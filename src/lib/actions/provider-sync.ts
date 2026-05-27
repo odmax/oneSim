@@ -1,0 +1,255 @@
+'use server'
+
+import { prisma } from '@/lib/prisma'
+import { revalidatePath } from 'next/cache'
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth/config'
+import { redirect } from 'next/navigation'
+import { generateSku, generatePackageCode } from '@/lib/packages/resolve-package'
+import { buildAdapter } from '@/lib/providers/adapter-manager'
+import { normalizePlan } from '@/lib/providers/plan-utils'
+import type { ProviderPlan } from '@/lib/providers/adapter-types'
+
+export type { ProviderPlan }
+
+function extractCountry(rawData: string): string | null {
+  try {
+    const parsed = JSON.parse(rawData)
+    return parsed.country || parsed.region || null
+  } catch {
+    return null
+  }
+}
+
+function inferCapabilitiesFromProvider(provider: any): Record<string, boolean> {
+  const planListPath = provider.planListPath || ''
+  const responseListKey = provider.responseListKey || ''
+
+  const capabilities: Record<string, boolean> = {}
+
+  capabilities.supportsESIM = true
+  capabilities.supportsPlanSync = !!planListPath
+  capabilities.supportsQRCode = !!provider.activationPath
+  capabilities.supportsUsage = !!(provider.usagePath || provider.statusPath)
+  capabilities.supportsUsageSync = !!provider.usagePath
+  capabilities.supportsSuspend = !!provider.suspendPath
+  capabilities.supportsSuspendResume = !!(provider.suspendPath && provider.resumePath)
+  capabilities.supportsTopUp = !!provider.topUpPath
+  capabilities.supportsBundleTemplates = planListPath.includes('bundle_templates') || responseListKey === 'bundle_template_list'
+
+  return capabilities
+}
+
+export async function syncProviderPlans(providerId: string) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+
+  const provider = await prisma.provider.findUnique({ where: { id: providerId } })
+  if (!provider) return { error: 'Provider not found' }
+
+  const diagnostics: any = {
+    providerId: provider.id,
+    providerName: provider.name,
+    providerCode: provider.code,
+    providerType: provider.type,
+    adapterStrategy: provider.adapterStrategy || provider.type,
+    baseUrl: provider.apiBaseUrl || '(not set)',
+    authUrl: provider.authUrl || '(not set)',
+    tokenPresent: !!provider.apiToken,
+    tokenLength: provider.apiToken ? 1 : 0,
+    tokenPlacement: provider.tokenPlacement || 'URL_PATH',
+    planListPath: provider.planListPath || '(not set)',
+    responseListKey: provider.responseListKey || '(not set)',
+    endpoint: '',
+    responseStatus: 0,
+    responseKeys: [],
+    fetchedCount: 0,
+    lowCountWarning: false,
+  }
+
+  try {
+    const strategy = provider.adapterStrategy
+    if (!strategy) {
+      return { error: `Cannot sync: adapterStrategy is not configured for provider "${provider.name}". Go to Edit Provider to set a protocol strategy.`, diagnostics }
+    }
+
+    const adapter = await buildAdapter(provider)
+    if (!adapter) return { error: `No adapter available for provider type "${provider.type}" / strategy "${strategy}"`, diagnostics }
+
+    const planListPath = provider.planListPath || '/plans'
+    diagnostics.endpoint = `${provider.apiBaseUrl || '(baseUrl)'}${planListPath.replace(/\{token\}/g, '{token}')}`
+
+    const result = await adapter.syncPlans()
+
+    if (!result.success) {
+      diagnostics.responseStatus = -1
+      diagnostics.providerError = result.error?.message || 'Unknown adapter error'
+      await prisma.provider.update({
+        where: { id: providerId },
+        data: { lastSyncAt: new Date(), lastSyncResult: `Sync failed: ${result.error?.message || 'Unknown error'}`, lastSyncCount: 0 },
+      }).catch(() => {})
+      return { error: `Sync failed: ${result.error?.message || 'Unknown'}`, diagnostics }
+    }
+
+    const plans = result.data || []
+
+    diagnostics.fetchedCount = plans.length
+    diagnostics.lowCountWarning = plans.length > 0 && plans.length < 10
+
+    if (adapter && 'getCapabilities' in adapter) {
+      diagnostics.capabilities = adapter.getCapabilities().map((c: any) => c.key)
+    }
+
+    // Auto-detect capabilities from provider config (don't override manual true settings)
+    const VALID_CAP_KEYS = new Set(['supportsESIM', 'supportsUsage', 'supportsTopUp', 'supportsSuspend', 'supportsQRCode', 'supportsPools', 'supportsTemplates', 'supportsUsageSync', 'supportsWebhookPush', 'supportsSuspendResume'])
+    const inferred = inferCapabilitiesFromProvider(provider)
+    const capabilitiesUpdate: Record<string, boolean> = {}
+    for (const [key, value] of Object.entries(inferred)) {
+      if (VALID_CAP_KEYS.has(key) && value && !(provider as any)[key]) {
+        capabilitiesUpdate[key] = true
+      }
+    }
+
+    await prisma.provider.update({
+      where: { id: providerId },
+      data: {
+        lastSyncAt: new Date(),
+        lastSyncResult: `Synced ${plans.length} plans successfully`,
+        lastSyncCount: plans.length,
+        ...capabilitiesUpdate,
+      },
+    })
+
+    await prisma.auditLog.create({
+      data: {
+        userId: session.user.id,
+        action: 'PROVIDER_PLANS_SYNCED',
+        entity: 'Provider',
+        entityId: provider.code,
+        details: `Synced ${plans.length} plans from "${provider.name}" (strategy: ${diagnostics.adapterStrategy}). Inferred capabilities: ${Object.keys(capabilitiesUpdate).join(', ') || 'none'}`,
+      },
+    })
+
+    revalidatePath(`/admin/providers/${providerId}`)
+    return { success: `Fetched ${plans.length} plans from ${provider.name}.`, plans, diagnostics, inferredCapabilities: Object.keys(capabilitiesUpdate) }
+  } catch (error: any) {
+    await prisma.provider.update({
+      where: { id: providerId },
+      data: {
+        lastSyncAt: new Date(),
+        lastSyncResult: `Sync failed: ${error.message || 'Unknown error'}`,
+        lastSyncCount: 0,
+      },
+    }).catch(() => {})
+    return { error: `Sync failed: ${error.message || 'Unknown error'}`, diagnostics }
+  }
+}
+
+export async function importProviderPlan(providerId: string, formData: FormData) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+
+  const provider = await prisma.provider.findUnique({ where: { id: providerId } })
+  if (!provider) redirect(`/admin/providers?error=Provider+not+found`)
+
+  const planRawData = formData.get('planRawData') as string
+  const planData = planRawData ? (() => { try { return JSON.parse(planRawData) } catch { return null } })() : null
+
+  const planId = formData.get('planId') as string
+  const planName = formData.get('planName') as string
+
+  let normalized
+  if (!planId || !planName) {
+    if (!planData) {
+      redirect(`/admin/providers/${providerId}?error=${encodeURIComponent('Invalid plan data: missing id/name and no raw data available')}`)
+    }
+    normalized = normalizePlan(planData)
+    if (!normalized.providerPlanId || !normalized.name) {
+      const rawKeys = planData ? Object.keys(planData).join(', ') : 'none'
+      redirect(`/admin/providers/${providerId}?error=${encodeURIComponent(`Invalid plan data: could not find id or name in raw data (keys: ${rawKeys})`)}`)
+    }
+  }
+
+  const resolvedPlanId = normalized ? normalized.providerPlanId : planId
+  const resolvedName = normalized ? normalized.name : planName
+  const resolvedDataGB = normalized ? normalized.dataGB : (parseInt(formData.get('planDataGB') as string, 10) || 1)
+  const resolvedValidityDays = normalized ? normalized.validityDays : (parseInt(formData.get('planValidityDays') as string, 10) || 30)
+  const resolvedCostPriceUSD = normalized ? normalized.costPriceUSD : (parseFloat(formData.get('planPriceUSD') as string) || 0)
+  const resolvedDescription = normalized ? normalized.description : (formData.get('planDescription') as string || '')
+  const resolvedRawData = normalized ? normalized.rawData : planData
+
+  try {
+    const sku = generateSku(resolvedName, resolvedDataGB, resolvedValidityDays, provider.code)
+    let packageCode = generatePackageCode(resolvedDataGB, resolvedValidityDays)
+
+    let existingCode = await prisma.eSIMPackage.findUnique({ where: { packageCode } })
+    while (existingCode) {
+      packageCode = generatePackageCode(resolvedDataGB, resolvedValidityDays)
+      existingCode = await prisma.eSIMPackage.findUnique({ where: { packageCode } })
+    }
+
+    const existingPackage = await prisma.eSIMPackage.findFirst({
+      where: { providerId, providerPlanId: resolvedPlanId },
+    })
+
+    if (existingPackage) {
+      await prisma.eSIMPackage.update({
+        where: { id: existingPackage.id },
+        data: {
+          source: 'PROVIDER_PLAN',
+          name: resolvedName,
+          description: resolvedDescription || existingPackage.description,
+          dataGB: resolvedDataGB,
+          validityDays: resolvedValidityDays,
+          costPriceUSD: resolvedCostPriceUSD,
+          priceUSD: 0,
+          localPrice: 0,
+          providerRawData: resolvedRawData,
+          sku: existingPackage.sku || sku,
+          packageCode: existingPackage.packageCode || packageCode,
+        },
+      })
+
+      await prisma.auditLog.create({
+        data: { userId: session.user.id, action: 'PROVIDER_PLAN_UPDATED', entity: 'ESIMPackage', entityId: existingPackage.id, details: `Updated package from ${provider.code} plan: ${resolvedName} (${resolvedPlanId})` },
+      })
+
+      revalidatePath(`/admin/providers/${providerId}`)
+      revalidatePath('/admin/packages')
+      redirect(`/admin/providers/${providerId}?synced=true&success=${encodeURIComponent(`Package "${resolvedName}" updated. Set selling price and activate manually.`)}`)
+    }
+
+    await prisma.eSIMPackage.create({
+      data: {
+        source: 'PROVIDER_PLAN',
+        name: resolvedName,
+        description: resolvedDescription || `Imported from ${provider.name}: ${resolvedName}`,
+        dataGB: resolvedDataGB,
+        validityDays: resolvedValidityDays,
+        priceUSD: 0,
+        localPrice: 0,
+        currency: 'USD',
+        isActive: false,
+        sku,
+        packageCode,
+        providerId,
+        providerName: provider.code,
+        providerPlanId: resolvedPlanId,
+        providerRawData: resolvedRawData,
+        costPriceUSD: resolvedCostPriceUSD,
+      },
+    })
+
+    await prisma.auditLog.create({
+      data: { userId: session.user.id, action: 'PROVIDER_PLAN_IMPORTED', entity: 'ESIMPackage', entityId: resolvedPlanId, details: `Imported package from ${provider.code} plan: ${resolvedName} (${resolvedPlanId})` },
+    })
+
+    revalidatePath(`/admin/providers/${providerId}`)
+    revalidatePath('/admin/packages')
+    redirect(`/admin/providers/${providerId}?synced=true&success=${encodeURIComponent(`Package "${resolvedName}" imported. Set selling price and activate manually.`)}`)
+  } catch (error: any) {
+    redirect(`/admin/providers/${providerId}?synced=true&error=${encodeURIComponent(`Failed to import: ${error.message || 'Unknown error'}`)}`)
+  }
+}
+
+

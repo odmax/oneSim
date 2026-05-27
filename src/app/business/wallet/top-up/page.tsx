@@ -1,0 +1,149 @@
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth/config'
+import { prisma } from '@/lib/prisma'
+import { redirect } from 'next/navigation'
+import Link from 'next/link'
+import { createTopUpRequest } from '@/lib/actions/wallet-topup'
+import CopyButton from '@/components/CopyButton'
+
+export default async function TopUpPage({
+  searchParams,
+}: {
+  searchParams?: { error?: string; success?: string; ref?: string; amount?: string }
+}) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'BUSINESS_USER') redirect('/login')
+
+  const businessId = session.user.businessId!
+  const business = await prisma.business.findUnique({ where: { id: businessId } })
+  if (!business) redirect('/login')
+
+  const isSuccess = searchParams?.success === 'true'
+  const paymentRef = searchParams?.ref
+  const amount = searchParams?.amount
+
+  return (
+    <div className="space-y-6">
+      <Link href="/business/wallet" className="text-sm text-gray-500 hover:text-gray-700">← Back to Wallet</Link>
+
+      {isSuccess && paymentRef && amount ? (
+        /* Confirmation view */
+        <>
+          <div className="rounded-xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-6 shadow-sm">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100">
+                <span className="text-2xl text-emerald-600">✓</span>
+              </div>
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Top-Up Request Submitted</h2>
+                <p className="text-sm text-gray-500">Your request is pending admin confirmation.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-gray-100 bg-white p-6 shadow-sm">
+            <h3 className="text-base font-semibold text-gray-900 mb-4">Payment Instructions</h3>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3">
+                <span className="text-sm text-gray-500">Amount</span>
+                <span className="text-lg font-bold text-gray-900">${parseFloat(amount).toFixed(2)}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3">
+                <span className="text-sm text-gray-500">Reference</span>
+                <div className="flex items-center gap-2">
+                  <code className="text-sm font-mono font-medium text-gray-900">{paymentRef}</code>
+                  <CopyButton text={paymentRef} label="Copy ref" />
+                </div>
+              </div>
+              <div className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3">
+                <span className="text-sm text-gray-500">Payment Method</span>
+                <span className="text-sm font-medium text-gray-900">Manual Bank Transfer</span>
+              </div>
+            </div>
+
+            <div className="mt-5 rounded-lg border border-amber-100 bg-amber-50 p-4">
+              <p className="text-sm font-medium text-amber-800">Bank Transfer Details</p>
+              <div className="mt-2 space-y-1 text-sm text-amber-700">
+                <p>Bank: OneSim Financial Services</p>
+                <p>Account: 1234567890</p>
+                <p>Sort Code: 11-22-33</p>
+                <p className="mt-2 font-medium">Reference: {paymentRef}</p>
+              </div>
+            </div>
+
+            <div className="mt-5 rounded-lg bg-blue-50 p-4">
+              <p className="text-sm text-blue-700">
+                Your wallet will be credited once the admin confirms receipt of payment.
+                This usually takes 1-2 business days.
+              </p>
+            </div>
+
+            <Link
+              href="/business/wallet"
+              className="mt-5 inline-block rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm"
+            >
+              Back to Wallet
+            </Link>
+          </div>
+        </>
+      ) : (
+        /* Top-up form */
+        <>
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">Top Up Wallet</h2>
+            <p className="mt-1 text-sm text-gray-500">Request a wallet top-up — admin will confirm manually.</p>
+          </div>
+
+          {searchParams?.error && (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {searchParams.error === 'invalid_amount' && 'Please enter a valid positive amount.'}
+              {searchParams.error === 'amount_too_large' && 'Amount exceeds maximum ($100,000).'}
+            </div>
+          )}
+
+          <div className="max-w-lg">
+            <div className="rounded-xl border border-gray-100 bg-white p-6 shadow-sm">
+              <div className="mb-5">
+                <p className="text-sm text-gray-500">Current Balance</p>
+                <p className="text-2xl font-bold text-gray-900">${business.walletBalance.toFixed(2)}</p>
+              </div>
+
+              <form action={createTopUpRequest} className="space-y-4">
+                <div>
+                  <label htmlFor="amount" className="block text-sm font-medium text-gray-700">Amount (USD)</label>
+                  <div className="mt-1 relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+                    <input
+                      id="amount"
+                      name="amount"
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      max="100000"
+                      required
+                      placeholder="0.00"
+                      className="block w-full rounded-lg border border-gray-200 pl-7 pr-4 py-2.5 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-lg bg-gray-50 p-4">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Payment Method</p>
+                  <p className="mt-1 text-sm font-medium text-gray-900">Manual Bank Transfer</p>
+                  <p className="text-xs text-gray-400">Pay via bank transfer. Your wallet is credited after admin confirmation.</p>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm"
+                >
+                  Submit Top-Up Request
+                </button>
+              </form>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}

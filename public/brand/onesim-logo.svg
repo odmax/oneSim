@@ -1,0 +1,13 @@
+<svg width="120" height="40" viewBox="0 0 120 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle with turquoise color -->
+  <rect width="120" height="40" fill="white"/>
+  
+  <!-- Stylized "O" with turquoise fill -->
+  <circle cx="30" cy="20" r="14" fill="#00D4D4"/>
+  <circle cx="30" cy="20" r="9" fill="white"/>
+  
+  <!-- Text "neSim" in navy blue -->
+  <text x="50" y="26" font-family="Arial, sans-serif" font-weight="bold" font-size="18" fill="#1a1a2e">
+    neSim
+  </text>
+</svg>

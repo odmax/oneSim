@@ -1,0 +1,11 @@
+-- Seed providers
+-- Providers are now configured through the Admin UI.
+-- This seed file is kept for reference only.
+-- 
+-- To seed a provider programmatically, use:
+--   src/lib/actions/providers.ts → createProvider()
+-- 
+-- Example: adding a default provider via seed script:
+--   INSERT INTO "Provider" ("id", name, code, type, "adapterStrategy", status, "authType", "apiBaseUrl", "authUrl", "apiToken", environment, priority, "createdAt", "updatedAt")
+--   SELECT gen_random_uuid()::text, 'Default Provider', 'DEFAULT', 'CUSTOM', 'REST_CATALOG', 'TESTING', 'bearer_token', NULL, NULL, NULL, 'staging', 0, NOW(), NOW()
+--   WHERE NOT EXISTS (SELECT 1 FROM "Provider" WHERE code = 'DEFAULT');

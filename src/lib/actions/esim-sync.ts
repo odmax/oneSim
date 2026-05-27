@@ -1,0 +1,154 @@
+'use server'
+
+import { prisma } from '@/lib/prisma'
+import { revalidatePath } from 'next/cache'
+import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
+
+export async function syncEsimStatus(esimId: string) {
+  const esim = await prisma.eSIM.findUnique({
+    where: { id: esimId },
+    include: { purchase: { include: { package: true } } },
+  })
+  if (!esim) return { success: false, error: 'eSIM not found' }
+
+  if (!esim.providerActivationId) {
+    return { success: false, error: 'No provider activation ID' }
+  }
+
+  const providerId = esim.purchase.package.providerId
+  if (!providerId) return { success: false, error: 'No linked provider' }
+
+  const adapter = await getAdapterForProvider(providerId)
+  if (!adapter) return { success: false, error: 'Provider not available' }
+
+  const result = await adapter.getActivationStatus(esim.providerActivationId)
+  if (!result.success) return { success: false, error: result.error?.message }
+
+  await prisma.eSIM.update({
+    where: { id: esimId },
+    data: {
+      providerStatus: result.data?.status,
+      status: result.data?.status === 'ACTIVE' ? 'ACTIVE' : esim.status,
+      lastSyncAt: new Date(),
+      providerResponse: result.data,
+    },
+  })
+
+  revalidatePath(`/admin/esims/${esimId}`)
+  revalidatePath('/admin/esims')
+  return { success: true, data: result.data }
+}
+
+export async function syncEsimUsage(esimId: string) {
+  const esim = await prisma.eSIM.findUnique({
+    where: { id: esimId },
+    include: { purchase: { include: { package: true } } },
+  })
+  if (!esim) return { success: false, error: 'eSIM not found' }
+
+  const providerId = esim.purchase.package.providerId
+  if (!providerId) return { success: false, error: 'No linked provider' }
+
+  const adapter = await getAdapterForProvider(providerId)
+  if (!adapter) return { success: false, error: 'Provider not available' }
+
+  const result = await adapter.getUsage(esim.iccid)
+  if (!result.success) return { success: false, error: result.error?.message }
+
+  if (result.data) {
+    await prisma.usageRecord.create({
+      data: {
+        esimId,
+        dataUsedMB: result.data.dataUsedMB,
+        timestamp: result.data.timestamp ? new Date(result.data.timestamp) : new Date(),
+      },
+    })
+  }
+
+  await prisma.eSIM.update({
+    where: { id: esimId },
+    data: { lastSyncAt: new Date() },
+  })
+
+  revalidatePath(`/admin/esims/${esimId}`)
+  return { success: true, data: result.data }
+}
+
+export async function getQrCode(esimId: string) {
+  const esim = await prisma.eSIM.findUnique({
+    where: { id: esimId },
+    include: { purchase: { include: { package: true } } },
+  })
+  if (!esim) return { success: false, error: 'eSIM not found' }
+
+  if (esim.qrCodeUrl) return { success: true, data: { qrCodeUrl: esim.qrCodeUrl } }
+
+  const providerId = esim.purchase.package.providerId
+  if (!providerId) return { success: false, error: 'No linked provider' }
+
+  const adapter = await getAdapterForProvider(providerId)
+  if (!adapter) return { success: false, error: 'Provider not available' }
+
+  const result = await adapter.getQRCode(esim.iccid)
+  if (!result.success) return { success: false, error: result.error?.message }
+
+  if (result.data?.qrCodeUrl) {
+    await prisma.eSIM.update({
+      where: { id: esimId },
+      data: { qrCodeUrl: result.data.qrCodeUrl },
+    })
+  }
+
+  revalidatePath(`/admin/esims/${esimId}`)
+  return result
+}
+
+export async function suspendEsim(esimId: string) {
+  const esim = await prisma.eSIM.findUnique({
+    where: { id: esimId },
+    include: { purchase: { include: { package: true } } },
+  })
+  if (!esim) return { success: false, error: 'eSIM not found' }
+
+  const providerId = esim.purchase.package.providerId
+  if (!providerId) return { success: false, error: 'No linked provider' }
+
+  const adapter = await getAdapterForProvider(providerId)
+  if (!adapter) return { success: false, error: 'Provider not available' }
+
+  const result = await adapter.suspendESIM(esim.iccid)
+  if (!result.success) return { success: false, error: result.error?.message }
+
+  await prisma.eSIM.update({
+    where: { id: esimId },
+    data: { status: 'SUSPENDED', lastSyncAt: new Date() },
+  })
+
+  revalidatePath(`/admin/esims/${esimId}`)
+  return { success: true }
+}
+
+export async function resumeEsim(esimId: string) {
+  const esim = await prisma.eSIM.findUnique({
+    where: { id: esimId },
+    include: { purchase: { include: { package: true } } },
+  })
+  if (!esim) return { success: false, error: 'eSIM not found' }
+
+  const providerId = esim.purchase.package.providerId
+  if (!providerId) return { success: false, error: 'No linked provider' }
+
+  const adapter = await getAdapterForProvider(providerId)
+  if (!adapter) return { success: false, error: 'Provider not available' }
+
+  const result = await adapter.resumeESIM(esim.iccid)
+  if (!result.success) return { success: false, error: result.error?.message }
+
+  await prisma.eSIM.update({
+    where: { id: esimId },
+    data: { status: 'ACTIVE', lastSyncAt: new Date() },
+  })
+
+  revalidatePath(`/admin/esims/${esimId}`)
+  return { success: true }
+}
