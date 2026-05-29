@@ -234,24 +234,59 @@ export class UrlTokenConnector extends RestCatalogConnector {
     const token = this.config.apiToken || ''
     const path = `/template/v03_09/add_bundle_using_template_from_pool/${token}`
     const body = { template_id: params.planId, quantity: params.quantity, email: params.subscriber.email }
-    const { text, error } = await fetchText(this.baseUrl(path), {
+    const maskedPath = path.replace(token, token.slice(0, 4) + '••••')
+    const safeBody = JSON.stringify({ ...body, template_id: body.template_id })
+
+    console.log(`[UrlTokenConnector] activateESIM:\n  URL: ${this.baseUrl(maskedPath)}\n  Body: ${safeBody}`)
+
+    const { text, error, status } = await fetchText(this.baseUrl(path), {
       method: 'POST', headers: this.headers, body: JSON.stringify(body),
     })
-    if (error) return { success: false, error }
-    if (!text) return { success: false, error: { code: 'EMPTY', message: 'Empty activation response' } }
+
+    if (error) {
+      console.log(`[UrlTokenConnector] activateESIM FAILED: status=${status} error=${error.code} msg=${error.message}`)
+      return { success: false, error }
+    }
+    if (!text) {
+      console.log(`[UrlTokenConnector] activateESIM FAILED: empty response`)
+      return { success: false, error: { code: 'EMPTY', message: 'Empty activation response' } }
+    }
+
+    console.log(`[UrlTokenConnector] activateESIM response (${text.length} chars): ${text.substring(0, 500)}`)
+
     try {
       const json = JSON.parse(text)
-      const iccids: string[] = json.iccid ? [json.iccid] : json.iccids || json.iccid_list || []
+      const topKeys = Object.keys(json)
+
+      // Extract ICCIDs from various possible response formats
+      const iccids: string[] = (() => {
+        if (Array.isArray(json.iccids) && json.iccids.length > 0) return json.iccids
+        if (json.iccid) return [json.iccid]
+        if (Array.isArray(json.iccid_list) && json.iccid_list.length > 0) return json.iccid_list
+        if (json.data?.iccids) return json.data.iccids
+        if (json.data?.iccid) return [json.data.iccid]
+        if (json.response?.iccids) return json.response.iccids
+        if (json.response?.iccid) return [json.response.iccid]
+        if (json.sim?.iccid) return [json.sim.iccid]
+        if (Array.isArray(json.sims)) return json.sims.map((s: any) => s.iccid).filter(Boolean)
+        if (json.esim?.iccid) return [json.esim.iccid]
+        if (json.order?.iccids) return json.order.iccids
+        if (json.bundle?.iccid) return [json.bundle.iccid]
+        console.log(`[UrlTokenConnector] WARNING: No ICCID field found in response. Top keys: ${topKeys.join(', ')}`)
+        return []
+      })()
+
       return {
         success: true,
         data: {
-          activationId: json.transaction_id || json.order_id || json.id || '',
+          activationId: json.transaction_id || json.order_id || json.id || json.response?.transaction_id || '',
           iccids,
-          qrCodeUrl: json.qr_code_url || json.qrCodeUrl || '',
+          qrCodeUrl: json.qr_code_url || json.qrCodeUrl || json.data?.qr_code_url || '',
           status: json.status || 'ACTIVATED',
         },
       }
-    } catch {
+    } catch (e: any) {
+      console.log(`[UrlTokenConnector] activateESIM PARSE FAILED: ${e.message}`)
       return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse activation response' } }
     }
   }
