@@ -19,6 +19,7 @@ interface PackageBuyCardProps {
 
 export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
   const [quantity, setQuantity] = useState(1)
+  const [submitting, setSubmitting] = useState(false)
   const price = parseFloat(pkg.priceUSD.toString())
   const total = price * quantity
   const insufficient = walletBalance < total
@@ -45,7 +46,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
         </div>
       </div>
 
-      <form action={purchaseESIMs} className="space-y-3">
+      <form action={purchaseESIMs} className="space-y-3" onSubmit={() => setSubmitting(true)}>
         <input type="hidden" name="packageId" value={pkg.id} />
         <div>
           <label htmlFor={`quantity-${pkg.id}`} className="block text-xs font-medium text-gray-500 mb-1">
@@ -67,10 +68,10 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
           <span className="text-sm font-semibold text-gray-900">Total: ${total.toFixed(2)}</span>
           <button
             type="submit"
+            disabled={insufficient || submitting}
             className="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={insufficient}
           >
-            {insufficient ? 'Insufficient Balance' : 'Buy Now'}
+            {submitting ? 'Processing...' : insufficient ? 'Insufficient Balance' : 'Buy Now'}
           </button>
         </div>
       </form>

@@ -36,9 +36,11 @@ export default async function BuyESIMPage({
 
       {searchParams.error && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {searchParams.error === 'invalid_input' && 'Invalid input. Please check your selection.'}
-          {searchParams.error === 'package_not_found' && 'Selected package not found or inactive.'}
-          {searchParams.error === 'insufficient_balance' && 'Insufficient wallet balance. Please top up your wallet.'}
+          {searchParams.error === 'invalid_input' && 'Invalid quantity or package selection.'}
+          {searchParams.error === 'package_not_found' && 'This package is no longer available.'}
+          {searchParams.error === 'insufficient_balance' && 'Insufficient wallet balance. Please request credit before buying.'}
+          {searchParams.error === 'business_suspended' && 'Your business account is suspended. Please contact support.'}
+          {searchParams.error === 'provider_failed' && 'Provider could not provision this eSIM right now. Please contact support or try again later.'}
           {searchParams.error === 'purchase_failed' && 'Purchase failed. Please try again.'}
         </div>
       )}

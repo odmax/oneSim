@@ -7,6 +7,17 @@ import { redirect } from 'next/navigation'
 import { purchaseESIMSchema } from '@/lib/validators/business'
 import { createOrder } from '@/lib/services/orders/create-order'
 
+const ERROR_MAP: Record<string, string> = {
+  'Package not found or inactive': 'package_not_found',
+  'Package not available for purchase': 'package_not_found',
+  'Insufficient wallet balance': 'insufficient_balance',
+  'Business account is suspended': 'business_suspended',
+  'quantity must be between 1 and 100': 'invalid_input',
+  'No provider adapter available': 'provider_failed',
+  'Provider activation failed': 'provider_failed',
+  'Provider returned fewer ICCIDs': 'provider_failed',
+}
+
 export async function purchaseESIMs(formData: FormData) {
   const session = await getServerSession(authOptions)
 
@@ -34,15 +45,15 @@ export async function purchaseESIMs(formData: FormData) {
   })
 
   if (!result.success) {
-    const errorMap: Record<string, string> = {
-      'Package not found or inactive': 'package_not_found',
-      'Package not available for purchase': 'package_not_found',
-      'Insufficient wallet balance': 'insufficient_balance',
-      'Business account is suspended': 'purchase_failed',
-      'quantity must be between 1 and 100': 'invalid_input',
+    const msg = result.error || 'Purchase failed'
+    console.error(`purchaseESIMs failed: business=${businessId} pkg=${packageId} qty=${quantity} error=${msg}`)
+
+    for (const [key, value] of Object.entries(ERROR_MAP)) {
+      if (msg.startsWith(key)) {
+        redirect(`/business/buy-esim?error=${value}`)
+      }
     }
-    const errorParam = errorMap[result.error!] || 'purchase_failed'
-    redirect(`/business/buy-esim?error=${errorParam}`)
+    redirect(`/business/buy-esim?error=purchase_failed`)
   }
 
   revalidatePath('/business/orders')
