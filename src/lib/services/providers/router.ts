@@ -17,6 +17,8 @@ export interface OrderResult {
   esims?: Array<{
     id: string
     iccid: string
+    imsi?: string | null
+    activationCode?: string | null
     status: string
     qrCodeUrl?: string
   }>
@@ -166,14 +168,26 @@ export async function routeOrder(request: OrderRequest): Promise<OrderResult> {
       }
     }
 
+    const data = result.data
+    const iccids = data.iccids || []
+    if (iccids.length < request.quantity) {
+      return {
+        success: false,
+        error: `Provider returned fewer ICCIDs than requested (got ${iccids.length}, need ${request.quantity})`,
+        providerName,
+      }
+    }
+
     return {
       success: true,
-      orderId: result.data.activationId,
-      esims: result.data.iccids.map((iccid: string, i: number) => ({
+      orderId: data.activationId,
+      esims: iccids.map((iccid: string, i: number) => ({
         id: `pending-${i}`,
         iccid,
+        imsi: data.imsis?.[i] || null,
+        activationCode: data.activationCodes?.[i] || null,
         status: 'PENDING_ACTIVATION',
-        qrCodeUrl: result.data?.qrCodeUrl || undefined,
+        qrCodeUrl: data.qrCodeUrl || undefined,
       })),
       providerStatus: result.data.status || 'PENDING',
       providerName,

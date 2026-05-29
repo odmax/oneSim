@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation'
 import bcrypt from 'bcryptjs'
 import { authOptions } from '@/lib/auth/config'
 import { getServerSession } from 'next-auth'
+import { sendPasswordSetupEmail } from '@/lib/actions/auth-setup'
 
 export async function updateBusiness(formData: FormData) {
   const session = await getServerSession(authOptions)
@@ -113,17 +114,18 @@ export async function createBusiness(formData: FormData) {
   const adminName = formData.get('adminName') as string
   const adminEmail = formData.get('adminEmail') as string
   const adminPassword = formData.get('adminPassword') as string
+  const sendInvite = formData.get('sendInvite') === 'on'
   const status = formData.get('status') as string || 'PENDING';
 
   if (!name || !contactEmail || !country) {
     redirect('/admin/businesses/new?error=missing_business_info')
   }
 
-  if (!adminName || !adminEmail || !adminPassword) {
+  if (!adminName || !adminEmail) {
     redirect('/admin/businesses/new?error=missing_admin_info')
   }
 
-  if (adminPassword.length < 8) {
+  if (!sendInvite && (!adminPassword || adminPassword.length < 8)) {
     redirect('/admin/businesses/new?error=password_too_short')
   }
 
@@ -137,7 +139,9 @@ export async function createBusiness(formData: FormData) {
       redirect('/admin/businesses/new?error=email_exists')
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+    let createdUserId = ''
+
+    await prisma.$transaction(async (tx) => {
       // Create business
       const business = await tx.business.create({
         data: {
@@ -153,10 +157,13 @@ export async function createBusiness(formData: FormData) {
         },
       })
 
-      // Create admin user (required)
-      const bcrypt = await import('bcryptjs')
-      const passwordHash = await bcrypt.default.hash(adminPassword, 10)
-        
+      // Create admin user
+      let passwordHash: string | null = null
+      if (adminPassword) {
+        const bcrypt = await import('bcryptjs')
+        passwordHash = await bcrypt.default.hash(adminPassword, 10)
+      }
+
       const user = await tx.user.create({
         data: {
           email: adminEmail,
@@ -166,6 +173,8 @@ export async function createBusiness(formData: FormData) {
           isActive: true,
         },
       })
+
+      createdUserId = user.id
 
       // Link user to business as ADMIN
       await tx.businessUser.create({
@@ -183,15 +192,20 @@ export async function createBusiness(formData: FormData) {
           action: 'CREATE',
           entity: 'Business',
           entityId: business.id,
-          details: `Created business: ${name} with admin: ${adminEmail}, status: ${status}`,
+          details: `Created business: ${name} with admin: ${adminEmail}, status: ${status}${sendInvite ? ', invite sent' : ''}`,
         },
       })
 
-      return { business, userId: user.id }
+      return business
     })
 
+    // Send invite email outside transaction
+    if (sendInvite && createdUserId) {
+      await sendPasswordSetupEmail(createdUserId, adminEmail, adminName)
+    }
+
     revalidatePath('/admin/businesses')
-    redirect('/admin/businesses?success=business_created')
+    redirect(`/admin/businesses?success=${sendInvite ? 'business_created_invited' : 'business_created'}`)
   } catch (error: any) {
     console.error('Business creation error:', error)
     if (error?.code === 'P2002') {

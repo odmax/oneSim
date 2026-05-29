@@ -19,7 +19,7 @@ export async function GET(request: Request, { params }: { params: { id: string }
   if (!invoice) return new NextResponse('Not found', { status: 404 })
 
   const lineItems = (invoice.metadata as any)?.lineItems || []
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://onesim.africa'
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://staging.onetelecom.cloud'
 
   const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Invoice ${invoice.invoiceNumber || params.id}</title>

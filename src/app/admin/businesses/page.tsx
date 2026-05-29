@@ -143,7 +143,9 @@ export default async function AdminBusinessesPage({
       {searchParams.success && (
         <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700">
           {searchParams.success === 'business_created' && 'Business account created successfully.'}
+          {searchParams.success === 'business_created_invited' && 'Business created. Invite email sent.'}
           {searchParams.success === 'status_updated' && 'Business status updated successfully.'}
+          {searchParams.success === 'invite_resent' && 'Invite email resent successfully.'}
         </div>
       )}
       {searchParams.error && (

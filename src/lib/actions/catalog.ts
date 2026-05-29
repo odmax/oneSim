@@ -60,9 +60,9 @@ export async function convertToCatalogProduct(packageId: string, formData: FormD
     revalidatePath('/admin/provider-plans')
     revalidatePath('/admin/catalog-products')
     revalidatePath('/admin/packages')
-    redirect('/admin/provider-plans?success=Package+converted+to+catalog+product')
+    redirect(`/admin/packages?tab=catalog&success=${encodeURIComponent('Package converted to catalog product')}`)
   } catch (error: any) {
-    redirect(`/admin/provider-plans/${packageId}/convert?error=${encodeURIComponent(error.message || 'Conversion failed')}`)
+    redirect(`/admin/packages/${packageId}/edit?error=${encodeURIComponent(error.message || 'Conversion failed')}`)
   }
 }
 

@@ -39,7 +39,7 @@ export async function updateAccount(formData: FormData) {
       select: { passwordHash: true }
     })
 
-    if (!user) {
+    if (!user || !user.passwordHash) {
       redirect(`/${session.user.role === 'INTERNAL_ADMIN' ? 'admin' : 'business'}/account?error=update_failed`)
     }
 

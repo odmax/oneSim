@@ -67,7 +67,7 @@ enum ProviderStatus {
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
-  passwordHash  String
+  passwordHash  String?
   name          String
   role          UserRole
   isActive      Boolean   @default(true)
@@ -79,9 +79,25 @@ model User {
   purchases               ESIMPurchase[]
   topUpRequests           WalletTopUpRequest[]  @relation("TopUpRequestedBy")
   approvedTopUpRequests   WalletTopUpRequest[]  @relation("TopUpApprovedBy")
+  passwordResetTokens     PasswordResetToken[]
   auditLogs               AuditLog[]
 
   @@map("users")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String
+  type      String   @default("SET_PASSWORD") // SET_PASSWORD | RESET_PASSWORD
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+  @@map("password_reset_tokens")
 }
 
 model Business {

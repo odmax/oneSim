@@ -12,17 +12,22 @@ function TxTypeBadge({ type }: { type: string }) {
   return (
     <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[type] || 'bg-gray-50 text-gray-500'}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${type === 'TOPUP' ? 'bg-emerald-400' : 'bg-blue-400'}`} />
-      {type}
+      {type === 'TOPUP' ? 'Credit' : type}
     </span>
   )
 }
 
-function TopUpStatusBadge({ status }: { status: string }) {
+function CreditStatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     PENDING: 'bg-amber-50 text-amber-600',
     APPROVED: 'bg-emerald-50 text-emerald-600',
     REJECTED: 'bg-red-50 text-red-600',
     CANCELLED: 'bg-gray-50 text-gray-500',
+  }
+  const labels: Record<string, string> = {
+    PENDING: 'Awaiting Confirmation',
+    APPROVED: 'Credited',
+    REJECTED: 'Rejected',
   }
   return (
     <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[status] || 'bg-gray-50 text-gray-500'}`}>
@@ -31,7 +36,7 @@ function TopUpStatusBadge({ status }: { status: string }) {
         status === 'REJECTED' ? 'bg-red-400' :
         status === 'PENDING' ? 'bg-amber-400' : 'bg-gray-400'
       }`} />
-      {status}
+      {labels[status] || status}
     </span>
   )
 }
@@ -58,65 +63,75 @@ export default async function WalletPage({
     .filter(tx => parseFloat(tx.amount.toString()) < 0)
     .reduce((sum, tx) => sum + Math.abs(parseFloat(tx.amount.toString())), 0)
 
-  const pendingTopUps = business.topUpRequests.filter(r => r.status === 'PENDING')
-  const completedTopUps = business.topUpRequests.filter(r => r.status === 'APPROVED')
+  const pendingRequests = business.topUpRequests.filter(r => r.status === 'PENDING')
+  const lastCredit = business.topUpRequests.find(r => r.status === 'APPROVED')
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Wallet</h2>
-          <p className="mt-1 text-sm text-gray-500">Manage your wallet balance and transactions</p>
+          <p className="mt-1 text-sm text-gray-500">Your account credit balance and transaction history</p>
         </div>
         <Link href="/business/wallet/top-up">
           <button className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm">
-            Top Up Wallet
+            Request Credit
           </button>
         </Link>
       </div>
 
       {searchParams?.error && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {searchParams.error === 'invalid_amount' && 'Invalid amount. Please enter a valid positive number.'}
-          {searchParams.error === 'topup_failed' && 'Top-up failed. Please try again.'}
+          {searchParams.error === 'invalid_amount' && 'Invalid amount.'}
         </div>
       )}
       {searchParams?.success && (
         <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700">
-          {searchParams.success === 'topup' && 'Wallet topped up successfully!'}
+          {searchParams.success === 'topup' && 'Request submitted.'}
         </div>
       )}
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-5 shadow-sm">
           <p className="text-xs font-medium text-emerald-600 uppercase tracking-wider">Current Balance</p>
           <p className="mt-2 text-3xl font-bold text-gray-900">${business.walletBalance.toFixed(2)}</p>
         </div>
         <div className="rounded-xl border border-red-100 bg-gradient-to-br from-red-50 to-white p-5 shadow-sm">
-          <p className="text-xs font-medium text-red-600 uppercase tracking-wider">Total Spent</p>
+          <p className="text-xs font-medium text-red-600 uppercase tracking-wider">Total Used</p>
           <p className="mt-2 text-3xl font-bold text-gray-900">${totalSpent.toFixed(2)}</p>
         </div>
         <div className="rounded-xl border border-amber-100 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm">
-          <p className="text-xs font-medium text-amber-600 uppercase tracking-wider">Pending Top-Ups</p>
-          <p className="mt-2 text-3xl font-bold text-gray-900">{pendingTopUps.length}</p>
+          <p className="text-xs font-medium text-amber-600 uppercase tracking-wider">Pending Requests</p>
+          <p className="mt-2 text-3xl font-bold text-gray-900">{pendingRequests.length}</p>
+        </div>
+        <div className="rounded-xl border border-blue-100 bg-gradient-to-br from-blue-50 to-white p-5 shadow-sm">
+          <p className="text-xs font-medium text-blue-600 uppercase tracking-wider">Last Credit</p>
+          {lastCredit ? (
+            <div>
+              <p className="mt-2 text-3xl font-bold text-gray-900">$${lastCredit.amount.toString()}</p>
+              <p className="mt-0.5 text-xs text-gray-500">{new Date(lastCredit.createdAt).toLocaleDateString()}</p>
+            </div>
+          ) : (
+            <p className="mt-2 text-sm text-gray-400">No credit yet</p>
+          )}
         </div>
       </div>
 
-      {/* Pending top-ups */}
-      {pendingTopUps.length > 0 && (
+      {/* Pending requests */}
+      {pendingRequests.length > 0 && (
         <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
           <p className="text-sm font-medium text-amber-800">
-            {pendingTopUps.length} top-up request{pendingTopUps.length > 1 ? 's' : ''} pending admin confirmation.
+            {pendingRequests.length} credit request{pendingRequests.length > 1 ? 's' : ''} awaiting admin confirmation.
           </p>
         </div>
       )}
 
-      {/* Top-up history */}
+      {/* Credit history */}
       {business.topUpRequests.length > 0 && (
         <div className="rounded-xl border border-gray-100 bg-white shadow-sm overflow-hidden">
           <div className="border-b border-gray-50 px-5 py-4">
-            <h3 className="text-base font-semibold text-gray-900">Top-Up History</h3>
+            <h3 className="text-base font-semibold text-gray-900">Credit History</h3>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -134,7 +149,7 @@ export default async function WalletPage({
                     <td className="px-5 py-4 text-sm text-gray-500">{new Date(r.createdAt).toLocaleDateString()}</td>
                     <td className="px-5 py-4 text-sm font-mono text-gray-700">{r.paymentReference}</td>
                     <td className="px-5 py-4 text-sm font-medium text-gray-900">${r.amount.toString()}</td>
-                    <td className="px-5 py-4"><TopUpStatusBadge status={r.status} /></td>
+                    <td className="px-5 py-4"><CreditStatusBadge status={r.status} /></td>
                   </tr>
                 ))}
               </tbody>

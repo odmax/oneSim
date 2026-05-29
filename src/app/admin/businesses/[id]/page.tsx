@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { updateBusinessStatus } from '@/lib/actions/business'
+import { sendPasswordSetupEmail } from '@/lib/actions/auth-setup'
 import WalletActions from './wallet-actions'
 import ConfirmForm from './confirm-form'
 
@@ -39,6 +40,11 @@ export default async function BusinessDetailPage({
       transactions: {
         orderBy: { createdAt: 'desc' },
         take: 20
+      },
+      topUpRequests: {
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        include: { requestedBy: { select: { name: true, email: true } } },
       },
       customers: {
         take: 10,
@@ -193,19 +199,33 @@ export default async function BusinessDetailPage({
           <div className="rounded-lg border bg-white p-6 shadow-sm">
             <h3 className="mb-4 text-lg font-semibold">Team Members ({business._count.users})</h3>
             <div className="divide-y">
-              {business.users.map((bu) => (
+              {business.users.map((bu) => {
+                const isInvited = !bu.user.passwordHash
+                return (
                 <div key={bu.id} className="flex items-center justify-between py-3">
                   <div>
                     <p className="font-medium text-gray-900">{bu.user.name}</p>
                     <p className="text-sm text-gray-600">{bu.user.email}</p>
                   </div>
-                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                    bu.role === 'ADMIN' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'
-                  }`}>
-                    {bu.role}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                      bu.role === 'ADMIN' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'
+                    }`}>
+                      {bu.role}
+                    </span>
+                    {isInvited ? (
+                      <>
+                        <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-600">Invited</span>
+                        <form action={sendPasswordSetupEmail.bind(null, bu.user.id, bu.user.email, bu.user.name || '')}>
+                          <button type="submit" className="rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-600 hover:bg-amber-100">Resend</button>
+                        </form>
+                      </>
+                    ) : (
+                      <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-600">Active</span>
+                    )}
+                  </div>
                 </div>
-              ))}
+              )})}
             </div>
           </div>
 
@@ -272,6 +292,49 @@ export default async function BusinessDetailPage({
               </table>
             ) : (
               <p className="text-sm text-gray-500">No purchases yet.</p>
+            )}
+          </div>
+
+          <div className="rounded-lg border bg-white p-6 shadow-sm">
+            <h3 className="mb-4 text-lg font-semibold">
+              Wallet Top-Up Requests
+              <Link href={`/admin/wallet-topups?state=PENDING`} className="ml-2 text-sm font-normal text-emerald-600 hover:text-emerald-700">View all →</Link>
+            </h3>
+            {business.topUpRequests.length > 0 ? (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs font-medium text-gray-500">
+                    <th className="pb-2">Reference</th>
+                    <th className="pb-2">Amount</th>
+                    <th className="pb-2">Status</th>
+                    <th className="pb-2">Requested By</th>
+                    <th className="pb-2">Date</th>
+                    <th className="pb-2">Approved</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {business.topUpRequests.map((r: any) => (
+                    <tr key={r.id}>
+                      <td className="py-3 text-sm font-mono text-gray-700">{r.paymentReference}</td>
+                      <td className="py-3 text-sm font-semibold text-gray-900">${r.amount.toString()}</td>
+                      <td className="py-3">
+                        <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          r.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-600' :
+                          r.status === 'REJECTED' ? 'bg-red-50 text-red-600' :
+                          'bg-amber-50 text-amber-600'
+                        }`}>
+                          {r.status}
+                        </span>
+                      </td>
+                      <td className="py-3 text-sm text-gray-600">{r.requestedBy?.name || r.requestedBy?.email || '—'}</td>
+                      <td className="py-3 text-sm text-gray-500">{new Date(r.createdAt).toLocaleDateString()}</td>
+                      <td className="py-3 text-sm text-gray-500">{r.approvedAt ? new Date(r.approvedAt).toLocaleDateString() : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="text-sm text-gray-500">No top-up requests yet.</p>
             )}
           </div>
 

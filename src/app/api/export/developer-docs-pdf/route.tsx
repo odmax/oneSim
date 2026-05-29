@@ -27,7 +27,7 @@ export async function GET() {
       },
     })
 
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://onesim.africa'
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://staging.onetelecom.cloud'
 
     const pdfBuffer = await renderToBuffer(
       <DeveloperDocsPDF

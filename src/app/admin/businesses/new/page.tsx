@@ -162,16 +162,23 @@ export default async function NewBusinessPage() {
               </div>
 
               <div>
+                <label htmlFor="sendInvite" className="flex items-center gap-2 cursor-pointer">
+                  <input id="sendInvite" name="sendInvite" type="checkbox" defaultChecked className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500" />
+                  <span className="text-sm font-medium text-gray-700">Send invite email to set password</span>
+                </label>
+                <p className="mt-1 text-xs text-gray-400">User will receive an email with a link to create their password.</p>
+              </div>
+
+              <div>
                 <label htmlFor="adminPassword" className="block text-sm font-medium text-gray-700">
-                  Temporary Password * (min 8 characters)
+                  Temporary Password <span className="text-gray-400">(optional if invite is sent)</span>
                 </label>
                 <input
                   id="adminPassword"
                   name="adminPassword"
                   type="password"
-                  required
                   minLength={8}
-                  placeholder="Minimum 8 characters"
+                  placeholder="Leave blank to send invite"
                   className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 focus:border-cyan-500 focus:outline-none"
                 />
               </div>

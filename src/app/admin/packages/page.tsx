@@ -194,6 +194,7 @@ export default async function AdminPackagesPage({
                 {pkg.source === 'PROVIDER_PLAN' && (
                   <div className="mb-4">
                     <ProgressIndicator source={pkg.source} isActive={pkg.isActive} hasDisplayName={!!pkg.displayName} />
+                    <p className="mt-2 text-xs text-gray-400">Imported provider plan. Configure and add to catalog before clients can buy it.</p>
                   </div>
                 )}
 
@@ -275,6 +276,9 @@ export default async function AdminPackagesPage({
                           Quick Add
                         </button>
                       </form>
+                      {pkg._count.purchases === 0 && (
+                        <DeletePackageButton packageId={pkg.id} variant="card" />
+                      )}
                     </>
                   ) : (
                     <>

@@ -28,6 +28,8 @@ export interface ActivateESIMParams {
 export interface ActivateESIMResult {
   activationId: string
   iccids: string[]
+  imsis?: string[]
+  activationCodes?: string[]
   qrCodeUrl?: string
   status?: string
 }

@@ -50,9 +50,14 @@ export default async function AdminWalletTopupsPage({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">Wallet Top-Ups</h2>
-        <p className="mt-1 text-sm text-gray-500">Manage wallet top-up requests from businesses</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Credit Allocations</h2>
+          <p className="mt-1 text-sm text-gray-500">Manage wallet credit requests from businesses</p>
+        </div>
+        <Link href="/admin/credit-allocations/new" className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm">
+          Allocate Credit
+        </Link>
       </div>
 
       {searchParams?.error && (
@@ -115,24 +120,25 @@ export default async function AdminWalletTopupsPage({
                     <td className="px-5 py-4 text-sm text-gray-500">{new Date(r.createdAt).toLocaleDateString()}</td>
                     <td className="px-5 py-4">
                       {r.status === 'PENDING' ? (
-                        <div className="flex gap-1.5">
-                          <form action={approveTopUpRequest.bind(null, r.id)}>
-                            <input type="hidden" name="adminNote" value="" />
+                        <div className="flex flex-col gap-2 min-w-[200px]">
+                          <form action={approveTopUpRequest.bind(null, r.id)} className="flex flex-col gap-1.5">
+                            <input name="adminNote" placeholder="Note (optional)..." className="rounded border border-gray-200 px-2 py-1 text-xs focus:border-emerald-500 focus:outline-none" />
                             <button type="submit" className="rounded bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-100">
                               Approve
                             </button>
                           </form>
-                          <form action={rejectTopUpRequest.bind(null, r.id)}>
-                            <input type="hidden" name="adminNote" value="" />
+                          <form action={rejectTopUpRequest.bind(null, r.id)} className="flex flex-col gap-1.5">
+                            <input name="adminNote" placeholder="Reason..." className="rounded border border-gray-200 px-2 py-1 text-xs focus:border-red-500 focus:outline-none" />
                             <button type="submit" className="rounded bg-red-50 px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-100">
                               Reject
                             </button>
                           </form>
                         </div>
                       ) : (
-                        <span className="text-xs text-gray-400">
-                          {r.approvedBy?.name ? `by ${r.approvedBy.name}` : '—'}
-                        </span>
+                        <div className="text-xs text-gray-400 space-y-0.5">
+                          {r.approvedBy?.name && <p>by {r.approvedBy.name}</p>}
+                          {r.adminNote && <p className="text-gray-500 italic">Note: {r.adminNote}</p>}
+                        </div>
                       )}
                     </td>
                   </tr>

@@ -34,12 +34,7 @@ export default async function ApiKeysPage() {
   })
 
   return (
-    <div className="p-6">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">API Keys</h2>
-        <p className="text-gray-600">Manage external API access for your business</p>
-      </div>
-
+    <div className="space-y-6">
       <ApiKeysClient keys={keys.map(k => ({
         ...k,
         lastUsedAt: k.lastUsedAt?.toISOString() || null,

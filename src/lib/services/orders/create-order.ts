@@ -33,6 +33,8 @@ export interface CreateOrderResult {
   esims?: Array<{
     id: string
     iccid: string
+    imsi?: string | null
+    activationCode?: string | null
     status: string
     qrCodeUrl?: string | null
   }>
@@ -138,13 +140,15 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
 
     const esims = []
     for (let i = 0; i < quantity; i++) {
-      const providerEsim = providerResult.esims?.[i]
+      const esimData = providerResult.esims?.[i]
       const esim = await tx.eSIM.create({
         data: {
           purchaseId: purchase.id,
           customerId: customerId || null,
-          iccid: providerEsim?.iccid || `PENDING-${Date.now()}-${i}`,
-          qrCodeUrl: providerEsim?.qrCodeUrl || null,
+          iccid: esimData!.iccid,
+          imsi: esimData?.imsi || null,
+          activationCode: esimData?.activationCode || null,
+          qrCodeUrl: esimData?.qrCodeUrl || null,
           status: 'PENDING_ACTIVATION',
           providerStatus: 'PENDING',
           expiresAt: new Date(Date.now() + pkg.validityDays * 24 * 60 * 60 * 1000),
@@ -202,6 +206,8 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     esims: result.esims.map((e) => ({
       id: e.id,
       iccid: e.iccid,
+      imsi: e.imsi,
+      activationCode: e.activationCode,
       status: e.status,
       qrCodeUrl: e.qrCodeUrl,
     })),

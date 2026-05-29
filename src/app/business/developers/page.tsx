@@ -78,7 +78,7 @@ export default async function DevelopersPage() {
         }))}
         apiKeys={apiKeys}
         isAdmin={isAdmin}
-        baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://onesim.africa'}
+        baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://staging.onetelecom.cloud'}
       />
     </div>
   )

@@ -19,7 +19,7 @@ export default function AdminLayout({
     { title: 'eSIMs', href: '/admin/esims' },
     { title: 'Usage Analytics', href: '/admin/usage' },
     { title: 'Invoices', href: '/admin/invoices' },
-    { title: 'Wallet Top-Ups', href: '/admin/wallet-topups' },
+    { title: 'Credit Allocations', href: '/admin/wallet-topups' },
     { title: 'MONITORING', href: '#', sectionHeader: true },
     { title: 'Analytics', href: '/admin/analytics' },
     // Jobs — hidden for now

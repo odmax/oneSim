@@ -89,6 +89,9 @@ export default function LoginForm() {
                 className="h-11"
               />
             </div>
+            <div className="text-right">
+              <a href="/forgot-password" className="text-xs text-emerald-400 hover:text-emerald-300">Forgot password?</a>
+            </div>
             {error && (
               <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600 border border-red-100">
                 {error}

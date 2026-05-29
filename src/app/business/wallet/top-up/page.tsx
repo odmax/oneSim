@@ -19,14 +19,14 @@ export default async function TopUpPage({
   if (!business) redirect('/login')
 
   const isSuccess = searchParams?.success === 'true'
-  const paymentRef = searchParams?.ref
+  const creditRef = searchParams?.ref
   const amount = searchParams?.amount
 
   return (
     <div className="space-y-6">
       <Link href="/business/wallet" className="text-sm text-gray-500 hover:text-gray-700">← Back to Wallet</Link>
 
-      {isSuccess && paymentRef && amount ? (
+      {isSuccess && creditRef && amount ? (
         /* Confirmation view */
         <>
           <div className="rounded-xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-6 shadow-sm">
@@ -35,14 +35,14 @@ export default async function TopUpPage({
                 <span className="text-2xl text-emerald-600">✓</span>
               </div>
               <div>
-                <h2 className="text-xl font-bold text-gray-900">Top-Up Request Submitted</h2>
+                <h2 className="text-xl font-bold text-gray-900">Credit Request Submitted</h2>
                 <p className="text-sm text-gray-500">Your request is pending admin confirmation.</p>
               </div>
             </div>
           </div>
 
           <div className="rounded-xl border border-gray-100 bg-white p-6 shadow-sm">
-            <h3 className="text-base font-semibold text-gray-900 mb-4">Payment Instructions</h3>
+            <h3 className="text-base font-semibold text-gray-900 mb-4">Request Details</h3>
             <div className="space-y-4">
               <div className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3">
                 <span className="text-sm text-gray-500">Amount</span>
@@ -51,30 +51,15 @@ export default async function TopUpPage({
               <div className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3">
                 <span className="text-sm text-gray-500">Reference</span>
                 <div className="flex items-center gap-2">
-                  <code className="text-sm font-mono font-medium text-gray-900">{paymentRef}</code>
-                  <CopyButton text={paymentRef} label="Copy ref" />
+                  <code className="text-sm font-mono font-medium text-gray-900">{creditRef}</code>
+                  <CopyButton text={creditRef} label="Copy ref" />
                 </div>
-              </div>
-              <div className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3">
-                <span className="text-sm text-gray-500">Payment Method</span>
-                <span className="text-sm font-medium text-gray-900">Manual Bank Transfer</span>
-              </div>
-            </div>
-
-            <div className="mt-5 rounded-lg border border-amber-100 bg-amber-50 p-4">
-              <p className="text-sm font-medium text-amber-800">Bank Transfer Details</p>
-              <div className="mt-2 space-y-1 text-sm text-amber-700">
-                <p>Bank: OneSim Financial Services</p>
-                <p>Account: 1234567890</p>
-                <p>Sort Code: 11-22-33</p>
-                <p className="mt-2 font-medium">Reference: {paymentRef}</p>
               </div>
             </div>
 
             <div className="mt-5 rounded-lg bg-blue-50 p-4">
               <p className="text-sm text-blue-700">
-                Your wallet will be credited once the admin confirms receipt of payment.
-                This usually takes 1-2 business days.
+                Your wallet will be credited once the admin processes this request.
               </p>
             </div>
 
@@ -87,11 +72,11 @@ export default async function TopUpPage({
           </div>
         </>
       ) : (
-        /* Top-up form */
+        /* Request form */
         <>
           <div>
-            <h2 className="text-2xl font-bold text-gray-900">Top Up Wallet</h2>
-            <p className="mt-1 text-sm text-gray-500">Request a wallet top-up — admin will confirm manually.</p>
+            <h2 className="text-2xl font-bold text-gray-900">Request Credit</h2>
+            <p className="mt-1 text-sm text-gray-500">Request additional credit for your account. An admin will process your request.</p>
           </div>
 
           {searchParams?.error && (
@@ -127,17 +112,11 @@ export default async function TopUpPage({
                   </div>
                 </div>
 
-                <div className="rounded-lg bg-gray-50 p-4">
-                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Payment Method</p>
-                  <p className="mt-1 text-sm font-medium text-gray-900">Manual Bank Transfer</p>
-                  <p className="text-xs text-gray-400">Pay via bank transfer. Your wallet is credited after admin confirmation.</p>
-                </div>
-
                 <button
                   type="submit"
                   className="w-full rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm"
                 >
-                  Submit Top-Up Request
+                  Submit Request
                 </button>
               </form>
             </div>
