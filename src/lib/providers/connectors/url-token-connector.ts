@@ -6,6 +6,7 @@ interface UrlTokenConfig {
   apiToken?: string
   authUrl?: string
   environment?: string
+  fieldMappings?: Record<string, any>
 }
 
 async function fetchText(url: string, opts?: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }): Promise<{ text?: string; error?: { code: string; message: string }; status?: number }> {
@@ -46,6 +47,10 @@ interface AuthAccount {
 export class UrlTokenConnector extends RestCatalogConnector {
   constructor(providerId: string, name: string | undefined, config: UrlTokenConfig) {
     super(providerId, name, config)
+  }
+
+  private get fieldMappings(): Record<string, any> {
+    return (this.config as any).fieldMappings || {}
   }
 
   protected get headers(): Record<string, string> {
@@ -233,11 +238,28 @@ export class UrlTokenConnector extends RestCatalogConnector {
   async activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
     const token = this.config.apiToken || ''
     const path = `/template/v03_09/add_bundle_using_template_from_pool/${token}`
-    const body = { template_id: params.planId, quantity: params.quantity, email: params.subscriber.email }
     const maskedPath = path.replace(token, token.slice(0, 4) + '••••')
-    const safeBody = JSON.stringify({ ...body, template_id: body.template_id })
+    const payloadType = this.fieldMappings.activationPayloadType
 
-    console.log(`[UrlTokenConnector] activateESIM:\n  URL: ${this.baseUrl(maskedPath)}\n  Body: ${safeBody}`)
+    let body: Record<string, any>
+    let maskedBody: Record<string, any>
+
+    if (payloadType === 'CHOICE_ADD_BUNDLE_FROM_POOL') {
+      body = {
+        sku: params.planId,
+        user_id: this.fieldMappings.userId || 'onesim',
+        eu_email_address: params.subscriber.email || undefined,
+      }
+      maskedBody = { ...body, sku: body.sku }
+      console.log(`[UrlTokenConnector] Choice activation:\n  URL: ${this.baseUrl(maskedPath)}\n  Body: ${JSON.stringify(maskedBody)}`)
+    } else {
+      body = { template_id: params.planId, quantity: params.quantity, email: params.subscriber.email }
+      maskedBody = { ...body, template_id: body.template_id }
+      console.log(`[UrlTokenConnector] Generic activation:\n  URL: ${this.baseUrl(maskedPath)}\n  Body: ${JSON.stringify(maskedBody)}`)
+    }
+
+    // Remove undefined values
+    Object.keys(body).forEach(k => { if (body[k] === undefined) delete body[k] })
 
     const { text, error, status } = await fetchText(this.baseUrl(path), {
       method: 'POST', headers: this.headers, body: JSON.stringify(body),
@@ -256,9 +278,43 @@ export class UrlTokenConnector extends RestCatalogConnector {
 
     try {
       const json = JSON.parse(text)
+
+      // Check for explicit provider failure
+      if (json.success === false || json.status === 'failed' || json.status === 'error') {
+        const errMsg = json.message || json.error || json.error_message || 'Provider rejected activation'
+        console.log(`[UrlTokenConnector] Provider returned failure: ${errMsg}`)
+        return { success: false, error: { code: 'PROVIDER_FAILED', message: errMsg } }
+      }
+
       const topKeys = Object.keys(json)
 
-      // Extract ICCIDs from various possible response formats
+      if (payloadType === 'CHOICE_ADD_BUNDLE_FROM_POOL' && Array.isArray(json.data?.imsis)) {
+        // Choice-specific response: data.imsis[].iccid, .imsi, .activation_code, .qr_code_link
+        const imsis = json.data.imsis as Array<any>
+        const iccids = imsis.map((s: any) => s.iccid).filter(Boolean)
+        const imsis_arr = imsis.map((s: any) => s.imsi).filter(Boolean)
+        const activationCodes = imsis.map((s: any) => s.activation_code).filter(Boolean)
+        const qrCodeUrl = imsis[0]?.qr_code_link || ''
+
+        if (iccids.length === 0) {
+          console.log(`[UrlTokenConnector] WARNING: Choice response has no ICCIDs in data.imsis. Top keys: ${topKeys.join(', ')}`)
+          return { success: false, error: { code: 'NO_ICCIDS', message: 'Provider returned 0 ICCIDs' } }
+        }
+
+        return {
+          success: true,
+          data: {
+            activationId: json.transaction_id || json.order_id || json.id || '',
+            iccids,
+            imsis: imsis_arr,
+            activationCodes,
+            qrCodeUrl: qrCodeUrl || undefined,
+            status: json.status || 'ACTIVATED',
+          },
+        }
+      }
+
+      // Generic response extraction
       const iccids: string[] = (() => {
         if (Array.isArray(json.iccids) && json.iccids.length > 0) return json.iccids
         if (json.iccid) return [json.iccid]

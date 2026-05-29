@@ -62,7 +62,7 @@ export function createConnector(providerId: string, name: string | undefined, co
         authType: config.authType || undefined,
       })
     case 'URL_TOKEN':
-      return new UrlTokenConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env })
+      return new UrlTokenConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env, fieldMappings: config.fieldMappings })
     case 'HEADER_TOKEN':
       return new HeaderTokenRestConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env })
     case 'REST_CATALOG':
@@ -76,6 +76,22 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
   if (!provider) return null
 
   const connectorType = resolveConnectorType(provider.adapterStrategy, provider.type)
+  console.log(`[buildConnector] provider=${provider.name}(${provider.id}) type=${provider.type} strategy=${provider.adapterStrategy} connectorType=${connectorType}`)
+
+  // Merge fieldMappings from provider.fieldMappings and provider.config?.fieldMappings
+  const directFm = typeof provider.fieldMappings === 'object' && provider.fieldMappings !== null
+    ? provider.fieldMappings as Record<string, any>
+    : {}
+  const configFm = typeof provider.config === 'object' && provider.config !== null
+    ? (provider.config as any).fieldMappings || {}
+    : {}
+  const mergedFieldMappings = { ...configFm, ...directFm }
+
+  console.log(`[buildConnector] fieldMappings keys: ${Object.keys(mergedFieldMappings).join(', ') || '(none)'}`)
+  if (mergedFieldMappings.activationPayloadType) {
+    console.log(`[buildConnector] activationPayloadType=${mergedFieldMappings.activationPayloadType} userId=${mergedFieldMappings.userId || '(not set)'}`)
+  }
+
   return createConnector(provider.id, provider.name, connectorType, {
     apiBaseUrl: provider.apiBaseUrl,
     apiToken: decryptToken(provider.apiToken),
@@ -88,7 +104,7 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
     suspendPath: provider.suspendPath,
     resumePath: provider.resumePath,
     responseListKey: provider.responseListKey,
-    fieldMappings: provider.fieldMappings,
+    fieldMappings: mergedFieldMappings,
     endpointMappings: provider.endpointMappings,
     tokenPlacement: provider.tokenPlacement,
     authType: provider.authType,
