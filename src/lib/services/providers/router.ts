@@ -184,8 +184,8 @@ export async function routeOrder(request: OrderRequest): Promise<OrderResult> {
       esims: iccids.map((iccid: string, i: number) => ({
         id: `pending-${i}`,
         iccid,
-        imsi: data.imsis?.[i] || null,
-        activationCode: data.activationCodes?.[i] || null,
+        imsi: data.imsis?.[i] != null ? String(data.imsis[i]) : null,
+        activationCode: data.activationCodes?.[i] != null ? String(data.activationCodes[i]) : null,
         status: 'PENDING_ACTIVATION',
         qrCodeUrl: data.qrCodeUrl || undefined,
       })),

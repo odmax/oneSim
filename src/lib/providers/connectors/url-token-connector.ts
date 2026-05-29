@@ -292,7 +292,7 @@ export class UrlTokenConnector extends RestCatalogConnector {
         // Choice-specific response: data.imsis[].iccid, .imsi, .activation_code, .qr_code_link
         const imsis = json.data.imsis as Array<any>
         const iccids = imsis.map((s: any) => s.iccid).filter(Boolean)
-        const imsis_arr = imsis.map((s: any) => s.imsi).filter(Boolean)
+        const imsis_arr: string[] = imsis.map((s: any) => s.imsi != null ? String(s.imsi) : null).filter((v): v is string => v !== null)
         const activationCodes = imsis.map((s: any) => s.activation_code).filter(Boolean)
         const qrCodeUrl = imsis[0]?.qr_code_link || ''
 
