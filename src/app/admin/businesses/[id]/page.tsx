@@ -3,7 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { updateBusinessStatus } from '@/lib/actions/business'
+import { updateBusinessStatus, deleteBusiness } from '@/lib/actions/business'
 import { sendPasswordSetupEmail } from '@/lib/actions/auth-setup'
 import WalletActions from './wallet-actions'
 import ConfirmForm from './confirm-form'
@@ -20,6 +20,9 @@ export default async function BusinessDetailPage({
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     redirect('/login')
   }
+
+  const currentAdmin = await prisma.internalAdmin.findUnique({ where: { userId: session.user.id } })
+  const isSuperAdmin = currentAdmin?.role === 'SUPER_ADMIN'
 
   const business = await prisma.business.findUnique({
     where: { id: params.id },
@@ -135,6 +138,13 @@ export default async function BusinessDetailPage({
                 Reactivate
               </button>
             </form>
+          )}
+          {isSuperAdmin && (
+            <ConfirmForm action={deleteBusiness.bind(null, business.id)} message={`Delete ${business.name}? This will permanently delete all associated data including purchases, eSIMs, invoices, and users. This cannot be undone.`}>
+              <button type="submit" className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50">
+                Delete Business
+              </button>
+            </ConfirmForm>
           )}
         </div>
       </div>
