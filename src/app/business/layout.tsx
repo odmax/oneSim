@@ -30,19 +30,26 @@ export default async function BusinessLayout({
   const isMember = session?.user?.businessRole === 'MEMBER'
 
   const sidebarItems = [
+    { title: 'Overview', href: '#', sectionHeader: true },
     { title: 'Dashboard', href: '/business/dashboard', icon: 'LayoutDashboard' as const },
-    { title: 'Buy eSIM', href: '/business/buy-esim', icon: 'ShoppingCart' as const, readOnly: isMember },
-    { title: 'Client eSIMs', href: '/business/esims', icon: 'SimCard' as const },
+
+    { title: 'Sales & eSIMs', href: '#', sectionHeader: true },
+    { title: 'Buy eSIMs', href: '/business/buy-esim', icon: 'ShoppingCart' as const, readOnly: isMember },
+    { title: 'eSIM Inventory', href: '/business/esims', icon: 'SimCard' as const },
     { title: 'Customers', href: '/business/customers', icon: 'Users' as const, readOnly: isMember },
     { title: 'Orders', href: '/business/orders', icon: 'FileText' as const, readOnly: isMember },
-    { title: 'Team Members', href: '/business/users', icon: 'Users' as const },
-    { title: 'Wallet', href: '/business/wallet', icon: 'Wallet' as const, readOnly: isMember },
+
+    { title: 'Finance', href: '#', sectionHeader: true },
+    { title: 'Wallet Credit', href: '/business/wallet', icon: 'Wallet' as const, readOnly: isMember },
+
+    { title: 'Developer Tools', href: '#', sectionHeader: true },
     { title: 'API Keys', href: '/business/api-keys', icon: 'Key' as const, readOnly: isMember },
-    // Webhooks — hidden for now
-    { title: 'Developers', href: '/business/developers', icon: 'FileCode' as const, readOnly: isMember },
-    { title: 'API Usage', href: '/business/api-usage', icon: 'BarChart3' as const },
-    { title: 'Usage', href: '/business/usage', icon: 'BarChart3' as const },
-    { title: 'Account', href: '/business/account', icon: 'Settings' as const },
+    { title: 'API Documentation', href: '/business/developers', icon: 'FileCode' as const, readOnly: isMember },
+    { title: 'API Logs', href: '/business/api-usage', icon: 'BarChart3' as const },
+
+    { title: 'Account', href: '#', sectionHeader: true },
+    { title: 'Team Members', href: '/business/users', icon: 'Users' as const },
+    { title: 'Account Settings', href: '/business/account', icon: 'Settings' as const },
   ];
 
   return (

@@ -153,10 +153,37 @@ export default function DevelopersClient({ packages, apiKeys, isAdmin, baseUrl }
 
   const successResponse = JSON.stringify({
     success: true,
-    orderId: 'cmow...abc123',
-    customerId: 'cmow...def456',
-    status: 'PENDING_ACTIVATION',
-    esims: [{ id: 'cmow...ghi789', iccid: '89012345678901234567', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://api.onesim.africa/qr/89012345678901234567' }],
+    order: {
+      id: 'cmow...abc123',
+      status: 'PENDING_ACTIVATION',
+      quantity: 1,
+      unitCost: 5.00,
+      totalCost: 5.00,
+      currency: 'USD',
+      createdAt: '2026-05-27T12:00:00.000Z',
+    },
+    package: {
+      id: 'pkg_xxx',
+      displayName: 'OneSIM 1GB 7 Days',
+      customerDescription: 'Perfect for short trips',
+      dataGB: 1,
+      validityDays: 7,
+      unitCost: 5.00,
+      currency: 'USD',
+    },
+    esims: [{
+      id: 'cmow...ghi789',
+      iccid: '89012345678901234567',
+      imsi: '310150123456789',
+      activationCode: 'ABC123',
+      qrCodeUrl: 'https://staging.onetelecom.cloud/qr/89012345678901234567',
+      status: 'PENDING_ACTIVATION',
+      expiresAt: '2026-06-03T12:00:00.000Z',
+      activationInstructions: [
+        { platform: 'iPhone / iOS', steps: ['Go to Settings → Cellular → Add eSIM', 'Scan the QR code'] },
+      ],
+    }],
+    wallet: { deducted: 5.00, currency: 'USD' },
   }, null, 2)
 
   const packagesResponse = JSON.stringify({
@@ -662,31 +689,31 @@ console.log(data);`} />
             <div className="space-y-3">
               <div>
                 <p className="mb-1 text-xs font-medium text-red-600">400 — Validation Error</p>
-                <CodeBlock code={JSON.stringify({ success: false, error: 'customerName and customerEmail are required' }, null, 2)} />
+                <CodeBlock code={JSON.stringify({ success: false, error: { code: 'MISSING_FIELDS', message: 'customerName and customerEmail are required' } }, null, 2)} />
               </div>
               <div>
                 <p className="mb-1 text-xs font-medium text-red-600">401 — Authentication Error</p>
-                <CodeBlock code={JSON.stringify({ success: false, error: 'Missing or invalid Authorization header. Use: Authorization: Bearer ONESIM_CLIENT_API_KEY' }, null, 2)} />
+                <CodeBlock code={JSON.stringify({ success: false, error: { code: 'AUTH_FAILED', message: 'Missing or invalid Authorization header.' } }, null, 2)} />
               </div>
               <div>
                 <p className="mb-1 text-xs font-medium text-red-600">402 — Insufficient Balance</p>
-                <CodeBlock code={JSON.stringify({ success: false, error: 'Insufficient wallet balance' }, null, 2)} />
+                <CodeBlock code={JSON.stringify({ success: false, error: { code: 'INSUFFICIENT_WALLET_BALANCE', message: 'Insufficient wallet balance. Please request credit before ordering.' } }, null, 2)} />
               </div>
               <div>
                 <p className="mb-1 text-xs font-medium text-red-600">403 — Suspended Business</p>
-                <CodeBlock code={JSON.stringify({ success: false, error: 'Business account is suspended' }, null, 2)} />
+                <CodeBlock code={JSON.stringify({ success: false, error: { code: 'BUSINESS_SUSPENDED', message: 'Business account is suspended.' } }, null, 2)} />
               </div>
               <div>
                 <p className="mb-1 text-xs font-medium text-red-600">404 — Package Not Found</p>
-                <CodeBlock code={JSON.stringify({ success: false, error: 'Package not found or inactive' }, null, 2)} />
+                <CodeBlock code={JSON.stringify({ success: false, error: { code: 'PACKAGE_UNAVAILABLE', message: 'This package is no longer available.' } }, null, 2)} />
               </div>
               <div>
                 <p className="mb-1 text-xs font-medium text-red-600">429 — Rate Limit Exceeded</p>
-                <CodeBlock code={JSON.stringify({ success: false, error: 'Rate limit exceeded. Please reduce request volume and retry after 60 seconds.' }, null, 2)} />
+                <CodeBlock code={JSON.stringify({ success: false, error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Rate limit exceeded. Please reduce request volume and retry after 60 seconds.' } }, null, 2)} />
               </div>
               <div>
-                <p className="mb-1 text-xs font-medium text-red-600">502 — Gateway Error</p>
-                <CodeBlock code={JSON.stringify({ success: false, error: 'Activation failed' }, null, 2)} />
+                <p className="mb-1 text-xs font-medium text-red-600">502 — Provider Error</p>
+                <CodeBlock code={JSON.stringify({ success: false, error: { code: 'PROVIDER_PROVISIONING_FAILED', message: 'Provider could not provision this eSIM right now.' } }, null, 2)} />
               </div>
             </div>
 
@@ -711,10 +738,13 @@ console.log(data);`} />
                 id: 'cmow...abc123',
                 status: 'PENDING_ACTIVATION',
                 quantity: 1,
-                totalAmount: 5.00,
+                unitCost: 5.00,
+                totalCost: 5.00,
+                currency: 'USD',
                 createdAt: '2026-05-09T12:00:00Z',
-                package: { id: 'pkg_xxx', displayName: 'OneSIM 1GB 7 Days', dataGB: 1, validityDays: 7, priceUSD: 5.00 },
-                esims: [{ id: 'cmow...ghi789', iccid: '89012345678901234567', status: 'PENDING_ACTIVATION', qrCodeUrl: null }],
+                package: { id: 'pkg_xxx', displayName: 'OneSIM 1GB 7 Days', dataGB: 1, validityDays: 7, unitCost: 5.00, currency: 'USD' },
+                esims: [{ id: 'cmow...ghi789', iccid: '89012345678901234567', imsi: null, activationCode: null, status: 'PENDING_ACTIVATION', qrCodeUrl: null }],
+                wallet: { deducted: 5.00, currency: 'USD' },
               },
             }, null, 2)} />
           </EndpointCard>
@@ -732,13 +762,17 @@ console.log(data);`} />
                 id: 'cmow...ghi789',
                 iccid: '89012345678901234567',
                 status: 'ACTIVE',
-                qrCodeUrl: 'https://api.onesim.africa/qr/89012345678901234567',
+                qrCodeUrl: 'https://staging.onetelecom.cloud/qr/89012345678901234567',
                 activationCode: null,
                 imsi: '310150123456789',
                 expiresAt: '2026-05-16T12:00:00Z',
-                package: { id: 'pkg_xxx', displayName: 'OneSIM 1GB 7 Days', dataGB: 1, validityDays: 7, priceUSD: 5.00 },
+                package: { id: 'pkg_xxx', displayName: 'OneSIM 1GB 7 Days', dataGB: 1, validityDays: 7, priceUSD: 5.00, unitCost: 5.00, currency: 'USD' },
                 dataUsedMB: 0,
                 usageRecords: [],
+                activationInstructions: [
+                  { platform: 'iPhone / iOS', steps: ['Go to Settings → Cellular → Add eSIM', 'Scan the QR code'] },
+                  { platform: 'Android', steps: ['Go to Settings → Network → Mobile Network → Add Carrier', 'Scan the QR code'] },
+                ],
               },
             }, null, 2)} />
           </EndpointCard>
@@ -779,9 +813,11 @@ console.log(data);`} />
                   id: 'cmow...abc123',
                   status: 'PENDING_ACTIVATION',
                   quantity: 1,
-                  totalAmount: 5.00,
+                  unitCost: 5.00,
+                  totalCost: 5.00,
+                  currency: 'USD',
                   createdAt: '2026-05-09T12:00:00Z',
-                  package: { id: 'pkg_xxx', displayName: 'OneSIM 1GB 7 Days', dataGB: 1, validityDays: 7, priceUSD: 5.00 },
+                  package: { id: 'pkg_xxx', displayName: 'OneSIM 1GB 7 Days', dataGB: 1, validityDays: 7, unitCost: 5.00, currency: 'USD' },
                   esims: [{ id: 'cmow...ghi789', iccid: '89012345678901234567', status: 'PENDING_ACTIVATION' }],
                 },
               ],
