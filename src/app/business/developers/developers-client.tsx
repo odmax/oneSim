@@ -532,8 +532,25 @@ console.log(data);`} />
   -H "Authorization: Bearer YOUR_API_KEY"`} />
                     </div>
                     <div>
-                      <p className="text-xs font-medium text-gray-700">Get eSIM status:</p>
-                      <CodeBlock code={`curl -X GET "${baseUrl}/api/v1/esims/{esimId}/status" \
+                      <p className="text-xs font-medium text-gray-700">Get eSIM details:</p>
+                      <CodeBlock code={`curl -X GET "${baseUrl}/api/v1/esims/{esimId}" \
+  -H "Authorization: Bearer YOUR_API_KEY"`} />
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-gray-700">Top up eSIM:</p>
+                      <CodeBlock code={`curl -X POST "${baseUrl}/api/v1/esims/{esimId}/top-up" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"packageId": "pkg_xxx"}'`} />
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-gray-700">Get eSIM usage:</p>
+                      <CodeBlock code={`curl -X GET "${baseUrl}/api/v1/esims/{esimId}/usage" \
+  -H "Authorization: Bearer YOUR_API_KEY"`} />
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-gray-700">List all usage:</p>
+                      <CodeBlock code={`curl -X GET "${baseUrl}/api/v1/usage" \
   -H "Authorization: Bearer YOUR_API_KEY"`} />
                     </div>
                   </div>
@@ -750,7 +767,7 @@ console.log(data);`} />
           </EndpointCard>
 
           {/* eSIM Status */}
-          <EndpointCard method="GET" path="/api/v1/esims/{esimId}/status" description="Get the current status and details for a specific eSIM.">
+          <EndpointCard method="GET" path="/api/v1/esims/{esimId}" description="Get full details for a specific eSIM including usage records and activation instructions.">
             <h5 className="mb-2 text-xs font-semibold text-gray-700 uppercase tracking-wider">Path Parameters</h5>
             <ParamTable params={[
               { name: 'esimId', type: 'string', required: true, description: 'eSIM ID returned from order creation' },
@@ -768,12 +785,83 @@ console.log(data);`} />
                 expiresAt: '2026-05-16T12:00:00Z',
                 package: { id: 'pkg_xxx', displayName: 'OneSIM 1GB 7 Days', dataGB: 1, validityDays: 7, priceUSD: 5.00, unitCost: 5.00, currency: 'USD' },
                 dataUsedMB: 0,
+                dataRemainingMB: 1024,
+                dataTotalMB: 1024,
                 usageRecords: [],
                 activationInstructions: [
                   { platform: 'iPhone / iOS', steps: ['Go to Settings → Cellular → Add eSIM', 'Scan the QR code'] },
                   { platform: 'Android', steps: ['Go to Settings → Network → Mobile Network → Add Carrier', 'Scan the QR code'] },
                 ],
               },
+            }, null, 2)} />
+          </EndpointCard>
+
+          {/* Top-Up */}
+          <EndpointCard method="POST" path="/api/v1/esims/{esimId}/top-up" description="Top up an existing eSIM with a compatible bundle. Funds are deducted from wallet only on success.">
+            <h5 className="mb-2 text-xs font-semibold text-gray-700 uppercase tracking-wider">Path Parameters</h5>
+            <ParamTable params={[
+              { name: 'esimId', type: 'string', required: true, description: 'eSIM ID to top up' },
+            ]} />
+            <h5 className="mb-2 mt-4 text-xs font-semibold text-gray-700 uppercase tracking-wider">Request Body</h5>
+            <ParamTable params={[
+              { name: 'packageId', type: 'string', required: false, description: 'Top-up package ID' },
+              { name: 'sku', type: 'string', required: false, description: 'Top-up package SKU' },
+              { name: 'packageCode', type: 'string', required: false, description: 'Top-up package code' },
+              { name: 'quantity', type: 'integer', required: false, description: 'Number of top-ups (default 1)' },
+            ]} />
+            <h5 className="mb-2 mt-4 text-xs font-semibold text-gray-700 uppercase tracking-wider">Success Response</h5>
+            <CodeBlock code={JSON.stringify({
+              success: true,
+              topUp: { id: 'cmow...top123', status: 'COMPLETED', amount: 5.00, currency: 'USD', dataAddedMB: 1024, validityDaysAdded: 7 },
+              esim: { id: 'cmow...ghi789', iccid: '89012345678901234567', imsi: '310150123456789', status: 'ACTIVE', expiresAt: '2026-06-03T12:00:00Z', dataUsedMB: 0, dataRemainingMB: 2048 },
+              wallet: { deducted: 5.00, currency: 'USD' },
+            }, null, 2)} />
+            <h5 className="mb-2 mt-5 text-xs font-semibold text-red-700 uppercase tracking-wider">Error Responses</h5>
+            <div className="space-y-3">
+              <div><p className="mb-1 text-xs font-medium text-red-600">402 — Insufficient Balance</p><CodeBlock code={JSON.stringify({ success: false, error: { code: 'INSUFFICIENT_WALLET_BALANCE', message: 'Insufficient wallet balance.' } }, null, 2)} /></div>
+              <div><p className="mb-1 text-xs font-medium text-red-600">404 — eSIM Not Found</p><CodeBlock code={JSON.stringify({ success: false, error: { code: 'ESIM_NOT_FOUND', message: 'eSIM not found' } }, null, 2)} /></div>
+              <div><p className="mb-1 text-xs font-medium text-red-600">400 — Top-Up Not Available</p><CodeBlock code={JSON.stringify({ success: false, error: { code: 'TOPUP_NOT_AVAILABLE', message: 'Top-up is not available for this eSIM.' } }, null, 2)} /></div>
+              <div><p className="mb-1 text-xs font-medium text-red-600">400 — Invalid Package</p><CodeBlock code={JSON.stringify({ success: false, error: { code: 'INVALID_TOPUP_PACKAGE', message: 'Package is not a valid top-up option.' } }, null, 2)} /></div>
+              <div><p className="mb-1 text-xs font-medium text-red-600">502 — Provider Error</p><CodeBlock code={JSON.stringify({ success: false, error: { code: 'PROVIDER_TOPUP_FAILED', message: 'Provider could not process top-up. No amount was deducted.' } }, null, 2)} /></div>
+            </div>
+            <p className="mt-3 text-xs text-gray-500">Important: If the provider fails, no wallet deduction occurs. Your balance is safe.</p>
+          </EndpointCard>
+
+          {/* Usage */}
+          <EndpointCard method="GET" path="/api/v1/esims/{esimId}/usage" description="Get usage history for a specific eSIM.">
+            <h5 className="mb-2 text-xs font-semibold text-gray-700 uppercase tracking-wider">Path Parameters</h5>
+            <ParamTable params={[
+              { name: 'esimId', type: 'string', required: true, description: 'eSIM ID' },
+            ]} />
+            <h5 className="mb-2 mt-4 text-xs font-semibold text-gray-700 uppercase tracking-wider">Response</h5>
+            <CodeBlock code={JSON.stringify({
+              success: true,
+              esim: { id: 'cmow...ghi789', iccid: '89012345678901234567', status: 'ACTIVE', dataUsedMB: 256, dataRemainingMB: 768, dataTotalMB: 1024 },
+              usageRecords: [
+                { dataUsedMB: 128, timestamp: '2026-05-27T12:00:00Z' },
+                { dataUsedMB: 128, timestamp: '2026-05-26T12:00:00Z' },
+              ],
+            }, null, 2)} />
+          </EndpointCard>
+
+          {/* Usage List */}
+          <EndpointCard method="GET" path="/api/v1/usage" description="List usage summary across all eSIMs for your business.">
+            <h5 className="mb-2 text-xs font-semibold text-gray-700 uppercase tracking-wider">Query Parameters</h5>
+            <ParamTable params={[
+              { name: 'status', type: 'string', required: false, description: 'Filter by eSIM status (ACTIVE, PENDING_ACTIVATION, etc.)' },
+              { name: 'search', type: 'string', required: false, description: 'Search by ICCID or IMSI' },
+              { name: 'page', type: 'integer', required: false, description: 'Page number (default 1)' },
+              { name: 'limit', type: 'integer', required: false, description: 'Results per page (default 20, max 100)' },
+            ]} />
+            <h5 className="mb-2 mt-4 text-xs font-semibold text-gray-700 uppercase tracking-wider">Response</h5>
+            <CodeBlock code={JSON.stringify({
+              success: true,
+              esims: [
+                { id: 'cmow...ghi789', iccid: '89012345678901234567', status: 'ACTIVE', dataUsedMB: 256, dataRemainingMB: 768, dataTotalMB: 1024, package: { displayName: 'OneSIM 1GB 7 Days', dataGB: 1 } },
+              ],
+              summary: { totalEsims: 10, activeCount: 8, totalDataUsedMB: 2048 },
+              page: 1,
+              limit: 20,
             }, null, 2)} />
           </EndpointCard>
 

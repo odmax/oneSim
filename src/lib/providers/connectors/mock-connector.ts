@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo } from './connector-interface'
 
 export class MockConnector implements IProviderConnector {
   readonly providerId: string
@@ -79,5 +79,9 @@ export class MockConnector implements IProviderConnector {
 
   async getQRCode(_iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>> {
     return { success: true, data: { qrCodeUrl: 'https://mock/qr' } }
+  }
+
+  async topUpESIM(_params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
+    return { success: true, data: { providerReference: 'mock-topup-ref', dataAddedMB: 1024, validityDaysAdded: 30, status: 'COMPLETED' } }
   }
 }

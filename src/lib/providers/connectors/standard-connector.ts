@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, StatusResult, UsageResult, RateResult, DiagnosticInfo } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, UsageResult, RateResult, DiagnosticInfo } from './connector-interface'
 import { classifyError } from './connector-interface'
 
 interface StandardConnectorConfig {
@@ -372,5 +372,9 @@ export class StandardProviderConnector implements IProviderConnector {
 
   async getQRCode(_iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>> {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'QR code not supported' } }
+  }
+
+  async topUpESIM(_params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
+    return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Top-up not supported by this connector' } }
   }
 }

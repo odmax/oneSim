@@ -66,6 +66,11 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
       if (!r.success) return { success: false, error: r.error }
       return { success: true, data: r.data }
     },
+    topUpESIM: async (params) => {
+      const r = await connector.topUpESIM(params)
+      if (!r.success) return { success: false, error: r.error }
+      return { success: true, data: r.data }
+    },
     handleWebhook: async () => ({ success: true, data: { handled: true, action: 'acknowledged' } }),
   }
 }

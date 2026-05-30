@@ -1,5 +1,5 @@
 import { RestCatalogConnector } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, StatusResult, DiagnosticInfo } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo } from './connector-interface'
 
 interface UrlTokenConfig {
   apiBaseUrl: string
@@ -382,6 +382,90 @@ export class UrlTokenConnector extends RestCatalogConnector {
     const { error } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers })
     if (error) return { success: false, error }
     return { success: true }
+  }
+
+  async topUpESIM(params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
+    const token = this.config.apiToken || ''
+    const topUpPath = this.fieldMappings.topUpPath || `/account/v03_09/update_imsi/${token}`
+    const maskedPath = topUpPath.replace(token, token.slice(0, 4) + '••••')
+
+    const payloadType = this.fieldMappings.topUpPayloadType || 'CHOICE_UPDATE_IMSI'
+
+    let body: Record<string, any>
+
+    if (payloadType === 'CHOICE_UPDATE_IMSI') {
+      body = {
+        user_id: this.fieldMappings.userId || 'onesim',
+        iccid: params.iccid,
+        package_name: params.sku || params.packageName || params.planId,
+        top_up_occurrences: this.fieldMappings.topUpOccurrences || 1,
+        top_up_allow_days: this.fieldMappings.topUpAllowDays || 30,
+        top_up_quantity: params.quantity || 1,
+      }
+    } else {
+      body = {
+        iccid: params.iccid,
+        plan_id: params.planId,
+        quantity: params.quantity,
+        email: params.subscriber?.email,
+      }
+    }
+
+    // Remove undefined values
+    Object.keys(body).forEach(k => { if (body[k] === undefined) delete body[k] })
+
+    console.log(`[UrlTokenConnector] topUpESIM:\n  URL: ${this.baseUrl(maskedPath)}\n  Body: ${JSON.stringify(body)}`)
+
+    const url = topUpPath.startsWith('http') ? topUpPath : this.baseUrl(topUpPath)
+    const { text, error, status } = await fetchText(url, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify(body),
+    })
+
+    if (error) {
+      console.log(`[UrlTokenConnector] topUpESIM FAILED: status=${status} error=${error.code} msg=${error.message}`)
+      return { success: false, error }
+    }
+    if (!text) {
+      return { success: false, error: { code: 'EMPTY', message: 'Empty top-up response' } }
+    }
+
+    console.log(`[UrlTokenConnector] topUpESIM response (${text.length} chars): ${text.substring(0, 500)}`)
+
+    try {
+      const json = JSON.parse(text)
+
+      if (json.success === false || json.status === 'failed' || json.status === 'error') {
+        const errMsg = json.message || json.error || json.error_message || 'Provider rejected top-up'
+        return { success: false, error: { code: 'PROVIDER_FAILED', message: errMsg } }
+      }
+
+      // Extract data added from package info or response
+      let dataAddedMB: number | undefined
+      let validityDaysAdded: number | undefined
+
+      if (params.sku) {
+        // If we have a top-up package, use its data from field mappings
+        dataAddedMB = this.fieldMappings.topUpDataMB || undefined
+        validityDaysAdded = this.fieldMappings.topUpValidityDays || undefined
+      }
+
+      return {
+        success: true,
+        data: {
+          providerReference: json.transaction_id || json.order_id || json.id || json.reference || '',
+          dataAddedMB,
+          validityDaysAdded,
+          status: json.status || 'COMPLETED',
+          newExpiry: json.expiry_date || json.expires_at || undefined,
+          newDataTotalMB: json.data_total_mb || json.dataTotalMB || undefined,
+          newDataRemainingMB: json.data_remaining_mb || json.dataRemainingMB || undefined,
+        },
+      }
+    } catch (e: any) {
+      return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse top-up response' } }
+    }
   }
 
   private mapTemplatePlan(item: any): ConnectorPlan {

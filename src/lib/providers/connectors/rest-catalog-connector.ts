@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo } from './connector-interface'
 import { classifyError } from './connector-interface'
 
 interface RestCatalogConfig {
@@ -337,6 +337,10 @@ export class RestCatalogConnector implements IProviderConnector {
 
   async getQRCode(_iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>> {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'QR code not supported' } }
+  }
+
+  async topUpESIM(_params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
+    return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Top-up not supported by this connector' } }
   }
 
   protected extractList(data: any, listKey: string): any[] {

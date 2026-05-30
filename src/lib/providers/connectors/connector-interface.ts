@@ -45,6 +45,26 @@ export interface StatusResult {
   iccid?: string
 }
 
+export interface TopUpESIMParams {
+  iccid: string
+  imsi?: string | null
+  planId: string
+  sku?: string
+  packageName?: string
+  quantity: number
+  subscriber?: { email: string; first_name?: string; last_name?: string }
+}
+
+export interface TopUpESIMResult {
+  providerReference: string
+  dataAddedMB?: number
+  validityDaysAdded?: number
+  status: string
+  newExpiry?: string
+  newDataTotalMB?: number
+  newDataRemainingMB?: number
+}
+
 export interface RateResult {
   country?: string
   operator?: string
@@ -135,4 +155,5 @@ export interface IProviderConnector {
   resumeESIM(subscriptionId: string): Promise<ConnectorResult<void>>
   getRates(): Promise<ConnectorResult<RateResult[]>>
   getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>>
+  topUpESIM(params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>>
 }

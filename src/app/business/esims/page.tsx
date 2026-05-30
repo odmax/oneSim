@@ -160,6 +160,11 @@ export default async function ESIMsPage({
                     {isAdmin && (
                       <td className="whitespace-nowrap px-5 py-4">
                         <div className="flex flex-col gap-1.5">
+                          {['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && esim.iccid && (
+                            <Link href={`/business/esims/${esim.id}/top-up`} className="text-xs font-medium text-emerald-600 hover:text-emerald-700">
+                              Top Up
+                            </Link>
+                          )}
                           {esim.customer ? (
                             <>
                               {esim.qrCodeUrl && (

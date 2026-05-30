@@ -2,6 +2,7 @@ import { decryptToken } from '@/lib/encryption'
 import type {
   ProviderAdapter, ProviderResult, ProviderPlan,
   ActivateESIMParams, ActivateESIMResult, UsageResult, RateResult,
+  TopUpESIMParams, TopUpESIMResult,
   CredentialField, ProviderCapability, AuthResult,
   WebhookPayload,
 } from './adapter-types'
@@ -267,6 +268,10 @@ export class GenericProtocolAdapter implements ProviderAdapter {
 
   async getQRCode(_iccid: string): Promise<ProviderResult<{ qrCodeUrl: string }>> {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'QR code not supported by this provider' } }
+  }
+
+  async topUpESIM(_params: TopUpESIMParams): Promise<ProviderResult<TopUpESIMResult>> {
+    return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Top-up not supported by this provider' } }
   }
 
   async handleWebhook(_payload: WebhookPayload): Promise<ProviderResult<{ handled: boolean; action?: string }>> {

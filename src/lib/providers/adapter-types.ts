@@ -48,6 +48,26 @@ export interface RateResult {
   validityDays?: number
 }
 
+export interface TopUpESIMParams {
+  iccid: string
+  imsi?: string | null
+  planId: string
+  sku?: string
+  packageName?: string
+  quantity: number
+  subscriber?: { email: string; first_name?: string; last_name?: string }
+}
+
+export interface TopUpESIMResult {
+  providerReference: string
+  dataAddedMB?: number
+  validityDaysAdded?: number
+  status: string
+  newExpiry?: string
+  newDataTotalMB?: number
+  newDataRemainingMB?: number
+}
+
 export interface CredentialField {
   name: string
   label: string
@@ -113,4 +133,5 @@ export interface ProviderAdapter {
   getQRCode(iccid: string): Promise<ProviderResult<{ qrCodeUrl: string }>>
 
   handleWebhook(payload: WebhookPayload): Promise<ProviderResult<{ handled: boolean; action?: string }>>
+  topUpESIM(params: TopUpESIMParams): Promise<ProviderResult<TopUpESIMResult>>
 }

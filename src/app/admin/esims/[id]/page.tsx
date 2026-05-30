@@ -113,6 +113,11 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             <form action={async () => { 'use server'; const r = await resumeEsim(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=eSIM+resumed`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}>
               <button type="submit" className="rounded-lg border border-green-300 px-4 py-2 text-sm font-medium text-green-700 hover:bg-green-50">Resume eSIM</button>
             </form>
+            {esim.iccid && ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && (
+              <Link href={`/admin/esims/${esim.id}/top-up`} className="inline-block rounded-lg border border-emerald-300 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50">
+                Top Up
+              </Link>
+            )}
           </div>
           {provider && <p className="mt-3 text-xs text-gray-400">Powered by: {provider.name}</p>}
         </div>
