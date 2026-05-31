@@ -669,6 +669,34 @@ model ApiRequestLog {
   @@map("api_request_logs")
 }
 
+model ProviderWebhookEvent {
+  id              String    @id @default(cuid())
+  providerId      String?
+  providerType    String
+  eventType       String
+  externalEventId String?
+  iccid           String?
+  imsi            String?
+  esimId          String?
+  businessId      String?
+  status          String    @default("RECEIVED") // RECEIVED | PROCESSED | FAILED | IGNORED
+  payload         Json
+  errorMessage    String?
+  receivedAt      DateTime  @default(now())
+  processedAt     DateTime?
+
+  @@index([providerType])
+  @@index([eventType])
+  @@index([iccid])
+  @@index([imsi])
+  @@index([esimId])
+  @@index([businessId])
+  @@index([status])
+  @@index([receivedAt])
+  @@unique([providerType, externalEventId])
+  @@map("provider_webhook_events")
+}
+
 // ─── No-Code Provider Connector (Phase 1) ──────────────────────────
 
 model ProviderConfig {

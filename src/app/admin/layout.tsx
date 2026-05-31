@@ -25,6 +25,7 @@ export default function AdminLayout({
     // Jobs — hidden for now
     { title: 'Audit Logs', href: '/admin/audit-logs' },
     { title: 'API Logs', href: '/admin/api-logs' },
+    { title: 'Provider Webhooks', href: '/admin/provider-webhooks' },
     { title: 'Admin Users', href: '/admin/users' },
     { title: 'SYSTEM', href: '#', sectionHeader: true },
     { title: 'Settings', href: '/admin/settings' },
