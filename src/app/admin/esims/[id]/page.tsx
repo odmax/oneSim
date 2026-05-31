@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { syncEsimStatus, syncEsimUsage, getQrCode, suspendEsim, resumeEsim } from '@/lib/actions/esim-sync'
+import { syncESIMStatus as enhancedSyncStatus } from '@/lib/services/esims/sync-esim-status'
 
 export default async function AdminEsimDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
   const session = await getServerSession(authOptions)
@@ -44,7 +45,7 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             <div className="flex justify-between"><dt className="text-gray-500">ICCID</dt><dd className="font-mono font-medium text-gray-900">{esim.iccid}</dd></div>
             {esim.imsi && <div className="flex justify-between"><dt className="text-gray-500">IMSI</dt><dd className="font-mono font-medium text-gray-900">{esim.imsi}</dd></div>}
             {esim.activationCode && <div className="flex justify-between"><dt className="text-gray-500">Activation Code</dt><dd className="font-mono font-medium text-gray-900 break-all">{esim.activationCode}</dd></div>}
-            <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${esim.status === 'ACTIVE' ? 'bg-green-100 text-green-800' : esim.status === 'SUSPENDED' ? 'bg-orange-100 text-orange-800' : esim.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>{esim.status}</span></dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${esim.status === 'ACTIVE' ? 'bg-green-100 text-green-800' : esim.status === 'SUSPENDED' ? 'bg-orange-100 text-orange-800' : esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>{esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' : esim.status === 'ACTIVE' ? 'Activated on device' : esim.status === 'EXPIRED' ? 'Expired' : esim.status === 'SUSPENDED' ? 'Suspended' : esim.status === 'FAILED' ? 'Provisioning failed' : esim.status}</span></dd></div>
             {esim.providerStatus && <div className="flex justify-between"><dt className="text-gray-500">Provider Status</dt><dd className="font-medium text-gray-900">{esim.providerStatus}</dd></div>}
             {esim.providerActivationId && <div className="flex justify-between"><dt className="text-gray-500">Provider Activation ID</dt><dd className="font-mono text-xs text-gray-600">{esim.providerActivationId}</dd></div>}
             <div className="flex justify-between"><dt className="text-gray-500">Package</dt><dd className="font-medium text-gray-900">{esim.purchase.package.name}</dd></div>
@@ -98,8 +99,8 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
         <div className="mb-6 rounded-lg border bg-white p-6 shadow-sm">
           <h3 className="mb-4 text-lg font-semibold text-gray-900">Provider Actions</h3>
           <div className="flex flex-wrap gap-3">
-            <form action={async () => { 'use server'; const r = await syncEsimStatus(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=Status+synced`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}>
-              <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Sync Status</button>
+            <form action={async () => { 'use server'; const r = await enhancedSyncStatus(esim.id); if (r.success) { const msg = r.activated ? 'Activation+detected' : 'Status+synced'; redirect(`/admin/esims/${esim.id}?success=${msg}`) } else { redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Failed')}`) } }}>
+              <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Refresh Status</button>
             </form>
             <form action={async () => { 'use server'; const r = await syncEsimUsage(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=Usage+synced`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}>
               <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Sync Usage</button>

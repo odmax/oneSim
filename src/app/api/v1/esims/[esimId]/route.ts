@@ -44,7 +44,7 @@ export async function GET(
   const safeEsim = stripEsimProviderFields(esim)
   const safePackage = stripPackageProviderFields(esim.purchase.package)
 
-  const dataUsedMB = esim.usageRecords.reduce((sum, r) => sum + r.dataUsedMB, 0)
+  const dataUsedMB = esim.dataUsedMB || esim.usageRecords.reduce((sum, r) => sum + r.dataUsedMB, 0)
   const instructions = getActivationInstructions(!!esim.qrCodeUrl)
 
   return respond(request, {
@@ -52,15 +52,28 @@ export async function GET(
     esim: {
       id: safeEsim.id,
       iccid: safeEsim.iccid,
+      imsi: safeEsim.imsi || undefined,
       status: esim.status,
+      statusLabel: esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' :
+                    esim.status === 'ACTIVE' ? 'Activated on device' :
+                    esim.status === 'EXPIRED' ? 'Expired' :
+                    esim.status === 'SUSPENDED' ? 'Suspended' :
+                    esim.status === 'FAILED' ? 'Provisioning failed' : esim.status,
       qrCodeUrl: safeEsim.qrCodeUrl,
       activationCode: safeEsim.activationCode || undefined,
-      imsi: safeEsim.imsi || undefined,
-      expiresAt: safeEsim.expiresAt,
-      package: safePackage,
+      activatedAt: esim.activatedAt,
+      activationDetectedAt: esim.activationDetectedAt,
+      lastUsageAt: esim.lastUsageAt,
+      expiresAt: esim.expiresAt,
       dataUsedMB,
+      dataRemainingMB: esim.dataRemainingMB,
+      dataTotalMB: esim.dataTotalMB,
+      package: safePackage,
       usageRecords: esim.usageRecords,
       activationInstructions: instructions,
+      sharedAt: esim.sharedAt,
+      sharedToEmail: esim.sharedToEmail,
+      lastStatusSyncAt: esim.lastStatusSyncAt,
     },
   }, 200, startTime, businessId, {
     apiKeyId,

@@ -197,13 +197,20 @@ export default async function AdminESIMsPage({
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">
                   <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
-                    esim.status === 'ACTIVE' 
-                      ? 'bg-green-100 text-green-800' 
-                      : esim.status === 'PENDING'
-                      ? 'bg-yellow-100 text-yellow-800'
-                      : 'bg-red-100 text-red-800'
+                    esim.status === 'ACTIVE' ? 'bg-green-100 text-green-800' :
+                    esim.status === 'PENDING_ACTIVATION' ? 'bg-yellow-100 text-yellow-800' :
+                    esim.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' :
+                    esim.status === 'EXPIRED' ? 'bg-red-100 text-red-800' :
+                    esim.status === 'SUSPENDED' ? 'bg-orange-100 text-orange-800' :
+                    esim.status === 'FAILED' ? 'bg-red-100 text-red-800' :
+                    'bg-gray-100 text-gray-800'
                   }`}>
-                    {esim.status}
+                    {esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' :
+                     esim.status === 'ACTIVE' ? 'Activated on device' :
+                     esim.status === 'EXPIRED' ? 'Expired' :
+                     esim.status === 'SUSPENDED' ? 'Suspended' :
+                     esim.status === 'FAILED' ? 'Provisioning failed' :
+                     esim.status}
                   </span>
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">

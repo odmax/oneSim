@@ -553,6 +553,18 @@ console.log(data);`} />
                       <CodeBlock code={`curl -X GET "${baseUrl}/api/v1/usage" \
   -H "Authorization: Bearer YOUR_API_KEY"`} />
                     </div>
+                    <div>
+                      <p className="text-xs font-medium text-gray-700">Refresh eSIM status:</p>
+                      <CodeBlock code={`curl -X POST "${baseUrl}/api/v1/esims/{esimId}/refresh-status" \
+  -H "Authorization: Bearer YOUR_API_KEY"`} />
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-gray-700">Share eSIM:</p>
+                      <CodeBlock code={`curl -X POST "${baseUrl}/api/v1/esims/{esimId}/share" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "customer@example.com"}'`} />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -882,6 +894,41 @@ console.log(data);`} />
               total: 1,
               page: 1,
               limit: 20,
+            }, null, 2)} />
+          </EndpointCard>
+
+          {/* Refresh Status */}
+          <EndpointCard method="POST" path="/api/v1/esims/{esimId}/refresh-status" description="Refresh activation and usage status from the provider. Detects when eSIM becomes active on a device.">
+            <h5 className="mb-2 text-xs font-semibold text-gray-700 uppercase tracking-wider">Path Parameters</h5>
+            <ParamTable params={[
+              { name: 'esimId', type: 'string', required: true, description: 'eSIM ID to refresh' },
+            ]} />
+            <h5 className="mb-2 mt-4 text-xs font-semibold text-gray-700 uppercase tracking-wider">Response</h5>
+            <CodeBlock code={JSON.stringify({
+              success: true,
+              statusChanged: true,
+              newStatus: 'ACTIVE',
+              activated: true,
+            }, null, 2)} />
+            <p className="mt-2 text-xs text-gray-500">When `activated` is true, this is the first time activation was detected. The eSIM status transitions from PENDING_ACTIVATION (Ready to install) → ACTIVE (Activated on device).</p>
+          </EndpointCard>
+
+          {/* Share */}
+          <EndpointCard method="POST" path="/api/v1/esims/{esimId}/share" description="Generate a shareable install link and optionally send it via email to the end customer.">
+            <h5 className="mb-2 text-xs font-semibold text-gray-700 uppercase tracking-wider">Path Parameters</h5>
+            <ParamTable params={[
+              { name: 'esimId', type: 'string', required: true, description: 'eSIM ID to share' },
+            ]} />
+            <h5 className="mb-2 mt-4 text-xs font-semibold text-gray-700 uppercase tracking-wider">Request Body</h5>
+            <ParamTable params={[
+              { name: 'email', type: 'string', required: false, description: 'Optional recipient email. If provided, install instructions are sent via email.' },
+            ]} />
+            <h5 className="mb-2 mt-4 text-xs font-semibold text-gray-700 uppercase tracking-wider">Response</h5>
+            <CodeBlock code={JSON.stringify({
+              success: true,
+              shareToken: 'abc...token...xyz',
+              installLink: 'https://staging.onetelecom.cloud/install/esim/abc...token...xyz',
+              sharedToEmail: 'customer@example.com',
             }, null, 2)} />
           </EndpointCard>
 

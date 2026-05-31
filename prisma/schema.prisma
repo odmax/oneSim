@@ -305,7 +305,12 @@ model ESIM {
   dataUsedMB              Int         @default(0)
   dataRemainingMB         Int?
   dataTotalMB             Int?
+  lastUsageAt             DateTime?
+  activationDetectedAt    DateTime?
   lastUsageSyncAt         DateTime?
+  lastStatusSyncAt        DateTime?
+  sharedAt                DateTime?
+  sharedToEmail           String?
   createdAt               DateTime    @default(now())
   updatedAt               DateTime    @updatedAt
 
@@ -313,6 +318,7 @@ model ESIM {
   customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
   usageRecords UsageRecord[]
   topUps      ESIMTopUp[]
+  shareTokens ESIMShareToken[]
 
   @@map("esims")
 }
@@ -354,6 +360,20 @@ model UsageRecord {
   esim        ESIM      @relation(fields: [esimId], references: [id], onDelete: Cascade)
 
   @@map("usage_records")
+}
+
+model ESIMShareToken {
+  id          String    @id @default(cuid())
+  esimId      String
+  token       String    @unique
+  createdById String?
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime
+  usedAt      DateTime?
+
+  esim        ESIM      @relation(fields: [esimId], references: [id], onDelete: Cascade)
+
+  @@map("esim_share_tokens")
 }
 
 model Invoice {
