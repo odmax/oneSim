@@ -70,7 +70,10 @@ export async function DELETE(
   })
   if (!pkg) return NextResponse.json({ error: 'Package not found' }, { status: 404 })
 
-  const hasDependents = pkg._count.purchases > 0 || pkg._count.topUpRecords > 0
+  const esimCount = await prisma.eSIM.count({
+    where: { purchase: { packageId: params.id } },
+  })
+  const hasDependents = pkg._count.purchases > 0 || pkg._count.topUpRecords > 0 || esimCount > 0
 
   if (hasDependents) {
     await prisma.eSIMPackage.update({

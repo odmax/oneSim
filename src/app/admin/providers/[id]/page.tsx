@@ -43,7 +43,11 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   const healthLogs: HealthEvent[] = await getRecentHealthLogs(provider.id, 10)
 
   const packageCount = await prisma.eSIMPackage.count({ where: { providerId: provider.id } })
-  const importedPackages = await prisma.eSIMPackage.findMany({ where: { providerId: provider.id }, orderBy: { createdAt: 'desc' } })
+  const importedPackages = await prisma.eSIMPackage.findMany({
+    where: { providerId: provider.id },
+    include: { _count: { select: { purchases: true, topUpRecords: true } } },
+    orderBy: { createdAt: 'desc' },
+  })
   // annual markup — deprecated
   const importedPlanIds = new Set(importedPackages.filter(p => p.providerPlanId).map(p => p.providerPlanId!))
 
@@ -387,7 +391,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
                     <td className="whitespace-nowrap px-4 py-3 text-sm">
                       <Link href={`/admin/packages/${pkg.id}/edit`} className="text-blue-600 hover:text-blue-800">Configure</Link>
                       <span className="mx-2 text-gray-300">|</span>
-                      <DeletePackageButton packageId={pkg.id} />
+                      <DeletePackageButton packageId={pkg.id} hasPurchases={(pkg as any)._count?.purchases > 0 || (pkg as any)._count?.topUpRecords > 0} />
                     </td>
                   </tr>
                 ))}

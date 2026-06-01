@@ -96,7 +96,7 @@ export default async function AdminPackagesPage({
 
   const allPackages = await prisma.eSIMPackage.findMany({
     where: tab === 'all' ? {} : sourceFilter(tab),
-    include: { _count: { select: { purchases: true } } },
+    include: { _count: { select: { purchases: true, topUpRecords: true } } },
     orderBy: { priceUSD: 'asc' },
   })
 
@@ -279,7 +279,7 @@ export default async function AdminPackagesPage({
                           Quick Add
                         </button>
                       </form>
-                      <DeletePackageButton packageId={pkg.id} variant="card" hasPurchases={pkg._count.purchases > 0} />
+                      <DeletePackageButton packageId={pkg.id} variant="card" hasPurchases={pkg._count.purchases > 0 || pkg._count.topUpRecords > 0} />
                     </>
                   ) : (
                     <>
@@ -310,7 +310,7 @@ export default async function AdminPackagesPage({
                           </button>
                         </ConfirmForm>
                       )}
-                      <DeletePackageButton packageId={pkg.id} variant="card" hasPurchases={pkg._count.purchases > 0} />
+                      <DeletePackageButton packageId={pkg.id} variant="card" hasPurchases={pkg._count.purchases > 0 || pkg._count.topUpRecords > 0} />
                     </>
                   )}
                 </div>

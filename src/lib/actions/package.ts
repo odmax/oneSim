@@ -80,7 +80,10 @@ export async function deletePackageAction(formData: FormData) {
   })
   if (!pkg) return
 
-  const hasDependents = pkg._count.purchases > 0 || pkg._count.topUpRecords > 0
+  const esimCount = await prisma.eSIM.count({
+    where: { purchase: { packageId: id } },
+  })
+  const hasDependents = pkg._count.purchases > 0 || pkg._count.topUpRecords > 0 || esimCount > 0
 
   if (hasDependents) {
     await prisma.eSIMPackage.update({
