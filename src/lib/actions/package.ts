@@ -80,16 +80,34 @@ export async function deletePackageAction(formData: FormData) {
   })
   if (!pkg) return
 
-  await prisma.eSIMPackage.delete({ where: { id } })
+  const hasPurchases = pkg._count.purchases > 0
 
-  await prisma.auditLog.create({
-    data: {
-      action: 'DELETE',
-      entity: 'ESIMPackage',
-      entityId: id,
-      details: `Deleted package: ${pkg.name} (had ${pkg._count.purchases} purchase(s))`,
-    },
-  })
+  if (hasPurchases) {
+    await prisma.eSIMPackage.update({
+      where: { id },
+      data: { isActive: false, hiddenFromCatalog: true, archivedAt: new Date() },
+    })
+
+    await prisma.auditLog.create({
+      data: {
+        action: 'ARCHIVE',
+        entity: 'ESIMPackage',
+        entityId: id,
+        details: `Archived package (had ${pkg._count.purchases} purchases): ${pkg.name}. Existing eSIMs and orders preserved.`,
+      },
+    })
+  } else {
+    await prisma.eSIMPackage.delete({ where: { id } })
+
+    await prisma.auditLog.create({
+      data: {
+        action: 'DELETE',
+        entity: 'ESIMPackage',
+        entityId: id,
+        details: `Deleted package (no purchases): ${pkg.name}`,
+      },
+    })
+  }
 
   revalidatePath('/admin/packages')
   revalidatePath('/admin/providers')

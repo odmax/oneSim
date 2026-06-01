@@ -12,6 +12,8 @@ export async function GET(request: NextRequest) {
   const packages = await prisma.eSIMPackage.findMany({
     where: {
       isActive: true,
+      hiddenFromCatalog: false,
+      archivedAt: null,
       source: { in: ['CATALOG_PRODUCT', 'MANUAL'] },
     },
     orderBy: { priceUSD: 'asc' },

@@ -64,9 +64,22 @@ export async function DELETE(
   const authError = requireAdmin(session)
   if (authError) return authError
 
-  await prisma.eSIMPackage.delete({
+  const pkg = await prisma.eSIMPackage.findUnique({
     where: { id: params.id },
+    include: { _count: { select: { purchases: true } } },
   })
+  if (!pkg) return NextResponse.json({ error: 'Package not found' }, { status: 404 })
 
-  return NextResponse.json({ success: true })
+  const hasPurchases = pkg._count.purchases > 0
+
+  if (hasPurchases) {
+    await prisma.eSIMPackage.update({
+      where: { id: params.id },
+      data: { isActive: false, hiddenFromCatalog: true, archivedAt: new Date() },
+    })
+    return NextResponse.json({ success: true, archived: true, message: 'Package has existing purchased eSIMs. Archived instead of deleted.' })
+  }
+
+  await prisma.eSIMPackage.delete({ where: { id: params.id } })
+  return NextResponse.json({ success: true, deleted: true })
 }

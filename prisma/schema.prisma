@@ -252,6 +252,8 @@ model ESIMPackage {
   topUpDays       Int?
   topUpOccurrences Int?
   compatibleTopUpPackageIds Json?
+  archivedAt              DateTime?
+  hiddenFromCatalog       Boolean   @default(false)
 
   purchases     ESIMPurchase[]
   provider      Provider?  @relation(fields: [providerId], references: [id], onDelete: SetNull)

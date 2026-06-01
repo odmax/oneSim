@@ -27,7 +27,10 @@ function sourceFilter(tab: TabId): any {
   }
 }
 
-function StatusBadge({ source, isActive }: { source: string; isActive: boolean }) {
+function StatusBadge({ source, isActive, hiddenFromCatalog }: { source: string; isActive: boolean; hiddenFromCatalog?: boolean }) {
+  if (hiddenFromCatalog) {
+    return <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-600"><span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> Archived</span>
+  }
   if (source === 'PROVIDER_PLAN') {
     return <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2.5 py-0.5 text-xs font-medium text-orange-600"><span className="h-1.5 w-1.5 rounded-full bg-orange-400" /> Not in catalog</span>
   }
@@ -220,7 +223,7 @@ export default async function AdminPackagesPage({
 
                 {/* Status */}
                 <div className="mb-3">
-                  <StatusBadge source={pkg.source} isActive={pkg.isActive} />
+                  <StatusBadge source={pkg.source} isActive={pkg.isActive} hiddenFromCatalog={pkg.hiddenFromCatalog || undefined} />
                 </div>
 
                 {/* Details grid */}
@@ -276,9 +279,7 @@ export default async function AdminPackagesPage({
                           Quick Add
                         </button>
                       </form>
-                      {pkg._count.purchases === 0 && (
-                        <DeletePackageButton packageId={pkg.id} variant="card" />
-                      )}
+                      <DeletePackageButton packageId={pkg.id} variant="card" hasPurchases={pkg._count.purchases > 0} />
                     </>
                   ) : (
                     <>
@@ -309,7 +310,7 @@ export default async function AdminPackagesPage({
                           </button>
                         </ConfirmForm>
                       )}
-                      <DeletePackageButton packageId={pkg.id} variant="card" />
+                      <DeletePackageButton packageId={pkg.id} variant="card" hasPurchases={pkg._count.purchases > 0} />
                     </>
                   )}
                 </div>

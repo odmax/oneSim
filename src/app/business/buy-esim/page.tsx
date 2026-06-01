@@ -16,7 +16,7 @@ export default async function BuyESIMPage({
   }
 
   const packages = await prisma.eSIMPackage.findMany({
-    where: { isActive: true, source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } },
+    where: { isActive: true, hiddenFromCatalog: false, archivedAt: null, source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } },
     orderBy: { priceUSD: 'asc' }
   })
 
