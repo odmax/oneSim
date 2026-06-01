@@ -66,13 +66,13 @@ export async function DELETE(
 
   const pkg = await prisma.eSIMPackage.findUnique({
     where: { id: params.id },
-    include: { _count: { select: { purchases: true } } },
+    include: { _count: { select: { purchases: true, topUpRecords: true } } },
   })
   if (!pkg) return NextResponse.json({ error: 'Package not found' }, { status: 404 })
 
-  const hasPurchases = pkg._count.purchases > 0
+  const hasDependents = pkg._count.purchases > 0 || pkg._count.topUpRecords > 0
 
-  if (hasPurchases) {
+  if (hasDependents) {
     await prisma.eSIMPackage.update({
       where: { id: params.id },
       data: { isActive: false, hiddenFromCatalog: true, archivedAt: new Date() },

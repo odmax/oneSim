@@ -285,7 +285,7 @@ model ESIMPurchase {
 
   business    Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
   user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  package     ESIMPackage   @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  package     ESIMPackage   @relation(fields: [packageId], references: [id], onDelete: Restrict)
   esims       ESIM[]
   invoice     Invoice?
 
@@ -354,7 +354,7 @@ model ESIMTopUp {
 
   business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
   esim        ESIM         @relation(fields: [esimId], references: [id], onDelete: Cascade)
-  package     ESIMPackage  @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  package     ESIMPackage  @relation(fields: [packageId], references: [id], onDelete: Restrict)
   customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
   invoice     Invoice?
 

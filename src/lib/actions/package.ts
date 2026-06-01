@@ -76,13 +76,13 @@ export async function deletePackageAction(formData: FormData) {
 
   const pkg = await prisma.eSIMPackage.findUnique({
     where: { id },
-    include: { _count: { select: { purchases: true } } },
+    include: { _count: { select: { purchases: true, topUpRecords: true } } },
   })
   if (!pkg) return
 
-  const hasPurchases = pkg._count.purchases > 0
+  const hasDependents = pkg._count.purchases > 0 || pkg._count.topUpRecords > 0
 
-  if (hasPurchases) {
+  if (hasDependents) {
     await prisma.eSIMPackage.update({
       where: { id },
       data: { isActive: false, hiddenFromCatalog: true, archivedAt: new Date() },
@@ -93,7 +93,7 @@ export async function deletePackageAction(formData: FormData) {
         action: 'ARCHIVE',
         entity: 'ESIMPackage',
         entityId: id,
-        details: `Archived package (had ${pkg._count.purchases} purchases): ${pkg.name}. Existing eSIMs and orders preserved.`,
+        details: `Archived package (had ${pkg._count.purchases} purchases, ${pkg._count.topUpRecords} top-ups): ${pkg.name}. Existing eSIMs and orders preserved.`,
       },
     })
   } else {
@@ -104,7 +104,7 @@ export async function deletePackageAction(formData: FormData) {
         action: 'DELETE',
         entity: 'ESIMPackage',
         entityId: id,
-        details: `Deleted package (no purchases): ${pkg.name}`,
+        details: `Deleted package (no purchases or top-ups): ${pkg.name}`,
       },
     })
   }

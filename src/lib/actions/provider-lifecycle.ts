@@ -9,6 +9,7 @@ export interface ProviderDependencies {
   packages: number
   purchases: number
   esims: number
+  topUps: number
   pricingRules: number
   total: number
   hasDependencies: boolean
@@ -17,7 +18,7 @@ export interface ProviderDependencies {
 export async function getProviderDependencies(providerId: string): Promise<ProviderDependencies> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
-    return { packages: 0, purchases: 0, esims: 0, pricingRules: 0, total: 0, hasDependencies: false }
+    return { packages: 0, purchases: 0, esims: 0, topUps: 0, pricingRules: 0, total: 0, hasDependencies: false }
   }
 
   const [packages] = await Promise.all([
@@ -31,17 +32,20 @@ export async function getProviderDependencies(providerId: string): Promise<Provi
   })
   const pkgIds = packageIds.map(p => p.id)
 
-  const [purchases, esims] = await Promise.all([
+  const [purchases, esims, topUps] = await Promise.all([
     pkgIds.length > 0
       ? prisma.eSIMPurchase.count({ where: { packageId: { in: pkgIds } } })
       : Promise.resolve(0),
     pkgIds.length > 0
       ? prisma.eSIM.count({ where: { purchase: { packageId: { in: pkgIds } } } })
       : Promise.resolve(0),
+    pkgIds.length > 0
+      ? prisma.eSIMTopUp.count({ where: { packageId: { in: pkgIds } } })
+      : Promise.resolve(0),
   ])
 
-  const total = packages + purchases + esims + pricingRules
-  return { packages, purchases, esims, pricingRules, total, hasDependencies: total > 0 }
+  const total = packages + purchases + esims + topUps + pricingRules
+  return { packages, purchases, esims, topUps, pricingRules, total, hasDependencies: total > 0 }
 }
 
 export async function archiveProvider(providerId: string) {
@@ -74,13 +78,26 @@ export async function archiveProvider(providerId: string) {
     },
   })
 
+  // Hide all associated packages from catalog to prevent future sales
+  const providerPkgs = await prisma.eSIMPackage.findMany({
+    where: { providerId },
+    select: { id: true },
+  })
+  const pIds = providerPkgs.map(p => p.id)
+  if (pIds.length > 0) {
+    await prisma.eSIMPackage.updateMany({
+      where: { id: { in: pIds } },
+      data: { isActive: false, hiddenFromCatalog: true, archivedAt: new Date() },
+    })
+  }
+
   await prisma.auditLog.create({
     data: {
       userId: session.user.id,
       action: 'PROVIDER_ARCHIVED',
       entity: 'Provider',
       entityId: provider.code,
-      details: `Provider "${provider.name}" archived. Linked records preserved: ${deps.packages} packages, ${deps.purchases} purchases, ${deps.esims} eSIMs, ${deps.pricingRules} pricing rules.`,
+      details: `Provider "${provider.name}" archived. ${deps.packages} packages hidden, ${deps.purchases} purchases, ${deps.esims} eSIMs preserved.`,
     },
   })
 
