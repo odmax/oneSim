@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { authenticateAndCheck, respond } from '@/lib/api/v1-response'
 import { stripPackageProviderFields, stripEsimProviderFields } from '@/lib/analytics/safe-fields'
 import { getActivationInstructions } from '@/lib/esim/activation-instructions'
+import { getPackageDisplayName, getPackageDataGB, PurchaseSnapshot } from '@/lib/packages/snapshot-utils'
 
 export async function GET(
   request: NextRequest,
@@ -42,10 +43,25 @@ export async function GET(
   }
 
   const safeEsim = stripEsimProviderFields(esim)
-  const safePackage = stripPackageProviderFields(esim.purchase.package)
-
   const dataUsedMB = esim.dataUsedMB || esim.usageRecords.reduce((sum, r) => sum + r.dataUsedMB, 0)
   const instructions = getActivationInstructions(!!esim.qrCodeUrl)
+
+  const snap = (esim.packageSnapshot || esim.purchase.packageSnapshot) as PurchaseSnapshot | null
+  const packageInfo = snap ? {
+    id: snap.packageId || esim.purchase.package.id,
+    displayName: snap.displayName || safeEsim.packageName || esim.purchase.package.displayName || esim.purchase.package.name,
+    dataGB: snap.dataGB || esim.packageDataGB || esim.purchase.packageDataGB || esim.purchase.package.dataGB,
+    validityDays: snap.validityDays || esim.packageValidityDays || esim.purchase.packageValidityDays || esim.purchase.package.validityDays,
+    unitCost: snap.priceUSD || parseFloat(esim.purchase.package.priceUSD.toString()),
+    currency: snap.currency || esim.purchase.package.currency || 'USD',
+  } : {
+    id: esim.purchase.package.id,
+    displayName: safeEsim.packageName || esim.purchase.package.displayName || esim.purchase.package.name,
+    dataGB: esim.packageDataGB || esim.purchase.packageDataGB || esim.purchase.package.dataGB,
+    validityDays: esim.packageValidityDays || esim.purchase.packageValidityDays || esim.purchase.package.validityDays,
+    unitCost: parseFloat(esim.purchase.package.priceUSD.toString()),
+    currency: esim.purchase.package.currency || 'USD',
+  }
 
   return respond(request, {
     success: true,
@@ -68,7 +84,7 @@ export async function GET(
       dataUsedMB,
       dataRemainingMB: esim.dataRemainingMB,
       dataTotalMB: esim.dataTotalMB,
-      package: safePackage,
+      package: packageInfo,
       usageRecords: esim.usageRecords,
       activationInstructions: instructions,
       sharedAt: esim.sharedAt,

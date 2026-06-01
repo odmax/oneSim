@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import SyncButton from '@/components/SyncButton'
+import { getPackageDisplayName } from '@/lib/packages/snapshot-utils'
 
 export default async function AdminESIMsPage({
   searchParams
@@ -179,7 +180,7 @@ export default async function AdminESIMsPage({
                   )}
                 </td>
                 <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">
-                  {esim.purchase.package.name}
+                  {getPackageDisplayName(esim)}
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">
                   <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${

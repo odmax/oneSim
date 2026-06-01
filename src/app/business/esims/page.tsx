@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { assignESIM, unassignESIM, markAsSent, sendToCustomer, syncEsimStatusAction, shareEsimViaEmail, createShareToken } from '@/lib/actions/esim'
+import { getPackageDisplayName, getPackageDataGB, isPackageArchived } from '@/lib/packages/snapshot-utils'
 import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
 
@@ -110,8 +111,11 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
               <tbody className="divide-y divide-gray-50">
                 {esims.map((esim) => {
                   const pkg = esim.purchase.package
+                  const snapName = getPackageDisplayName(esim)
+                  const snapData = getPackageDataGB(esim)
+                  const archived = pkg ? isPackageArchived(pkg) : false
                   const shareMsg = encodeURIComponent(
-                    `Your eSIM is ready!\n\nPackage: ${pkg.displayName || pkg.name}\nICCID: ${esim.iccid}${esim.activationCode ? `\nActivation Code: ${esim.activationCode}` : ''}\n${esim.qrCodeUrl ? `\nQR Code: ${esim.qrCodeUrl}` : ''}\n\nInstall: Settings → Cellular → Add eSIM\n\n— OneSim Africa`
+                    `Your eSIM is ready!\n\nPackage: ${snapName}\nICCID: ${esim.iccid}${esim.activationCode ? `\nActivation Code: ${esim.activationCode}` : ''}\n${esim.qrCodeUrl ? `\nQR Code: ${esim.qrCodeUrl}` : ''}\n\nInstall: Settings → Cellular → Add eSIM\n\n— OneSim Africa`
                   )
                   const whatsAppUrl = `https://wa.me/?text=${shareMsg}`
                   return (
@@ -123,8 +127,9 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-700">
-                        {pkg.displayName || pkg.name}
-                        <span className="ml-1.5 text-xs text-gray-400">({pkg.dataGB}GB)</span>
+                        {snapName}
+                        <span className="ml-1.5 text-xs text-gray-400">({snapData}GB)</span>
+                        {archived && <span className="ml-1.5 text-xs text-amber-500">(discontinued)</span>}
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-sm">
                         {esim.customer ? (
@@ -162,7 +167,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                               iccid={esim.iccid}
                               activationCode={esim.activationCode}
                               qrCodeUrl={esim.qrCodeUrl}
-                              packageName={pkg.displayName || pkg.name}
+                              packageName={snapName}
                               whatsAppUrl={whatsAppUrl}
                               customerEmail={esim.customer?.email}
                             />
@@ -172,7 +177,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                                 {esim.qrCodeUrl && (
                                   <a href={esim.qrCodeUrl} target="_blank" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">View QR Code</a>
                                 )}
-                                <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${pkg.displayName || pkg.name}\nData: ${pkg.dataGB}GB\nValidity: ${pkg.validityDays} days`} label="Copy Details" />
+                                <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
                                 {esim.deliveryStatus === 'NOT_SENT' ? (
                                   <form action={sendToCustomer}>
                                     <input type="hidden" name="esimId" value={esim.id} />

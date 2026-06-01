@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { syncEsimStatus, syncEsimUsage, getQrCode, suspendEsim, resumeEsim } from '@/lib/actions/esim-sync'
 import { syncESIMStatus as enhancedSyncStatus } from '@/lib/services/esims/sync-esim-status'
+import { getPackageDisplayName, getPackageDataGB, getPackageValidityDays } from '@/lib/packages/snapshot-utils'
 
 export default async function AdminEsimDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
   const session = await getServerSession(authOptions)
@@ -48,9 +49,9 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${esim.status === 'ACTIVE' ? 'bg-green-100 text-green-800' : esim.status === 'SUSPENDED' ? 'bg-orange-100 text-orange-800' : esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>{esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' : esim.status === 'ACTIVE' ? 'Activated on device' : esim.status === 'EXPIRED' ? 'Expired' : esim.status === 'SUSPENDED' ? 'Suspended' : esim.status === 'FAILED' ? 'Provisioning failed' : esim.status}</span></dd></div>
             {esim.providerStatus && <div className="flex justify-between"><dt className="text-gray-500">Provider Status</dt><dd className="font-medium text-gray-900">{esim.providerStatus}</dd></div>}
             {esim.providerActivationId && <div className="flex justify-between"><dt className="text-gray-500">Provider Activation ID</dt><dd className="font-mono text-xs text-gray-600">{esim.providerActivationId}</dd></div>}
-            <div className="flex justify-between"><dt className="text-gray-500">Package</dt><dd className="font-medium text-gray-900">{esim.purchase.package.name}</dd></div>
-            <div className="flex justify-between"><dt className="text-gray-500">Data</dt><dd className="font-medium text-gray-900">{esim.purchase.package.dataGB} GB</dd></div>
-            <div className="flex justify-between"><dt className="text-gray-500">Validity</dt><dd className="font-medium text-gray-900">{esim.purchase.package.validityDays} days</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Package</dt><dd className="font-medium text-gray-900">{getPackageDisplayName(esim)}</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Data</dt><dd className="font-medium text-gray-900">{getPackageDataGB(esim)} GB</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Validity</dt><dd className="font-medium text-gray-900">{getPackageValidityDays(esim)} days</dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">Business</dt><dd className="font-medium text-gray-900">{esim.purchase.business.name}</dd></div>
             {esim.customer && <div className="flex justify-between"><dt className="text-gray-500">Customer</dt><dd className="font-medium text-gray-900">{esim.customer.name} ({esim.customer.email})</dd></div>}
             {esim.activatedAt && <div className="flex justify-between"><dt className="text-gray-500">Activated</dt><dd className="text-gray-600">{esim.activatedAt.toLocaleString()}</dd></div>}

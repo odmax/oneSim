@@ -274,6 +274,12 @@ model ESIMPurchase {
   providerStatus  String?
   providerResponse Json?
   callbackUrl     String?
+  packageSnapshot Json?
+  packageName     String?
+  packageDataGB   Int?
+  packageValidityDays Int?
+  packageUnitPrice Decimal?
+  packageCurrency String?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -313,6 +319,10 @@ model ESIM {
   lastStatusSyncAt        DateTime?
   sharedAt                DateTime?
   sharedToEmail           String?
+  packageSnapshot         Json?
+  packageName             String?
+  packageDataGB           Int?
+  packageValidityDays     Int?
   createdAt               DateTime    @default(now())
   updatedAt               DateTime    @updatedAt
 

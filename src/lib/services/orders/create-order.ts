@@ -121,6 +121,25 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
   }
 
   const displayName = pkg.displayName || pkg.name
+  const unitPrice = parseFloat(pkg.priceUSD.toString())
+
+  const packageSnapshot = {
+    packageId: pkg.id,
+    sku: pkg.sku,
+    packageCode: pkg.packageCode,
+    displayName,
+    customerDescription: pkg.customerDescription || null,
+    dataGB: pkg.dataGB,
+    validityDays: pkg.validityDays,
+    priceUSD: unitPrice,
+    localPrice: parseFloat(pkg.localPrice.toString()),
+    currency: pkg.currency || 'USD',
+    source: pkg.source,
+    providerId: pkg.providerId,
+    providerPlanId: pkg.providerPlanId || null,
+    providerName: pkg.providerName || null,
+    purchasedAt: new Date().toISOString(),
+  }
 
   // Create order with real ICCIDs from provider
   const result = await prisma.$transaction(async (tx) => {
@@ -135,6 +154,12 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
         providerStatus: providerResult.providerStatus || 'PENDING',
         providerResponse: providerResult as any,
         callbackUrl: callbackUrl || null,
+        packageSnapshot: packageSnapshot as any,
+        packageName: displayName,
+        packageDataGB: pkg.dataGB,
+        packageValidityDays: pkg.validityDays,
+        packageUnitPrice: unitPrice,
+        packageCurrency: pkg.currency || 'USD',
       },
     })
 
@@ -152,6 +177,10 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
           status: 'PENDING_ACTIVATION',
           providerStatus: 'PENDING',
           expiresAt: new Date(Date.now() + pkg.validityDays * 24 * 60 * 60 * 1000),
+          packageSnapshot: packageSnapshot as any,
+          packageName: displayName,
+          packageDataGB: pkg.dataGB,
+          packageValidityDays: pkg.validityDays,
         },
       })
       esims.push(esim)
@@ -191,8 +220,6 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
 
     return { purchase, esims }
   })
-
-  const unitPrice = parseFloat(pkg.priceUSD.toString())
 
   return {
     success: true,
