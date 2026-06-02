@@ -71,61 +71,61 @@ enum ProviderStatus {
 }
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  passwordHash  String?
-  name          String
-  role          UserRole
-  isActive      Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?
+  name         String
+  role         UserRole
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  businessUsers           BusinessUser[]
-  internalAdmin           InternalAdmin?
-  purchases               ESIMPurchase[]
-  topUpRequests           WalletTopUpRequest[]  @relation("TopUpRequestedBy")
-  approvedTopUpRequests   WalletTopUpRequest[]  @relation("TopUpApprovedBy")
-  passwordResetTokens     PasswordResetToken[]
-  auditLogs               AuditLog[]
+  businessUsers         BusinessUser[]
+  internalAdmin         InternalAdmin?
+  purchases             ESIMPurchase[]
+  topUpRequests         WalletTopUpRequest[] @relation("TopUpRequestedBy")
+  approvedTopUpRequests WalletTopUpRequest[] @relation("TopUpApprovedBy")
+  passwordResetTokens   PasswordResetToken[]
+  auditLogs             AuditLog[]
 
   @@map("users")
 }
 
 model PasswordResetToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
   tokenHash String
-  type      String   @default("SET_PASSWORD") // SET_PASSWORD | RESET_PASSWORD
+  type      String    @default("SET_PASSWORD") // SET_PASSWORD | RESET_PASSWORD
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, type])
   @@map("password_reset_tokens")
 }
 
 model Business {
-  id              String        @id @default(cuid())
-  name            String
-  regNumber       String?
-  taxId           String?
-  contactEmail    String
-  contactPhone    String?
-  address         String?
-  country         String
-  status          BusinessStatus @default(PENDING)
-  walletBalance   Decimal       @default(0)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id            String         @id @default(cuid())
+  name          String
+  regNumber     String?
+  taxId         String?
+  contactEmail  String
+  contactPhone  String?
+  address       String?
+  country       String
+  status        BusinessStatus @default(PENDING)
+  walletBalance Decimal        @default(0)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
   users              BusinessUser[]
   purchases          ESIMPurchase[]
   invoices           Invoice[]
   transactions       WalletTransaction[]
   topUpRequests      WalletTopUpRequest[]
-  esimTopUps         ESIMTopUp[]
+  esimTopUps         ESIMTopUp[]               @relation("BusinessESIMTopUps")
   customers          Customer[]
   apiKeys            BusinessApiKey[]
   webhookEndpoints   BusinessWebhookEndpoint[]
@@ -138,15 +138,15 @@ model Business {
 }
 
 model BusinessUser {
-  id          String            @id @default(cuid())
-  userId      String
-  businessId  String
-  role        BusinessUserRole  @default(MEMBER)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  id         String           @id @default(cuid())
+  userId     String
+  businessId String
+  role       BusinessUserRole @default(MEMBER)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
 
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@unique([userId, businessId])
   @@map("business_users")
@@ -162,214 +162,215 @@ model InternalAdmin {
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 
-  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("internal_admins")
 }
 
 model Provider {
-  id                  String         @id @default(cuid())
-  name                String
-  code                String         @unique
-  type                ProviderType
-  adapterStrategy     String?
-  authType            String?        @default("bearer_token")
-  apiVersion          String?        @default("v1")
-  apiBaseUrl          String?
-  authUrl             String?
-  apiToken            String?
-  tokenPlacement      String?        @default("URL_PATH")
-  planListPath        String?
-  activationPath      String?
-  statusPath          String?
-  usagePath           String?
-  suspendPath         String?
-  resumePath          String?
-  topUpPath           String?
-  responseListKey     String?
-  environment         String         @default("staging")
-  status              ProviderStatus @default(ACTIVE)
-  priority            Int            @default(0)
-  isDefaultFallback   Boolean        @default(false)
-  regions             Json?          /// Array of supported region/country codes for routing
-  supportsESIM        Boolean        @default(true)
-  supportsUsage       Boolean        @default(false)
-  supportsTopUp       Boolean        @default(false)
-  supportsSuspend     Boolean        @default(false)
-  supportsQRCode      Boolean        @default(false)
-  supportsPools       Boolean        @default(false)
-  supportsTemplates   Boolean        @default(false)
-  supportsUsageSync   Boolean        @default(false)
-  supportsWebhookPush Boolean        @default(false)
-  supportsSuspendResume Boolean      @default(false)
-  endpointMappings    Json?
-  fieldMappings       Json?
-  config              Json?
+  id                       String         @id @default(cuid())
+  name                     String
+  code                     String         @unique
+  type                     ProviderType
+  adapterStrategy          String?
+  authType                 String?        @default("bearer_token")
+  apiVersion               String?        @default("v1")
+  apiBaseUrl               String?
+  authUrl                  String?
+  apiToken                 String?
+  tokenPlacement           String?        @default("URL_PATH")
+  planListPath             String?
+  activationPath           String?
+  statusPath               String?
+  usagePath                String?
+  suspendPath              String?
+  resumePath               String?
+  topUpPath                String?
+  responseListKey          String?
+  environment              String         @default("staging")
+  status                   ProviderStatus @default(ACTIVE)
+  priority                 Int            @default(0)
+  isDefaultFallback        Boolean        @default(false)
+  regions                  Json? /// Array of supported region/country codes for routing
+  supportsESIM             Boolean        @default(true)
+  supportsUsage            Boolean        @default(false)
+  supportsTopUp            Boolean        @default(false)
+  supportsSuspend          Boolean        @default(false)
+  supportsQRCode           Boolean        @default(false)
+  supportsPools            Boolean        @default(false)
+  supportsTemplates        Boolean        @default(false)
+  supportsUsageSync        Boolean        @default(false)
+  supportsWebhookPush      Boolean        @default(false)
+  supportsSuspendResume    Boolean        @default(false)
+  endpointMappings         Json?
+  fieldMappings            Json?
+  config                   Json?
   /// Health tracking fields
   lastSuccessfulConnection DateTime?
   lastFailedConnection     DateTime?
-  activationSuccessRate    Float?     /// Percentage 0-100
+  activationSuccessRate    Float? /// Percentage 0-100
   averageActivationTimeMs  Int?
-  errorCount               Int?       @default(0)
-  lastError                String?    /// Last error message
-  lastSyncAt               DateTime?  /// Last successful plan sync
-  lastSyncResult           String?    /// Summary of last sync result
-  lastSyncCount            Int?       /// Number of plans fetched in last sync
-  createdAt           DateTime       @default(now())
-  updatedAt           DateTime       @updatedAt
+  errorCount               Int?           @default(0)
+  lastError                String? /// Last error message
+  lastSyncAt               DateTime? /// Last successful plan sync
+  lastSyncResult           String? /// Summary of last sync result
+  lastSyncCount            Int? /// Number of plans fetched in last sync
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
 
-  packages            ESIMPackage[]
+  packages ESIMPackage[]
 
   @@map("providers")
 }
 
 model ESIMPackage {
-  id            String    @id @default(cuid())
-  name          String
-  displayName   String?
-  description   String?
-  customerDescription String?
-  dataGB        Int
-  validityDays  Int
-  priceUSD      Decimal
-  localPrice    Decimal
-  currency      String    @default("USD")
-  isActive      Boolean   @default(true)
-  sku           String?   @unique
-  packageCode   String?   @unique
-  providerName  String?
-  providerPlanId String?
-  providerId    String?
-  providerRawData Json?
-  costPriceUSD  Decimal?
-  markupPercent Decimal?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  source          PackageSource @default(CATALOG_PRODUCT)
-  providerMapping Json?
-  productType     ProductType @default(NEW_ESIM)
-  topUpQuantity   Int?
-  topUpDays       Int?
-  topUpOccurrences Int?
+  id                        String        @id @default(cuid())
+  name                      String
+  displayName               String?
+  description               String?
+  customerDescription       String?
+  dataGB                    Int
+  validityDays              Int
+  priceUSD                  Decimal
+  localPrice                Decimal
+  currency                  String        @default("USD")
+  isActive                  Boolean       @default(true)
+  sku                       String?       @unique
+  packageCode               String?       @unique
+  providerName              String?
+  providerPlanId            String?
+  providerId                String?
+  providerRawData           Json?
+  costPriceUSD              Decimal?
+  markupPercent             Decimal?
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+  source                    PackageSource @default(CATALOG_PRODUCT)
+  providerMapping           Json?
+  productType               ProductType   @default(NEW_ESIM)
+  topUpQuantity             Int?
+  topUpDays                 Int?
+  topUpOccurrences          Int?
   compatibleTopUpPackageIds Json?
-  archivedAt              DateTime?
-  hiddenFromCatalog       Boolean   @default(false)
+  archivedAt                DateTime?
+  hiddenFromCatalog         Boolean       @default(false)
 
-  purchases     ESIMPurchase[]
-  provider      Provider?  @relation(fields: [providerId], references: [id], onDelete: SetNull)
-  pricingRules  PricingRule[]
-  topUpRecords  ESIMTopUp[]
+  purchases    ESIMPurchase[]
+  provider     Provider?      @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  pricingRules PricingRule[]
+  topUpRecords ESIMTopUp[]
 
   @@map("esim_packages")
 }
 
 model ESIMPurchase {
-  id              String          @id @default(cuid())
-  businessId      String
-  userId          String
-  packageId       String
-  quantity        Int
-  totalAmount     Decimal
-  status          String          @default("PENDING")
-  providerStatus  String?
-  providerResponse Json?
-  callbackUrl     String?
-  packageSnapshot Json?
-  packageName     String?
-  packageDataGB   Int?
+  id                  String   @id @default(cuid())
+  businessId          String
+  userId              String
+  packageId           String
+  quantity            Int
+  totalAmount         Decimal
+  status              String   @default("PENDING")
+  providerStatus      String?
+  providerResponse    Json?
+  callbackUrl         String?
+  packageSnapshot     Json?
+  packageName         String?
+  packageDataGB       Int?
   packageValidityDays Int?
-  packageUnitPrice Decimal?
-  packageCurrency String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  packageUnitPrice    Decimal?
+  packageCurrency     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
-  business    Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  package     ESIMPackage   @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  esims       ESIM[]
-  invoice     Invoice?
+  business Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  package  ESIMPackage @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  esims    ESIM[]
+  invoice  Invoice?
 
   @@map("esim_purchases")
 }
 
 model ESIM {
-  id                      String      @id @default(cuid())
-  purchaseId              String
-  customerId              String?
-  iccid                   String      @unique
-  imsi                    String?
-  activationCode          String?
-  qrCodeUrl               String?
-  status                  String      @default("PENDING")
-  activatedAt             DateTime?
-  expiresAt               DateTime?
-  deliveryStatus          String      @default("NOT_SENT")
-  deliveredAt             DateTime?
-  providerActivationId    String?
-  providerSubscriptionId  String?
-  providerStatus          String?
-  providerResponse        Json?
-  lastSyncAt              DateTime?
-  dataUsedMB              Int         @default(0)
-  dataRemainingMB         Int?
-  dataTotalMB             Int?
-  lastUsageAt             DateTime?
-  activationDetectedAt    DateTime?
-  lastUsageSyncAt         DateTime?
-  lastStatusSyncAt        DateTime?
-  sharedAt                DateTime?
-  sharedToEmail           String?
-  packageSnapshot         Json?
-  packageName             String?
-  packageDataGB           Int?
-  packageValidityDays     Int?
-  createdAt               DateTime    @default(now())
-  updatedAt               DateTime    @updatedAt
+  id                     String    @id @default(cuid())
+  purchaseId             String
+  customerId             String?
+  iccid                  String    @unique
+  imsi                   String?
+  activationCode         String?
+  qrCodeUrl              String?
+  status                 String    @default("PENDING")
+  activatedAt            DateTime?
+  expiresAt              DateTime?
+  deliveryStatus         String    @default("NOT_SENT")
+  deliveredAt            DateTime?
+  providerActivationId   String?
+  providerSubscriptionId String?
+  providerStatus         String?
+  providerResponse       Json?
+  lastSyncAt             DateTime?
+  dataUsedMB             Int       @default(0)
+  dataRemainingMB        Int?
+  dataTotalMB            Int?
+  lastUsageAt            DateTime?
+  activationDetectedAt   DateTime?
+  lastUsageSyncAt        DateTime?
+  lastStatusSyncAt       DateTime?
+  sharedAt               DateTime?
+  sharedToEmail          String?
+  packageSnapshot        Json?
+  packageName            String?
+  packageDataGB          Int?
+  packageValidityDays    Int?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
-  purchase    ESIMPurchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
-  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  purchase     ESIMPurchase     @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  customer     Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
   usageRecords UsageRecord[]
-  topUps      ESIMTopUp[]
-  shareTokens ESIMShareToken[]
+  topUps       ESIMTopUp[]      @relation("ESIMTopUps")
+  shareTokens  ESIMShareToken[]
 
   @@map("esims")
 }
 
 model ESIMTopUp {
-  id                  String         @id @default(cuid())
-  businessId          String
-  esimId              String
-  customerId          String?
-  packageId           String
-  providerId          String?
-  providerReference   String?
-  amount              Decimal
-  currency            String         @default("USD")
-  status              ESIMTopUpStatus @default(PENDING)
-  dataAddedMB         Int?
-  validityDaysAdded   Int?
-  providerResponse    Json?
-  createdAt           DateTime       @default(now())
-  completedAt         DateTime?
+  id                String          @id @default(cuid())
+  businessId        String
+  esimId            String
+  customerId        String?
+  packageId         String
+  providerId        String?
+  providerReference String?
+  amount            Decimal
+  currency          String          @default("USD")
+  status            ESIMTopUpStatus @default(PENDING)
+  dataAddedMB       Int?
+  validityDaysAdded Int?
+  providerResponse  Json?
+  createdAt         DateTime        @default(now())
+  completedAt       DateTime?
 
-  business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  esim        ESIM         @relation(fields: [esimId], references: [id], onDelete: Cascade)
-  package     ESIMPackage  @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  invoice     Invoice?
+  business      Business     @relation("BusinessESIMTopUps", fields: [businessId], references: [id], onDelete: Cascade)
+  esim          ESIM         @relation("ESIMTopUps", fields: [esimId], references: [id], onDelete: Restrict)
+  ESIMPackage   ESIMPackage? @relation(fields: [eSIMPackageId], references: [id])
+  eSIMPackageId String?
+  Invoice       Invoice?
+  Customer      Customer?    @relation(fields: [customerId], references: [id])
 
   @@map("esim_top_ups")
 }
 
 model UsageRecord {
-  id              String    @id @default(cuid())
+  id              String   @id @default(cuid())
   esimId          String
   dataUsedMB      Int
   dataTotalMB     Int?
   dataRemainingMB Int?
-  timestamp       DateTime  @default(now())
+  timestamp       DateTime @default(now())
 
-  esim        ESIM      @relation(fields: [esimId], references: [id], onDelete: Cascade)
+  esim ESIM @relation(fields: [esimId], references: [id], onDelete: Cascade)
 
   @@map("usage_records")
 }
@@ -383,7 +384,7 @@ model ESIMShareToken {
   expiresAt   DateTime
   usedAt      DateTime?
 
-  esim        ESIM      @relation(fields: [esimId], references: [id], onDelete: Cascade)
+  esim ESIM @relation(fields: [esimId], references: [id], onDelete: Cascade)
 
   @@map("esim_share_tokens")
 }
@@ -405,9 +406,9 @@ model Invoice {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  business    Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  purchase    ESIMPurchase? @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
-  topUp       ESIMTopUp?    @relation(fields: [topUpId], references: [id], onDelete: SetNull)
+  business Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  purchase ESIMPurchase? @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  topUp    ESIMTopUp?    @relation(fields: [topUpId], references: [id], onDelete: SetNull)
 
   @@unique([purchaseId])
   @@unique([topUpId])
@@ -415,14 +416,14 @@ model Invoice {
 }
 
 model WalletTransaction {
-  id          String    @id @default(cuid())
+  id          String   @id @default(cuid())
   businessId  String
   amount      Decimal
   type        String
   description String?
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime @default(now())
 
-  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@map("wallet_transactions")
 }
@@ -463,51 +464,51 @@ model WalletTopUpRequest {
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
-  business         Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  requestedBy      User               @relation("TopUpRequestedBy", fields: [requestedById], references: [id])
-  approvedBy       User?              @relation("TopUpApprovedBy", fields: [approvedById], references: [id])
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  requestedBy User     @relation("TopUpRequestedBy", fields: [requestedById], references: [id])
+  approvedBy  User?    @relation("TopUpApprovedBy", fields: [approvedById], references: [id])
 
   @@map("wallet_top_up_requests")
 }
 
 model AuditLog {
-  id        String    @id @default(cuid())
+  id        String   @id @default(cuid())
   userId    String?
   action    String
   entity    String
   entityId  String?
   details   String?
-  createdAt DateTime  @default(now())
+  createdAt DateTime @default(now())
 
-  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@map("audit_logs")
 }
 
 model Customer {
-  id          String         @id @default(cuid())
-  businessId  String
-  name        String
-  email       String
-  phone       String?
-  country     String
-  status      CustomerStatus @default(ACTIVE)
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  id         String         @id @default(cuid())
+  businessId String
+  name       String
+  email      String
+  phone      String?
+  country    String
+  status     CustomerStatus @default(ACTIVE)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
 
-  business    Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  esims       ESIM[]
-  esimTopUps  ESIMTopUp[]
+  business   Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  esims      ESIM[]
+  esimTopUps ESIMTopUp[]
 
   @@map("customers")
 }
 
 model Setting {
-  id        String    @id @default(cuid())
-  key       String    @unique
+  id        String   @id @default(cuid())
+  key       String   @unique
   value     String
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("settings")
 }
@@ -525,27 +526,27 @@ model AnnualMarkupSetting {
 }
 
 model PricingRule {
-  id            String     @id @default(cuid())
-  name          String
-  description   String?
-  ruleType      String     @default("GLOBAL_DISCOUNT") // GLOBAL_DISCOUNT | BUSINESS_DISCOUNT | REGION_OVERRIDE | PACKAGE_OVERRIDE | PROMOTIONAL
-  ruleMode      String     @default("PERCENTAGE")      // PERCENTAGE | FIXED_AMOUNT | FIXED_PRICE
-  value         Decimal?   // percentage, amount, or fixed price
-  priority      Int        @default(0)
-  isActive      Boolean    @default(true)
-  businessId    String?
-  region        String?
-  country       String?
-  packageId     String?
-  packageType   String?
-  startDate     DateTime?
-  endDate       DateTime?
-  createdBy     String?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  ruleType    String    @default("GLOBAL_DISCOUNT") // GLOBAL_DISCOUNT | BUSINESS_DISCOUNT | REGION_OVERRIDE | PACKAGE_OVERRIDE | PROMOTIONAL
+  ruleMode    String    @default("PERCENTAGE") // PERCENTAGE | FIXED_AMOUNT | FIXED_PRICE
+  value       Decimal? // percentage, amount, or fixed price
+  priority    Int       @default(0)
+  isActive    Boolean   @default(true)
+  businessId  String?
+  region      String?
+  country     String?
+  packageId   String?
+  packageType String?
+  startDate   DateTime?
+  endDate     DateTime?
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  business      Business?  @relation(fields: [businessId], references: [id], onDelete: SetNull)
-  package       ESIMPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  business Business?    @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  package  ESIMPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
 
   @@map("pricing_rules")
 }
@@ -556,28 +557,28 @@ enum ApiKeyStatus {
 }
 
 model BusinessApiKey {
-  id          String      @id @default(cuid())
-  businessId  String
-  name        String
-  keyHash     String
-  keyPrefix   String      @unique
-  status      ApiKeyStatus @default(ACTIVE)
-  lastUsedAt  DateTime?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id         String       @id @default(cuid())
+  businessId String
+  name       String
+  keyHash    String
+  keyPrefix  String       @unique
+  status     ApiKeyStatus @default(ACTIVE)
+  lastUsedAt DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
 
-  business    Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@map("business_api_keys")
 }
 
 model IdempotencyRecord {
-  id          String   @id @default(cuid())
-  key         String   @unique
-  businessId  String
-  response    Json
-  expiresAt   DateTime
-  createdAt   DateTime @default(now())
+  id         String   @id @default(cuid())
+  key        String   @unique
+  businessId String
+  response   Json
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
 
   @@map("idempotency_records")
 }
@@ -588,18 +589,18 @@ enum WebhookEndpointStatus {
 }
 
 model BusinessWebhookEndpoint {
-  id          String                @id @default(cuid())
-  businessId  String
-  name        String
-  url         String
-  secret      String
-  status      WebhookEndpointStatus @default(ACTIVE)
-  events      Json
-  createdAt   DateTime              @default(now())
-  updatedAt   DateTime              @updatedAt
+  id         String                @id @default(cuid())
+  businessId String
+  name       String
+  url        String
+  secret     String
+  status     WebhookEndpointStatus @default(ACTIVE)
+  events     Json
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
 
-  business    Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  deliveries  WebhookDelivery[]
+  business   Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
 
   @@map("business_webhook_endpoints")
 }
@@ -611,21 +612,21 @@ enum WebhookDeliveryStatus {
 }
 
 model WebhookDelivery {
-  id            String                @id @default(cuid())
-  businessId    String
-  endpointId    String
-  eventType     String
-  payload       Json
-  status        WebhookDeliveryStatus @default(PENDING)
-  responseCode  Int?
-  responseBody  String?
-  attempts      Int                   @default(0)
-  nextRetryAt   DateTime?
-  createdAt     DateTime              @default(now())
-  sentAt        DateTime?
+  id           String                @id @default(cuid())
+  businessId   String
+  endpointId   String
+  eventType    String
+  payload      Json
+  status       WebhookDeliveryStatus @default(PENDING)
+  responseCode Int?
+  responseBody String?
+  attempts     Int                   @default(0)
+  nextRetryAt  DateTime?
+  createdAt    DateTime              @default(now())
+  sentAt       DateTime?
 
-  business      Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  endpoint      BusinessWebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  business Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  endpoint BusinessWebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
 
   @@map("webhook_deliveries")
 }
@@ -661,20 +662,20 @@ model BackgroundJob {
 }
 
 model ApiRequestLog {
-  id              String    @id @default(cuid())
-  businessId      String
-  apiKeyId        String?
-  method          String
-  path            String
-  statusCode      Int
-  durationMs      Int
-  ipAddress       String?
-  userAgent       String?
-  idempotencyKey  String?
-  errorMessage    String?
-  createdAt       DateTime  @default(now())
+  id             String   @id @default(cuid())
+  businessId     String
+  apiKeyId       String?
+  method         String
+  path           String
+  statusCode     Int
+  durationMs     Int
+  ipAddress      String?
+  userAgent      String?
+  idempotencyKey String?
+  errorMessage   String?
+  createdAt      DateTime @default(now())
 
-  business        Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@index([businessId, createdAt])
   @@index([createdAt])
@@ -697,6 +698,7 @@ model ProviderWebhookEvent {
   receivedAt      DateTime  @default(now())
   processedAt     DateTime?
 
+  @@unique([providerType, externalEventId])
   @@index([providerType])
   @@index([eventType])
   @@index([iccid])
@@ -705,7 +707,6 @@ model ProviderWebhookEvent {
   @@index([businessId])
   @@index([status])
   @@index([receivedAt])
-  @@unique([providerType, externalEventId])
   @@map("provider_webhook_events")
 }
 
@@ -731,27 +732,27 @@ model ProviderConfig {
 }
 
 model ProviderTemplate {
-  id          String   @id @default(cuid())
-  name        String
-  description String?
-  connectorType String  @default("STANDARD")
-  authType    String   @default("bearer_token")
-  tokenPlacement String @default("URL_PATH")
-  defaultBaseUrl String?
-  defaultAuthUrl String?
-  defaultPlanListPath String?
-  defaultActivationPath String?
-  defaultStatusPath String?
-  defaultUsagePath String?
-  defaultSuspendPath String?
-  defaultResumePath String?
+  id                     String   @id @default(cuid())
+  name                   String
+  description            String?
+  connectorType          String   @default("STANDARD")
+  authType               String   @default("bearer_token")
+  tokenPlacement         String   @default("URL_PATH")
+  defaultBaseUrl         String?
+  defaultAuthUrl         String?
+  defaultPlanListPath    String?
+  defaultActivationPath  String?
+  defaultStatusPath      String?
+  defaultUsagePath       String?
+  defaultSuspendPath     String?
+  defaultResumePath      String?
   defaultResponseListKey String?
-  defaultFieldMappings Json @default("{}")
-  defaultCapabilities Json @default("{}")
-  isSystemTemplate Boolean @default(false)
-  createdBy  String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  defaultFieldMappings   Json     @default("{}")
+  defaultCapabilities    Json     @default("{}")
+  isSystemTemplate       Boolean  @default(false)
+  createdBy              String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   @@map("provider_templates")
 }
