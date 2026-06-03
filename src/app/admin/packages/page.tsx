@@ -149,14 +149,14 @@ export default async function AdminPackagesPage({
             )
           })}
         </nav>
-        <div className="mt-4 flex items-center justify-between">
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-gray-500">
             {tab === 'provider' && 'Imported provider plans — configure and publish as catalog products'}
             {tab === 'catalog' && 'Catalog products — activate to make them visible to business clients'}
             {tab === 'manual' && 'Manually created packages'}
             {tab === 'all' && 'Overview of all packages across your catalog'}
           </p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {tab === 'provider' && providerPlans.length > 0 && (
               <form action={bulkConvertToCatalog.bind(null, providerPlans.map(p => p.id))}>
                 <button type="submit" className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm">
@@ -262,7 +262,7 @@ export default async function AdminPackagesPage({
                 </div>
 
                 {/* Actions */}
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   {pkg.source === 'PROVIDER_PLAN' ? (
                     <>
                       <Link
