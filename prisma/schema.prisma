@@ -352,12 +352,11 @@ model ESIMTopUp {
   createdAt         DateTime        @default(now())
   completedAt       DateTime?
 
-  business      Business     @relation("BusinessESIMTopUps", fields: [businessId], references: [id], onDelete: Cascade)
-  esim          ESIM         @relation("ESIMTopUps", fields: [esimId], references: [id], onDelete: Restrict)
-  ESIMPackage   ESIMPackage? @relation(fields: [eSIMPackageId], references: [id])
-  eSIMPackageId String?
-  Invoice       Invoice?
-  Customer      Customer?    @relation(fields: [customerId], references: [id])
+  business Business    @relation("BusinessESIMTopUps", fields: [businessId], references: [id], onDelete: Cascade)
+  esim     ESIM        @relation("ESIMTopUps", fields: [esimId], references: [id], onDelete: Restrict)
+  package  ESIMPackage @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  Invoice  Invoice?
+  customer Customer?   @relation(fields: [customerId], references: [id])
 
   @@map("esim_top_ups")
 }
