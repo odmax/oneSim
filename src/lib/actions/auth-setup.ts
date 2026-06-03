@@ -8,7 +8,7 @@ import { redirect } from 'next/navigation'
 import bcrypt from 'bcryptjs'
 import crypto from 'crypto'
 import { getAppUrl } from '@/lib/config/urls'
-import { sendEmail, buildSetPasswordEmail, buildResetPasswordEmail } from '@/lib/email/send-email'
+import { sendEmail, buildResetPasswordEmail } from '@/lib/email/send-email'
 
 function generateRawToken(): string {
   return crypto.randomBytes(32).toString('hex')
@@ -20,33 +20,6 @@ function hashToken(token: string): string {
 
 function getAppBase(): string {
   return getAppUrl().replace(/\/+$/, '')
-}
-
-export async function sendPasswordSetupEmail(userId: string, email: string, name: string) {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
-
-  // Invalidate old tokens
-  await prisma.passwordResetToken.updateMany({
-    where: { userId, type: 'SET_PASSWORD', usedAt: null },
-    data: { usedAt: new Date(0) },
-  })
-
-  const raw = generateRawToken()
-  const tokenHash = hashToken(raw)
-  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
-
-  await prisma.passwordResetToken.create({
-    data: { userId, tokenHash, type: 'SET_PASSWORD', expiresAt },
-  })
-
-  const link = `${getAppBase()}/set-password?token=${raw}`
-  const emailContent = buildSetPasswordEmail(link, name)
-  await sendEmail({ to: email, ...emailContent })
-
-  await prisma.auditLog.create({
-    data: { userId: session.user.id, action: 'USER_INVITED', entity: 'User', entityId: userId, details: `Password setup email sent to ${email}` },
-  })
 }
 
 export async function requestPasswordReset(formData: FormData) {

@@ -38,22 +38,6 @@ export async function sendEmail(params: SendEmailParams): Promise<{ success: boo
   return { success: true }
 }
 
-export function buildSetPasswordEmail(link: string, name: string): { subject: string; html: string } {
-  const appUrl = getAppUrl()
-  return {
-    subject: 'Set your OneSim account password',
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px">
-        <h2 style="color:#059669">OneSim Africa</h2>
-        <p>Hi ${name},</p>
-        <p>Your OneSim account has been created. Click the button below to set your password and activate your account.</p>
-        <a href="${link}" style="display:inline-block;background:#059669;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0">Set Password</a>
-        <p style="font-size:12px;color:#6b7280">This link expires in 24 hours. If you did not request this, please ignore this email.</p>
-        <p style="font-size:12px;color:#6b7280">— OneSim Africa (${appUrl})</p>
-      </div>`,
-  }
-}
-
 export function buildResetPasswordEmail(link: string): { subject: string; html: string } {
   const appUrl = getAppUrl()
   return {

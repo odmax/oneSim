@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { updateBusinessStatus, deleteBusiness } from '@/lib/actions/business'
-import { sendPasswordSetupEmail } from '@/lib/actions/auth-setup'
+
 import WalletActions from './wallet-actions'
 import ConfirmForm from './confirm-form'
 
@@ -209,9 +209,7 @@ export default async function BusinessDetailPage({
           <div className="rounded-lg border bg-white p-6 shadow-sm">
             <h3 className="mb-4 text-lg font-semibold">Team Members ({business._count.users})</h3>
             <div className="divide-y">
-              {business.users.map((bu) => {
-                const isInvited = !bu.user.passwordHash
-                return (
+              {business.users.map((bu) => (
                 <div key={bu.id} className="flex items-center justify-between py-3">
                   <div>
                     <p className="font-medium text-gray-900">{bu.user.name}</p>
@@ -223,19 +221,10 @@ export default async function BusinessDetailPage({
                     }`}>
                       {bu.role}
                     </span>
-                    {isInvited ? (
-                      <>
-                        <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-600">Invited</span>
-                        <form action={sendPasswordSetupEmail.bind(null, bu.user.id, bu.user.email, bu.user.name || '')}>
-                          <button type="submit" className="rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-600 hover:bg-amber-100">Resend</button>
-                        </form>
-                      </>
-                    ) : (
-                      <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-600">Active</span>
-                    )}
+                    <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-600">Active</span>
                   </div>
                 </div>
-              )})}
+              ))}
             </div>
           </div>
 

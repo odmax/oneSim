@@ -6,7 +6,6 @@ import { redirect } from 'next/navigation'
 import bcrypt from 'bcryptjs'
 import { authOptions } from '@/lib/auth/config'
 import { getServerSession } from 'next-auth'
-import { sendPasswordSetupEmail } from '@/lib/actions/auth-setup'
 
 export async function updateBusiness(formData: FormData) {
   const session = await getServerSession(authOptions)
@@ -89,47 +88,35 @@ export async function createBusiness(formData: FormData) {
   const adminName = formData.get('adminName') as string
   const adminEmail = formData.get('adminEmail') as string
   const adminPassword = formData.get('adminPassword') as string
-  const sendInvite = formData.get('sendInvite') === 'on'
   const status = formData.get('status') as string || 'PENDING';
 
   if (!name || !contactEmail || !country) redirect('/admin/businesses/new?error=missing_business_info')
   if (!adminName || !adminEmail) redirect('/admin/businesses/new?error=missing_admin_info')
-  if (!sendInvite && (!adminPassword || adminPassword.length < 8)) redirect('/admin/businesses/new?error=password_too_short')
+  if (!adminPassword || adminPassword.length < 8) redirect('/admin/businesses/new?error=password_too_short')
 
   try {
     const existingUser = await prisma.user.findUnique({ where: { email: adminEmail } })
     if (existingUser) redirect('/admin/businesses/new?error=email_exists')
 
-    let createdUserId = ''
+    const passwordHash = await bcrypt.hash(adminPassword, 10)
 
     await prisma.$transaction(async (tx) => {
       const business = await tx.business.create({
         data: { name, regNumber: regNumber || null, taxId: taxId || null, contactEmail, contactPhone: contactPhone || null, country, address: address || null, status: status as any, walletBalance: 0 },
       })
 
-      let passwordHash: string | null = null
-      if (adminPassword) {
-        const bcrypt = await import('bcryptjs')
-        passwordHash = await bcrypt.default.hash(adminPassword, 10)
-      }
-
       const user = await tx.user.create({
         data: { email: adminEmail, passwordHash, name: adminName, role: 'BUSINESS_USER', isActive: true },
       })
-      createdUserId = user.id
 
       await tx.businessUser.create({ data: { userId: user.id, businessId: business.id, role: 'ADMIN' } })
       await tx.auditLog.create({
-        data: { userId: session.user.id, action: 'CREATE', entity: 'Business', entityId: business.id, details: `Created business: ${name} with admin: ${adminEmail}, status: ${status}${sendInvite ? ', invite sent' : ''}` },
+        data: { userId: session.user.id, action: 'CREATE', entity: 'Business', entityId: business.id, details: `Created business: ${name} with admin: ${adminEmail}` },
       })
     })
 
-    if (sendInvite && createdUserId) {
-      await sendPasswordSetupEmail(createdUserId, adminEmail, adminName)
-    }
-
     revalidatePath('/admin/businesses')
-    redirect(`/admin/businesses?success=${sendInvite ? 'business_created_invited' : 'business_created'}`)
+    redirect(`/admin/businesses/new?success=true&email=${encodeURIComponent(adminEmail)}&password=${encodeURIComponent(adminPassword)}`)
   } catch (error: any) {
     console.error('Business creation error:', error)
     if (error?.code === 'P2002') redirect('/admin/businesses/new?error=email_exists')

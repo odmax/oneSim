@@ -82,24 +82,14 @@ export async function addTeamMember(formData: FormData) {
       return { user, businessUser }
     })
 
-    await sendTeamMemberInviteEmail(email, name, password)
-
     revalidatePath('/business/users')
-    return { success: 'Team member created successfully. Login details have been sent to their email.' }
+    return { success: true, email, password, name }
   } catch (error: any) {
     if (error?.code === 'P2002') {
       return { error: 'Duplicate email: This email is already in use' }
     }
     return { error: 'Failed to create team member. Please try again.' }
   }
-}
-
-async function sendTeamMemberInviteEmail(email: string, name: string, password: string) {
-  console.log('--- MOCK EMAIL SENT ---')
-  console.log(`To: ${email}`)
-  console.log(`Subject: You have been added to OneSim Africa`)
-  console.log(`Body: Hello ${name},\n\nYou have been added as a team member. You can now login at ${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/login\n\nEmail: ${email}\nPassword: ${password}\n\nPlease change your password after logging in.`)
-  console.log('------------------------')
 }
 
 export async function removeTeamMember(userId: string) {
