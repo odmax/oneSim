@@ -100,16 +100,36 @@ export async function deletePackageAction(formData: FormData) {
       },
     })
   } else {
-    await prisma.eSIMPackage.delete({ where: { id } })
+    try {
+      await prisma.eSIMPackage.delete({ where: { id } })
 
-    await prisma.auditLog.create({
-      data: {
-        action: 'DELETE',
-        entity: 'ESIMPackage',
-        entityId: id,
-        details: `Deleted package (no purchases or top-ups): ${pkg.name}`,
-      },
-    })
+      await prisma.auditLog.create({
+        data: {
+          action: 'DELETE',
+          entity: 'ESIMPackage',
+          entityId: id,
+          details: `Deleted package (no purchases or top-ups): ${pkg.name}`,
+        },
+      })
+    } catch (err: any) {
+      // P2003 = foreign key constraint violation — dependent records found at DB level
+      if (err.code === 'P2003') {
+        await prisma.eSIMPackage.update({
+          where: { id },
+          data: { isActive: false, hiddenFromCatalog: true, archivedAt: new Date() },
+        })
+        await prisma.auditLog.create({
+          data: {
+            action: 'ARCHIVE',
+            entity: 'ESIMPackage',
+            entityId: id,
+            details: `Archived package (protected by DB constraint): ${pkg.name}. Existing eSIMs preserved.`,
+          },
+        })
+      } else {
+        throw err
+      }
+    }
   }
 
   revalidatePath('/admin/packages')

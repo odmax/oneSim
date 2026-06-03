@@ -83,6 +83,17 @@ export async function DELETE(
     return NextResponse.json({ success: true, archived: true, message: 'Package has existing purchased eSIMs. Archived instead of deleted.' })
   }
 
-  await prisma.eSIMPackage.delete({ where: { id: params.id } })
-  return NextResponse.json({ success: true, deleted: true })
+  try {
+    await prisma.eSIMPackage.delete({ where: { id: params.id } })
+    return NextResponse.json({ success: true, deleted: true })
+  } catch (err: any) {
+    if (err.code === 'P2003') {
+      await prisma.eSIMPackage.update({
+        where: { id: params.id },
+        data: { isActive: false, hiddenFromCatalog: true, archivedAt: new Date() },
+      })
+      return NextResponse.json({ success: true, archived: true, message: 'Package has dependent records. Archived instead of deleted.' })
+    }
+    throw err
+  }
 }
