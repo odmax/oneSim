@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
+import { handlePrismaError } from '@/lib/errors/handle-prisma-error'
 
 export async function addTeamMember(formData: FormData) {
   const session = await getServerSession(authOptions)
@@ -168,6 +169,7 @@ export async function removeTeamMember(userId: string) {
     revalidatePath('/business/users')
     return { success: 'Team member removed successfully' }
   } catch (error: any) {
-    return { error: 'Failed to remove team member. Please try again.' }
+    const { message } = handlePrismaError(error, 'Failed to remove team member')
+    return { error: message }
   }
 }

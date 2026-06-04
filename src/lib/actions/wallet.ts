@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
+import { handleServerActionError, handlePrismaError } from '@/lib/errors/handle-prisma-error'
 
 export async function topUpWallet(formData: FormData) {
   const session = await getServerSession(authOptions)
@@ -48,9 +49,8 @@ export async function topUpWallet(formData: FormData) {
 
     revalidatePath('/business/wallet')
     revalidatePath('/business/dashboard')
-  } catch (error) {
-    console.error('Top-up error:', error)
-    redirect('/business/wallet?error=topup_failed')
+  } catch (error: any) {
+    handleServerActionError(error, '/business/wallet', 'topup_failed')
   }
 }
 
@@ -103,9 +103,8 @@ export async function adminCreditWallet(formData: FormData) {
     revalidatePath('/admin/businesses')
     revalidatePath(`/admin/businesses/${businessId}`)
     redirect(`/admin/businesses/${businessId}?success=wallet_credited`)
-  } catch (error) {
-    console.error('Wallet credit error:', error)
-    redirect(`/admin/businesses/${businessId}?error=wallet_action_failed`)
+  } catch (error: any) {
+    handleServerActionError(error, `/admin/businesses/${businessId}`, 'wallet_action_failed')
   }
 }
 
@@ -167,8 +166,12 @@ export async function adminDebitWallet(formData: FormData) {
     revalidatePath('/admin/businesses')
     revalidatePath(`/admin/businesses/${businessId}`)
     redirect(`/admin/businesses/${businessId}?success=wallet_debited`)
-  } catch (error) {
-    console.error('Wallet debit error:', error)
-    redirect(`/admin/businesses/${businessId}?error=insufficient_balance`)
+  } catch (error: any) {
+    if (error?.digest?.startsWith('NEXT_REDIRECT')) throw error
+    if (error?.message?.includes('Insufficient balance')) {
+      redirect(`/admin/businesses/${businessId}?error=insufficient_balance`)
+    }
+    const { message } = handlePrismaError(error, 'Debit failed')
+    redirect(`/admin/businesses/${businessId}?error=${encodeURIComponent(message)}`)
   }
 }

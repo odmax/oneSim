@@ -6,6 +6,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
 import crypto from 'crypto'
+import { handlePrismaError } from '@/lib/errors/handle-prisma-error'
 
 function generateSecret(): string {
   return 'whsec_' + crypto.randomBytes(24).toString('hex')
@@ -139,37 +140,47 @@ export async function updateWebhook(endpointId: string, formData: FormData) {
 }
 
 export async function toggleWebhook(endpointId: string) {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'BUSINESS_USER') return
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session || session.user.role !== 'BUSINESS_USER') return
 
-  const endpoint = await prisma.businessWebhookEndpoint.findFirst({
-    where: { id: endpointId, businessId: session.user.businessId! },
-  })
-  if (!endpoint) return
+    const endpoint = await prisma.businessWebhookEndpoint.findFirst({
+      where: { id: endpointId, businessId: session.user.businessId! },
+    })
+    if (!endpoint) return
 
-  const newStatus = endpoint.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
-  await prisma.businessWebhookEndpoint.update({
-    where: { id: endpointId },
-    data: { status: newStatus },
-  })
+    const newStatus = endpoint.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+    await prisma.businessWebhookEndpoint.update({
+      where: { id: endpointId },
+      data: { status: newStatus },
+    })
 
-  revalidatePath('/business/webhooks')
+    revalidatePath('/business/webhooks')
+  } catch (error: any) {
+    const { message } = handlePrismaError(error, 'Failed to toggle webhook')
+    console.error('[toggleWebhook]', message)
+  }
 }
 
 export async function deleteWebhook(endpointId: string) {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'BUSINESS_USER') return
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session || session.user.role !== 'BUSINESS_USER') return
 
-  const businessUser = await prisma.businessUser.findFirst({
-    where: { userId: session.user.id, businessId: session.user.businessId!, role: 'ADMIN' },
-  })
-  if (!businessUser) return
+    const businessUser = await prisma.businessUser.findFirst({
+      where: { userId: session.user.id, businessId: session.user.businessId!, role: 'ADMIN' },
+    })
+    if (!businessUser) return
 
-  await prisma.businessWebhookEndpoint.deleteMany({
-    where: { id: endpointId, businessId: session.user.businessId! },
-  })
+    await prisma.businessWebhookEndpoint.deleteMany({
+      where: { id: endpointId, businessId: session.user.businessId! },
+    })
 
-  revalidatePath('/business/webhooks')
+    revalidatePath('/business/webhooks')
+  } catch (error: any) {
+    const { message } = handlePrismaError(error, 'Failed to delete webhook')
+    console.error('[deleteWebhook]', message)
+  }
 }
 
 export async function sendTestWebhook(endpointId: string) {

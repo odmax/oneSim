@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
+import { handlePrismaError, handleServerActionError } from '@/lib/errors/handle-prisma-error'
 
 function generateInvoiceNumber(): string {
   const ts = Date.now().toString(36).toUpperCase()
@@ -68,43 +69,45 @@ export async function generateInvoice(formData: FormData) {
 }
 
 export async function markInvoicePaid(invoiceId: string) {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
-  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } })
-  if (!invoice) redirect('/admin/invoices?error=Invoice+not+found')
-  if (invoice.status === 'PAID') redirect('/admin/invoices?error=Already+paid')
+    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } })
+    if (!invoice) redirect('/admin/invoices?error=Invoice+not+found')
+    if (invoice.status === 'PAID') redirect('/admin/invoices?error=Already+paid')
 
-  await prisma.invoice.update({
-    where: { id: invoiceId },
-    data: { status: 'PAID', paidAt: new Date() },
-  })
+    await prisma.invoice.update({ where: { id: invoiceId }, data: { status: 'PAID', paidAt: new Date() } })
 
-  await prisma.auditLog.create({
-    data: { userId: session.user.id, action: 'INVOICE_PAID', entity: 'Invoice', entityId: invoiceId, details: `Invoice ${invoice.invoiceNumber || invoiceId} marked as paid` },
-  })
+    await prisma.auditLog.create({
+      data: { userId: session.user.id, action: 'INVOICE_PAID', entity: 'Invoice', entityId: invoiceId, details: `Invoice ${invoice.invoiceNumber || invoiceId} marked as paid` },
+    })
 
-  revalidatePath('/admin/invoices')
-  redirect(`/admin/invoices/${invoiceId}?success=Invoice+marked+as+paid`)
+    revalidatePath('/admin/invoices')
+    redirect(`/admin/invoices/${invoiceId}?success=Invoice+marked+as+paid`)
+  } catch (error: any) {
+    handleServerActionError(error, '/admin/invoices', 'mark_paid_failed')
+  }
 }
 
 export async function cancelInvoice(invoiceId: string) {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
-  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } })
-  if (!invoice) redirect('/admin/invoices?error=Invoice+not+found')
-  if (invoice.status === 'PAID' || invoice.status === 'CANCELLED') redirect('/admin/invoices?error=Cannot+cancel')
+    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } })
+    if (!invoice) redirect('/admin/invoices?error=Invoice+not+found')
+    if (invoice.status === 'PAID' || invoice.status === 'CANCELLED') redirect('/admin/invoices?error=Cannot+cancel')
 
-  await prisma.invoice.update({
-    where: { id: invoiceId },
-    data: { status: 'CANCELLED' },
-  })
+    await prisma.invoice.update({ where: { id: invoiceId }, data: { status: 'CANCELLED' } })
 
-  await prisma.auditLog.create({
-    data: { userId: session.user.id, action: 'INVOICE_CANCELLED', entity: 'Invoice', entityId: invoiceId, details: `Invoice ${invoice.invoiceNumber || invoiceId} cancelled` },
-  })
+    await prisma.auditLog.create({
+      data: { userId: session.user.id, action: 'INVOICE_CANCELLED', entity: 'Invoice', entityId: invoiceId, details: `Invoice ${invoice.invoiceNumber || invoiceId} cancelled` },
+    })
 
-  revalidatePath('/admin/invoices')
-  redirect(`/admin/invoices/${invoiceId}?success=Invoice+cancelled`)
+    revalidatePath('/admin/invoices')
+    redirect(`/admin/invoices/${invoiceId}?success=Invoice+cancelled`)
+  } catch (error: any) {
+    handleServerActionError(error, '/admin/invoices', 'cancel_failed')
+  }
 }
