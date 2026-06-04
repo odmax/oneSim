@@ -47,6 +47,7 @@ export default async function BusinessLayout({
     { title: 'API Keys', href: '/business/api-keys', icon: 'Key' as const, readOnly: isMember },
     { title: 'API Documentation', href: '/business/developers', icon: 'FileCode' as const, readOnly: isMember },
     { title: 'API Logs', href: '/business/api-usage', icon: 'BarChart3' as const },
+    { title: 'Webhooks', href: '/business/webhooks', icon: 'Webhook' as const, readOnly: isMember },
 
     { title: 'Account', href: '#', sectionHeader: true },
     { title: 'Team Members', href: '/business/users', icon: 'Users' as const },

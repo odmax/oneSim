@@ -588,19 +588,23 @@ enum WebhookEndpointStatus {
 }
 
 model BusinessWebhookEndpoint {
-  id         String                @id @default(cuid())
-  businessId String
-  name       String
-  url        String
-  secret     String
-  status     WebhookEndpointStatus @default(ACTIVE)
-  events     Json
-  createdAt  DateTime              @default(now())
-  updatedAt  DateTime              @updatedAt
+  id              String                @id @default(cuid())
+  businessId      String
+  name            String
+  url             String
+  secret          String
+  status          WebhookEndpointStatus @default(ACTIVE)
+  events          Json
+  lastSuccessAt   DateTime?
+  lastFailureAt   DateTime?
+  failureCount    Int                   @default(0)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
 
-  business   Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  deliveries WebhookDelivery[]
+  business        Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  deliveries      WebhookDelivery[]
 
+  @@index([businessId])
   @@map("business_webhook_endpoints")
 }
 
@@ -615,10 +619,12 @@ model WebhookDelivery {
   businessId   String
   endpointId   String
   eventType    String
+  eventId      String?
   payload      Json
   status       WebhookDeliveryStatus @default(PENDING)
   responseCode Int?
   responseBody String?
+  errorMessage String?
   attempts     Int                   @default(0)
   nextRetryAt  DateTime?
   createdAt    DateTime              @default(now())
@@ -627,6 +633,10 @@ model WebhookDelivery {
   business Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
   endpoint BusinessWebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
 
+  @@index([businessId, createdAt])
+  @@index([endpointId])
+  @@index([status])
+  @@index([eventType])
   @@map("webhook_deliveries")
 }
 

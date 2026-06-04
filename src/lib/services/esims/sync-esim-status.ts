@@ -90,6 +90,40 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
 
   await prisma.eSIM.update({ where: { id: esimId }, data: updateData })
 
+  // Fire business webhooks (non-blocking)
+  if (activated && !esim.activatedAt) {
+    ;(async () => {
+      try {
+        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+        await enqueueBusinessWebhooks(esim.purchase.businessId, 'esim.activated', { esimId, iccid: esim.iccid, imsi: esim.imsi, status: newStatus, providerStatus })
+      } catch { }
+    })()
+  }
+  if (newStatus === 'EXPIRED' && esim.status !== 'EXPIRED') {
+    ;(async () => {
+      try {
+        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+        await enqueueBusinessWebhooks(esim.purchase.businessId, 'esim.expired', { esimId, iccid: esim.iccid })
+      } catch { }
+    })()
+  }
+  if (newStatus === 'SUSPENDED' && esim.status !== 'SUSPENDED') {
+    ;(async () => {
+      try {
+        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+        await enqueueBusinessWebhooks(esim.purchase.businessId, 'esim.suspended', { esimId, iccid: esim.iccid })
+      } catch { }
+    })()
+  }
+  if (dataUsedMB != null && dataUsedMB !== esim.dataUsedMB) {
+    ;(async () => {
+      try {
+        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+        await enqueueBusinessWebhooks(esim.purchase.businessId, 'usage.updated', { esimId, iccid: esim.iccid, dataUsedMB, dataTotalMB, dataRemainingMB })
+      } catch { }
+    })()
+  }
+
   // Create usage record if we have data
   if (dataUsedMB != null && dataUsedMB > 0) {
     const lastRecord = esim.usageRecords[0]

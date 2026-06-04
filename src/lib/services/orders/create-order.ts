@@ -117,6 +117,17 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
   })
 
   if (!providerResult.success) {
+    ;(async () => {
+      try {
+        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+        await enqueueBusinessWebhooks(businessId, 'order.failed', {
+          packageId: pkg.id,
+          packageName: pkg.displayName || pkg.name,
+          quantity,
+          error: providerResult.error,
+        })
+      } catch { }
+    })()
     return { success: false, error: providerResult.error || 'Provider activation failed', errorStatus: 502 }
   }
 
@@ -220,6 +231,29 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
 
     return { purchase, esims }
   })
+
+  // Fire webhook events (non-blocking, fire-and-forget)
+  ;(async () => {
+    try {
+      const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+      await enqueueBusinessWebhooks(businessId, 'order.completed', {
+        orderId: result.purchase.id,
+        packageId: pkg.id,
+        packageName: displayName,
+        quantity,
+        totalAmount,
+        currency: pkg.currency || 'USD',
+        customer: customer ? { name: customer.name, email: customer.email } : null,
+        esims: result.esims.map(e => ({ id: e.id, iccid: e.iccid })),
+        providerName: providerResult.providerName || null,
+      })
+      await enqueueBusinessWebhooks(businessId, 'esim.provisioned', {
+        orderId: result.purchase.id,
+        quantity,
+        esims: result.esims.map(e => ({ id: e.id, iccid: e.iccid, status: e.status })),
+      })
+    } catch { /* webhook must never block purchase */ }
+  })()
 
   return {
     success: true,

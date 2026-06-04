@@ -84,6 +84,15 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
   })
 
   if (!providerResult.success) {
+    ;(async () => {
+      try {
+        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+        await enqueueBusinessWebhooks(businessId, 'topup.failed', {
+          esimId: params.esimId, iccid: esim.iccid,
+          topUpPackageId, error: providerResult.error?.message,
+        })
+      } catch { }
+    })()
     return { success: false, error: providerResult.error?.message || 'Provider top-up failed', errorStatus: 502 }
   }
 
@@ -170,6 +179,16 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
 
       return topUp
     })
+
+    ;(async () => {
+      try {
+        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+        await enqueueBusinessWebhooks(businessId, 'topup.completed', {
+          topUpId: result.id, esimId: params.esimId, iccid: esim.iccid,
+          topUpPackageId, amount, dataAddedMB, validityDaysAdded,
+        })
+      } catch { }
+    })()
 
     return {
       success: true,
