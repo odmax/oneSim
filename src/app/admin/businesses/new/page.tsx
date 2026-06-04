@@ -53,11 +53,14 @@ export default async function NewBusinessPage({ searchParams }: { searchParams?:
 
       {searchParams?.error && (
         <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {searchParams.error === 'email_exists' && 'This email is already in use.'}
-          {searchParams.error === 'missing_business_info' && 'Please fill in all required business fields.'}
+          {searchParams.error === 'email_exists' && 'This email is already in use by another account.'}
+          {searchParams.error === 'missing_business_info' && 'Please fill in all required business fields (company name, contact email, country).'}
           {searchParams.error === 'missing_admin_info' && 'Please provide admin name and email.'}
           {searchParams.error === 'password_too_short' && 'Password must be at least 8 characters.'}
-          {searchParams.error === 'creation_failed' && 'Failed to create business. Please try again.'}
+          {searchParams.error === 'reference_error' && 'A related record was not found. This may be a database constraint issue.'}
+          {searchParams.error === 'missing_column' && 'A database column is missing. Run the latest migration.'}
+          {searchParams.error === 'not_found' && 'The record to update was not found.'}
+          {searchParams.error === 'creation_failed' && 'Failed to create business. Check server logs for details and contact support.'}
         </div>
       )}
 

@@ -118,8 +118,17 @@ export async function createBusiness(formData: FormData) {
     revalidatePath('/admin/businesses')
     redirect(`/admin/businesses/new?success=true&email=${encodeURIComponent(adminEmail)}&password=${encodeURIComponent(adminPassword)}`)
   } catch (error: any) {
-    console.error('Business creation error:', error)
+    // Re-throw redirect errors so Next.js handles them
+    if (error?.digest?.startsWith('NEXT_REDIRECT')) throw error
+
+    console.error('[createBusiness] Error:', error?.message || error, error?.code ? `(code: ${error.code})` : '')
+
     if (error?.code === 'P2002') redirect('/admin/businesses/new?error=email_exists')
+    if (error?.code === 'P2003') redirect('/admin/businesses/new?error=reference_error')
+    if (error?.code === 'P2022') redirect('/admin/businesses/new?error=missing_column')
+    if (error?.code === 'P2025') redirect('/admin/businesses/new?error=not_found')
+
+    console.error('[createBusiness] Unhandled error:', error)
     redirect('/admin/businesses/new?error=creation_failed')
   }
 }
@@ -134,12 +143,27 @@ export async function deleteBusiness(businessId: string) {
   const business = await prisma.business.findUnique({ where: { id: businessId } })
   if (!business) redirect('/admin/businesses?error=Business+not+found')
 
-  await prisma.business.delete({ where: { id: businessId } })
+  try {
+    // Count dependent records for audit
+    const [purchaseCount, esimCount, topUpCount] = await Promise.all([
+      prisma.eSIMPurchase.count({ where: { businessId } }),
+      prisma.eSIM.count({ where: { purchase: { businessId } } }),
+      prisma.eSIMTopUp.count({ where: { businessId } }),
+    ])
 
-  await prisma.auditLog.create({
-    data: { userId: session.user.id, action: 'DELETE', entity: 'Business', entityId: businessId, details: `Deleted business: ${business.name}` },
-  })
+    await prisma.business.delete({ where: { id: businessId } })
 
-  revalidatePath('/admin/businesses')
-  redirect('/admin/businesses?success=business_deleted')
+    await prisma.auditLog.create({
+      data: { userId: session.user.id, action: 'DELETE', entity: 'Business', entityId: businessId, details: `Deleted business: ${business.name} (${purchaseCount} purchases, ${esimCount} eSIMs, ${topUpCount} top-ups cascade-deleted)` },
+    })
+
+    revalidatePath('/admin/businesses')
+    redirect('/admin/businesses?success=business_deleted')
+  } catch (error: any) {
+    if (error?.digest?.startsWith('NEXT_REDIRECT')) throw error
+    console.error('[deleteBusiness] Error:', error?.message || error, error?.code ? `(code: ${error.code})` : '')
+    if (error?.code === 'P2003') redirect('/admin/businesses?error=Business+has+linked+records+that+cannot+be+deleted')
+    if (error?.code === 'P2025') redirect('/admin/businesses?error=Business+not+found')
+    redirect('/admin/businesses?error=Failed+to+delete+business')
+  }
 }
