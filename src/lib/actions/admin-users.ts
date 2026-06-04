@@ -108,20 +108,26 @@ export async function deleteAdminUser(adminId: string) {
 
   if (adminId === currentAdmin.id) redirect('/admin/users?error=Cannot+delete+yourself')
 
-  const target = await prisma.internalAdmin.findUnique({ where: { id: adminId }, include: { user: true } })
-  if (!target) redirect('/admin/users?error=User+not+found')
+  try {
+    const target = await prisma.internalAdmin.findUnique({ where: { id: adminId }, include: { user: true } })
+    if (!target) redirect('/admin/users?error=User+not+found')
 
-  if (target.role === 'SUPER_ADMIN') {
-    const count = await prisma.internalAdmin.count({ where: { role: 'SUPER_ADMIN' } })
-    if (count <= 1) redirect('/admin/users?error=Cannot+delete+last+SUPER_ADMIN')
+    if (target.role === 'SUPER_ADMIN') {
+      const count = await prisma.internalAdmin.count({ where: { role: 'SUPER_ADMIN' } })
+      if (count <= 1) redirect('/admin/users?error=Cannot+delete+last+SUPER_ADMIN')
+    }
+
+    await prisma.internalAdmin.delete({ where: { id: adminId } })
+    await prisma.user.update({ where: { id: target.userId }, data: { isActive: false } })
+    await prisma.auditLog.create({
+      data: { userId: session.user.id, action: 'ADMIN_DELETED', entity: 'InternalAdmin', entityId: adminId, details: `Admin deleted: ${target.user.name}` },
+    })
+
+    revalidatePath('/admin/users')
+    redirect('/admin/users?success=Admin+user+deleted')
+  } catch (error: any) {
+    if (error?.digest?.startsWith('NEXT_REDIRECT')) throw error
+    const { handleServerActionError } = await import('@/lib/errors/handle-prisma-error')
+    handleServerActionError(error, '/admin/users', 'delete_failed')
   }
-
-  await prisma.internalAdmin.delete({ where: { id: adminId } })
-  await prisma.user.update({ where: { id: target.userId }, data: { isActive: false } })
-  await prisma.auditLog.create({
-    data: { userId: session.user.id, action: 'ADMIN_DELETED', entity: 'InternalAdmin', entityId: adminId, details: `Admin deleted: ${target.user.name}` },
-  })
-
-  revalidatePath('/admin/users')
-  redirect('/admin/users?success=Admin+user+deleted')
 }
