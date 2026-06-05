@@ -22,6 +22,7 @@ export default function AdminLayout({
     { title: 'Credit Allocations', href: '/admin/wallet-topups' },
     { title: 'MONITORING', href: '#', sectionHeader: true },
     { title: 'Analytics', href: '/admin/analytics' },
+    { title: 'API Analytics', href: '/admin/api-analytics' },
     // Jobs — hidden for now
     { title: 'Audit Logs', href: '/admin/audit-logs' },
     { title: 'API Logs', href: '/admin/api-logs' },
