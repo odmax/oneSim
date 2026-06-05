@@ -687,6 +687,9 @@ model ApiRequestLog {
   business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@index([businessId, createdAt])
+  @@index([apiKeyId])
+  @@index([path])
+  @@index([statusCode])
   @@index([createdAt])
   @@map("api_request_logs")
 }

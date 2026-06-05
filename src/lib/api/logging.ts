@@ -34,7 +34,7 @@ export async function logApiRequest(
   }
 }
 
-export async function checkRateLimit(businessId: string): Promise<{ allowed: boolean; limit: number; remaining: number }> {
+export async function checkRateLimit(businessId: string): Promise<{ allowed: boolean; limit: number; remaining: number; resetAt: Date }> {
   const business = await prisma.business.findUnique({
     where: { id: businessId },
     select: { rateLimitPerMinute: true },
@@ -43,7 +43,10 @@ export async function checkRateLimit(businessId: string): Promise<{ allowed: boo
   const defaultLimit = 60
   const limit = business?.rateLimitPerMinute || defaultLimit
 
-  const oneMinuteAgo = new Date(Date.now() - 60 * 1000)
+  const now = Date.now()
+  const oneMinuteAgo = new Date(now - 60 * 1000)
+  const resetAt = new Date(now + 60 * 1000)
+  resetAt.setSeconds(0, 0)
 
   const count = await prisma.apiRequestLog.count({
     where: {
@@ -53,15 +56,16 @@ export async function checkRateLimit(businessId: string): Promise<{ allowed: boo
   })
 
   const remaining = Math.max(0, limit - count)
-  return { allowed: count < limit, limit, remaining }
+  return { allowed: count < limit, limit, remaining, resetAt }
 }
 
 export function addRateLimitHeaders(
   response: NextResponse,
-  { limit, remaining }: { limit: number; remaining: number },
+  { limit, remaining, resetAt }: { limit: number; remaining: number; resetAt?: Date },
 ): NextResponse {
   response.headers.set('X-RateLimit-Limit', String(limit))
   response.headers.set('X-RateLimit-Remaining', String(remaining))
+  if (resetAt) response.headers.set('X-RateLimit-Reset', String(Math.floor(resetAt.getTime() / 1000)))
   return response
 }
 
@@ -69,12 +73,17 @@ export function createRateLimitResponse(): NextResponse {
   return NextResponse.json(
     {
       success: false,
-      error: 'Rate limit exceeded. Please reduce request volume and retry after 60 seconds.',
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'API rate limit exceeded. Please reduce request volume and retry.',
+      },
     },
     {
       status: 429,
       headers: {
         'Retry-After': '60',
+        'X-RateLimit-Limit': '60',
+        'X-RateLimit-Remaining': '0',
       },
     },
   )
