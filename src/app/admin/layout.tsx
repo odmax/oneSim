@@ -23,6 +23,7 @@ export default function AdminLayout({
     { title: 'MONITORING', href: '#', sectionHeader: true },
     { title: 'Analytics', href: '/admin/analytics' },
     { title: 'API Analytics', href: '/admin/api-analytics' },
+    { title: 'Provider Health', href: '/admin/provider-health' },
     // Jobs — hidden for now
     { title: 'Audit Logs', href: '/admin/audit-logs' },
     { title: 'API Logs', href: '/admin/api-logs' },

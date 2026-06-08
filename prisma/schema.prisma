@@ -218,7 +218,8 @@ model Provider {
   createdAt                DateTime       @default(now())
   updatedAt                DateTime       @updatedAt
 
-  packages ESIMPackage[]
+  packages            ESIMPackage[]
+  healthSnapshots     ProviderHealthSnapshot[]
 
   @@map("providers")
 }
@@ -720,6 +721,41 @@ model ProviderWebhookEvent {
   @@index([status])
   @@index([receivedAt])
   @@map("provider_webhook_events")
+}
+
+model ProviderHealthSnapshot {
+  id                  String   @id @default(cuid())
+  providerId          String
+  status              String   @default("HEALTHY") // HEALTHY | DEGRADED | DOWN
+  responseTimeMs      Int?
+  successRate         Float?
+  lastCheckAt         DateTime
+  failureCount        Int      @default(0)
+  consecutiveFailures Int      @default(0)
+  metadata            Json?
+  createdAt           DateTime @default(now())
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("provider_health_snapshots")
+}
+
+model ProviderFailoverEvent {
+  id                 String   @id @default(cuid())
+  originalProviderId String?
+  fallbackProviderId String?
+  packageId          String?
+  orderId            String?
+  reason             String
+  createdAt          DateTime @default(now())
+
+  @@index([originalProviderId])
+  @@index([fallbackProviderId])
+  @@index([createdAt])
+  @@map("provider_failover_events")
 }
 
 // ─── No-Code Provider Connector (Phase 1) ──────────────────────────

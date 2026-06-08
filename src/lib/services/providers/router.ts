@@ -130,20 +130,9 @@ export async function resolveProviderTypeForPackage(pkg: {
   return { type: 'CUSTOM', adapter: null, providerName: undefined }
 }
 
-export async function routeOrder(request: OrderRequest): Promise<OrderResult> {
-  const pkg = await prisma.eSIMPackage.findUnique({
-    where: { id: request.packageId, isActive: true },
-  })
-
-  if (!pkg) {
-    return { success: false, error: 'Package not found or inactive' }
-  }
-
-  const { adapter, providerName } = await resolveProviderTypeForPackage(pkg)
-
-  if (!adapter) {
-    return { success: false, error: 'No provider adapter available', providerName }
-  }
+async function attemptActivation(pkg: any, request: OrderRequest, providerInfo: { adapter?: ProviderAdapter | null; providerName?: string; providerId?: string }, originalProviderId?: string): Promise<OrderResult & { providerId?: string }> {
+  const { adapter, providerName, providerId } = providerInfo
+  if (!adapter) return { success: false, error: 'No provider adapter available', providerName, providerId }
 
   try {
     const planId = pkg.providerPlanId || pkg.id
@@ -151,39 +140,26 @@ export async function routeOrder(request: OrderRequest): Promise<OrderResult> {
     const result = await adapter.activateESIM({
       planId,
       quantity: request.quantity,
-      subscriber: {
-        email: request.customerEmail,
-        first_name: nameParts[0] || '',
-        last_name: nameParts.slice(1).join(' ') || undefined,
-      },
+      subscriber: { email: request.customerEmail, first_name: nameParts[0] || '', last_name: nameParts.slice(1).join(' ') || undefined },
       activationType: 'ACTIVATE_NOW',
       externalId: request.businessId,
     })
 
     if (!result.success || !result.data) {
-      return {
-        success: false,
-        error: result.error?.message || 'Provider activation failed',
-        providerName,
-      }
+      return { success: false, error: result.error?.message || 'Provider activation failed', providerName, providerId }
     }
 
     const data = result.data
     const iccids = data.iccids || []
     if (iccids.length < request.quantity) {
-      return {
-        success: false,
-        error: `Provider returned fewer ICCIDs than requested (got ${iccids.length}, need ${request.quantity})`,
-        providerName,
-      }
+      return { success: false, error: `Provider returned fewer ICCIDs than requested (got ${iccids.length}, need ${request.quantity})`, providerName, providerId }
     }
 
     return {
       success: true,
       orderId: data.activationId,
       esims: iccids.map((iccid: string, i: number) => ({
-        id: `pending-${i}`,
-        iccid,
+        id: `pending-${i}`, iccid,
         imsi: data.imsis?.[i] != null ? String(data.imsis[i]) : null,
         activationCode: data.activationCodes?.[i] != null ? String(data.activationCodes[i]) : null,
         status: 'PENDING_ACTIVATION',
@@ -191,14 +167,63 @@ export async function routeOrder(request: OrderRequest): Promise<OrderResult> {
       })),
       providerStatus: result.data.status || 'PENDING',
       providerName,
+      providerId,
     }
   } catch (e: any) {
-    return {
-      success: false,
-      error: `Provider error: ${e.message || 'Unknown error'}`,
-      providerName,
-    }
+    return { success: false, error: `Provider error: ${e.message || 'Unknown error'}`, providerName, providerId }
   }
+}
+
+export async function routeOrder(request: OrderRequest): Promise<OrderResult> {
+  const pkg = await prisma.eSIMPackage.findUnique({
+    where: { id: request.packageId, isActive: true },
+  })
+
+  if (!pkg) return { success: false, error: 'Package not found or inactive' }
+
+  // Try primary provider
+  const primary = await resolveProviderTypeForPackage(pkg)
+  let result = await attemptActivation(pkg, request, primary, primary.providerId)
+
+  if (!result.success && primary.providerId) {
+    // Log failover reason
+    const failoverReason = result.error || 'Primary provider failed'
+
+    // Try fallback: other operational providers
+    const operationalProviders = await prisma.provider.findMany({
+      where: { status: { in: ['ACTIVE', 'DEGRADED', 'TESTING'] }, id: { not: primary.providerId } },
+      orderBy: { priority: 'asc' },
+    })
+
+    for (const fallback of operationalProviders) {
+      const adapter = await getAdapterForType(fallback.type, {
+        apiBaseUrl: fallback.apiBaseUrl, apiToken: fallback.apiToken,
+        providerId: fallback.id, environment: fallback.environment, authUrl: fallback.authUrl,
+      })
+      const fallbackResult = await attemptActivation(pkg, request, { adapter, providerName: fallback.name, providerId: fallback.id }, primary.providerId)
+
+      if (fallbackResult.success) {
+        // Log failover event
+        await prisma.providerFailoverEvent.create({
+          data: {
+            originalProviderId: primary.providerId,
+            fallbackProviderId: fallback.id,
+            packageId: pkg.id,
+            reason: failoverReason,
+          },
+        }).catch(() => {})
+
+        return fallbackResult
+      }
+    }
+
+    // All providers failed - create a failover event showing total failure
+    await prisma.providerFailoverEvent.create({
+      data: { originalProviderId: primary.providerId, packageId: pkg.id, reason: `All providers failed: ${failoverReason}` },
+    }).catch(() => {})
+  }
+
+  return result
 }
 
 export const providerRouter = { routeOrder }
