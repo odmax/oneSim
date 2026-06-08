@@ -87,6 +87,8 @@ model User {
   approvedTopUpRequests WalletTopUpRequest[] @relation("TopUpApprovedBy")
   passwordResetTokens   PasswordResetToken[]
   auditLogs             AuditLog[]
+  createdTickets        SupportTicket[]      @relation("TicketCreator")
+  assignedTickets       SupportTicket[]      @relation("TicketAssignee")
 
   @@map("users")
 }
@@ -126,6 +128,7 @@ model Business {
   transactions       WalletTransaction[]
   topUpRequests      WalletTopUpRequest[]
   esimTopUps         ESIMTopUp[]               @relation("BusinessESIMTopUps")
+  supportTickets     SupportTicket[]
   customers          Customer[]
   apiKeys            BusinessApiKey[]
   webhookEndpoints   BusinessWebhookEndpoint[]
@@ -218,8 +221,8 @@ model Provider {
   createdAt                DateTime       @default(now())
   updatedAt                DateTime       @updatedAt
 
-  packages            ESIMPackage[]
-  healthSnapshots     ProviderHealthSnapshot[]
+  packages        ESIMPackage[]
+  healthSnapshots ProviderHealthSnapshot[]
 
   @@map("providers")
 }
@@ -589,21 +592,21 @@ enum WebhookEndpointStatus {
 }
 
 model BusinessWebhookEndpoint {
-  id              String                @id @default(cuid())
-  businessId      String
-  name            String
-  url             String
-  secret          String
-  status          WebhookEndpointStatus @default(ACTIVE)
-  events          Json
-  lastSuccessAt   DateTime?
-  lastFailureAt   DateTime?
-  failureCount    Int                   @default(0)
-  createdAt       DateTime              @default(now())
-  updatedAt       DateTime              @updatedAt
+  id            String                @id @default(cuid())
+  businessId    String
+  name          String
+  url           String
+  secret        String
+  status        WebhookEndpointStatus @default(ACTIVE)
+  events        Json
+  lastSuccessAt DateTime?
+  lastFailureAt DateTime?
+  failureCount  Int                   @default(0)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
 
-  business        Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  deliveries      WebhookDelivery[]
+  business   Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
 
   @@index([businessId])
   @@map("business_webhook_endpoints")
@@ -756,6 +759,81 @@ model ProviderFailoverEvent {
   @@index([fallbackProviderId])
   @@index([createdAt])
   @@map("provider_failover_events")
+}
+
+model SupportTicket {
+  id               String    @id @default(cuid())
+  ticketNumber     String    @unique
+  businessId       String
+  createdById      String
+  assignedToId     String?
+  subject          String
+  category         String    @default("GENERAL") // TECHNICAL | BILLING | WALLET | API | ESIM_ACTIVATION | TOPUP | GENERAL
+  priority         String    @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
+  status           String    @default("OPEN") // OPEN | PENDING | RESOLVED | CLOSED
+  relatedEsimId    String?
+  relatedOrderId   String?
+  relatedInvoiceId String?
+  lastMessageAt    DateTime?
+  resolvedAt       DateTime?
+  closedAt         DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  business   Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  createdBy  User                 @relation("TicketCreator", fields: [createdById], references: [id])
+  assignedTo User?                @relation("TicketAssignee", fields: [assignedToId], references: [id])
+  messages   SupportMessage[]
+  events     SupportTicketEvent[]
+
+  @@index([businessId])
+  @@index([status])
+  @@index([priority])
+  @@index([assignedToId])
+  @@index([lastMessageAt])
+  @@index([createdAt])
+  @@map("support_tickets")
+}
+
+model SupportMessage {
+  id            String    @id @default(cuid())
+  ticketId      String
+  senderId      String
+  senderType    String    @default("BUSINESS_USER") // BUSINESS_USER | ADMIN | SYSTEM
+  message       String
+  attachmentUrl String?
+  readAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@map("support_messages")
+}
+
+model SupportTypingState {
+  id        String   @id @default(cuid())
+  ticketId  String
+  userId    String
+  isTyping  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+
+  @@unique([ticketId, userId])
+  @@map("support_typing_states")
+}
+
+model SupportTicketEvent {
+  id        String   @id @default(cuid())
+  ticketId  String
+  actorId   String?
+  eventType String // TICKET_CREATED | MESSAGE_SENT | STATUS_CHANGED | ASSIGNED | PRIORITY_CHANGED | TICKET_CLOSED | TICKET_REOPENED | READ_RECEIPT
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@map("support_ticket_events")
 }
 
 // ─── No-Code Provider Connector (Phase 1) ──────────────────────────

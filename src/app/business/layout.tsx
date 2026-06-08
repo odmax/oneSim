@@ -43,6 +43,9 @@ export default async function BusinessLayout({
     { title: 'Finance', href: '#', sectionHeader: true },
     { title: 'Wallet Credit', href: '/business/wallet', icon: 'Wallet' as const, readOnly: isMember },
 
+    { title: 'Support', href: '#', sectionHeader: true },
+    { title: 'Support Tickets', href: '/business/support', icon: 'HelpCircle' as const },
+
     { title: 'Developer Tools', href: '#', sectionHeader: true },
     { title: 'API Keys', href: '/business/api-keys', icon: 'Key' as const, readOnly: isMember },
     { title: 'API Documentation', href: '/business/developers', icon: 'FileCode' as const, readOnly: isMember },
