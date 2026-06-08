@@ -51,10 +51,13 @@ export default async function AdminSupportPage({ searchParams }: { searchParams?
           const active = f.p ? searchParams?.priority === f.p : f.key ? searchParams?.status === f.key : !searchParams?.status && !searchParams?.priority
           return <Link key={f.label} href={href} className={`rounded-lg px-3 py-1.5 text-xs font-medium ${active ? 'bg-cyan-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{f.label}</Link>
         })}
-        <select className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs" onChange={e => { const v = e.target.value; if (v) window.location.assign(`/admin/support?businessId=${v}`) }}>
-          <option value="">All Businesses</option>
-          {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
+        <form action="/admin/support" method="GET" className="flex gap-2">
+          <select name="businessId" className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs">
+            <option value="">All Businesses</option>
+            {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <button type="submit" className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-700">Filter</button>
+        </form>
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-white shadow-sm">
