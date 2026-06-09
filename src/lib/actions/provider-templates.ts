@@ -43,6 +43,7 @@ export async function createTemplate(formData: FormData) {
       defaultResponseListKey: (formData.get('defaultResponseListKey') as string) || null,
       defaultFieldMappings: parseJsonField(formData, 'defaultFieldMappings', {}),
       defaultCapabilities: parseJsonField(formData, 'defaultCapabilities', {}),
+      endpointMappings: parseJsonField(formData, 'endpointMappings', null),
       isSystemTemplate: formData.get('isSystemTemplate') === 'on',
       createdBy: session.user.id,
     },
@@ -82,6 +83,7 @@ export async function updateTemplate(templateId: string, formData: FormData) {
       defaultResponseListKey: (formData.get('defaultResponseListKey') as string) || null,
       defaultFieldMappings: parseJsonField(formData, 'defaultFieldMappings', {}),
       defaultCapabilities: parseJsonField(formData, 'defaultCapabilities', {}),
+      endpointMappings: parseJsonField(formData, 'endpointMappings', null),
     },
   })
 
@@ -167,6 +169,7 @@ export async function saveProviderAsTemplate(providerId: string, formData: FormD
         supportsWebhookPush: provider.supportsWebhookPush,
         supportsSuspendResume: provider.supportsSuspendResume,
       },
+      endpointMappings: provider.endpointMappings as any,
       isSystemTemplate: false,
       createdBy: session.user.id,
     },

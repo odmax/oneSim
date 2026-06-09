@@ -9,6 +9,10 @@ import { buildAdapter } from '@/lib/providers/adapter-manager'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 import { encryptToken } from '@/lib/encryption'
 
+function tryParseJson(raw: string): any {
+  try { return JSON.parse(raw) } catch { return null }
+}
+
 export async function createProvider(formData: FormData) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
@@ -37,6 +41,7 @@ export async function createProvider(formData: FormData) {
   const supportsUsageSync = formData.get('supportsUsageSync') === 'on'
   const supportsWebhookPush = formData.get('supportsWebhookPush') === 'on'
   const supportsSuspendResume = formData.get('supportsSuspendResume') === 'on'
+  const endpointMappingsRaw = formData.get('endpointMappings') as string
 
   if (!name || !code || !type) {
     redirect('/admin/providers/new?error=Name%2C+Code%2C+and+Type+are+required')
@@ -89,6 +94,7 @@ export async function createProvider(formData: FormData) {
       supportsUsageSync,
       supportsWebhookPush,
       supportsSuspendResume,
+      endpointMappings: endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : undefined,
     },
   })
 

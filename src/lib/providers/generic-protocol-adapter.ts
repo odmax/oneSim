@@ -23,11 +23,13 @@ interface ProviderRecord {
   usagePath?: string | null
   suspendPath?: string | null
   resumePath?: string | null
+  topUpPath?: string | null
   responseListKey?: string | null
   fieldMappings?: any
   authType?: string | null
   config?: any
   environment?: string | null
+  endpointMappings?: any
 }
 
 function resolvePath(path: string, token: string, baseUrl: string): string {
@@ -211,19 +213,21 @@ export class GenericProtocolAdapter implements ProviderAdapter {
 
   async syncPlans(): Promise<ProviderResult<ProviderPlan[]>> {
     const p = this.provider
-    const planListPath = p.planListPath || '/plans'
     const baseUrl = p.apiBaseUrl || ''
+    if (!baseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+
+    // Try endpoint mappings first, then fall back to path field
+    const planEp = this.getEndpointForCapability('GET_PLANS')
+    const planListPath = planEp?.path || p.planListPath || '/plans'
+    const method = planEp?.method || 'POST'
     const token = this.token
     const tokenPlacement = p.tokenPlacement || 'URL_PATH'
-
-    if (!baseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
 
     const url = this.buildRequestUrl(planListPath, baseUrl, token, tokenPlacement)
     const headers: Record<string, string> = {}
     this.applyTokenHeaders(headers, token, tokenPlacement)
 
-    const { data, error, status, contentType } = await this.rawFetch(url, { headers })
-
+    const { data, error } = await this.rawFetch(url, { method, headers })
     if (error) return { success: false, error }
     if (!data) return { success: false, error: { code: 'EMPTY_RESPONSE', message: 'Empty response from provider' } }
 
@@ -240,10 +244,57 @@ export class GenericProtocolAdapter implements ProviderAdapter {
     return { success: true, data: plans }
   }
 
-  async activateESIM(_params: ActivateESIMParams): Promise<ProviderResult<ActivateESIMResult>> {
-    const path = this.provider.activationPath
+  async activateESIM(params: ActivateESIMParams): Promise<ProviderResult<ActivateESIMResult>> {
+    const purchaseEp = this.getEndpointForCapability('PURCHASE_ESIM')
+    const path = purchaseEp?.path || this.provider.activationPath
     if (!path) return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Activation not supported by this provider' } }
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Generic activation not yet implemented' } }
+
+    const method = purchaseEp?.method || 'POST'
+    const body = {
+      planCode: params.planId,
+      quantity: params.quantity,
+      email: params.subscriber.email,
+      ...(this.provider.config ? (this.provider.config as any) : {}),
+    }
+
+    const baseUrl = this.provider.apiBaseUrl || ''
+    const token = this.token
+    const tokenPlacement = this.provider.tokenPlacement || 'BEARER_HEADER'
+    const url = this.buildRequestUrl(path, baseUrl, token, tokenPlacement)
+    const headers: Record<string, string> = {}
+    this.applyTokenHeaders(headers, token, tokenPlacement)
+
+    const { data, error } = await this.rawFetch(url, { method, headers, body: JSON.stringify(body) })
+    if (error) return { success: false, error }
+    if (!data) return { success: false, error: { code: 'EMPTY_RESPONSE', message: 'Empty activation response' } }
+
+    // Normalize response into ActivateESIMResult
+    const iccids: string[] = (() => {
+      if (Array.isArray(data.iccids) && data.iccids.length > 0) return data.iccids
+      if (data.iccid) return [data.iccid]
+      if (data.data?.iccid) return [data.data.iccid]
+      if (data.data?.iccids) return data.data.iccids
+      if (data.esim?.iccid) return [data.esim.iccid]
+      if (data.order?.iccids) return data.order.iccids
+      if (data.result?.iccid) return [data.result.iccid]
+      return []
+    })()
+
+    if (iccids.length < params.quantity) {
+      return { success: false, error: { code: 'NO_ICCIDS', message: `Provider returned ${iccids.length} ICCIDs, need ${params.quantity}` } }
+    }
+
+    return {
+      success: true,
+      data: {
+        activationId: data.orderId || data.order_id || data.transactionId || data.id || data.data?.orderId || '',
+        iccids,
+        imsis: data.imsis || (data.imsi ? [data.imsi] : undefined),
+        activationCodes: data.activationCodes || (data.activationCode ? [data.activationCode] : data.data?.activationCode ? [data.data.activationCode] : data.lpa ? [data.lpa] : undefined),
+        qrCodeUrl: data.qrCodeUrl || data.qr_code_url || data.data?.qrCodeUrl || data.data?.qr_code_url || undefined,
+        status: data.status || data.orderStatus || 'ACTIVATED',
+      },
+    }
   }
 
   async getActivationStatus(_activationId: string): Promise<ProviderResult<{ status: string; iccids?: string[] }>> {
@@ -276,6 +327,32 @@ export class GenericProtocolAdapter implements ProviderAdapter {
 
   async handleWebhook(_payload: WebhookPayload): Promise<ProviderResult<{ handled: boolean; action?: string }>> {
     return { success: true, data: { handled: true, action: 'acknowledged' } }
+  }
+
+  // ─── Endpoint mapping support (template-driven providers) ──────
+
+  private getEndpointForCapability(capability: string): { method: string; path: string } | null {
+    const ep = this.provider.endpointMappings as Record<string, string> | null
+    if (!ep) return null
+    const entry = ep[capability]
+    if (!entry) return null
+    // Format: "POST /path" or just "/path"
+    const parts = entry.split(' ')
+    if (parts.length === 2) return { method: parts[0].toUpperCase(), path: parts[1] }
+    return { method: 'POST', path: entry }
+  }
+
+  private callEndpoint(capability: string, body?: any): Promise<{ data?: any; error?: { code: string; message: string }; status?: number }> {
+    const ep = this.getEndpointForCapability(capability)
+    const path = ep?.path || this.provider.planListPath || ''
+    const method = ep?.method || 'POST'
+    const baseUrl = this.provider.apiBaseUrl || ''
+    const token = this.token
+    const tokenPlacement = this.provider.tokenPlacement || 'BEARER_HEADER'
+    const url = this.buildRequestUrl(path, baseUrl, token, tokenPlacement)
+    const headers: Record<string, string> = {}
+    this.applyTokenHeaders(headers, token, tokenPlacement)
+    return this.rawFetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined })
   }
 
   // ─── Internal helpers ──────────────────────────────────────────

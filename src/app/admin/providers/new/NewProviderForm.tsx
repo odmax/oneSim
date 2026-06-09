@@ -22,6 +22,7 @@ type SavedTemplate = {
   defaultResponseListKey: string | null
   defaultFieldMappings: any
   defaultCapabilities: any
+  endpointMappings: any
 }
 
 type BuiltInTemplate = {
@@ -137,6 +138,11 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
       if (fm.price_usd) setField('fieldCost', fm.price_usd)
     }
 
+    // Endpoint mappings (capability → endpoint)
+    if (t.endpointMappings) {
+      setField('endpointMappings', JSON.stringify(t.endpointMappings))
+    }
+
     // Capabilities not needed on create — configured post-creation
   }, [])
 
@@ -154,6 +160,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
   return (
     <form action={createProvider} className="space-y-4">
       <input type="hidden" name="type" value="CUSTOM" />
+      <input type="hidden" name="endpointMappings" value="" />
 
       <div>
         <label htmlFor="template" className="block text-sm font-medium text-gray-700">Provider Template</label>
