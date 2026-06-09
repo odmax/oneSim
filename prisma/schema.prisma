@@ -872,9 +872,11 @@ model ProviderTemplate {
   defaultUsagePath       String?
   defaultSuspendPath     String?
   defaultResumePath      String?
+  defaultTopUpPath       String?
   defaultResponseListKey String?
   defaultFieldMappings   Json     @default("{}")
   defaultCapabilities    Json     @default("{}")
+  endpointMappings       Json?    /// Capability → endpoint mapping (e.g. {"AUTH_LOGIN": "POST /api/auth/login", "PURCHASE_ESIM": "POST /api/esim/purchase"})
   isSystemTemplate       Boolean  @default(false)
   createdBy              String?
   createdAt              DateTime @default(now())
