@@ -109,6 +109,18 @@ export async function getAdapterForType(type: string, config?: { apiBaseUrl?: st
   })
 }
 
+/**
+ * Checks if endpointMappings are capability-style (template-driven) vs legacy single-operation.
+ * Template-driven mappings include keys like AUTH_LOGIN, GET_PLANS, PURCHASE_ESIM.
+ * Legacy mappings only have keys like activate, status, etc.
+ */
+function isTemplateDriven(em: any): boolean {
+  if (!em || typeof em !== 'object') return false
+  const keys = Object.keys(em)
+  // Template-driven providers have capability-style keys
+  return keys.some(k => ['AUTH_LOGIN', 'GET_PLANS', 'PURCHASE_ESIM', 'GET_WALLET', 'TOP_UP', 'RENEW_ESIM'].includes(k))
+}
+
 export async function buildAdapter(provider: {
   id: string
   name?: string
@@ -132,16 +144,15 @@ export async function buildAdapter(provider: {
   endpointMappings?: any
   environment?: string | null
 }): Promise<ProviderAdapter | null> {
-  // Try new connector system first
-  const connector = await buildConnectorFromProvider(provider.id)
-  if (connector) return connectorToAdapter(connector)
-
-  // Check if provider is template-driven (has endpointMappings)
-  const hasEndpointMappings = provider.endpointMappings && typeof provider.endpointMappings === 'object' && Object.keys(provider.endpointMappings).length > 0
-  if (hasEndpointMappings) {
+  // Template-driven providers use TemplateProviderAdapter
+  if (isTemplateDriven(provider.endpointMappings)) {
     console.log(`[buildAdapter] Using TemplateProviderAdapter for ${provider.name} (${provider.id})`)
     return new TemplateProviderAdapter(provider)
   }
+
+  // Try new connector system for non-template providers (Choice, iBASIS, etc.)
+  const connector = await buildConnectorFromProvider(provider.id)
+  if (connector) return connectorToAdapter(connector)
 
   const strategy = provider.adapterStrategy || ''
 
