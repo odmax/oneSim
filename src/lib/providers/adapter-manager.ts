@@ -215,7 +215,23 @@ export async function authenticateProviderViaAdapter(
   config?: { apiBaseUrl?: string | null; apiToken?: string | null; providerId?: string }
 ): Promise<{ success: boolean; token?: string; accountInfo?: any; error?: string; code?: string }> {
   try {
-    const adapter = await getAdapterForType(type, { ...config, providerId: config?.providerId || 'auth' })
+    // Try buildAdapter first when provider ID is available (handles template-driven providers)
+    let adapter: ProviderAdapter
+    if (config?.providerId && config.providerId !== 'auth' && config.providerId !== 'undefined') {
+      const fullProvider = await prisma.provider.findUnique({ where: { id: config.providerId } })
+      if (fullProvider) {
+        const built = await buildAdapter(fullProvider)
+        if (built) {
+          adapter = built
+        } else {
+          adapter = await getAdapterForType(type, { ...config, providerId: config.providerId })
+        }
+      } else {
+        adapter = await getAdapterForType(type, { ...config, providerId: config.providerId })
+      }
+    } else {
+      adapter = await getAdapterForType(type, { ...config, providerId: config?.providerId || 'auth' })
+    }
     const result = await adapter.authenticate(credentials)
 
     if (!result.success) {
