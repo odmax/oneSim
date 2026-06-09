@@ -42,13 +42,19 @@ export async function createProvider(formData: FormData) {
   const supportsWebhookPush = formData.get('supportsWebhookPush') === 'on'
   const supportsSuspendResume = formData.get('supportsSuspendResume') === 'on'
   const endpointMappingsRaw = formData.get('endpointMappings') as string
+  const parsedEndpointMappings = endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : null
+
+  // Auto-detect template-driven provider from endpointMappings
+  const isTemplate = parsedEndpointMappings && (parsedEndpointMappings.AUTH_LOGIN || parsedEndpointMappings.PURCHASE_ESIM || parsedEndpointMappings.GET_PLANS)
 
   if (!name || !code || !type) {
     redirect('/admin/providers/new?error=Name%2C+Code%2C+and+Type+are+required')
   }
 
   // Validate adapterStrategy — required for non-MOCK providers
-  const resolvedStrategy = adapterStrategy || (type === 'MOCK' ? 'MOCK' : null)
+  // Template-driven providers auto-set "TEMPLATE"
+  const effectiveStrategy = isTemplate ? 'TEMPLATE' : (adapterStrategy || (type === 'MOCK' ? 'MOCK' : null))
+  const resolvedStrategy = effectiveStrategy
   if (!resolvedStrategy) {
     redirect('/admin/providers/new?error=Adapter+Strategy+is+required+for+non-MOCK+providers')
   }
@@ -62,6 +68,9 @@ export async function createProvider(formData: FormData) {
   if (regionsRaw) {
     try { regions = JSON.parse(regionsRaw) } catch { redirect('/admin/providers/new?error=Invalid+JSON+in+regions') }
   }
+
+  // Build config for template-driven providers
+  const config: any = isTemplate ? { ...(parsedEndpointMappings || {}), providerMode: 'TEMPLATE', templateDriven: true } : undefined
 
   if (isDefaultFallback) {
     await prisma.provider.updateMany({ where: { isDefaultFallback: true }, data: { isDefaultFallback: false } })
@@ -94,7 +103,8 @@ export async function createProvider(formData: FormData) {
       supportsUsageSync,
       supportsWebhookPush,
       supportsSuspendResume,
-      endpointMappings: endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : undefined,
+      endpointMappings: isTemplate ? parsedEndpointMappings : (endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : undefined),
+      config: config || undefined,
     },
   })
 

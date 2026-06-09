@@ -110,15 +110,31 @@ export async function getAdapterForType(type: string, config?: { apiBaseUrl?: st
 }
 
 /**
- * Checks if endpointMappings are capability-style (template-driven) vs legacy single-operation.
- * Template-driven mappings include keys like AUTH_LOGIN, GET_PLANS, PURCHASE_ESIM.
- * Legacy mappings only have keys like activate, status, etc.
+ * Explicitly detects whether a provider should use TemplateProviderAdapter.
+ * Uses multiple signals — NOT just endpointMappings — to avoid accidentally
+ * classifying Choice/iBASIS as template-driven.
+ *
+ * Returns true if ANY of these conditions are met:
+ * - adapterStrategy === "TEMPLATE"
+ * - provider.type === "TEMPLATE"
+ * - provider.config?.providerMode === "TEMPLATE"
+ * - provider.config?.templateDriven === true
+ * - provider has a template relation with providerFamily in ["AIRHUB", "CUSTOM_TEMPLATE"]
  */
-function isTemplateDriven(em: any): boolean {
-  if (!em || typeof em !== 'object') return false
-  const keys = Object.keys(em)
-  // Template-driven providers have capability-style keys
-  return keys.some(k => ['AUTH_LOGIN', 'GET_PLANS', 'PURCHASE_ESIM', 'GET_WALLET', 'TOP_UP', 'RENEW_ESIM'].includes(k))
+export function isTemplateDrivenProvider(provider: {
+  adapterStrategy?: string | null
+  type?: string
+  config?: any
+  endpointMappings?: any
+  template?: any
+}): boolean {
+  if (provider.adapterStrategy === 'TEMPLATE') return true
+  if (provider.type === 'TEMPLATE') return true
+  const cfg = provider.config || {}
+  if (cfg.providerMode === 'TEMPLATE') return true
+  if (cfg.templateDriven === true) return true
+  if (provider.template?.providerFamily && ['AIRHUB', 'CUSTOM_TEMPLATE'].includes(provider.template.providerFamily)) return true
+  return false
 }
 
 export async function buildAdapter(provider: {
@@ -142,11 +158,12 @@ export async function buildAdapter(provider: {
   authType?: string | null
   config?: any
   endpointMappings?: any
+  template?: any
   environment?: string | null
 }): Promise<ProviderAdapter | null> {
   // Template-driven providers use TemplateProviderAdapter
-  if (isTemplateDriven(provider.endpointMappings)) {
-    console.log(`[buildAdapter] Using TemplateProviderAdapter for ${provider.name} (${provider.id})`)
+  if (isTemplateDrivenProvider(provider)) {
+    console.log(`[buildAdapter] Using TemplateProviderAdapter for ${provider.name} (${provider.id}, strategy=${provider.adapterStrategy})`)
     return new TemplateProviderAdapter(provider)
   }
 
