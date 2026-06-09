@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import Link from 'next/link'
 import SyncButton from '@/components/SyncButton'
 import { getPackageDisplayName } from '@/lib/packages/snapshot-utils'
 
@@ -246,6 +247,9 @@ export default async function AdminESIMsPage({
                   }
                 </td>
                 <td className="whitespace-nowrap px-6 py-4 text-sm">
+                  <Link href={`/admin/esims/${esim.id}`} className="text-cyan-600 hover:text-cyan-800 font-medium mr-3">
+                    View SIM
+                  </Link>
                   {esim.providerActivationId && (
                     <SyncButton esimId={esim.id} providerActivationId={esim.providerActivationId} />
                   )}
