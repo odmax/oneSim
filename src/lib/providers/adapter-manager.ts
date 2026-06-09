@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import type { ProviderAdapter, CredentialField, ProviderCapability } from './adapter-types'
 import { GenericProtocolAdapter } from './generic-protocol-adapter'
+import { TemplateProviderAdapter } from './template-provider-adapter'
 import { registry } from '@/services/providerRegistry'
 import { buildConnectorFromProvider } from './connectors/connector-factory'
 import { decryptToken } from '@/lib/encryption'
@@ -128,11 +129,19 @@ export async function buildAdapter(provider: {
   fieldMappings?: any
   authType?: string | null
   config?: any
+  endpointMappings?: any
   environment?: string | null
 }): Promise<ProviderAdapter | null> {
   // Try new connector system first
   const connector = await buildConnectorFromProvider(provider.id)
   if (connector) return connectorToAdapter(connector)
+
+  // Check if provider is template-driven (has endpointMappings)
+  const hasEndpointMappings = provider.endpointMappings && typeof provider.endpointMappings === 'object' && Object.keys(provider.endpointMappings).length > 0
+  if (hasEndpointMappings) {
+    console.log(`[buildAdapter] Using TemplateProviderAdapter for ${provider.name} (${provider.id})`)
+    return new TemplateProviderAdapter(provider)
+  }
 
   const strategy = provider.adapterStrategy || ''
 

@@ -110,6 +110,9 @@ export async function updateProvider(providerId: string, formData: FormData) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
+  const existingProvider = await prisma.provider.findUnique({ where: { id: providerId } })
+  if (!existingProvider) redirect('/admin/providers?error=Provider+not+found')
+
   const name = formData.get('name') as string
   const status = (formData.get('status') as string) || undefined
   const authType = formData.get('authType') as string
@@ -186,16 +189,26 @@ export async function updateProvider(providerId: string, formData: FormData) {
   if (fieldCost) fieldMappings.price_usd = fieldCost
   update.fieldMappings = fieldMappings
 
-  // Activation endpoint mapping
-  let bodyTemplate: any = undefined
-  if (activationBodyTemplate) {
-    try { bodyTemplate = JSON.parse(activationBodyTemplate) } catch { /* ignore invalid JSON */ }
+  // Endpoint mappings — merge with existing to preserve template-driven mappings
+  const endpointMappingsRaw = formData.get('endpointMappings') as string
+  const existingMappings = existingProvider.endpointMappings as Record<string, any> || {}
+  if (endpointMappingsRaw) {
+    try {
+      const parsed = JSON.parse(endpointMappingsRaw)
+      update.endpointMappings = { ...existingMappings, ...parsed }
+    } catch {
+      update.endpointMappings = { ...existingMappings }
+    }
+  } else {
+    // Legacy single-activation mapping
+    let bodyTemplate: any = undefined
+    if (activationBodyTemplate) {
+      try { bodyTemplate = JSON.parse(activationBodyTemplate) } catch { /* ignore invalid JSON */ }
+    }
+    const actMapping: any = { method: activationMethod || 'POST' }
+    if (bodyTemplate) actMapping.body = bodyTemplate
+    update.endpointMappings = { ...existingMappings, activate: actMapping }
   }
-  const endpointMappings: Record<string, any> = {
-    activate: { method: activationMethod || 'POST' },
-  }
-  if (bodyTemplate) endpointMappings.activate.body = bodyTemplate
-  update.endpointMappings = endpointMappings
 
   // If setting as default fallback, clear others
   if (isDefaultFallback) {
