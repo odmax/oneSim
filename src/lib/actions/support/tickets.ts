@@ -171,16 +171,19 @@ export async function updateTicketStatus(ticketId: string, status: string) {
   }
 }
 
-export async function assignTicketTo(ticketId: string, adminId: string) {
+export async function assignTicketTo(ticketId: string, formData: FormData) {
   try {
     const session = await getServerSession(authOptions)
     if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
+    const adminId = formData.get('adminId') as string
+    const resolvedAdminId = !adminId || adminId === '__unassign__' ? null : adminId
+
     await prisma.$transaction(async (tx) => {
       const old = await tx.supportTicket.findUnique({ where: { id: ticketId }, select: { assignedToId: true } })
-      await tx.supportTicket.update({ where: { id: ticketId }, data: { assignedToId: adminId || null } })
+      await tx.supportTicket.update({ where: { id: ticketId }, data: { assignedToId: resolvedAdminId } })
       await tx.supportTicketEvent.create({
-        data: { ticketId, actorId: session.user.id, eventType: 'ASSIGNED', metadata: { from: old?.assignedToId || null, to: adminId || null } },
+        data: { ticketId, actorId: session.user.id, eventType: 'ASSIGNED', metadata: { from: old?.assignedToId || null, to: resolvedAdminId } },
       })
     })
 

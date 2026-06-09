@@ -109,11 +109,12 @@ export default async function AdminTicketDetail({ params, searchParams }: { para
           <div className="rounded-lg border bg-white p-5 shadow-sm">
             <h3 className="text-sm font-semibold text-gray-900 mb-3">Assignment</h3>
             <p className="text-xs text-gray-500 mb-2">Currently: {ticket.assignedTo?.name || 'Unassigned'}</p>
-            <form action={assignTicketTo.bind(null, params.id, '')}>
-              <select name="adminId" onChange={e => e.target.form?.requestSubmit()} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm">
-                <option value="">Unassign</option>
+            <form action={assignTicketTo.bind(null, params.id)} className="flex gap-2">
+              <select name="adminId" className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm">
+                <option value="__unassign__">Unassign</option>
                 {admins.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
+              <button type="submit" className="rounded-lg bg-cyan-600 px-3 py-2 text-sm font-medium text-white hover:bg-cyan-700">Assign</button>
             </form>
           </div>
 
