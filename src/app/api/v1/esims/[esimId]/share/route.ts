@@ -57,7 +57,7 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
       },
     })
 
-    const installLink = `${getAppUrl()}/install/esim/${token}`
+    const installLink = `${getAppUrl()}/install/${token}`
     const pkg = (esim.purchase as any).package
 
     // Send email if recipient provided
