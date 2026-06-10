@@ -7,12 +7,33 @@ interface EndpointConfig {
   path: string
 }
 
+// Global capability aliases: canonical name → alternative keys to try
+const CAPABILITY_ALIASES: Record<string, string[]> = {
+  GET_WALLET: ['WALLET_BALANCE'],
+  GET_COUNTRIES: ['COUNTRY_REGION_DETAILS'],
+  GET_STATUS: ['GET_ESIM_STATUS'],
+  GET_USAGE: ['USAGE'],
+}
+// Build reverse map: alias → canonical
+const ALIAS_TO_CANONICAL: Record<string, string> = {}
+for (const [canonical, aliases] of Object.entries(CAPABILITY_ALIASES)) {
+  for (const alias of aliases) ALIAS_TO_CANONICAL[alias] = canonical
+}
+
+function resolveAlias(capability: string): string {
+  return ALIAS_TO_CANONICAL[capability] || capability
+}
+
 function resolveEndpoint(mappings: Record<string, string> | null | undefined, capability: string, defaultPath?: string | null): EndpointConfig | null {
-  const entry = mappings?.[capability]
-  if (entry) {
-    const parts = entry.split(' ')
-    if (parts.length === 2) return { method: parts[0].toUpperCase(), path: parts[1] }
-    return { method: 'POST', path: entry }
+  // Try exact key first, then aliases
+  const keys = [capability, ...(CAPABILITY_ALIASES[capability] || [])]
+  for (const key of keys) {
+    const entry = mappings?.[key]
+    if (entry) {
+      const parts = entry.split(' ')
+      if (parts.length === 2) return { method: parts[0].toUpperCase(), path: parts[1] }
+      return { method: 'POST', path: entry }
+    }
   }
   if (defaultPath) return { method: 'POST', path: defaultPath }
   return null
@@ -157,33 +178,39 @@ async testConnection(): Promise<ProviderResult<{ message: string; latencyMs?: nu
   const authResult = await this.authenticate({})
   if (!authResult.success) return { success: false, error: authResult.error }
 
-  // Try read-only capabilities in order: GET_PLANS → GET_WALLET → GET_COUNTRIES
-  let capResult = await this.callCapabilityWithDetail('GET_PLANS')
-  if (capResult.error) capResult = await this.callCapabilityWithDetail('WALLET_BALANCE', undefined, 'GET_WALLET')
-  if (capResult.error) capResult = await this.callCapabilityWithDetail('GET_COUNTRY_REGION', undefined, 'GET_COUNTRIES')
+  // Try safe read-only capabilities in priority order (with alias fallback via resolveEndpoint)
+  const safeCaps = ['GET_PLANS', 'GET_WALLET', 'GET_COUNTRIES']
+  let capResult: { data?: any; error?: { code: string; message: string; details?: any } } | null = null
+
+  for (const cap of safeCaps) {
+    capResult = await this.callCapabilityWithDetail(cap)
+    if (!capResult.error) break
+    if (capResult.error.code === 'NOT_SUPPORTED') continue
+    // If we got a real HTTP error, include it in the message but try next
+  }
 
   const latencyMs = Date.now() - start
 
-  if (capResult.error) {
-    if (capResult.error.code === 'NOT_SUPPORTED') {
+  if (!capResult || capResult.error) {
+    const msg = capResult?.error?.message
+    if (msg?.includes('NOT_SUPPORTED') || msg?.includes('not configured')) {
       return { success: true, data: { message: 'Authentication passed. No read-only test capability configured.', latencyMs } }
     }
-    return { success: true, data: { message: `Authenticated. Capability test skipped: ${capResult.error.message}`, latencyMs } }
+    return { success: true, data: { message: `Authenticated. Capability test: ${msg || 'no capabilities configured'}`, latencyMs } }
   }
   return { success: true, data: { message: 'Connected. Auth + capability test passed.', latencyMs } }
 }
 
-private async callCapabilityWithDetail(capKey: string, body?: any, altKey?: string): Promise<{ data?: any; error?: { code: string; message: string; details?: any } }> {
-  const key = altKey || capKey
-  const ep = resolveEndpoint(this.endpointMappings, key)
-  if (!ep) return { error: { code: 'NOT_SUPPORTED', message: `Capability ${key} not configured` } }
+private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ data?: any; error?: { code: string; message: string; details?: any } }> {
+  const ep = resolveEndpoint(this.endpointMappings, capKey)
+  if (!ep) return { error: { code: 'NOT_SUPPORTED', message: `Capability ${capKey} not configured` } }
   const url = buildUrl(this.baseUrl, ep.path)
   const headers: Record<string, string> = {}
   applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
 
   const result = await rawFetch(url, { method: ep.method, headers, body: body ? JSON.stringify(body) : undefined })
   if (result.error) {
-    return { error: { code: result.error.code, message: `${key} failed: ${ep.method} ${url} returned ${result.status || 'error'}: ${result.error.message}`, details: { capability: key, url, method: ep.method, status: result.status } } }
+    return { error: { code: result.error.code, message: `${capKey} failed: ${ep.method} ${url} returned ${result.status || 'error'}: ${result.error.message}`, details: { capability: capKey, url, method: ep.method, status: result.status } } }
   }
   return { data: result.data }
 }
