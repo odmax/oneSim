@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
-import { buildAdapter } from '@/lib/providers/adapter-manager'
+import { buildAdapter, isTemplateDrivenProvider } from '@/lib/providers/adapter-manager'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 import { encryptToken } from '@/lib/encryption'
 
@@ -292,7 +292,21 @@ export async function testProviderConnection(providerId: string) {
   if (!provider) return { success: false, error: 'Provider not found' }
 
   try {
-    // Prefer new connector system
+    // Template-driven providers use buildAdapter (goes through isTemplateDrivenProvider → TemplateProviderAdapter)
+    if (isTemplateDrivenProvider(provider)) {
+      const adapter = await buildAdapter(provider)
+      if (!adapter) return { success: false, error: 'Failed to create adapter for template-driven provider' }
+
+      const result = await adapter.testConnection()
+      await recordProviderHealth(providerId, result.success, result.error?.message)
+      if (result.success) {
+        await prisma.auditLog.create({ data: { userId: session.user.id, action: 'PROVIDER_CONNECTION_TESTED', entity: 'Provider', entityId: provider.code, details: `${provider.name}: ${result.data?.message || 'Connection successful'} (TemplateProviderAdapter)` } })
+        return { success: true, message: result.data?.message || 'Connection successful' }
+      }
+      return { success: false, error: result.error?.message || 'Connection test failed' }
+    }
+
+    // Prefer new connector system for non-template providers (Choice, iBASIS, etc.)
     const connector = await buildConnectorFromProvider(providerId)
     if (connector) {
       const result = await connector.testConnection()

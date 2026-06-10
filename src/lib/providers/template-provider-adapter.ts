@@ -152,21 +152,41 @@ export class TemplateProviderAdapter implements ProviderAdapter {
   getCredentialFields() { return [] }
   getCapabilities() { return [] }
 
-  async testConnection(): Promise<ProviderResult<{ message: string; latencyMs?: number }>> {
-    const start = Date.now()
-    const authResult = await this.authenticate({})
-    if (!authResult.success) return { success: false, error: authResult.error }
+async testConnection(): Promise<ProviderResult<{ message: string; latencyMs?: number }>> {
+  const start = Date.now()
+  const authResult = await this.authenticate({})
+  if (!authResult.success) return { success: false, error: authResult.error }
 
-    // Try wallet or plans as second check
-    const walletResult = await this.callCapability('GET_WALLET')
-    const plansResult = walletResult.error ? await this.callCapability('GET_PLANS') : walletResult
-    const latencyMs = Date.now() - start
+  // Try read-only capabilities in order: GET_PLANS → GET_WALLET → GET_COUNTRIES
+  let capResult = await this.callCapabilityWithDetail('GET_PLANS')
+  if (capResult.error) capResult = await this.callCapabilityWithDetail('WALLET_BALANCE', undefined, 'GET_WALLET')
+  if (capResult.error) capResult = await this.callCapabilityWithDetail('GET_COUNTRY_REGION', undefined, 'GET_COUNTRIES')
 
-    if (plansResult.error && walletResult.error) {
-      return { success: true, data: { message: `Authenticated. Capability test skipped: ${plansResult.error.message}`, latencyMs } }
+  const latencyMs = Date.now() - start
+
+  if (capResult.error) {
+    if (capResult.error.code === 'NOT_SUPPORTED') {
+      return { success: true, data: { message: 'Authentication passed. No read-only test capability configured.', latencyMs } }
     }
-    return { success: true, data: { message: 'Connected. Auth + capability test passed.', latencyMs } }
+    return { success: true, data: { message: `Authenticated. Capability test skipped: ${capResult.error.message}`, latencyMs } }
   }
+  return { success: true, data: { message: 'Connected. Auth + capability test passed.', latencyMs } }
+}
+
+private async callCapabilityWithDetail(capKey: string, body?: any, altKey?: string): Promise<{ data?: any; error?: { code: string; message: string; details?: any } }> {
+  const key = altKey || capKey
+  const ep = resolveEndpoint(this.endpointMappings, key)
+  if (!ep) return { error: { code: 'NOT_SUPPORTED', message: `Capability ${key} not configured` } }
+  const url = buildUrl(this.baseUrl, ep.path)
+  const headers: Record<string, string> = {}
+  applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
+
+  const result = await rawFetch(url, { method: ep.method, headers, body: body ? JSON.stringify(body) : undefined })
+  if (result.error) {
+    return { error: { code: result.error.code, message: `${key} failed: ${ep.method} ${url} returned ${result.status || 'error'}: ${result.error.message}`, details: { capability: key, url, method: ep.method, status: result.status } } }
+  }
+  return { data: result.data }
+}
 
   async syncPlans(): Promise<ProviderResult<ProviderPlan[]>> {
     // Ensure authenticated
