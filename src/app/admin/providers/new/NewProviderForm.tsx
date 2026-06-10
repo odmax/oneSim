@@ -93,10 +93,19 @@ function setField(name: string, value: string) {
 }
 
 export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[] }) {
+  // Controlled state for hidden/meta fields (avoids React overriding DOM setField)
+  const [hiddenEndpointMappings, setHiddenEndpointMappings] = useState('')
+  const [hiddenAdapterStrategy, setHiddenAdapterStrategy] = useState('')
+  const [hiddenProviderTemplateId, setHiddenProviderTemplateId] = useState('')
+  const [hiddenRequestMappings, setHiddenRequestMappings] = useState('')
+  const [hiddenResponseMappings, setHiddenResponseMappings] = useState('')
+  const [hiddenRequiredConfigFields, setHiddenRequiredConfigFields] = useState('')
+
   const applyBuiltinTemplate = useCallback((templateId: string) => {
     const template = BUILTIN_TEMPLATES[templateId]
     if (!template) return
     setField('adapterStrategy', template.presets.adapterStrategy || '')
+    setHiddenAdapterStrategy(template.presets.adapterStrategy || '')
     setField('authType', template.presets.authType || 'bearer_token')
     setField('apiBaseUrl', template.presets.apiBaseUrl || '')
     setField('authUrl', template.presets.authUrl || '')
@@ -141,12 +150,24 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
 
     // Endpoint mappings (capability → endpoint)
     if (t.endpointMappings) {
-      setField('endpointMappings', JSON.stringify(t.endpointMappings))
+      const json = JSON.stringify(t.endpointMappings)
+      setField('endpointMappings', json)
+      setHiddenEndpointMappings(json)
     }
+
+    // Provider template ID
+    setHiddenProviderTemplateId(t.id)
+    setField('providerTemplateId', t.id)
+
+    // Request/response mappings (cast from JSON to string)
+    const tAny = t as any
+    setHiddenRequestMappings(JSON.stringify(tAny.requestMappings || ''))
+    setHiddenResponseMappings(JSON.stringify(tAny.responseMappings || ''))
 
     // Store dynamic config fields for credential rendering
     if (t.requiredConfigFields && t.requiredConfigFields.length > 0) {
       setConfigFields(t.requiredConfigFields)
+      setHiddenRequiredConfigFields(JSON.stringify(t.requiredConfigFields))
     }
 
     // Capabilities not needed on create — configured post-creation
@@ -167,7 +188,12 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
   return (
     <form action={createProvider} className="space-y-4">
       <input type="hidden" name="type" value="CUSTOM" />
-      <input type="hidden" name="endpointMappings" value="" />
+      <input type="hidden" name="endpointMappings" value={hiddenEndpointMappings} />
+      <input type="hidden" name="adapterStrategy" value={hiddenAdapterStrategy} />
+      <input type="hidden" name="providerTemplateId" value={hiddenProviderTemplateId} />
+      <input type="hidden" name="requestMappings" value={hiddenRequestMappings} />
+      <input type="hidden" name="responseMappings" value={hiddenResponseMappings} />
+      <input type="hidden" name="requiredConfigFields" value={hiddenRequiredConfigFields} />
 
       <div>
         <label htmlFor="template" className="block text-sm font-medium text-gray-700">Provider Template</label>
