@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { createProvider } from '@/lib/actions/providers'
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 
 type SavedTemplate = {
   id: string
@@ -23,6 +23,7 @@ type SavedTemplate = {
   defaultFieldMappings: any
   defaultCapabilities: any
   endpointMappings: any
+  requiredConfigFields?: any
 }
 
 type BuiltInTemplate = {
@@ -143,6 +144,11 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
       setField('endpointMappings', JSON.stringify(t.endpointMappings))
     }
 
+    // Store dynamic config fields for credential rendering
+    if (t.requiredConfigFields && t.requiredConfigFields.length > 0) {
+      setConfigFields(t.requiredConfigFields)
+    }
+
     // Capabilities not needed on create — configured post-creation
   }, [])
 
@@ -156,6 +162,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
   }, [applyBuiltinTemplate, applySavedTemplate])
 
   const hasSavedTemplates = templates.length > 0
+  const [configFields, setConfigFields] = useState<SavedTemplate['requiredConfigFields']>([])
 
   return (
     <form action={createProvider} className="space-y-4">
@@ -245,6 +252,22 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
         <input id="apiToken" name="apiToken" type="password" placeholder="Provider API token (optional — set up after creation)" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
         <p className="mt-1 text-xs text-gray-500">Optional. You can set up authentication after creation.</p>
       </div>
+
+      {configFields && configFields.length > 0 && (
+        <div className="rounded-lg border border-cyan-100 bg-cyan-50 p-4">
+          <h4 className="text-sm font-semibold text-cyan-800 mb-3">Provider Credentials</h4>
+          {configFields?.map((f: any) => (
+            <div key={f.name} className="mb-3">
+              <label htmlFor={`cfg-${f.name}`} className="block text-sm font-medium text-gray-700 mb-1">
+                {f.label}{f.required && <span className="text-red-500 ml-0.5">*</span>}
+              </label>
+              <input id={`cfg-${f.name}`} name={f.name} type={f.type || 'text'} required={f.required}
+                placeholder={f.placeholder || ''} className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
+            </div>
+          ))}
+          <p className="text-xs text-cyan-600">Credentials are stored in the provider config and used for authentication.</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div>

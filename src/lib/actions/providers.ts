@@ -85,8 +85,17 @@ export async function createProvider(formData: FormData) {
     try { regions = JSON.parse(regionsRaw) } catch { redirect('/admin/providers/new?error=Invalid+JSON+in+regions') }
   }
 
-  // Build config for template-driven providers
-  const config: any = isTemplate ? { ...(parsedEndpointMappings || {}), providerMode: 'TEMPLATE', templateDriven: true } : undefined
+  // Collect dynamic config fields from form (for template-driven providers or any provider with extra fields)
+  const KNOWN_FORM_FIELDS = new Set(['name', 'code', 'type', 'status', 'authType', 'apiVersion', 'apiBaseUrl', 'authUrl', 'apiToken', 'adapterStrategy', 'environment', 'priority', 'isDefaultFallback', 'regions', 'supportsESIM', 'supportsUsage', 'supportsTopUp', 'supportsSuspend', 'supportsQRCode', 'supportsPools', 'supportsTemplates', 'supportsUsageSync', 'supportsWebhookPush', 'supportsSuspendResume', 'endpointMappings', 'requestMappings', 'responseMappings', 'providerTemplateId', 'requiredConfigFields', 'optionalConfigFields', 'planListPath', 'activationPath', 'statusPath', 'usagePath', 'suspendPath', 'resumePath', 'topUpPath', 'responseListKey', 'tokenPlacement', 'fieldSku', 'fieldName', 'fieldData', 'fieldValidity', 'fieldCost', 'activationMethod', 'activationBodyTemplate'])
+  const configFromForm: Record<string, any> = {}
+  for (const [key, value] of formData.entries()) {
+    if (!KNOWN_FORM_FIELDS.has(key) && value) {
+      configFromForm[key] = value as string
+    }
+  }
+  const config: any = isTemplate
+    ? { ...configFromForm, providerMode: 'TEMPLATE', templateDriven: true }
+    : Object.keys(configFromForm).length > 0 ? configFromForm : undefined
 
   if (isDefaultFallback) {
     await prisma.provider.updateMany({ where: { isDefaultFallback: true }, data: { isDefaultFallback: false } })
