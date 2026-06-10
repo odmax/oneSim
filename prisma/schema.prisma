@@ -252,7 +252,8 @@ model ProviderPackage {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  provider      Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  publishedAs   ESIMPackage?
 
   @@index([providerId])
   @@map("provider_packages")
@@ -289,11 +290,13 @@ model ESIMPackage {
   compatibleTopUpPackageIds Json?
   archivedAt                DateTime?
   hiddenFromCatalog         Boolean       @default(false)
+  providerPackageId         String?       @unique
 
   purchases    ESIMPurchase[]
   provider     Provider?      @relation(fields: [providerId], references: [id], onDelete: SetNull)
-  pricingRules PricingRule[]
-  topUpRecords ESIMTopUp[]
+  providerPackage ProviderPackage? @relation(fields: [providerPackageId], references: [id], onDelete: SetNull)
+  pricingRules    PricingRule[]
+  topUpRecords    ESIMTopUp[]
 
   @@map("esim_packages")
 }

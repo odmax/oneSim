@@ -120,6 +120,41 @@ export async function syncProviderPlans(providerId: string) {
       },
     })
 
+    // Create/update ProviderPackage records from synced plans
+    for (const plan of plans) {
+      const raw = plan.raw_data || {}
+      const providerPlanId = plan.id || raw.id || raw.planCode || ''
+      const providerPlanCode = raw.planCode || raw.sku || plan.sku || ''
+      if (!providerPlanId) continue
+
+      // Check for existing ProviderPackage by providerPlanId
+      const existing = await prisma.providerPackage.findFirst({
+        where: { providerId, providerPlanId },
+      })
+
+      const pkgData = {
+        providerPlanCode,
+        name: plan.name || raw.planName || '',
+        dataGB: plan.data_gb || parseInt(raw.dataAllowance) || 0,
+        validityDays: plan.validity_days || parseInt(raw.validity) || 30,
+        costPrice: plan.price_usd || parseFloat(raw.retailPrice) || 0,
+        currency: plan.currency || 'USD',
+        country: raw.country || raw.region || null,
+        region: raw.region || null,
+        planType: (raw.planType || raw.type || 'STANDARD') as string,
+        isAvailable: true,
+        providerRawData: raw,
+      }
+
+      if (existing) {
+        await prisma.providerPackage.update({ where: { id: existing.id }, data: pkgData })
+      } else {
+        await prisma.providerPackage.create({
+          data: { providerId, providerPlanId, ...pkgData },
+        })
+      }
+    }
+
     await prisma.auditLog.create({
       data: {
         userId: session.user.id,
