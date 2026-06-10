@@ -155,9 +155,49 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     const ep = resolveEndpoint(this.endpointMappings, 'AUTH_LOGIN', this.provider.authUrl)
     if (!ep) return { success: false, error: { code: 'AUTH_NOT_CONFIGURED', message: 'AUTH_LOGIN not configured' } }
 
-    const username = credentials.username || this.getField('username') || ''
-    const password = credentials.password || this.getField('password') || ''
-    const body = { username, password, ...credentials }
+    // Build auth body from requestMappings or default
+    const requestMap = this.provider.requestMappings || {}
+    const authMapping = requestMap.AUTH_LOGIN
+
+    // Collect credentials from all available sources
+    const allCreds: Record<string, string> = {
+      ...(this.config?.username ? { username: String(this.config.username) } : {}),
+      ...(this.config?.password ? { password: String(this.config.password) } : {}),
+      ...(this.provider.username ? { username: this.provider.username } : {}),
+      ...(this.provider.password ? { password: this.provider.password } : {}),
+      ...credentials,
+    }
+
+    // Build body using requestMappings template or defaults
+    let body: any
+    if (authMapping && typeof authMapping === 'object') {
+      body = {}
+      for (const [key, val] of Object.entries(authMapping)) {
+        const tmpl = String(val)
+        if (tmpl.startsWith('{{') && tmpl.endsWith('}}')) {
+          const varName = tmpl.slice(2, -2)
+          const varValue = allCreds[varName] || allCreds[varName.toLowerCase()] || allCreds[varName.toUpperCase()] || ''
+          body[key] = varValue
+        } else {
+          body[key] = tmpl
+        }
+      }
+    } else {
+      // Default body for credentials auth
+      if (this.provider.authType === 'credentials') {
+        body = { userName: allCreds.username || allCreds.userName || '', password: allCreds.password || '' }
+      } else {
+        body = { ...allCreds }
+      }
+    }
+
+    // Validate required fields
+    if (!body.userName && !body.username && !body.email && !body.apiKey && !body.apiToken) {
+      const missing = !body.userName && !body.username ? 'username' : 'password'
+      return { success: false, error: { code: 'MISSING_CREDENTIALS', message: `Missing required provider credentials: ${missing}` } }
+    }
+
+    console.log(`[TemplateProviderAdapter] AUTH_LOGIN ${ep.method} ${buildUrl(this.baseUrl, ep.path)} keys=${Object.keys(body).join(',')}`)
 
     const result = await this.callCapability('AUTH_LOGIN', body)
     if (result.error) return { success: false, error: result.error }

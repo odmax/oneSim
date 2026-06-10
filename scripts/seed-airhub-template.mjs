@@ -43,6 +43,14 @@ console.log('Seeding Airhub Outreach system template...')
           supportsQRCode: true,
         },
         endpointMappings: airhubEndpoints,
+        requestMappings: {
+          AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
+        },
+        requiredConfigFields: [
+          { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'Airhub API username' },
+          { name: 'password', label: 'Password', type: 'password', required: true, placeholder: 'Airhub API password' },
+          { name: 'partnerCode', label: 'Partner Code', type: 'text', required: false, placeholder: 'Optional partner code' },
+        ],
         isSystemTemplate: true,
       },
     })
@@ -71,6 +79,14 @@ console.log('Seeding Airhub Outreach system template...')
           supportsQRCode: true,
         },
         endpointMappings: airhubEndpoints,
+        requestMappings: {
+          AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
+        },
+        requiredConfigFields: [
+          { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'Airhub API username' },
+          { name: 'password', label: 'Password', type: 'password', required: true, placeholder: 'Airhub API password' },
+          { name: 'partnerCode', label: 'Partner Code', type: 'text', required: false, placeholder: 'Optional partner code' },
+        ],
         isSystemTemplate: true,
       },
     })
