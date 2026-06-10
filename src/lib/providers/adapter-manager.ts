@@ -127,7 +127,9 @@ export function isTemplateDrivenProvider(provider: {
   config?: any
   endpointMappings?: any
   template?: any
+  providerTemplateId?: string | null
 }): boolean {
+  if (provider.providerTemplateId) return true
   if (provider.adapterStrategy === 'TEMPLATE') return true
   if (provider.type === 'TEMPLATE') return true
   const cfg = provider.config || {}

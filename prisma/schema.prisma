@@ -206,8 +206,14 @@ model Provider {
   supportsWebhookPush      Boolean        @default(false)
   supportsSuspendResume    Boolean        @default(false)
   endpointMappings         Json?
+  requestMappings          Json?
+  responseMappings         Json?
   fieldMappings            Json?
   config                   Json?
+  providerTemplateId       String?
+  requiredConfigFields     Json?
+  optionalConfigFields     Json?
+  enabledCapabilities      Json?
   /// Health tracking fields
   lastSuccessfulConnection DateTime?
   lastFailedConnection     DateTime?
@@ -222,9 +228,34 @@ model Provider {
   updatedAt                DateTime       @updatedAt
 
   packages        ESIMPackage[]
+  providerPackages ProviderPackage[]
   healthSnapshots ProviderHealthSnapshot[]
 
   @@map("providers")
+}
+
+model ProviderPackage {
+  id              String   @id @default(cuid())
+  providerId      String
+  providerPlanId  String
+  providerPlanCode String?
+  name            String
+  dataGB          Int
+  validityDays    Int
+  costPrice       Decimal
+  currency        String   @default("USD")
+  country         String?
+  region          String?
+  planType        String?  /// PREMIUM | STANDARD | LIFETIME
+  isAvailable     Boolean  @default(true)
+  providerRawData Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId])
+  @@map("provider_packages")
 }
 
 model ESIMPackage {
@@ -877,6 +908,10 @@ model ProviderTemplate {
   defaultFieldMappings   Json     @default("{}")
   defaultCapabilities    Json     @default("{}")
   endpointMappings       Json?    /// Capability → endpoint mapping (e.g. {"AUTH_LOGIN": "POST /api/auth/login", "PURCHASE_ESIM": "POST /api/esim/purchase"})
+  requestMappings        Json?    /// Template for building request bodies per capability
+  responseMappings       Json?    /// Template for parsing responses per capability
+  requiredConfigFields   Json?    /// Array of {name, label, type, placeholder} for credential form
+  optionalConfigFields   Json?    /// Array of optional config fields
   isSystemTemplate       Boolean  @default(false)
   createdBy              String?
   createdAt              DateTime @default(now())
