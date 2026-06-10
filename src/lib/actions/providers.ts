@@ -42,10 +42,26 @@ export async function createProvider(formData: FormData) {
   const supportsWebhookPush = formData.get('supportsWebhookPush') === 'on'
   const supportsSuspendResume = formData.get('supportsSuspendResume') === 'on'
   const endpointMappingsRaw = formData.get('endpointMappings') as string
-  const parsedEndpointMappings = endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : null
+  let parsedEndpointMappings = endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : null
+  const providerTemplateId = formData.get('providerTemplateId') as string
+  const requestMappingsRaw = formData.get('requestMappings') as string
+  const responseMappingsRaw = formData.get('responseMappings') as string
+  const requiredConfigRaw = formData.get('requiredConfigFields') as string
+  const optionalConfigRaw = formData.get('optionalConfigFields') as string
 
-  // Auto-detect template-driven provider from endpointMappings
-  const isTemplate = parsedEndpointMappings && (parsedEndpointMappings.AUTH_LOGIN || parsedEndpointMappings.PURCHASE_ESIM || parsedEndpointMappings.GET_PLANS)
+  // Auto-detect template-driven provider
+  const isTemplate = !!(providerTemplateId || (parsedEndpointMappings && (parsedEndpointMappings.AUTH_LOGIN || parsedEndpointMappings.PURCHASE_ESIM || parsedEndpointMappings.GET_PLANS)))
+
+  // If providerTemplateId is set, copy fields from the template
+  if (providerTemplateId && !parsedEndpointMappings) {
+    try {
+      const tpl = await prisma.providerTemplate.findUnique({ where: { id: providerTemplateId } })
+      if (tpl) {
+        // Only copy if not already overridden by form data
+        if (!endpointMappingsRaw) parsedEndpointMappings = tpl.endpointMappings as any
+      }
+    } catch { /* template lookup is best-effort */ }
+  }
 
   if (!name || !code || !type) {
     redirect('/admin/providers/new?error=Name%2C+Code%2C+and+Type+are+required')
@@ -103,7 +119,12 @@ export async function createProvider(formData: FormData) {
       supportsUsageSync,
       supportsWebhookPush,
       supportsSuspendResume,
+      providerTemplateId: providerTemplateId || null,
       endpointMappings: isTemplate ? parsedEndpointMappings : (endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : undefined),
+      requestMappings: requestMappingsRaw ? tryParseJson(requestMappingsRaw) : null,
+      responseMappings: responseMappingsRaw ? tryParseJson(responseMappingsRaw) : null,
+      requiredConfigFields: requiredConfigRaw ? tryParseJson(requiredConfigRaw) : null,
+      optionalConfigFields: optionalConfigRaw ? tryParseJson(optionalConfigRaw) : null,
       config: config || undefined,
     },
   })

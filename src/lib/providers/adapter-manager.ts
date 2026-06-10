@@ -119,7 +119,7 @@ export async function getAdapterForType(type: string, config?: { apiBaseUrl?: st
  * - provider.type === "TEMPLATE"
  * - provider.config?.providerMode === "TEMPLATE"
  * - provider.config?.templateDriven === true
- * - provider has a template relation with providerFamily in ["AIRHUB", "CUSTOM_TEMPLATE"]
+ * - provider has a template relation with providerFamily === "CUSTOM_TEMPLATE"
  */
 export function isTemplateDrivenProvider(provider: {
   adapterStrategy?: string | null
@@ -135,7 +135,7 @@ export function isTemplateDrivenProvider(provider: {
   const cfg = provider.config || {}
   if (cfg.providerMode === 'TEMPLATE') return true
   if (cfg.templateDriven === true) return true
-  if (provider.template?.providerFamily && ['AIRHUB', 'CUSTOM_TEMPLATE'].includes(provider.template.providerFamily)) return true
+  if (provider.template?.providerFamily === 'CUSTOM_TEMPLATE') return true
   return false
 }
 
