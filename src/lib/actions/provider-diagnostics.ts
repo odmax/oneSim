@@ -3,7 +3,7 @@
 import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
-import { getAdapterForType } from '@/lib/providers/adapter-manager'
+import { getAdapterForType, isTemplateDrivenProvider, buildAdapter } from '@/lib/providers/adapter-manager'
 
 export interface DiagnosticResult {
   test: string
@@ -33,7 +33,9 @@ export async function runProviderDiagnostics(providerId: string): Promise<Diagno
 
   // 2. Connection test via adapter
   try {
-    const adapter = await getAdapterForType(provider.type, { apiBaseUrl: provider.apiBaseUrl, apiToken: provider.apiToken, providerId: provider.id })
+    const adapter = isTemplateDrivenProvider(provider)
+      ? await buildAdapter(provider)
+      : await getAdapterForType(provider.type, { apiBaseUrl: provider.apiBaseUrl, apiToken: provider.apiToken, providerId: provider.id })
     if (adapter) {
       const start = Date.now()
       const connResult = await adapter.testConnection()

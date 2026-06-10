@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
-import { getAdapterForType, authenticateProviderViaAdapter } from '@/lib/providers/adapter-manager'
+import { getAdapterForType, authenticateProviderViaAdapter, isTemplateDrivenProvider, buildAdapter } from '@/lib/providers/adapter-manager'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 import { classifyError } from '@/lib/providers/connectors/connector-interface'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
@@ -244,6 +244,28 @@ export async function testProviderConnection(providerId: string) {
   try {
     const startTime = Date.now()
     const config = (provider.config as any) || {}
+
+    // Template-driven providers use TemplateProviderAdapter
+    if (isTemplateDrivenProvider(provider)) {
+      const adapter = await buildAdapter(provider)
+      if (!adapter) return { success: false, error: 'Failed to create adapter for template-driven provider', diagnostics: null }
+      const result = await adapter.testConnection()
+      const durationMs = Date.now() - startTime
+      const diagnostics = {
+        adapter: 'TemplateProviderAdapter',
+        endpointMappings: provider.endpointMappings,
+        config: { ...config, password: undefined, apiToken: undefined },
+      }
+      await prisma.provider.update({
+        where: { id: providerId },
+        data: result.success ? { lastSuccessfulConnection: new Date() } : { lastFailedConnection: new Date(), lastError: result.error?.message },
+      })
+      await recordHealthEvent(providerId, { eventType: 'CONNECTION_TEST', success: result.success, message: result.success ? 'Template provider connected' : (result.error?.message || 'Failed'), durationMs })
+      if (result.success) {
+        return { success: true, message: `Connected via TemplateProviderAdapter. ${result.data?.message || ''}`, diagnostics }
+      }
+      return { success: false, error: result.error?.message || 'Connection test failed', diagnostics }
+    }
 
     // Build connector from provider config
     const connector = await buildConnectorFromProvider(providerId)
