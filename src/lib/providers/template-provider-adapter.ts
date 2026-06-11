@@ -180,6 +180,16 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     const headers: Record<string, string> = {}
     applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
     const body = this.buildRequestBody(capability)
+    console.log('[TemplateProviderAdapter] CALL_WITH_BODY', {
+      capability,
+      url,
+      method: ep.method,
+      hasToken: !!this.token,
+      tokenPlacement: this.tokenPlacement,
+      authType: this.provider.authType,
+      headers: Object.keys(headers),
+      body,
+    })
     const result = await rawFetch(url, { method: ep.method, headers, body: JSON.stringify(body) })
     if (result.error) {
       const responsePreview = result.data ? JSON.stringify(result.data).substring(0, 200) : ''
