@@ -142,6 +142,52 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     return current
   }
 
+  /**
+   * Build request body for a capability using requestMappings with variable substitution.
+   * Supports {{variableName}} and {{variableName|defaultValue}} syntax.
+   * Variables are resolved from: provider.config, provider record fields, environment.
+   */
+  private buildRequestBody(capability: string): any {
+    const reqMap = this.provider.requestMappings || {}
+    const mapping = reqMap[capability]
+    if (!mapping || typeof mapping !== 'object') return {}
+
+    const resolveVar = (tmpl: string): string => {
+      const match = tmpl.match(/^\{\{(.+?)\}\}$/)
+      if (!match) return tmpl
+      const parts = match[1].split('|')
+      const varName = parts[0]
+      const defaultValue = parts[1] || ''
+      // Check multiple sources
+      const val = this.config?.[varName]
+        ?? this.provider[varName]
+        ?? process.env[varName]
+        ?? defaultValue
+      return val ?? ''
+    }
+
+    const body: any = {}
+    for (const [key, val] of Object.entries(mapping)) {
+      body[key] = resolveVar(String(val))
+    }
+    return body
+  }
+
+  private async callCapabilityWithBody(capability: string): Promise<{ data?: any; error?: { code: string; message: string; details?: any } }> {
+    const ep = resolveEndpoint(this.endpointMappings, capability)
+    if (!ep) return { error: { code: 'NOT_SUPPORTED', message: `Capability ${capability} not configured` } }
+    const url = buildUrl(this.baseUrl, ep.path)
+    const headers: Record<string, string> = {}
+    applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
+    const body = this.buildRequestBody(capability)
+    const result = await rawFetch(url, { method: ep.method, headers, body: JSON.stringify(body) })
+    if (result.error) {
+      const responsePreview = result.data ? JSON.stringify(result.data).substring(0, 200) : ''
+      return { error: { code: result.error.code, message: `${capability} failed: ${ep.method} ${url} returned ${result.status || 'error'}: ${result.error.message}${responsePreview ? ` | Response: ${responsePreview}` : ''}`, details: { capability, url, method: ep.method, status: result.status, responseBody: responsePreview } } }
+    }
+    return { data: result.data }
+  }
+
   private async callCapability(capability: string, body?: any): Promise<{ data?: any; error?: { code: string; message: string }; status?: number }> {
     const ep = resolveEndpoint(this.endpointMappings, capability)
     if (!ep) return { error: { code: 'NOT_SUPPORTED', message: `Capability ${capability} not configured for this provider` } }
@@ -260,7 +306,7 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
     const authResult = await this.authenticate({})
     if (!authResult.success) return { success: false, error: authResult.error }
 
-    const result = await this.callCapability('GET_PLANS')
+    const result = await this.callCapabilityWithBody('GET_PLANS')
     if (result.error) return { success: false, error: result.error }
     if (!result.data) return { success: false, error: { code: 'EMPTY', message: 'Empty plans response' } }
 
@@ -296,14 +342,18 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
     const authResult = await this.authenticate({})
     if (!authResult.success) return { success: false, error: authResult.error }
 
-    const body = {
-      planCode: params.planId,
-      quantity: params.quantity,
-      email: params.subscriber.email,
-      ...(this.config || {}),
-    }
+    // Build body from requestMappings, override with standard params
+    const reqBody = this.buildRequestBody('PURCHASE_ESIM')
+    const body = { ...reqBody, planCode: params.planId, quantity: params.quantity }
+    if (params.subscriber.email) body.email = params.subscriber.email
 
-    const result = await this.callCapability('PURCHASE_ESIM', body)
+    const ep = resolveEndpoint(this.endpointMappings, 'PURCHASE_ESIM')
+    if (!ep) return { success: false, error: { code: 'NOT_SUPPORTED', message: 'PURCHASE_ESIM not configured' } }
+    const url = buildUrl(this.baseUrl, ep.path)
+    const headers: Record<string, string> = {}
+    applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
+
+    const result = await rawFetch(url, { method: ep.method, headers, body: JSON.stringify(body) })
     if (result.error) return { success: false, error: result.error }
     if (!result.data) return { success: false, error: { code: 'EMPTY', message: 'Empty purchase response' } }
 
