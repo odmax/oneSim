@@ -48,20 +48,18 @@ export async function createProvider(formData: FormData) {
   const responseMappingsRaw = formData.get('responseMappings') as string
   const requiredConfigRaw = formData.get('requiredConfigFields') as string
   const optionalConfigRaw = formData.get('optionalConfigFields') as string
+  const tokenPlacementRaw = formData.get('tokenPlacement') as string
+
+  let tpl: any = null
+  if (providerTemplateId) {
+    try { tpl = await prisma.providerTemplate.findUnique({ where: { id: providerTemplateId } }) } catch { /* best-effort */ }
+  }
 
   // Auto-detect template-driven provider
   const isTemplate = !!(providerTemplateId || (parsedEndpointMappings && (parsedEndpointMappings.AUTH_LOGIN || parsedEndpointMappings.PURCHASE_ESIM || parsedEndpointMappings.GET_PLANS)))
 
-  // If providerTemplateId is set, copy fields from the template
-  if (providerTemplateId && !parsedEndpointMappings) {
-    try {
-      const tpl = await prisma.providerTemplate.findUnique({ where: { id: providerTemplateId } })
-      if (tpl) {
-        // Only copy if not already overridden by form data
-        if (!endpointMappingsRaw) parsedEndpointMappings = tpl.endpointMappings as any
-      }
-    } catch { /* template lookup is best-effort */ }
-  }
+  // If providerTemplateId is set, copy fields from the template as fallbacks
+  if (!endpointMappingsRaw && tpl?.endpointMappings) parsedEndpointMappings = tpl.endpointMappings as any
 
   if (!name || !code || !type) {
     redirect('/admin/providers/new?error=Name%2C+Code%2C+and+Type+are+required')
@@ -107,7 +105,7 @@ export async function createProvider(formData: FormData) {
       code: code.toUpperCase(),
       type: type === 'MOCK' ? 'MOCK' : 'CUSTOM',
       adapterStrategy: resolvedStrategy,
-      tokenPlacement: 'URL_PATH',
+      tokenPlacement: tokenPlacementRaw || tpl?.tokenPlacement || 'BEARER_HEADER',
       status: status as any,
       authType: authType || 'bearer_token',
       apiVersion: apiVersion || 'v1',
@@ -130,9 +128,9 @@ export async function createProvider(formData: FormData) {
       supportsSuspendResume,
       providerTemplateId: providerTemplateId || null,
       endpointMappings: isTemplate ? parsedEndpointMappings : (endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : undefined),
-      requestMappings: requestMappingsRaw ? tryParseJson(requestMappingsRaw) : null,
-      responseMappings: responseMappingsRaw ? tryParseJson(responseMappingsRaw) : null,
-      requiredConfigFields: requiredConfigRaw ? tryParseJson(requiredConfigRaw) : null,
+      requestMappings: requestMappingsRaw ? tryParseJson(requestMappingsRaw) : (tpl?.requestMappings as any) || null,
+      responseMappings: responseMappingsRaw ? tryParseJson(responseMappingsRaw) : (tpl?.responseMappings as any) || null,
+      requiredConfigFields: requiredConfigRaw ? tryParseJson(requiredConfigRaw) : (tpl?.requiredConfigFields as any) || null,
       optionalConfigFields: optionalConfigRaw ? tryParseJson(optionalConfigRaw) : null,
       config: config || undefined,
     },
