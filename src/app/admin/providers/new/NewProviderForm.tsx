@@ -185,6 +185,26 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
   const hasSavedTemplates = templates.length > 0
   const [configFields, setConfigFields] = useState<SavedTemplate['requiredConfigFields']>([])
 
+  // Auto-apply template when provider code matches a template name
+  const handleCodeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const code = e.target.value.toUpperCase()
+    const match = templates.find(t => t.name.toUpperCase().includes(code) || code.includes(t.name.toUpperCase()))
+    if (match) {
+      const templateJson = JSON.stringify(match)
+      const selector = document.querySelector<HTMLSelectElement>('[name="template"]')
+      if (selector) {
+        // Find or create an option with the value "saved:{json}"
+        let option = Array.from(selector.options).find(o => o.value === `saved:${templateJson}`)
+        if (!option) {
+          option = new Option(match.name, `saved:${templateJson}`, true, true)
+          selector.add(option)
+        }
+        selector.value = `saved:${templateJson}`
+        applySavedTemplate(templateJson)
+      }
+    }
+  }, [templates, applySavedTemplate])
+
   return (
     <form action={createProvider} className="space-y-4">
       <input type="hidden" name="type" value="CUSTOM" />
@@ -223,7 +243,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
         </div>
         <div>
           <label htmlFor="code" className="block text-sm font-medium text-gray-700">Provider Code</label>
-          <input id="code" name="code" type="text" required placeholder="e.g. PROVIDER1" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm font-mono uppercase focus:border-blue-500 focus:outline-none" />
+          <input id="code" name="code" type="text" required placeholder="e.g. AIRHUB" onChange={handleCodeChange} className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm font-mono uppercase focus:border-blue-500 focus:outline-none" />
           <p className="mt-1 text-xs text-gray-500">Unique identifier, auto-uppercased.</p>
         </div>
       </div>
@@ -268,7 +288,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
         </div>
         <div>
           <label htmlFor="authUrl" className="block text-sm font-medium text-gray-700">Auth URL (optional)</label>
-          <input id="authUrl" name="authUrl" type="url" defaultValue="" placeholder="https://auth.provider.com/token" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
+          <input id="authUrl" name="authUrl" type="text" defaultValue="" placeholder="https://auth.provider.com/token or /relative/path" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
           <p className="mt-1 text-xs text-gray-400">Separate auth endpoint if different from API Base URL.</p>
         </div>
       </div>
