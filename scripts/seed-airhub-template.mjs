@@ -45,7 +45,8 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: '{{partnerCode}}', countryCode: '{{countryCode|GB}}', flag: '2' },
+          GET_PLANS: { partnerCode: '{{partnerCode}}', countryCode: '{{countryCode|GB}}', multiplecountrycode: '{{countryCode|GB}}', flag: '2' },
+
           PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
         requiredConfigFields: [
@@ -84,7 +85,7 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: '{{partnerCode}}', countryCode: '{{countryCode|GB}}', flag: '2' },
+          GET_PLANS: { partnerCode: '{{partnerCode}}', countryCode: '{{countryCode|GB}}', multiplecountrycode: '{{countryCode|GB}}', flag: '2' },
           PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
         requiredConfigFields: [
@@ -97,7 +98,6 @@ console.log('Seeding Airhub Outreach system template...')
       },
     })
   }
-
   console.log('Airhub Outreach template ready.')
   console.log('')
   console.log('To connect Airhub as a provider:')
