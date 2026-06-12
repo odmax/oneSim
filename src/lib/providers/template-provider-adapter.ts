@@ -168,7 +168,11 @@ export class TemplateProviderAdapter implements ProviderAdapter {
 
     const body: any = {}
     for (const [key, val] of Object.entries(mapping)) {
-      body[key] = resolveVar(String(val))
+      if (Array.isArray(val)) {
+        body[key] = val.map(v => resolveVar(String(v)))
+      } else {
+        body[key] = resolveVar(String(val))
+      }
     }
     return body
   }
