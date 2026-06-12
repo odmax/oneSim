@@ -31,16 +31,6 @@ export async function createProvider(formData: FormData) {
   const priority = parseInt(formData.get('priority') as string) || 0
   const isDefaultFallback = formData.get('isDefaultFallback') === 'on'
   const regionsRaw = formData.get('regions') as string
-  const supportsESIM = formData.get('supportsESIM') === 'on'
-  const supportsUsage = formData.get('supportsUsage') === 'on'
-  const supportsTopUp = formData.get('supportsTopUp') === 'on'
-  const supportsSuspend = formData.get('supportsSuspend') === 'on'
-  const supportsQRCode = formData.get('supportsQRCode') === 'on'
-  const supportsPools = formData.get('supportsPools') === 'on'
-  const supportsTemplates = formData.get('supportsTemplates') === 'on'
-  const supportsUsageSync = formData.get('supportsUsageSync') === 'on'
-  const supportsWebhookPush = formData.get('supportsWebhookPush') === 'on'
-  const supportsSuspendResume = formData.get('supportsSuspendResume') === 'on'
   const endpointMappingsRaw = formData.get('endpointMappings') as string
   let parsedEndpointMappings = endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : null
   const providerTemplateId = formData.get('providerTemplateId') as string
@@ -54,6 +44,24 @@ export async function createProvider(formData: FormData) {
   if (providerTemplateId) {
     try { tpl = await prisma.providerTemplate.findUnique({ where: { id: providerTemplateId } }) } catch { /* best-effort */ }
   }
+
+  // Read capabilities from form, with template defaultCapabilities fallback
+  const tplCaps = tpl?.defaultCapabilities as Record<string, boolean> | null
+  const capFromForm = (key: string): boolean => {
+    const formVal = formData.get(key)
+    if (formVal) return formVal === 'on'
+    return tplCaps?.[key] === true
+  }
+  const supportsESIM = capFromForm('supportsESIM')
+  const supportsUsage = capFromForm('supportsUsage')
+  const supportsTopUp = capFromForm('supportsTopUp')
+  const supportsSuspend = capFromForm('supportsSuspend')
+  const supportsQRCode = capFromForm('supportsQRCode')
+  const supportsPools = capFromForm('supportsPools')
+  const supportsTemplates = capFromForm('supportsTemplates')
+  const supportsUsageSync = capFromForm('supportsUsageSync')
+  const supportsWebhookPush = capFromForm('supportsWebhookPush')
+  const supportsSuspendResume = capFromForm('supportsSuspendResume')
 
   // Auto-detect template-driven provider
   const isTemplate = !!(providerTemplateId || (parsedEndpointMappings && (parsedEndpointMappings.AUTH_LOGIN || parsedEndpointMappings.PURCHASE_ESIM || parsedEndpointMappings.GET_PLANS)))
