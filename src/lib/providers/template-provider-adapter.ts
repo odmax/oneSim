@@ -152,13 +152,12 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     const mapping = reqMap[capability]
     if (!mapping || typeof mapping !== 'object') return {}
 
-    const resolveVar = (tmpl: string): string => {
+    const resolveVar = (tmpl: string): string | number | boolean => {
       const match = tmpl.match(/^\{\{(.+?)\}\}$/)
       if (!match) return tmpl
       const parts = match[1].split('|')
       const varName = parts[0]
       const defaultValue = parts[1] || ''
-      // Check multiple sources
       const val = this.config?.[varName]
         ?? this.provider[varName]
         ?? process.env[varName]
@@ -166,13 +165,20 @@ export class TemplateProviderAdapter implements ProviderAdapter {
       return val ?? ''
     }
 
+    const resolveValue = (val: any): any => {
+      // Preserve number and boolean literals from the mapping
+      if (typeof val === 'number') return val
+      if (typeof val === 'boolean') return val
+      if (Array.isArray(val)) return val.map(v => resolveValue(v))
+      // Template variables resolve as strings (from config/form)
+      if (typeof val === 'string' && val.match(/^\{\{(.+?)\}\}$/)) return resolveVar(String(val))
+      // Static strings passed through
+      return String(val)
+    }
+
     const body: any = {}
     for (const [key, val] of Object.entries(mapping)) {
-      if (Array.isArray(val)) {
-        body[key] = val.map(v => resolveVar(String(v)))
-      } else {
-        body[key] = resolveVar(String(val))
-      }
+      body[key] = resolveValue(val)
     }
     return body
   }
