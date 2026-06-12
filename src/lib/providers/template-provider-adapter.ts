@@ -194,7 +194,12 @@ export class TemplateProviderAdapter implements ProviderAdapter {
       headers: Object.keys(headers),
       body,
     })
-    const result = await rawFetch(url, { method: ep.method, headers, body: JSON.stringify(body) })
+    const fetchOpts: any = { method: ep.method, headers }
+    // Only send body for methods that support it
+    if (['POST', 'PUT', 'PATCH'].includes(ep.method.toUpperCase())) {
+      fetchOpts.body = JSON.stringify(body)
+    }
+    const result = await rawFetch(url, fetchOpts)
     if (result.error) {
       const responsePreview = result.data ? JSON.stringify(result.data).substring(0, 200) : ''
       return { error: { code: result.error.code, message: `${capability} failed: ${ep.method} ${url} returned ${result.status || 'error'}: ${result.error.message}${responsePreview ? ` | Response: ${responsePreview}` : ''}`, details: { capability, url, method: ep.method, status: result.status, responseBody: responsePreview } } }

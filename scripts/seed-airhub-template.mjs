@@ -8,7 +8,7 @@ const airhubEndpoints = {
   WALLET_BALANCE: 'POST /api/ESIM/GetWallet',
   ORDER_DETAILS: 'POST /api/ESIM/OrderDetails',
   GET_ACTIVATION_CODE: 'POST /api/ESIM/GetActivationCode',
-  COUNTRY_REGION_DETAILS: 'POST /api/ESIM/GetCountryRegionDetails',
+  COUNTRY_REGION_DETAILS: 'GET /api/ESIM/Getcountry_regiondetail?flag=2',
   TOP_UP: 'POST /api/ESIM/InsertRenew',
   RENEW_ESIM: 'POST /api/ESIM/InsertRenew',
 }
