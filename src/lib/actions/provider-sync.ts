@@ -24,17 +24,24 @@ function extractCountry(rawData: string): string | null {
 function inferCapabilitiesFromProvider(provider: any): Record<string, boolean> {
   const planListPath = provider.planListPath || ''
   const responseListKey = provider.responseListKey || ''
+  const ep = (provider.endpointMappings || {}) as Record<string, string>
 
   const capabilities: Record<string, boolean> = {}
 
+  // Direct path fields take priority, then endpoint mappings
   capabilities.supportsESIM = true
-  capabilities.supportsPlanSync = !!planListPath
-  capabilities.supportsQRCode = !!provider.activationPath
-  capabilities.supportsUsage = !!(provider.usagePath || provider.statusPath)
-  capabilities.supportsUsageSync = !!provider.usagePath
-  capabilities.supportsSuspend = !!provider.suspendPath
-  capabilities.supportsSuspendResume = !!(provider.suspendPath && provider.resumePath)
-  capabilities.supportsTopUp = !!provider.topUpPath
+  capabilities.supportsPlanSync = !!(planListPath || ep.GET_PLANS)
+  capabilities.supportsQRCode = !!(provider.activationPath || ep.GET_ACTIVATION_CODE)
+  capabilities.supportsUsage = !!(provider.usagePath || provider.statusPath || ep.GET_USAGE)
+  capabilities.supportsUsageSync = !!(provider.usagePath || ep.GET_USAGE)
+  capabilities.supportsSuspend = !!(provider.suspendPath || ep.SUSPEND_ESIM)
+  capabilities.supportsSuspendResume = !!((provider.suspendPath && provider.resumePath) || (ep.SUSPEND_ESIM && ep.RESUME_ESIM))
+  capabilities.supportsTopUp = !!(provider.topUpPath || ep.PURCHASE_TOPUP || ep.GET_TOPUP_PLANS || ep.TOP_UP || ep.RENEW_ESIM)
+  capabilities.supportsWallet = !!(ep.GET_WALLET || ep.WALLET_BALANCE)
+  capabilities.supportsOrderLookup = !!(ep.GET_ORDER_DETAIL || ep.GET_ORDER_DETAILS || ep.ORDER_DETAILS)
+  capabilities.supportsInventory = !!(ep.GET_INVENTORY || ep.GET_PARTNER_INVENTORY_COUNT)
+  capabilities.supportsCountryCatalog = !!(ep.GET_COUNTRIES || ep.COUNTRY_REGION_DETAILS)
+  capabilities.supportsRenewals = !!(ep.INSERT_RENEW || ep.GET_RENEW_DATA || ep.RENEW_ESIM)
   capabilities.supportsBundleTemplates = planListPath.includes('bundle_templates') || responseListKey === 'bundle_template_list'
 
   return capabilities

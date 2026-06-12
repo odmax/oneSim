@@ -163,18 +163,24 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
         <div className="rounded-lg border bg-white p-6 shadow-sm">
           <h3 className="mb-4 text-lg font-semibold text-gray-900">Capabilities</h3>
           <div className="grid grid-cols-2 gap-2">
-            {[
-              { key: 'supportsESIM', label: 'eSIM Provisioning', yes: provider.supportsESIM },
-              { key: 'supportsQRCode', label: 'QR Code', yes: provider.supportsQRCode },
-              { key: 'supportsUsage', label: 'Usage Tracking', yes: provider.supportsUsage },
-              { key: 'supportsUsageSync', label: 'Usage Sync', yes: provider.supportsUsageSync },
-              { key: 'supportsTopUp', label: 'Top-Up Support', yes: provider.supportsTopUp },
-              { key: 'supportsSuspend', label: 'Suspend', yes: provider.supportsSuspend },
-              { key: 'supportsSuspendResume', label: 'Suspend/Resume', yes: provider.supportsSuspendResume },
-              { key: 'supportsPools', label: 'Data Pools', yes: provider.supportsPools },
-              { key: 'supportsTemplates', label: 'Bundle Templates', yes: provider.supportsTemplates },
-              { key: 'supportsWebhookPush', label: 'Webhook Push', yes: provider.supportsWebhookPush },
-            ].map(cap => (
+            {(() => {
+              const ep = (provider.endpointMappings || {}) as Record<string, string>
+              const p = provider as any
+              const hasEP = (k: string) => !!ep[k]
+              const caps = [
+                { key: 'supportsESIM', label: 'eSIM Provisioning', yes: p.supportsESIM || hasEP('PURCHASE_ESIM') },
+                { key: 'supportsQRCode', label: 'QR Code', yes: p.supportsQRCode || hasEP('GET_ACTIVATION_CODE') },
+                { key: 'supportsTopUp', label: 'Top-Up Support', yes: p.supportsTopUp || hasEP('PURCHASE_TOPUP') || hasEP('GET_TOPUP_PLANS') || hasEP('TOP_UP') || hasEP('RENEW_ESIM') },
+                { key: 'supportsUsage', label: 'Usage Tracking', yes: p.supportsUsage || hasEP('GET_USAGE') },
+                { key: 'supportsUsageSync', label: 'Usage Sync', yes: p.supportsUsageSync || hasEP('GET_USAGE') },
+                { key: 'supportsSuspend', label: 'Suspend', yes: p.supportsSuspend || hasEP('SUSPEND_ESIM') },
+                { key: 'supportsSuspendResume', label: 'Suspend/Resume', yes: p.supportsSuspendResume || (hasEP('SUSPEND_ESIM') && (hasEP('RESUME_ESIM') || hasEP('REACTIVATE_ESIM'))) },
+                { key: 'supportsPools', label: 'Data Pools', yes: p.supportsPools },
+                { key: 'supportsTemplates', label: 'Bundle Templates', yes: p.supportsTemplates },
+                { key: 'supportsWebhookPush', label: 'Webhook Push', yes: p.supportsWebhookPush },
+              ]
+              return caps
+            })().map(cap => (
               <div key={cap.key} className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
                 <span className="text-sm text-gray-700">{cap.label}</span>
                 {cap.yes ? (
