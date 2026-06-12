@@ -348,6 +348,20 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
     if (!authResult.success) return { success: false, error: authResult.error }
 
     const result = await this.callCapabilityWithBody('GET_PLANS')
+
+    console.log('[GET_PLANS_RESULT]', {
+      hasError: !!result.error,
+      hasData: !!result.data,
+      error: result.error || null,
+      dataType: result.data ? typeof result.data : null,
+    })
+    if (result.data) {
+      console.log('[GET_PLANS_RAW]', JSON.stringify(result.data).substring(0, 5000))
+    }
+    if (result.error) {
+      console.log('[GET_PLANS_ERROR]', JSON.stringify(result.error))
+    }
+
     if (result.error) return { success: false, error: result.error }
     if (!result.data) return { success: false, error: { code: 'EMPTY', message: 'Empty plans response' } }
 
@@ -355,6 +369,7 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
     const ep = this.endpointMappings
     const rm = (this.provider.requestMappings || {}) as any
     console.log('[syncPlans] diag', { listKey, GET_PLANS_EP: ep?.GET_PLANS, hasRM_GET_PLANS: !!rm.GET_PLANS, rawResponseKeys: Object.keys(result.data), responseStatus: 200 })
+    console.log('[GET_PLANS_EXTRACT]', { listKey, responseListKey: this.provider.responseListKey })
 
     const items = extractList(result.data, listKey)
     console.log('[syncPlans] extractedPlans=' + items.length)
