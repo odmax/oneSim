@@ -47,6 +47,20 @@ export async function syncProviderPlans(providerId: string) {
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) return { error: 'Provider not found' }
 
+  // Resolve plan list path from endpointMappings or template for template-driven providers
+  const resolvedPlanListPath = (() => {
+    if (provider.planListPath) return provider.planListPath
+    const ep = provider.endpointMappings as Record<string, string> | null
+    if (ep?.GET_PLANS) return ep.GET_PLANS
+    return '(not set)'
+  })()
+
+  // Resolve response list key from provider, template, or responseMappings
+  const resolvedResponseListKey = (() => {
+    if (provider.responseListKey) return provider.responseListKey
+    return '(not set)'
+  })()
+
   const diagnostics: any = {
     providerId: provider.id,
     providerName: provider.name,
@@ -57,9 +71,9 @@ export async function syncProviderPlans(providerId: string) {
     authUrl: provider.authUrl || '(not set)',
     tokenPresent: !!provider.apiToken,
     tokenLength: provider.apiToken ? 1 : 0,
-    tokenPlacement: provider.tokenPlacement || 'URL_PATH',
-    planListPath: provider.planListPath || '(not set)',
-    responseListKey: provider.responseListKey || '(not set)',
+    tokenPlacement: provider.tokenPlacement || 'BEARER_HEADER',
+    planListPath: resolvedPlanListPath,
+    responseListKey: resolvedResponseListKey,
     endpoint: '',
     responseStatus: 0,
     responseKeys: [],
