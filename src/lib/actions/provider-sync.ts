@@ -147,12 +147,15 @@ export async function syncProviderPlans(providerId: string) {
       },
     })
 
+    console.log('[syncProviderPlans] responseListKey=' + resolvedResponseListKey + ' plans=' + plans.length + ' endpointMappings.GET_PLANS=' + (provider.endpointMappings as any)?.GET_PLANS)
+
     // Create/update ProviderPackage records from synced plans
+    let imported = 0, duplicates = 0, skipped = 0
     for (const plan of plans) {
       const raw = plan.raw_data || {}
       const providerPlanId = plan.id || raw.id || raw.planCode || ''
       const providerPlanCode = raw.planCode || raw.sku || plan.sku || ''
-      if (!providerPlanId) continue
+      if (!providerPlanId) { skipped++; continue }
 
       // Check for existing ProviderPackage by providerPlanId
       const existing = await prisma.providerPackage.findFirst({
@@ -175,12 +178,15 @@ export async function syncProviderPlans(providerId: string) {
 
       if (existing) {
         await prisma.providerPackage.update({ where: { id: existing.id }, data: pkgData })
+        duplicates++
       } else {
         await prisma.providerPackage.create({
           data: { providerId, providerPlanId, ...pkgData },
         })
+        imported++
       }
     }
+    console.log('[syncProviderPlans] imported=' + imported + ' duplicates=' + duplicates + ' skipped=' + skipped + ' total=' + plans.length)
 
     await prisma.auditLog.create({
       data: {

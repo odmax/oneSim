@@ -352,7 +352,18 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
     if (!result.data) return { success: false, error: { code: 'EMPTY', message: 'Empty plans response' } }
 
     const listKey = this.provider.responseListKey || this.config?.responseListKey || 'data'
+    const ep = this.endpointMappings
+    const rm = (this.provider.requestMappings || {}) as any
+    console.log('[syncPlans] diag', { listKey, GET_PLANS_EP: ep?.GET_PLANS, hasRM_GET_PLANS: !!rm.GET_PLANS, rawResponseKeys: Object.keys(result.data), responseStatus: 200 })
+
     const items = extractList(result.data, listKey)
+    console.log('[syncPlans] extractedPlans=' + items.length)
+    if (items.length > 0) {
+      const first = { ...items[0] }
+      // Truncate long values for safe logging
+      for (const [k, v] of Object.entries(first)) { if (typeof v === 'string' && v.length > 100) first[k] = v.substring(0, 100) + '...' }
+      console.log('[syncPlans] firstPlan', JSON.stringify(first).substring(0, 500))
+    }
     const fieldMap = (this.provider.fieldMappings || {}) as Record<string, string>
 
     const plans: ProviderPlan[] = items.map((item: any) => {
