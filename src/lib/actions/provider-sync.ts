@@ -97,6 +97,12 @@ export async function syncProviderPlans(providerId: string) {
     const adapter = await buildAdapter(provider)
     if (!adapter) return { error: `No adapter available for provider type "${provider.type}" / strategy "${strategy}"`, diagnostics }
 
+    // Log sync context for debugging
+    const isTemplateDriven = !!(provider.providerTemplateId || provider.adapterStrategy === 'TEMPLATE')
+    const ep = (provider.endpointMappings || {}) as Record<string, string>
+    const rm = (provider.requestMappings || {}) as Record<string, any>
+    console.log(`[syncProviderPlans] provider=${provider.code} strategy=${provider.adapterStrategy} isTemplate=${isTemplateDriven} GET_PLANS_EP=${ep.GET_PLANS || '(not set)'} hasRM_GET_PLANS=${!!rm.GET_PLANS}`)
+
     const planListPath = provider.planListPath || '/plans'
     diagnostics.endpoint = `${provider.apiBaseUrl || '(baseUrl)'}${planListPath.replace(/\{token\}/g, '{token}')}`
 

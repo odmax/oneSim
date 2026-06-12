@@ -66,6 +66,19 @@ function extractToken(data: any, tokenPath?: string): string | null {
   return data.token || data.accessToken || data.access_token || data.data?.token || data.response?.token || null
 }
 
+function findFirstArray(obj: any, depth = 0, maxDepth = 5): any[] | null {
+  if (depth > maxDepth) return null
+  if (Array.isArray(obj)) return obj
+  if (obj && typeof obj === 'object') {
+    for (const val of Object.values(obj)) {
+      if (Array.isArray(val)) return val
+      const found = findFirstArray(val, depth + 1, maxDepth)
+      if (found) return found
+    }
+  }
+  return null
+}
+
 function extractList(data: any, listKey?: string): any[] {
   if (Array.isArray(data)) return data
   if (listKey) {
@@ -82,6 +95,9 @@ function extractList(data: any, listKey?: string): any[] {
   }
   const firstArr = Object.values(data).find(v => Array.isArray(v))
   if (firstArr) return firstArr as any[]
+  // Recursive search into nested objects (handles { isSuccess, data: { plans: [...] } })
+  const deepArr = findFirstArray(data)
+  if (deepArr) return deepArr
   return []
 }
 
