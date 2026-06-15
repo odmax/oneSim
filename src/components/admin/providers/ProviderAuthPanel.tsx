@@ -33,6 +33,7 @@ interface ProviderAuthPanelProps {
   authUrl?: string | null
   initialStatus?: AuthStatusData
   configValues?: Record<string, string>
+  requiredConfigFields?: Array<{ name: string; label: string; type: string; required: boolean; placeholder?: string }>
 }
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
@@ -44,7 +45,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: string
   unknown: { label: 'Unknown', color: 'text-gray-700 bg-gray-50 border-gray-200', icon: '❓' },
 }
 
-export function ProviderAuthPanel({ providerId, providerType, providerName, authType, authUrl, initialStatus, configValues = {} }: ProviderAuthPanelProps) {
+export function ProviderAuthPanel({ providerId, providerType, providerName, authType, authUrl, initialStatus, configValues = {}, requiredConfigFields = [] }: ProviderAuthPanelProps) {
   const router = useRouter()
   const [authStatus, setAuthStatus] = useState<AuthStatusData>(initialStatus || { hasToken: false, isConnected: false, status: 'unknown' })
   const [accountConfig, setAccountConfig] = useState<any>(null)
@@ -340,7 +341,7 @@ export function ProviderAuthPanel({ providerId, providerType, providerName, auth
           <p className="text-sm text-gray-600">
             Configure provider connection details.
           </p>
-          <CredentialFields type={providerType} authType={authType} authUrl={authUrl} values={configValues || {}} />
+          <CredentialFields type={providerType} authType={authType} authUrl={authUrl} values={configValues || {}} extraFields={requiredConfigFields} />
           <div className="flex gap-3">
             <button
               type="submit"

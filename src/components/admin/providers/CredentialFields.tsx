@@ -39,12 +39,16 @@ interface CredentialFieldsProps {
   authUrl?: string | null
   onChange?: (field: string, value: string) => void
   values?: Record<string, string>
+  extraFields?: Array<{ name: string; label: string; type: string; required: boolean; placeholder?: string }>
 }
 
-export function CredentialFields({ type, authType, authUrl, onChange, values = {} }: CredentialFieldsProps) {
-  const fields = authType ? fieldsForAuthType(authType) : getAdapterCredentialFields(type, authUrl)
+export function CredentialFields({ type, authType, authUrl, onChange, values = {}, extraFields = [] }: CredentialFieldsProps) {
+  const baseFields = authType ? fieldsForAuthType(authType) : getAdapterCredentialFields(type, authUrl)
+  // Merge base fields with extraFields, avoiding duplicates by name
+  const existingNames = new Set(baseFields.map(f => f.name))
+  const mergedFields = [...baseFields, ...extraFields.filter(f => !existingNames.has(f.name))]
 
-  if (fields.length === 0) {
+  if (mergedFields.length === 0) {
     return (
       <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4 text-sm text-yellow-800">
         No credential fields defined for provider type <strong>{type}</strong>. Select a provider type first.
@@ -54,22 +58,22 @@ export function CredentialFields({ type, authType, authUrl, onChange, values = {
 
   return (
     <div className="space-y-4">
-      {fields.map((field) => (
+      {mergedFields.map((field) => (
         <div key={field.name}>
           <label htmlFor={`cred-${field.name}`} className="block text-sm font-medium text-gray-700 mb-1">
             {field.label}
             {field.required && <span className="text-red-500 ml-0.5">*</span>}
           </label>
-          {field.type === 'select' ? (
+          {field.type === 'select' && (field as any).options ? (
             <select
               id={`cred-${field.name}`}
               name={field.name}
               required={field.required}
-              defaultValue={values[field.name] || field.options?.[0]?.value || ''}
+              defaultValue={values[field.name] || ((field as any).options?.[0]?.value) || ''}
               onChange={e => onChange?.(field.name, e.target.value)}
               className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none"
             >
-              {field.options?.map(opt => (
+              {(field as any).options?.map((opt: any) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
