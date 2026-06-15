@@ -127,6 +127,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
           authType={provider.authType}
           authUrl={provider.authUrl}
           initialStatus={authStatus}
+          configValues={(provider.config || {}) as Record<string, string>}
         />
 
         <div className="rounded-lg border bg-white p-6 shadow-sm">

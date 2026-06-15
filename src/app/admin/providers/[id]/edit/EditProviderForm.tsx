@@ -98,7 +98,7 @@ export function EditProviderForm({ provider }: { provider: any }) {
         </div>
         <div>
           <label htmlFor="authUrl" className="block text-sm font-medium text-gray-700">Auth URL (optional)</label>
-          <input id="authUrl" name="authUrl" type="url" defaultValue={provider.authUrl || ''} placeholder="https://auth.provider.com/token" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
+          <input id="authUrl" name="authUrl" type="text" defaultValue={provider.authUrl || ''} placeholder="https://auth.provider.com/token or /relative/path" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
           <p className="mt-1 text-xs text-gray-400">Separate auth endpoint if different from API Base URL.</p>
         </div>
       </div>
