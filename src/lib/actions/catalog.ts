@@ -44,6 +44,9 @@ export async function convertToCatalogProduct(packageId: string, formData: FormD
         isActive,
         displayName,
         markupPercent,
+        // Clear archive flags when converting (even if not immediately active)
+        hiddenFromCatalog: false,
+        archivedAt: null,
       },
     })
 
@@ -102,6 +105,8 @@ export async function saveAndConvertToCatalog(packageId: string, formData: FormD
     localPrice: localPrice ? parseFloat(localPrice) : newPriceUSD,
     isActive,
     markupPercent,
+    hiddenFromCatalog: false,
+    archivedAt: null,
   }
 
   if (providerId !== undefined) {

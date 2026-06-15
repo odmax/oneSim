@@ -35,7 +35,11 @@ export async function togglePackageActivation(packageId: string, formData: FormD
 
   await prisma.eSIMPackage.update({
     where: { id: packageId },
-    data: { isActive: newActive },
+    data: {
+      isActive: newActive,
+      // When reactivating, clear archive/hidden flags so package re-appears in catalog
+      ...(newActive ? { hiddenFromCatalog: false, archivedAt: null } : {}),
+    },
   })
 
   await prisma.auditLog.create({
@@ -217,6 +221,8 @@ export async function savePackage(packageId: string, formData: FormData) {
   if (action === 'save_and_activate') {
     finalIsActive = true
     updateData.isActive = true
+    updateData.hiddenFromCatalog = false
+    updateData.archivedAt = null
   } else if (action === 'hide') {
     finalIsActive = false
     updateData.isActive = false
