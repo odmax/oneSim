@@ -47,6 +47,7 @@ console.log('Seeding Airhub Outreach system template...')
           supportsESIM: true,
           supportsTopUp: true,
           supportsQRCode: true,
+          supportsRenewals: true,
         },
         endpointMappings: airhubEndpoints,
         requestMappings: {
@@ -93,6 +94,7 @@ console.log('Seeding Airhub Outreach system template...')
           supportsESIM: true,
           supportsTopUp: true,
           supportsQRCode: true,
+          supportsRenewals: true,
         },
         endpointMappings: airhubEndpoints,
         requestMappings: {

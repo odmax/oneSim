@@ -180,6 +180,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
                 { key: 'supportsPools', label: 'Data Pools', yes: p.supportsPools },
                 { key: 'supportsTemplates', label: 'Bundle Templates', yes: p.supportsTemplates },
                 { key: 'supportsWebhookPush', label: 'Webhook Push', yes: p.supportsWebhookPush },
+                { key: 'supportsRenewals', label: 'eSIM Renewal', yes: p.supportsRenewals || hasEP('RENEW_ESIM') || hasEP('INSERT_RENEW') || hasEP('GET_RENEW_DATA') || hasEP('TOP_UP') || hasEP('PURCHASE_TOPUP') },
               ]
               return caps
             })().map(cap => (
