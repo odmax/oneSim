@@ -43,7 +43,11 @@ const BUILTIN_TEMPLATES: Record<string, BuiltInTemplate> = {
   custom: {
     label: 'Custom (Start Blank)',
     description: 'Configure every field manually',
-    presets: {},
+    presets: {
+      adapterStrategy: 'REST_CATALOG',
+      authType: 'bearer_token',
+      environment: 'staging',
+    },
   },
   url_token: {
     label: 'URL Token Provider',
@@ -120,7 +124,10 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
       STANDARD: 'STANDARD', URL_TOKEN: 'URL_TOKEN',
       HEADER_TOKEN: 'HEADER_TOKEN', REST_CATALOG: 'REST_CATALOG', MOCK: 'MOCK',
     }
-    setField('adapterStrategy', connectorToAdapter[t.connectorType] || '')
+    // Detect template-driven providers: if template has capability-style endpoints, use TEMPLATE adapter strategy
+    const isTemplateDriven = !!(t.endpointMappings && (t.endpointMappings.AUTH_LOGIN || t.endpointMappings.GET_PLANS || t.endpointMappings.PURCHASE_ESIM))
+    const effectiveStrategy = isTemplateDriven ? 'TEMPLATE' : (connectorToAdapter[t.connectorType] || '')
+    setField('adapterStrategy', effectiveStrategy)
     setField('authType', t.authType || 'bearer_token')
     setField('apiBaseUrl', t.defaultBaseUrl || '')
     setField('authUrl', t.defaultAuthUrl || '')
@@ -209,7 +216,6 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
     <form action={createProvider} className="space-y-4">
       <input type="hidden" name="type" value="CUSTOM" />
       <input type="hidden" name="endpointMappings" value={hiddenEndpointMappings} />
-      <input type="hidden" name="adapterStrategy" value={hiddenAdapterStrategy} />
       <input type="hidden" name="providerTemplateId" value={hiddenProviderTemplateId} />
       <input type="hidden" name="requestMappings" value={hiddenRequestMappings} />
       <input type="hidden" name="responseMappings" value={hiddenResponseMappings} />
