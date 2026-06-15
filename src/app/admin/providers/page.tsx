@@ -10,12 +10,16 @@ function maskApiToken(token: string | null): string {
   return '••••••••' + token.slice(-4)
 }
 
-function getAuthStatus(provider: { apiToken: string | null; lastSuccessfulConnection: Date | null; lastFailedConnection: Date | null; errorCount: number | null; lastError: string | null }): { label: string; color: string; dot: string } {
-  if (!provider.apiToken) {
-    return { label: 'Not Configured', color: 'text-gray-600 bg-gray-100', dot: '⚪' }
-  }
-  if (provider.lastSuccessfulConnection && (!provider.lastFailedConnection || provider.lastSuccessfulConnection > provider.lastFailedConnection)) {
+function getAuthStatus(provider: { apiToken: string | null; lastSuccessfulConnection: Date | null; lastFailedConnection: Date | null; errorCount: number | null; lastError: string | null; config?: any }): { label: string; color: string; dot: string } {
+  const hasLegacyToken = !!provider.apiToken
+  const configToken = !!(provider.config as any)?.apiToken || !!(provider.config as any)?.token
+  const hasAnyToken = hasLegacyToken || configToken
+
+  if (provider.lastSuccessfulConnection && (!provider.lastFailedConnection || provider.lastSuccessfulConnection > provider.lastFailedConnection) && (provider.errorCount ?? 0) === 0) {
     return { label: 'Connected', color: 'text-green-700 bg-green-50', dot: '🟢' }
+  }
+  if (!hasAnyToken && !provider.lastSuccessfulConnection) {
+    return { label: 'Not Configured', color: 'text-gray-600 bg-gray-100', dot: '⚪' }
   }
   if (provider.lastError?.includes('token') || provider.lastError?.includes('expired') || provider.lastError?.includes('401')) {
     return { label: 'Token Expired', color: 'text-red-700 bg-red-50', dot: '🔴' }
