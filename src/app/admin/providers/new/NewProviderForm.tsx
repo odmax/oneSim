@@ -99,7 +99,7 @@ function setField(name: string, value: string) {
 export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[] }) {
   // Controlled state for hidden/meta fields (avoids React overriding DOM setField)
   const [hiddenEndpointMappings, setHiddenEndpointMappings] = useState('')
-  const [hiddenAdapterStrategy, setHiddenAdapterStrategy] = useState('')
+  const [resolvedAdapterStrategy, setResolvedAdapterStrategy] = useState('REST_CATALOG')
   const [hiddenProviderTemplateId, setHiddenProviderTemplateId] = useState('')
   const [hiddenRequestMappings, setHiddenRequestMappings] = useState('')
   const [hiddenResponseMappings, setHiddenResponseMappings] = useState('')
@@ -108,8 +108,9 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
   const applyBuiltinTemplate = useCallback((templateId: string) => {
     const template = BUILTIN_TEMPLATES[templateId]
     if (!template) return
-    setField('adapterStrategy', template.presets.adapterStrategy || '')
-    setHiddenAdapterStrategy(template.presets.adapterStrategy || '')
+    const strat = template.presets.adapterStrategy || 'REST_CATALOG'
+    setField('adapterStrategy', strat)
+    setResolvedAdapterStrategy(strat)
     setField('authType', template.presets.authType || 'bearer_token')
     setField('apiBaseUrl', template.presets.apiBaseUrl || '')
     setField('authUrl', template.presets.authUrl || '')
@@ -126,8 +127,9 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
     }
     // Detect template-driven providers: if template has capability-style endpoints, use TEMPLATE adapter strategy
     const isTemplateDriven = !!(t.endpointMappings && (t.endpointMappings.AUTH_LOGIN || t.endpointMappings.GET_PLANS || t.endpointMappings.PURCHASE_ESIM))
-    const effectiveStrategy = isTemplateDriven ? 'TEMPLATE' : (connectorToAdapter[t.connectorType] || '')
+    const effectiveStrategy = isTemplateDriven ? 'TEMPLATE' : (connectorToAdapter[t.connectorType] || 'REST_CATALOG')
     setField('adapterStrategy', effectiveStrategy)
+    setResolvedAdapterStrategy(effectiveStrategy)
     setField('authType', t.authType || 'bearer_token')
     setField('apiBaseUrl', t.defaultBaseUrl || '')
     setField('authUrl', t.defaultAuthUrl || '')
@@ -216,6 +218,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
     <form action={createProvider} className="space-y-4">
       <input type="hidden" name="type" value="CUSTOM" />
       <input type="hidden" name="endpointMappings" value={hiddenEndpointMappings} />
+      <input type="hidden" name="adapterStrategy" value={resolvedAdapterStrategy} />
       <input type="hidden" name="providerTemplateId" value={hiddenProviderTemplateId} />
       <input type="hidden" name="requestMappings" value={hiddenRequestMappings} />
       <input type="hidden" name="responseMappings" value={hiddenResponseMappings} />
@@ -260,13 +263,14 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
         <label htmlFor="adapterStrategy" className="block text-sm font-medium text-gray-700">Connector Type</label>
         <p className="text-xs text-gray-400 mb-1">Select the connector that matches how this provider works.</p>
         <select id="adapterStrategy" name="adapterStrategy" defaultValue="REST_CATALOG"
+          onChange={e => setResolvedAdapterStrategy(e.target.value)}
           className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none"
         >
           <option value="MOCK">Mock — Simulated provider for development</option>
           <option value="REST_CATALOG">REST API Provider — Standard REST API with plans catalog</option>
           <option value="URL_TOKEN">URL Token Provider — Token in URL path, SOAP auth, template bundles</option>
-          <option value="HEADER_TOKEN">Header Token Provider — Token in Authorization header, subscriber flow</option>
-          <option value="STANDARD">Standard — Path-based connector with endpoint mappings</option>
+          <option value="HEADER_TOKEN">Header Token Provider — Token in Authorization header</option>
+          <option value="TEMPLATE">Template-Driven — Capability/endpoint mapped provider (e.g., Airhub)</option>
         </select>
       </div>
 
