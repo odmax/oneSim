@@ -217,24 +217,25 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
 
       <div>
         <label htmlFor="template" className="block text-sm font-medium text-gray-700">Provider Template</label>
-        <p className="text-xs text-gray-400 mb-1">Choose a template to pre-fill settings, or start blank. <Link href="/admin/provider-templates" className="text-cyan-600 underline">Manage Templates</Link></p>
+        <p className="text-xs text-gray-400 mb-1">Choose a template to pre-fill settings, or start blank.</p>
         <select id="template" name="template" defaultValue="custom" onChange={handleTemplateChange}
           className="mt-1 block w-full max-w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none"
-          style={{ maxWidth: '100%' }}
+          style={{ maxWidth: '100%', minWidth: 0 }}
         >
           <optgroup label="Built-in Templates">
             {Object.entries(BUILTIN_TEMPLATES).map(([id, t]) => (
-              <option key={id} value={id} className="truncate">{t.label} — {t.description}</option>
+              <option key={id} value={id} className="truncate">{t.label}</option>
             ))}
           </optgroup>
           {hasSavedTemplates && (
             <optgroup label="Saved Templates">
               {templates.map(t => (
-                <option key={t.id} value={`saved:${JSON.stringify(t)}`} className="truncate">{t.name}{t.description ? ` — ${t.description}` : ''}</option>
+                <option key={t.id} value={`saved:${JSON.stringify(t)}`} className="truncate">{t.name}</option>
               ))}
             </optgroup>
           )}
         </select>
+        <p className="mt-1 text-xs text-gray-400">Template descriptions appear on hover. <Link href="/admin/provider-templates" className="text-cyan-600 underline">Manage Templates</Link></p>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
