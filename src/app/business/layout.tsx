@@ -49,6 +49,7 @@ export default async function BusinessLayout({
     { title: 'Developer Tools', href: '#', sectionHeader: true },
     { title: 'API Keys', href: '/business/api-keys', icon: 'Key' as const, readOnly: isMember },
     { title: 'API Documentation', href: '/business/developers', icon: 'FileCode' as const, readOnly: isMember },
+    { title: 'Integration Template', href: '/business/developers/template', icon: 'FileText' as const, readOnly: isMember },
     { title: 'API Analytics', href: '/business/api-analytics', icon: 'BarChart3' as const },
     { title: 'API Logs', href: '/business/api-usage', icon: 'List' as const },
     { title: 'Webhooks', href: '/business/webhooks', icon: 'Webhook' as const, readOnly: isMember },
