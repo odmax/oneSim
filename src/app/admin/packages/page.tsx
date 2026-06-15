@@ -4,10 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
-import { togglePackageActivation, hidePackageFromClients, movePackageToProviderPlan } from '@/lib/actions/markup'
-import { convertToCatalogProduct, bulkConvertToCatalog } from '@/lib/actions/catalog'
-import { DeletePackageButton } from '@/components/admin/providers/DeletePackageButton'
-import { ConfirmForm } from '@/components/admin/providers/ConfirmForm'
+import { bulkConvertToCatalog } from '@/lib/actions/catalog'
+import PackageActions from '@/components/admin/packages/PackageActions'
 
 const TABS = [
   { id: 'all', label: 'All Packages' },
@@ -261,59 +259,8 @@ export default async function AdminPackagesPage({
                   </div>
                 </div>
 
-                {/* Actions */}
-                <div className="flex flex-wrap gap-2">
-                  {pkg.source === 'PROVIDER_PLAN' ? (
-                    <>
-                      <Link
-                        href={`/admin/packages/${pkg.id}/edit`}
-                        className="flex-1 rounded-lg bg-emerald-600 px-3 py-2 text-center text-sm font-medium text-white hover:bg-emerald-700 shadow-sm"
-                      >
-                        {needsConfig ? 'Configure & Publish' : 'Edit & Publish'}
-                      </Link>
-                      <form action={convertToCatalogProduct.bind(null, pkg.id)}>
-                        <input type="hidden" name="priceUSD" value={sellingPrice > 0 ? sellingPrice.toString() : (costPrice > 0 ? (costPrice * 1.2).toFixed(2) : '1.00')} />
-                        <input type="hidden" name="localPrice" value={sellingPrice > 0 ? sellingPrice.toString() : (costPrice > 0 ? (costPrice * 1.2).toFixed(2) : '1.00')} />
-                        <input type="hidden" name="isActive" value="off" />
-                        <button type="submit" className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50">
-                          Quick Add
-                        </button>
-                      </form>
-                      <DeletePackageButton packageId={pkg.id} variant="card" hasPurchases={pkg._count.purchases > 0 || pkg._count.topUpRecords > 0} />
-                    </>
-                  ) : (
-                    <>
-                      <Link
-                        href={`/admin/packages/${pkg.id}/edit`}
-                        className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-center text-sm font-medium text-gray-700 hover:bg-gray-50"
-                      >
-                        Edit
-                      </Link>
-                      {pkg.isActive ? (
-                        <ConfirmForm action={hidePackageFromClients.bind(null, pkg.id)} message="Hide this package from business clients? Existing orders/eSIMs will not be affected.">
-                          <button type="submit" className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100">
-                            Hide
-                          </button>
-                        </ConfirmForm>
-                      ) : (
-                        <form action={togglePackageActivation.bind(null, pkg.id)}>
-                          <input type="hidden" name="isActive" value="on" />
-                          <button type="submit" className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-600 hover:bg-emerald-100">
-                            Activate
-                          </button>
-                        </form>
-                      )}
-                      {pkg.source === 'CATALOG_PRODUCT' && isImported && !pkg.isActive && (
-                        <ConfirmForm action={movePackageToProviderPlan.bind(null, pkg.id)} message="Move this package back to Provider Plans? It will no longer appear under Catalog Products. Provider mapping will be preserved.">
-                          <button type="submit" className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-500 hover:bg-gray-50">
-                            Revert
-                          </button>
-                        </ConfirmForm>
-                      )}
-                      <DeletePackageButton packageId={pkg.id} variant="card" hasPurchases={pkg._count.purchases > 0 || pkg._count.topUpRecords > 0} />
-                    </>
-                  )}
-                </div>
+                {/* Actions — shared component, state-driven */}
+                <PackageActions pkg={pkg as any} isImported={isImported} />
               </div>
             )
           })}
