@@ -386,9 +386,13 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
         const mapped = fieldMap[key]
         return mapped ? item[mapped] ?? item[key] ?? item[fieldMap[key]] : item[key] ?? item[key]
       }
-      const allowance = parseFloat(get('data_gb') ?? item.rate_group_allowance ?? item.dataGB ?? item.data_gb ?? 0)
-      const unit = (get('dataUnit') || item.rate_group_allow_qtyp || 'GB').toUpperCase()
-      const dataGB = unit === 'GB' ? allowance : unit === 'MB' ? Math.round(allowance / 1024) : allowance
+      // Compute dataGB from data_amount + data_unit (e.g., capacity=50, capacityUnit=GB → 50)
+      const dataAmount = get('data_amount') || item.capacity || ''
+      const dataUnit = (get('data_unit') || item.capacityUnit || item.rate_group_allow_qtyp || 'GB').toUpperCase()
+      const rawGb = parseFloat(get('data_gb') ?? item.rate_group_allowance ?? item.dataGB ?? item.data_gb ?? 0)
+      const amountGb = parseFloat(dataAmount) || 0
+      const allowance = amountGb > 0 ? amountGb : rawGb
+      const dataGB = dataUnit === 'GB' ? allowance : dataUnit === 'MB' ? Math.round(allowance / 1024) : allowance
       return {
         id: String(get('sku') || item.id || item.planCode || item.bundle_template_id || ''),
         name: String(get('name') || item.planName || item.bundle_name || item.name || ''),

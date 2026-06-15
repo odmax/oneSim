@@ -413,10 +413,14 @@ export async function getProviderAuthStatus(providerId: string) {
 
   if (!provider) return { hasToken: false, isConnected: false, status: 'unknown' }
 
-  const hasToken = !!provider.apiToken
+  // Template-driven providers may store token in config rather than apiToken field
+  const configToken = (provider.config as any)?.apiToken || (provider.config as any)?.token || null
+  const hasToken = !!provider.apiToken || !!configToken || !!provider.lastSuccessfulConnection
 
   let status: string
-  if (!hasToken) {
+  if (provider.lastSuccessfulConnection && (!provider.lastFailedConnection || provider.lastSuccessfulConnection > provider.lastFailedConnection) && (provider.errorCount ?? 0) === 0) {
+    status = 'connected'
+  } else if (!hasToken) {
     status = 'not_configured'
   } else if (provider.lastSuccessfulConnection && (!provider.lastFailedConnection || provider.lastSuccessfulConnection > provider.lastFailedConnection)) {
     status = 'connected'
