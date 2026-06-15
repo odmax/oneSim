@@ -108,6 +108,15 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
   const applyBuiltinTemplate = useCallback((templateId: string) => {
     const template = BUILTIN_TEMPLATES[templateId]
     if (!template) return
+    // Reset template-driven fields
+    setConfigFields([])
+    setHiddenEndpointMappings('')
+    setHiddenRequestMappings('')
+    setHiddenResponseMappings('')
+    setHiddenRequiredConfigFields('')
+    setHiddenProviderTemplateId('')
+    setField('providerTemplateId', '')
+    setField('endpointMappings', '')
     const strat = template.presets.adapterStrategy || 'REST_CATALOG'
     setField('adapterStrategy', strat)
     setResolvedAdapterStrategy(strat)
@@ -120,6 +129,9 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
 
   const applySavedTemplate = useCallback((templateJson: string) => {
     const t: SavedTemplate = JSON.parse(templateJson)
+
+    // Clear previous template config
+    setConfigFields([])
 
     const connectorToAdapter: Record<string, string> = {
       STANDARD: 'STANDARD', URL_TOKEN: 'URL_TOKEN',
