@@ -51,7 +51,7 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 5, countryCode: '{{countryCode|GB}}', multiplecountrycode: [] },
+          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 0, countryCode: '{{countryCode|UK}}', multiplecountrycode: ['{{countryCode|UK}}'] },
 
           PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
@@ -59,7 +59,7 @@ console.log('Seeding Airhub Outreach system template...')
           { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'Airhub API username' },
           { name: 'password', label: 'Password', type: 'password', required: true, placeholder: 'Airhub API password' },
           { name: 'partnerCode', label: 'Partner Code', type: 'text', required: false, placeholder: 'Optional partner code' },
-          { name: 'countryCode', label: 'Country Code', type: 'text', required: false, placeholder: 'GB (default)' },
+          { name: 'countryCode', label: 'Country Code', type: 'text', required: false, placeholder: 'UK (default)' },
         ],
         isSystemTemplate: true,
       },
@@ -97,14 +97,14 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 5, countryCode: '{{countryCode|GB}}', multiplecountrycode: [] },
+          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 0, countryCode: '{{countryCode|UK}}', multiplecountrycode: ['{{countryCode|UK}}'] },
           PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
         requiredConfigFields: [
           { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'Airhub API username' },
           { name: 'password', label: 'Password', type: 'password', required: true, placeholder: 'Airhub API password' },
           { name: 'partnerCode', label: 'Partner Code', type: 'text', required: false, placeholder: 'Optional partner code' },
-          { name: 'countryCode', label: 'Country Code', type: 'text', required: false, placeholder: 'GB (default)' },
+          { name: 'countryCode', label: 'Country Code', type: 'text', required: false, placeholder: 'UK (default)' },
         ],
         isSystemTemplate: true,
       },
