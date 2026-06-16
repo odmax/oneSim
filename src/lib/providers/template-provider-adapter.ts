@@ -290,6 +290,20 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     if (result.error) return { success: false, error: result.error }
     if (!result.data) return { success: false, error: { code: 'EMPTY_AUTH', message: 'Empty auth response' } }
 
+    // Temporary auth diagnostics — do not log token values
+    const dataKeys = typeof result.data === 'object' ? Object.keys(result.data) : []
+    const nestedResult = result.data?.result ? Object.keys(result.data.result) : []
+    console.log('[AUTH_DEBUG]', JSON.stringify({
+      status: 200,
+      topLevelKeys: dataKeys,
+      resultKeys: nestedResult,
+      hasResultAccessToken: !!(result.data?.result?.access_token),
+      hasAccessToken: !!(result.data?.access_token),
+      hasNestedToken: !!(result.data?.data?.token),
+      hasToken: !!(result.data?.token),
+      hasApiKey: !!(result.data?.apiKey ?? result.data?.result?.apiKey),
+    }))
+
     const token = extractToken(result.data, this.config?.tokenPath)
     if (!token) return { success: false, error: { code: 'NO_TOKEN', message: 'No token in auth response' } }
 
