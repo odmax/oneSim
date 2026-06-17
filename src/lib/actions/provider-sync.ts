@@ -128,7 +128,7 @@ export async function syncProviderPlans(providerId: string) {
     }
 
     // Auto-detect capabilities from provider config (don't override manual true settings)
-    const VALID_CAP_KEYS = new Set(['supportsESIM', 'supportsUsage', 'supportsTopUp', 'supportsSuspend', 'supportsQRCode', 'supportsPools', 'supportsTemplates', 'supportsUsageSync', 'supportsWebhookPush', 'supportsSuspendResume', 'supportsRenewals'])
+    const VALID_CAP_KEYS = new Set(['supportsESIM', 'supportsUsage', 'supportsTopUp', 'supportsSuspend', 'supportsQRCode', 'supportsPools', 'supportsTemplates', 'supportsUsageSync', 'supportsWebhookPush', 'supportsSuspendResume'])
     const inferred = inferCapabilitiesFromProvider(provider)
     const capabilitiesUpdate: Record<string, boolean> = {}
     for (const [key, value] of Object.entries(inferred)) {
