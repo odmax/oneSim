@@ -45,6 +45,9 @@ try {
       supportsQRCode: true,
       supportsUsage: true,
     },
+    responseMappings: {
+      tokenPath: 'result.access_token',
+    },
     endpointMappings: rakutenEndpoints,
     requestMappings: {
       AUTH_LOGIN: { username: '{{username}}', password: '{{password}}' },

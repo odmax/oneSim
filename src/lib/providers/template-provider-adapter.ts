@@ -63,7 +63,10 @@ function extractToken(data: any, tokenPath?: string): string | null {
     for (const p of parts) { if (current) current = current[p] }
     return current ? String(current) : null
   }
-  return data.token || data.accessToken || data.access_token || data.data?.token || data.response?.token || null
+  return data.token || data.accessToken || data.access_token
+    || data.data?.token || data.data?.access_token
+    || data.response?.token || data.result?.access_token
+    || data.result?.token || null
 }
 
 function findFirstArray(obj: any, depth = 0, maxDepth = 5): any[] | null {
@@ -290,21 +293,15 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     if (result.error) return { success: false, error: result.error }
     if (!result.data) return { success: false, error: { code: 'EMPTY_AUTH', message: 'Empty auth response' } }
 
-    // Temporary auth diagnostics — do not log token values
-    const dataKeys = typeof result.data === 'object' ? Object.keys(result.data) : []
-    const nestedResult = result.data?.result ? Object.keys(result.data.result) : []
-    console.log('[AUTH_DEBUG]', JSON.stringify({
-      status: 200,
-      topLevelKeys: dataKeys,
-      resultKeys: nestedResult,
-      hasResultAccessToken: !!(result.data?.result?.access_token),
-      hasAccessToken: !!(result.data?.access_token),
-      hasNestedToken: !!(result.data?.data?.token),
-      hasToken: !!(result.data?.token),
-      hasApiKey: !!(result.data?.apiKey ?? result.data?.result?.apiKey),
-    }))
+    const tokenPath = this.config?.tokenPath || this.provider.responseMappings?.tokenPath
+    const token = extractToken(result.data, tokenPath)
 
-    const token = extractToken(result.data, this.config?.tokenPath)
+    console.log('[TOKEN_EXTRACT]', JSON.stringify({
+      tokenPath: tokenPath || 'undefined (fallback)',
+      found: !!token,
+      // Log top-level keys only (no values)
+      topKeys: Object.keys(result.data).filter(k => k !== 'token' && k !== 'access_token' && k !== 'apiKey' && k !== 'apiToken'),
+    }))
     if (!token) return { success: false, error: { code: 'NO_TOKEN', message: 'No token in auth response' } }
 
     this.token = token

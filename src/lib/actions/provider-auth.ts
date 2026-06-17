@@ -249,22 +249,42 @@ export async function testProviderConnection(providerId: string) {
     if (isTemplateDrivenProvider(provider)) {
       const adapter = await buildAdapter(provider)
       if (!adapter) return { success: false, error: 'Failed to create adapter for template-driven provider', diagnostics: null }
-      const result = await adapter.testConnection()
+
+      // Authenticate first to get the token, then test connection (which also calls GET_PLANS)
+      const authResult = await adapter.authenticate({})
       const durationMs = Date.now() - startTime
       const diagnostics = {
         adapter: 'TemplateProviderAdapter',
         endpointMappings: provider.endpointMappings,
         config: { ...config, password: undefined, apiToken: undefined },
       }
+
+      if (authResult.success && authResult.data?.token) {
+        await prisma.provider.update({
+          where: { id: providerId },
+          data: {
+            apiToken: encryptToken(authResult.data.token),
+            lastSuccessfulConnection: new Date(),
+            errorCount: 0,
+            lastError: null,
+          },
+        })
+        await recordHealthEvent(providerId, { eventType: 'CONNECTION_TEST', success: true, message: 'Template provider authenticated', durationMs })
+
+        // Verify token works by calling testConnection (GET_PLANS)
+        const testResult = await adapter.testConnection()
+        if (testResult.success) {
+          return { success: true, message: `Connected. ${testResult.data?.message || ''}`, diagnostics }
+        }
+        return { success: true, message: `Authenticated. Token stored, but GET_PLANS: ${testResult.error?.message || 'failed'}`, diagnostics }
+      }
+
       await prisma.provider.update({
         where: { id: providerId },
-        data: result.success ? { lastSuccessfulConnection: new Date() } : { lastFailedConnection: new Date(), lastError: result.error?.message },
+        data: { lastFailedConnection: new Date(), lastError: authResult.error?.message || 'Auth failed' },
       })
-      await recordHealthEvent(providerId, { eventType: 'CONNECTION_TEST', success: result.success, message: result.success ? 'Template provider connected' : (result.error?.message || 'Failed'), durationMs })
-      if (result.success) {
-        return { success: true, message: `Connected via TemplateProviderAdapter. ${result.data?.message || ''}`, diagnostics }
-      }
-      return { success: false, error: result.error?.message || 'Connection test failed', diagnostics }
+      await recordHealthEvent(providerId, { eventType: 'CONNECTION_TEST', success: false, message: authResult.error?.message || 'Auth failed', durationMs })
+      return { success: false, error: authResult.error?.message || 'Authentication failed', diagnostics }
     }
 
     // Build connector from provider config
