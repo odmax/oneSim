@@ -149,21 +149,24 @@ export default async function AdminPackagesPage({
             )
           })}
         </nav>
-        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-gray-500">
-            {tab === 'provider' && 'Imported provider plans — configure and publish as catalog products'}
-            {tab === 'catalog' && 'Catalog products — activate to make them visible to business clients'}
-            {tab === 'manual' && 'Manually created packages'}
-            {tab === 'all' && 'Overview of all packages across your catalog'}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {tab === 'provider' && providerPlans.length > 0 && (
-              <form action={bulkConvertToCatalog.bind(null, providerPlans.map(p => p.id))}>
-                <button type="submit" className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm">
-                  Convert All to Catalog
-                </button>
-              </form>
-            )}
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-gray-500">
+              {tab === 'provider' && 'Imported provider plans — configure and publish as catalog products'}
+              {tab === 'catalog' && 'Catalog products — activate to make them visible to business clients'}
+              {tab === 'manual' && 'Manually created packages'}
+              {tab === 'all' && 'Overview of all packages across your catalog'}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <a href="/admin/imported-plans" className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 shadow-sm">
+                View Imported Plans
+              </a>
+              {tab === 'provider' && providerPlans.length > 0 && (
+                <form action={bulkConvertToCatalog.bind(null, providerPlans.map(p => p.id))}>
+                  <button type="submit" className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm">
+                    Convert All to Catalog
+                  </button>
+                </form>
+              )}
               {tab !== 'provider' && (
                 <Link href="/admin/packages/new" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 shadow-sm">
                   Add Package
@@ -173,7 +176,7 @@ export default async function AdminPackagesPage({
                 Export Pricing CSV
               </a>
               <PricingCsvImport />
-          </div>
+            </div>
         </div>
       </div>
 
