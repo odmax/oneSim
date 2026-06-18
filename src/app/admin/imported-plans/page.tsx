@@ -5,11 +5,13 @@ import { redirect } from 'next/navigation'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { getImportedPlans, type ImportedPlansFilters } from '@/lib/actions/imported-plans'
 import FilterBar from './FilterBar'
+import BulkPricingRules from './BulkPricingRules'
 import ImportedPlansActions from './ImportedPlansClient'
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   unconfigured: { label: 'Unconfigured', color: 'bg-orange-50 text-orange-600' },
   configured: { label: 'Configured', color: 'bg-blue-50 text-blue-600' },
+  ready_to_publish: { label: 'Ready To Publish', color: 'bg-purple-50 text-purple-600' },
   published: { label: 'Published', color: 'bg-emerald-50 text-emerald-600' },
   archived: { label: 'Archived', color: 'bg-amber-50 text-amber-600' },
 }
@@ -19,10 +21,20 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${s.color}`}>{s.label}</span>
 }
 
+function SummaryCard({ label, value, color, sub }: { label: string; value: number; color?: string; sub?: string }) {
+  return (
+    <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+      <p className="text-xs font-medium text-gray-500">{label}</p>
+      <p className={`mt-1 text-2xl font-bold ${value > 0 ? 'text-gray-900' : 'text-gray-300'}`}>{value}</p>
+      {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
+    </div>
+  )
+}
+
 export default async function ImportedPlansPage({
   searchParams,
 }: {
-  searchParams?: { provider?: string; status?: string; costMissing?: string; hidden?: string; search?: string; error?: string; success?: string }
+  searchParams?: { provider?: string; status?: string; costMissing?: string; sellPriceMissing?: string; readyToPublish?: string; notPublished?: string; recentlySynced?: string; hidden?: string; search?: string; error?: string; success?: string }
 }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
@@ -40,11 +52,26 @@ export default async function ImportedPlansPage({
     providerId: searchParams?.provider || undefined,
     status: (searchParams?.status as any) || undefined,
     costMissing: searchParams?.costMissing === '1',
+    sellPriceMissing: searchParams?.sellPriceMissing === '1',
+    readyToPublish: searchParams?.readyToPublish === '1',
+    notPublished: searchParams?.notPublished === '1',
+    recentlySynced: searchParams?.recentlySynced === '1',
     hiddenFromCatalog: searchParams?.hidden === '1',
     search: searchParams?.search || undefined,
   }
 
+  const allPlans = filters.search ? await getImportedPlans({}) : []
   const plans = await getImportedPlans(filters)
+  const allForCards = filters.search ? allPlans : plans
+
+  const total = allForCards.length
+  const unconfigured = allForCards.filter(p => p.status === 'unconfigured').length
+  const configured = allForCards.filter(p => p.status === 'configured').length
+  const readyToPub = allForCards.filter(p => p.status === 'ready_to_publish').length
+  const published = allForCards.filter(p => p.status === 'published').length
+  const archived = allForCards.filter(p => p.status === 'archived').length
+  const costMissing = allForCards.filter(p => p.costPriceUSD == null || p.costPriceUSD <= 0).length
+  const sellPriceMissing = allForCards.filter(p => p.sellingPrice == null || p.sellingPrice <= 0).length
 
   return (
     <div className="p-6">
@@ -62,21 +89,31 @@ export default async function ImportedPlansPage({
         <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800">{decodeURIComponent(searchParams.success)}</div>
       )}
 
-      {/* Summary */}
-      <div className="mb-6 grid gap-4 sm:grid-cols-4">
-        {(['unconfigured', 'configured', 'published', 'archived'] as const).map(status => {
-          const count = plans.filter(p => p.status === status).length
-          const s = STATUS_LABELS[status]
-          return (
-            <div key={status} className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-              <p className="text-xs font-medium text-gray-500">{s.label}</p>
-              <p className={`mt-1 text-2xl font-bold ${count > 0 ? 'text-gray-900' : 'text-gray-300'}`}>{count}</p>
-            </div>
-          )
-        })}
+      {/* Readiness Dashboard */}
+      <div className="mb-4 grid gap-3 sm:grid-cols-4 lg:grid-cols-8">
+        <SummaryCard label="Total Imported" value={total} />
+        <SummaryCard label="Unconfigured" value={unconfigured} color="text-orange-600" sub="Missing cost or sell price" />
+        <SummaryCard label="Configured" value={configured} color="text-blue-600" sub="Has cost + sell price" />
+        <SummaryCard label="Ready To Publish" value={readyToPub} color="text-purple-600" sub="Marked ready, not published" />
+        <SummaryCard label="Published" value={published} color="text-emerald-600" sub="Active in catalog" />
+        <SummaryCard label="Missing Cost" value={costMissing} />
+        <SummaryCard label="Missing Sell Price" value={sellPriceMissing} />
+        <SummaryCard label="Archived" value={archived} />
+      </div>
+
+      {/* Quick Filter Buttons */}
+      <div className="mb-4 flex flex-wrap gap-2">
+        <FilterLink current={searchParams} param="costMissing" label="Missing Cost" />
+        <FilterLink current={searchParams} param="sellPriceMissing" label="Missing Sell Price" />
+        <FilterLink current={searchParams} param="readyToPublish" label="Ready To Publish" />
+        <FilterLink current={searchParams} param="notPublished" label="Not Published" />
+        <FilterLink current={searchParams} param="recentlySynced" label="Recently Synced" />
       </div>
 
       <FilterBar providers={providers} />
+
+      {/* Bulk Pricing Rules */}
+      <BulkPricingRules />
 
       {/* Table */}
       <div className="overflow-x-auto rounded-xl border border-gray-100 bg-white shadow-sm">
@@ -95,7 +132,7 @@ export default async function ImportedPlansPage({
               <th className="px-4 py-3 text-right font-medium text-gray-500">Margin</th>
               <th className="px-4 py-3 text-right font-medium text-gray-500">Markup</th>
               <th className="px-4 py-3 text-center font-medium text-gray-500">Status</th>
-              <th className="px-4 py-3 text-center font-medium text-gray-500">Actions</th>
+              <th className="px-4 py-3 text-center font-medium text-gray-500" style={{ minWidth: 200 }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -139,9 +176,7 @@ export default async function ImportedPlansPage({
                     </td>
                     <td className="px-4 py-3 text-right">
                       {marginPct != null ? (
-                        <span className={`font-medium ${parseFloat(marginPct) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {marginPct}%
-                        </span>
+                        <span className={`font-medium ${parseFloat(marginPct) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{marginPct}%</span>
                       ) : (
                         <span className="text-gray-400">N/A</span>
                       )}
@@ -167,5 +202,22 @@ export default async function ImportedPlansPage({
         </table>
       </div>
     </div>
+  )
+}
+
+function FilterLink({ current, param, label }: { current: any; param: string; label: string }) {
+  const isActive = current?.[param] === '1'
+  const href = isActive
+    ? `/admin/imported-plans`
+    : `/admin/imported-plans?${new URLSearchParams({ [param]: '1' }).toString()}`
+  return (
+    <a href={href}
+      className={`inline-flex items-center rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+        isActive
+          ? 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-300'
+          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+      }`}>
+      {label}
+    </a>
   )
 }

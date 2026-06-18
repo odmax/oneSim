@@ -21,25 +21,20 @@ export default function FilterBar({ providers }: { providers: ProviderOption[] }
     <div className="mb-6 flex flex-wrap items-end gap-3">
       <div>
         <label className="block text-xs font-medium text-gray-500 mb-1">Provider</label>
-        <select
-          onChange={e => setParam('provider', e.target.value || null)}
-          defaultValue={sp.get('provider') || ''}
-          className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
-        >
+        <select onChange={e => setParam('provider', e.target.value || null)} defaultValue={sp.get('provider') || ''}
+          className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
           <option value="">All Providers</option>
           {providers.map(p => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
         </select>
       </div>
       <div>
         <label className="block text-xs font-medium text-gray-500 mb-1">Status</label>
-        <select
-          onChange={e => setParam('status', e.target.value || null)}
-          defaultValue={sp.get('status') || ''}
-          className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
-        >
+        <select onChange={e => setParam('status', e.target.value || null)} defaultValue={sp.get('status') || ''}
+          className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
           <option value="">All Statuses</option>
           <option value="unconfigured">Unconfigured</option>
           <option value="configured">Configured</option>
+          <option value="ready_to_publish">Ready To Publish</option>
           <option value="published">Published</option>
           <option value="archived">Archived</option>
         </select>

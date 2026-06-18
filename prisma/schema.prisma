@@ -248,6 +248,7 @@ model ProviderPackage {
   region          String?
   planType        String?  /// PREMIUM | STANDARD | LIFETIME
   isAvailable     Boolean  @default(true)
+  readyToPublish  Boolean  @default(false)
   providerRawData Json?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

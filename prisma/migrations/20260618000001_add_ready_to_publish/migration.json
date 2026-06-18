@@ -1,0 +1,19 @@
+{
+  "version": "5.2",
+  "steps": [
+    {
+      "tag": "AlterTable",
+      "tableName": "provider_packages",
+      "operations": [
+        {
+          "tag": "AddColumn",
+          "column": {
+            "name": "readyToPublish",
+            "type": "BOOLEAN",
+            "default": false
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -4,9 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { revalidatePath } from 'next/cache'
-import { redirect } from 'next/navigation'
 
-export type ImportedPlanStatus = 'unconfigured' | 'configured' | 'published' | 'archived'
+export type ImportedPlanStatus = 'unconfigured' | 'configured' | 'ready_to_publish' | 'published' | 'archived'
 
 export interface ImportedPlanRow {
   providerPackageId: string
@@ -28,6 +27,7 @@ export interface ImportedPlanRow {
   sellingPrice: number | null
   sellingCurrency: string | null
   markupPercent: number | null
+  readyToPublish: boolean
   isActive: boolean
   hiddenFromCatalog: boolean
   archivedAt: string | null
@@ -35,20 +35,25 @@ export interface ImportedPlanRow {
   status: ImportedPlanStatus
 }
 
-function computeStatus(esim: { isActive?: boolean; hiddenFromCatalog?: boolean; archivedAt?: Date | null; source?: string; costPriceUSD?: any; priceUSD?: any } | null): ImportedPlanStatus {
-  if (!esim) return 'unconfigured'
-  if (esim.archivedAt) return 'archived'
-  if (esim.source === 'CATALOG_PRODUCT' && esim.isActive) return 'published'
-  const hasCost = esim.costPriceUSD != null && Number(esim.costPriceUSD) > 0
-  const hasPrice = esim.priceUSD != null && Number(esim.priceUSD) > 0
-  if (hasCost && hasPrice) return 'configured'
-  return 'unconfigured'
+function computeStatus(pp: { readyToPublish?: boolean }, esim: { isActive?: boolean; archivedAt?: Date | null; source?: string; costPriceUSD?: any; priceUSD?: any } | null): ImportedPlanStatus {
+  if (esim?.archivedAt) return 'archived'
+  if (esim?.source === 'CATALOG_PRODUCT' && esim?.isActive) return 'published'
+  if (esim?.archivedAt) return 'archived'
+  const hasCost = esim?.costPriceUSD != null && Number(esim.costPriceUSD) > 0
+  const hasPrice = esim?.priceUSD != null && Number(esim.priceUSD) > 0
+  if (!hasCost || !hasPrice) return 'unconfigured'
+  if (pp.readyToPublish) return 'ready_to_publish'
+  return 'configured'
 }
 
 export interface ImportedPlansFilters {
   providerId?: string
   status?: ImportedPlanStatus
   costMissing?: boolean
+  sellPriceMissing?: boolean
+  readyToPublish?: boolean
+  notPublished?: boolean
+  recentlySynced?: boolean
   hiddenFromCatalog?: boolean
   search?: string
 }
@@ -68,6 +73,9 @@ export async function getImportedPlans(filters: ImportedPlansFilters): Promise<I
       { country: { contains: filters.search, mode: 'insensitive' } },
     ]
   }
+  if (filters.recentlySynced) {
+    where.createdAt = { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+  }
 
   const providerPackages = await prisma.providerPackage.findMany({
     where,
@@ -86,8 +94,6 @@ export async function getImportedPlans(filters: ImportedPlansFilters): Promise<I
 
   let rows: ImportedPlanRow[] = providerPackages.map(pp => {
     const esim = pp.publishedAs
-    const costPriceUSD = esim?.costPriceUSD ? Number(esim.costPriceUSD) : null
-    const sellingPrice = esim?.priceUSD ? Number(esim.priceUSD) : null
     return {
       providerPackageId: pp.id,
       providerId: pp.providerId,
@@ -103,29 +109,26 @@ export async function getImportedPlans(filters: ImportedPlansFilters): Promise<I
       validityDays: pp.validityDays,
       providerCostPrice: Number(pp.costPrice),
       providerCurrency: pp.currency,
-      costPriceUSD,
+      costPriceUSD: esim?.costPriceUSD ? Number(esim.costPriceUSD) : null,
       costCurrency: esim?.costCurrency || null,
-      sellingPrice,
+      sellingPrice: esim?.priceUSD ? Number(esim.priceUSD) : null,
       sellingCurrency: esim?.currency || null,
       markupPercent: esim?.markupPercent ? Number(esim.markupPercent) : null,
+      readyToPublish: pp.readyToPublish,
       isActive: esim?.isActive || false,
       hiddenFromCatalog: esim?.hiddenFromCatalog || false,
       archivedAt: esim?.archivedAt ? esim.archivedAt.toISOString() : null,
       packageId: esim?.id || null,
-      status: computeStatus(esim),
+      status: computeStatus(pp, esim),
     }
   })
 
-  // Client-side filters
-  if (filters.status) {
-    rows = rows.filter(r => r.status === filters.status)
-  }
-  if (filters.costMissing) {
-    rows = rows.filter(r => r.costPriceUSD == null || r.costPriceUSD <= 0)
-  }
-  if (filters.hiddenFromCatalog) {
-    rows = rows.filter(r => r.hiddenFromCatalog)
-  }
+  if (filters.status) rows = rows.filter(r => r.status === filters.status)
+  if (filters.costMissing) rows = rows.filter(r => r.costPriceUSD == null || r.costPriceUSD <= 0)
+  if (filters.sellPriceMissing) rows = rows.filter(r => r.sellingPrice == null || r.sellingPrice <= 0)
+  if (filters.readyToPublish) rows = rows.filter(r => r.readyToPublish && r.status !== 'published' && r.status !== 'archived')
+  if (filters.notPublished) rows = rows.filter(r => r.status !== 'published' && r.status !== 'archived')
+  if (filters.hiddenFromCatalog) rows = rows.filter(r => r.hiddenFromCatalog)
 
   return rows
 }
@@ -140,20 +143,18 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
   const sellingPriceRaw = formData.get('sellingPrice') as string
   const sellingCurrencyRaw = formData.get('sellingCurrency') as string
   const markupRaw = formData.get('markupPercent') as string
+  const readyRaw = formData.get('readyToPublish') as string
 
   const pp = await prisma.providerPackage.findUnique({ where: { id: providerPackageId }, include: { provider: true } })
   if (!pp) return { success: false, error: 'Provider package not found' }
-
-  // Find existing ESIMPackage linked via providerPackageId or create one
-  let esim = await prisma.eSIMPackage.findFirst({
-    where: { providerPackageId },
-  })
 
   const costPriceUSD = costPriceRaw ? parseFloat(costPriceRaw) : null
   const costCurrency = costCurrencyRaw?.trim().toUpperCase() || 'USD'
   const sellingPrice = sellingPriceRaw ? parseFloat(sellingPriceRaw) : null
   const sellingCurrency = sellingCurrencyRaw?.trim().toUpperCase() || 'USD'
   const markupPercent = markupRaw ? parseFloat(markupRaw) : null
+
+  let esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId } })
 
   const updateData: any = {
     name: pp.name,
@@ -165,6 +166,7 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
     costPriceUSD,
     costCurrency,
     priceUSD: sellingPrice || 0,
+    localPrice: 0,
     currency: sellingCurrency,
     markupPercent,
   }
@@ -172,7 +174,6 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
   if (esim) {
     await prisma.eSIMPackage.update({ where: { id: esim.id }, data: updateData })
   } else {
-    // Create with source='PROVIDER_PLAN' and link
     esim = await prisma.eSIMPackage.create({
       data: {
         ...updateData,
@@ -183,22 +184,67 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
     })
   }
 
-  // Recompute markupPercent if both prices known
   if (costPriceUSD && costPriceUSD > 0 && sellingPrice && sellingPrice > 0) {
     const computed = Math.round(((sellingPrice - costPriceUSD) / costPriceUSD) * 100 * 100) / 100
-    await prisma.eSIMPackage.update({
-      where: { id: esim.id },
-      data: { markupPercent: computed },
-    })
+    await prisma.eSIMPackage.update({ where: { id: esim.id }, data: { markupPercent: computed } })
+  }
+
+  // Handle readyToPublish toggle
+  if (readyRaw === 'true' || readyRaw === '1') {
+    await prisma.providerPackage.update({ where: { id: providerPackageId }, data: { readyToPublish: true } })
+  } else if (readyRaw === 'false' || readyRaw === '0') {
+    await prisma.providerPackage.update({ where: { id: providerPackageId }, data: { readyToPublish: false } })
   }
 
   await prisma.auditLog.create({
     data: {
-      userId: session.user.id,
-      action: 'IMPORTED_PLAN_PRICE_UPDATED',
-      entity: 'ProviderPackage',
-      entityId: providerPackageId,
+      userId: session.user.id, action: 'IMPORTED_PLAN_PRICE_UPDATED',
+      entity: 'ProviderPackage', entityId: providerPackageId,
       details: `Pricing updated for ${pp.name}: cost=${costPriceUSD}, selling=${sellingPrice}, markup=${markupPercent}`,
+    },
+  })
+
+  revalidatePath('/admin/imported-plans')
+  return { success: true }
+}
+
+export async function markReadyToPublish(providerPackageId: string): Promise<{ success: boolean; error?: string }> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+
+  const pp = await prisma.providerPackage.findUnique({ where: { id: providerPackageId }, include: { publishedAs: true } })
+  if (!pp) return { success: false, error: 'Not found' }
+
+  const esim = pp.publishedAs
+  const hasCost = esim?.costPriceUSD != null && Number(esim.costPriceUSD) > 0
+  const hasPrice = esim?.priceUSD != null && Number(esim.priceUSD) > 0
+  if (!hasCost || !hasPrice) return { success: false, error: 'Set cost and selling price before marking ready' }
+
+  await prisma.providerPackage.update({ where: { id: providerPackageId }, data: { readyToPublish: true } })
+
+  await prisma.auditLog.create({
+    data: {
+      userId: session.user.id, action: 'IMPORTED_PLAN_MARKED_READY',
+      entity: 'ProviderPackage', entityId: providerPackageId,
+      details: `Marked ready to publish: ${pp.name}`,
+    },
+  })
+
+  revalidatePath('/admin/imported-plans')
+  return { success: true }
+}
+
+export async function unmarkReadyToPublish(providerPackageId: string): Promise<{ success: boolean; error?: string }> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+
+  await prisma.providerPackage.update({ where: { id: providerPackageId }, data: { readyToPublish: false } })
+
+  await prisma.auditLog.create({
+    data: {
+      userId: session.user.id, action: 'IMPORTED_PLAN_MARKED_READY',
+      entity: 'ProviderPackage', entityId: providerPackageId,
+      details: `Unmarked ready to publish`,
     },
   })
 
@@ -212,66 +258,37 @@ export async function publishImportedPlan(formData: FormData): Promise<{ success
 
   const providerPackageId = formData.get('providerPackageId') as string
 
-  const pp = await prisma.providerPackage.findUnique({
-    where: { id: providerPackageId },
-    include: { provider: true },
-  })
+  const pp = await prisma.providerPackage.findUnique({ where: { id: providerPackageId }, include: { provider: true, publishedAs: true } })
   if (!pp) return { success: false, error: 'Provider package not found' }
 
-  // Find or create ESIMPackage
-  let esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId } })
-
-  const baseData: any = {
-    name: pp.name,
-    dataGB: pp.dataGB,
-    validityDays: pp.validityDays,
-    providerName: pp.provider.code,
-    providerId: pp.providerId,
-    providerPlanId: pp.providerPlanId,
-    providerPackageId,
-    source: 'CATALOG_PRODUCT',
-    isActive: true,
-    hiddenFromCatalog: false,
-    archivedAt: null,
-  }
-
-  if (!esim) {
+  let esim = pp.publishedAs || await prisma.eSIMPackage.findFirst({ where: { providerPackageId } })
+    if (!esim) {
     esim = await prisma.eSIMPackage.create({
       data: {
-        ...baseData,
-        costPriceUSD: Number(pp.costPrice) || undefined,
-        costCurrency: pp.currency,
-        priceUSD: 0,
-        currency: 'USD',
+        name: pp.name, dataGB: pp.dataGB, validityDays: pp.validityDays,
+        providerName: pp.provider.code, providerId: pp.providerId, providerPlanId: pp.providerPlanId,
+        providerPackageId, source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false,
+        costPriceUSD: Number(pp.costPrice) || undefined, costCurrency: pp.currency,
+        priceUSD: 0, localPrice: 0, currency: 'USD',
         sku: pp.providerPlanCode ? `${pp.provider.code}-${pp.providerPlanCode}` : undefined,
       },
     })
   }
 
-  // Validate pricing exists
   const hasCost = esim.costPriceUSD != null && Number(esim.costPriceUSD) > 0
   const hasPrice = esim.priceUSD != null && Number(esim.priceUSD) > 0
   if (!hasCost) return { success: false, error: 'Cost price must be set before publishing' }
   if (!hasPrice) return { success: false, error: 'Selling price must be set before publishing' }
 
-  // Publish
   await prisma.eSIMPackage.update({
     where: { id: esim.id },
-    data: {
-      source: 'CATALOG_PRODUCT',
-      isActive: true,
-      hiddenFromCatalog: false,
-      archivedAt: null,
-    },
+    data: { source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false, archivedAt: null },
   })
 
   await prisma.auditLog.create({
     data: {
-      userId: session.user.id,
-      action: 'IMPORTED_PLAN_PUBLISHED',
-      entity: 'ProviderPackage',
-      entityId: providerPackageId,
-      details: `Published to catalog: ${pp.name}`,
+      userId: session.user.id, action: 'IMPORTED_PLAN_PUBLISHED',
+      entity: 'ProviderPackage', entityId: providerPackageId, details: `Published to catalog: ${pp.name}`,
     },
   })
 
@@ -280,38 +297,179 @@ export async function publishImportedPlan(formData: FormData): Promise<{ success
   return { success: true }
 }
 
-// --- CSV ---
+export async function archiveImportedPlan(providerPackageId: string): Promise<{ success: boolean; error?: string }> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
 
+  const esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId } })
+  if (esim) {
+    await prisma.eSIMPackage.update({ where: { id: esim.id }, data: { archivedAt: new Date(), isActive: false, hiddenFromCatalog: true } })
+  }
+
+  await prisma.auditLog.create({
+    data: {
+      userId: session.user.id, action: 'ARCHIVE',
+      entity: 'ProviderPackage', entityId: providerPackageId, details: `Imported plan archived`,
+    },
+  })
+
+  revalidatePath('/admin/imported-plans')
+  return { success: true }
+}
+
+// Bulk Pricing Rules
+export interface PricingRuleInput {
+  providerCode?: string
+  country?: string
+  minCost?: number
+  maxCost?: number
+  markupPercent: number
+  applyToMissingSellingPriceOnly: boolean
+}
+
+export async function previewPricingRules(formData: FormData): Promise<{
+  matched: number; willUpdate: number; skippedMissingCost: number; skippedExistingSell: number; preview: { providerPackageId: string; name: string; currentSell: number | null; newSell: number }[]
+}> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+
+  const providerCode = (formData.get('providerCode') as string) || undefined
+  const country = (formData.get('country') as string) || undefined
+  const minCostRaw = formData.get('minCost') as string
+  const maxCostRaw = formData.get('maxCost') as string
+  const markupPercent = parseFloat(formData.get('markupPercent') as string)
+  const applyToMissingOnly = formData.get('applyToMissingSellingPriceOnly') === 'on'
+
+  if (!markupPercent || markupPercent <= 0) throw new Error('Markup percent must be > 0')
+
+  const where: any = { isAvailable: true }
+  if (providerCode) {
+    where.provider = { code: { equals: providerCode, mode: 'insensitive' } }
+  }
+  if (country) where.country = { contains: country, mode: 'insensitive' }
+
+  const pps = await prisma.providerPackage.findMany({
+    where,
+    include: {
+      provider: { select: { code: true } },
+      publishedAs: { select: { id: true, costPriceUSD: true, priceUSD: true } },
+    },
+  })
+
+  const minCost = minCostRaw ? parseFloat(minCostRaw) : null
+  const maxCost = maxCostRaw ? parseFloat(maxCostRaw) : null
+
+  let matched = 0
+  let willUpdate = 0
+  let skippedMissingCost = 0
+  let skippedExistingSell = 0
+  const preview: any[] = []
+
+  for (const pp of pps) {
+    const costRaw = pp.publishedAs?.costPriceUSD ?? pp.costPrice
+    const cost = costRaw ? Number(costRaw) : 0
+
+    if (minCost && cost < minCost) continue
+    if (maxCost && cost > maxCost) continue
+
+    matched++
+
+    if (!cost || cost <= 0) { skippedMissingCost++; continue }
+
+    const newSell = Math.round(cost * (1 + markupPercent / 100) * 100) / 100
+    const currentSell = pp.publishedAs?.priceUSD ? Number(pp.publishedAs.priceUSD) : null
+
+    if (applyToMissingOnly && currentSell != null && currentSell > 0) {
+      skippedExistingSell++
+      continue
+    }
+
+    willUpdate++
+    preview.push({ providerPackageId: pp.id, name: pp.name, currentSell, newSell })
+  }
+
+  return { matched, willUpdate, skippedMissingCost, skippedExistingSell, preview }
+}
+
+export async function applyPricingRules(formData: FormData): Promise<{
+  applied: number; errors: string[]
+}> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return { applied: 0, errors: [] }
+
+  const preview = await previewPricingRules(formData)
+  const errors: string[] = []
+
+  let applied = 0
+  for (const item of preview.preview) {
+    try {
+      let esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId: item.providerPackageId } })
+      if (esim) {
+        await prisma.eSIMPackage.update({
+          where: { id: esim.id },
+          data: { priceUSD: item.newSell },
+        })
+      } else {
+        const pp = await prisma.providerPackage.findUnique({ where: { id: item.providerPackageId }, include: { provider: true } })
+        if (pp) {
+          esim = await prisma.eSIMPackage.create({
+            data: {
+              name: pp.name, dataGB: pp.dataGB, validityDays: pp.validityDays,
+              providerName: pp.provider.code, providerId: pp.providerId, providerPlanId: pp.providerPlanId,
+              providerPackageId: item.providerPackageId, source: 'PROVIDER_PLAN',
+              costPriceUSD: Number(pp.costPrice) || undefined, priceUSD: item.newSell, localPrice: 0, currency: 'USD',
+              sku: pp.providerPlanCode ? `${pp.provider.code}-${pp.providerPlanCode}` : undefined,
+            },
+          })
+        }
+      }
+      applied++
+    } catch (e: any) {
+      errors.push(`Error on ${item.name}: ${e.message}`)
+    }
+  }
+
+  await prisma.auditLog.create({
+    data: {
+      userId: session.user.id, action: 'IMPORTED_PLAN_RULE_APPLIED',
+      entity: 'ProviderPackage',
+      details: `Pricing rules applied: ${applied} updates, ${preview.willUpdate} targeted, ${preview.skippedMissingCost} missing cost, ${preview.skippedExistingSell} skipped existing`,
+    },
+  })
+
+  revalidatePath('/admin/imported-plans')
+  return { applied, errors }
+}
+
+// CSV
 const CSV_COLS = [
   'packageId', 'source', 'providerCode', 'providerName', 'providerPlanId',
   'sku', 'name', 'dataGB', 'validityDays', 'country',
   'providerPrice', 'providerCurrency', 'costPriceUSD', 'costCurrency',
   'sellingPrice', 'sellingCurrency', 'markupPercent',
-  'isActive', 'hiddenFromCatalog', 'archivedAt', 'publishToCatalog',
+  'readyToPublish', 'isActive', 'hiddenFromCatalog', 'archivedAt', 'publishToCatalog',
 ]
 
-function sanitize(val: any): string {
-  const str = val == null ? '' : String(val)
-  if (str === '') return '""'
-  if (/^[=+\-@]/.test(str)) return `"'${str}"`
-  if (/[,"\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`
-  return str
+function sanitize(v: any): string {
+  const s = v == null ? '' : String(v)
+  if (s === '') return '""'
+  if (/^[=+\-@]/.test(s)) return `"'${s}"`
+  if (/[,"\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+  return s
 }
 
 function parseCsvLine(line: string): string[] {
-  const result: string[] = []
-  let cur = ''
-  let inQ = false
+  const r: string[] = []
+  let c = '', q = false
   for (let i = 0; i < line.length; i++) {
     const ch = line[i]
     if (ch === '"') {
-      if (inQ && line[i + 1] === '"') { cur += '"'; i++; continue }
-      inQ = !inQ
-    } else if (ch === ',' && !inQ) { result.push(cur.trim()); cur = '' }
-    else { cur += ch }
+      if (q && line[i + 1] === '"') { c += '"'; i++; continue }
+      q = !q
+    } else if (ch === ',' && !q) { r.push(c.trim()); c = '' } else c += ch
   }
-  result.push(cur.trim())
-  return result
+  r.push(c.trim())
+  return r
 }
 
 function parseBool(v: string): boolean | null {
@@ -331,44 +489,40 @@ function parseNum(v: string): number | null {
 export async function exportImportedPlansCsv(): Promise<string> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
-
   const rows = await getImportedPlans({})
   const header = CSV_COLS.map(sanitize).join(',')
-  const lines = rows.map(r =>
-    CSV_COLS.map(col => {
-      switch (col) {
-        case 'packageId': return sanitize(r.packageId || '')
-        case 'source': return sanitize('PROVIDER_PLAN')
-        case 'providerCode': return sanitize(r.providerCode)
-        case 'providerName': return sanitize(r.providerName)
-        case 'providerPlanId': return sanitize(r.providerPlanId)
-        case 'sku': return sanitize(r.sku || '')
-        case 'name': return sanitize(r.name)
-        case 'dataGB': return sanitize(r.dataGB)
-        case 'validityDays': return sanitize(r.validityDays)
-        case 'country': return sanitize(r.country || '')
-        case 'providerPrice': return sanitize(r.providerCostPrice)
-        case 'providerCurrency': return sanitize(r.providerCurrency)
-        case 'costPriceUSD': return sanitize(r.costPriceUSD != null ? r.costPriceUSD : '')
-        case 'costCurrency': return sanitize(r.costCurrency || r.providerCurrency)
-        case 'sellingPrice': return sanitize(r.sellingPrice != null ? r.sellingPrice : '')
-        case 'sellingCurrency': return sanitize(r.sellingCurrency || 'USD')
-        case 'markupPercent': return sanitize(r.markupPercent != null ? r.markupPercent : '')
-        case 'isActive': return sanitize(r.isActive ? '1' : '0')
-        case 'hiddenFromCatalog': return sanitize(r.hiddenFromCatalog ? '1' : '0')
-        case 'archivedAt': return sanitize(r.archivedAt || '')
-        case 'publishToCatalog': return sanitize('')
-        default: return ''
-      }
-    }).join(',')
-  )
+  const lines = rows.map(r => CSV_COLS.map(c => {
+    switch (c) {
+      case 'packageId': return sanitize(r.packageId || '')
+      case 'source': return sanitize('PROVIDER_PLAN')
+      case 'providerCode': return sanitize(r.providerCode)
+      case 'providerName': return sanitize(r.providerName)
+      case 'providerPlanId': return sanitize(r.providerPlanId)
+      case 'sku': return sanitize(r.sku || '')
+      case 'name': return sanitize(r.name)
+      case 'dataGB': return sanitize(r.dataGB)
+      case 'validityDays': return sanitize(r.validityDays)
+      case 'country': return sanitize(r.country || '')
+      case 'providerPrice': return sanitize(r.providerCostPrice)
+      case 'providerCurrency': return sanitize(r.providerCurrency)
+      case 'costPriceUSD': return sanitize(r.costPriceUSD != null ? r.costPriceUSD : '')
+      case 'costCurrency': return sanitize(r.costCurrency || r.providerCurrency)
+      case 'sellingPrice': return sanitize(r.sellingPrice != null ? r.sellingPrice : '')
+      case 'sellingCurrency': return sanitize(r.sellingCurrency || 'USD')
+      case 'markupPercent': return sanitize(r.markupPercent != null ? r.markupPercent : '')
+      case 'readyToPublish': return sanitize(r.readyToPublish ? '1' : '0')
+      case 'isActive': return sanitize(r.isActive ? '1' : '0')
+      case 'hiddenFromCatalog': return sanitize(r.hiddenFromCatalog ? '1' : '0')
+      case 'archivedAt': return sanitize(r.archivedAt || '')
+      case 'publishToCatalog': return sanitize('')
+      default: return ''
+    }
+  }).join(','))
 
   await prisma.auditLog.create({
     data: {
-      userId: session.user.id,
-      action: 'IMPORTED_PLAN_CSV_EXPORTED',
-      entity: 'ProviderPackage',
-      details: `Imported plans CSV exported — ${rows.length} rows`,
+      userId: session.user.id, action: 'IMPORTED_PLAN_CSV_EXPORTED',
+      entity: 'ProviderPackage', details: `Imported plans CSV exported — ${rows.length} rows`,
     },
   })
 
@@ -395,23 +549,8 @@ export async function importImportedPlansCsvPreview(formData: FormData): Promise
   const ci: Record<string, number> = {}
   for (let i = 0; i < header.length; i++) ci[header[i].trim()] = i
 
-  if (!('packageId' in ci) && !('providerPlanId' in ci)) throw new Error('Missing packageId column')
-
   const errors: { line: number; message: string }[] = []
   const preview: any[] = []
-
-  // Load existing linked ESIMPackages
-  const allLinked = await prisma.eSIMPackage.findMany({
-    where: { providerPackageId: { not: null } },
-    select: { id: true, providerPackageId: true, costPriceUSD: true, costCurrency: true, priceUSD: true, currency: true, markupPercent: true, isActive: true, hiddenFromCatalog: true, name: true },
-  })
-  const linkedMap = new Map(allLinked.filter(e => e.providerPackageId).map(e => [e.providerPackageId!, e]))
-
-  // Also load all provider packages by packageId field (the ESIMPackage id)
-  const allEsim = await prisma.eSIMPackage.findMany({
-    select: { id: true, costPriceUSD: true, costCurrency: true, priceUSD: true, currency: true, markupPercent: true, isActive: true, hiddenFromCatalog: true, name: true },
-  })
-  const esimMap = new Map(allEsim.map(e => [e.id, e]))
 
   for (let i = 1; i < lines.length; i++) {
     const ln = i + 1
@@ -421,18 +560,11 @@ export async function importImportedPlansCsvPreview(formData: FormData): Promise
     const packageId = g('packageId').trim()
     const providerPlanId = g('providerPlanId').trim()
 
-    // Resolve to a ProviderPackage
-    let pp = packageId ? await prisma.providerPackage.findFirst({ where: { publishedAs: { id: packageId } } }) : null
-    if (!pp && packageId) {
-      // Maybe packageId is the ESIMPackage id — find via inverse relation
-      pp = await prisma.providerPackage.findFirst({ where: { publishedAs: { id: packageId } } })
-    }
-    if (!pp && providerPlanId) {
-      pp = await prisma.providerPackage.findFirst({ where: { providerPlanId } })
-    }
-    if (!pp) { errors.push({ line: ln, message: `No provider package found for packageId=${packageId} providerPlanId=${providerPlanId}` }); continue }
+    let pp: any = packageId ? await prisma.providerPackage.findFirst({ where: { publishedAs: { id: packageId } }, include: { provider: true, publishedAs: true } }) : null
+    if (!pp && providerPlanId) pp = await prisma.providerPackage.findFirst({ where: { providerPlanId }, include: { provider: true, publishedAs: true } })
+    if (!pp) { errors.push({ line: ln, message: `No provider package found` }); continue }
 
-    const esim = linkedMap.get(pp.id)
+    const esim = pp.publishedAs
     const changes: Record<string, { from: any; to: any }> = {}
 
     const costRaw = g('costPriceUSD')
@@ -441,49 +573,48 @@ export async function importImportedPlansCsvPreview(formData: FormData): Promise
       if (n == null || n < 0) { errors.push({ line: ln, message: `Invalid costPriceUSD: "${costRaw}"` }); continue }
       if (n !== (esim?.costPriceUSD != null ? Number(esim.costPriceUSD) : null)) changes.costPriceUSD = { from: esim?.costPriceUSD, to: n }
     }
-
     const ccRaw = g('costCurrency')
     if (ccRaw.trim()) {
       if (!/^[A-Z]{3}$/i.test(ccRaw.trim())) { errors.push({ line: ln, message: `Invalid costCurrency: "${ccRaw}"` }); continue }
       const v = ccRaw.trim().toUpperCase()
       if (v !== (esim?.costCurrency || 'USD')) changes.costCurrency = { from: esim?.costCurrency || 'USD', to: v }
     }
-
     const spRaw = g('sellingPrice')
     if (spRaw.trim()) {
       const n = parseNum(spRaw)
       if (n == null || n < 0) { errors.push({ line: ln, message: `Invalid sellingPrice: "${spRaw}"` }); continue }
       if (n !== (esim?.priceUSD != null ? Number(esim.priceUSD) : null)) changes.sellingPrice = { from: esim?.priceUSD, to: n }
     }
-
     const scRaw = g('sellingCurrency')
     if (scRaw.trim()) {
       if (!/^[A-Z]{3}$/i.test(scRaw.trim())) { errors.push({ line: ln, message: `Invalid sellingCurrency: "${scRaw}"` }); continue }
       const v = scRaw.trim().toUpperCase()
       if (v !== (esim?.currency || 'USD')) changes.sellingCurrency = { from: esim?.currency || 'USD', to: v }
     }
-
     const mpRaw = g('markupPercent')
     if (mpRaw.trim()) {
       const n = parseNum(mpRaw)
       if (n == null || n < 0) { errors.push({ line: ln, message: `Invalid markupPercent: "${mpRaw}"` }); continue }
       if (n !== (esim?.markupPercent != null ? Number(esim.markupPercent) : null)) changes.markupPercent = { from: esim?.markupPercent, to: n }
     }
-
+    const rtpRaw = g('readyToPublish')
+    if (rtpRaw.trim()) {
+      const b = parseBool(rtpRaw)
+      if (b == null) { errors.push({ line: ln, message: `Invalid readyToPublish: "${rtpRaw}"` }); continue }
+      if (b !== pp.readyToPublish) changes.readyToPublish = { from: pp.readyToPublish, to: b }
+    }
     const iaRaw = g('isActive')
     if (iaRaw.trim()) {
       const b = parseBool(iaRaw)
       if (b == null) { errors.push({ line: ln, message: `Invalid isActive: "${iaRaw}"` }); continue }
       if (b !== esim?.isActive) changes.isActive = { from: esim?.isActive, to: b }
     }
-
     const hcRaw = g('hiddenFromCatalog')
     if (hcRaw.trim()) {
       const b = parseBool(hcRaw)
       if (b == null) { errors.push({ line: ln, message: `Invalid hiddenFromCatalog: "${hcRaw}"` }); continue }
       if (b !== esim?.hiddenFromCatalog) changes.hiddenFromCatalog = { from: esim?.hiddenFromCatalog, to: b }
     }
-
     const ptcRaw = g('publishToCatalog')
     if (ptcRaw.trim()) {
       const b = parseBool(ptcRaw)
@@ -491,33 +622,18 @@ export async function importImportedPlansCsvPreview(formData: FormData): Promise
       changes.publishToCatalog = { from: false, to: b }
     }
 
-    if (Object.keys(changes).length > 0) {
-      preview.push({ providerPackageId: pp.id, name: pp.name, changes })
-    }
+    if (Object.keys(changes).length > 0) preview.push({ providerPackageId: pp.id, name: pp.name, changes })
   }
-
-  await prisma.auditLog.create({
-    data: {
-      userId: session.user.id,
-      action: 'IMPORTED_PLAN_CSV_IMPORTED',
-      entity: 'ProviderPackage',
-      details: `Imported plans CSV preview — ${lines.length - 1} rows, ${errors.length} errors, ${preview.length} changes`,
-    },
-  })
 
   return { totalRows: lines.length - 1, validRows: lines.length - 1 - errors.length, errors, preview }
 }
 
-export async function applyImportedPlansCsvImport(formData: FormData): Promise<{
-  applied: number; errors: { line: number; message: string }[]
-}> {
+export async function applyImportedPlansCsvImport(formData: FormData): Promise<{ applied: number; errors: { line: number; message: string }[] }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { applied: 0, errors: [] }
 
   const preview = await importImportedPlansCsvPreview(formData)
-  if (preview.errors.length > 0 && preview.preview.length === 0) {
-    return { applied: 0, errors: preview.errors }
-  }
+  if (preview.errors.length > 0 && preview.preview.length === 0) return { applied: 0, errors: preview.errors }
 
   const file = formData.get('file') as File
   const text = await file.text()
@@ -537,98 +653,66 @@ export async function applyImportedPlansCsvImport(formData: FormData): Promise<{
     const packageId = g('packageId').trim()
     const providerPlanId = g('providerPlanId').trim()
 
-    let pp: any = packageId ? await prisma.providerPackage.findFirst({ where: { publishedAs: { id: packageId } }, include: { provider: true } }) : null
-    if (!pp && packageId) {
-      pp = await prisma.providerPackage.findFirst({ where: { publishedAs: { id: packageId } }, include: { provider: true } })
-    }
-    if (!pp && providerPlanId) pp = await prisma.providerPackage.findFirst({ where: { providerPlanId }, include: { provider: true } })
+    let pp: any = packageId ? await prisma.providerPackage.findFirst({ where: { publishedAs: { id: packageId } }, include: { provider: true, publishedAs: true } }) : null
+    if (!pp && providerPlanId) pp = await prisma.providerPackage.findFirst({ where: { providerPlanId }, include: { provider: true, publishedAs: true } })
     if (!pp) { errors.push({ line: ln, message: `Package not found` }); continue }
 
-    let esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId: pp.id } })
+    let esim = pp.publishedAs
     const updateData: any = {}
+    const ppUpdateData: any = {}
 
     const costRaw = g('costPriceUSD')
-    if (costRaw.trim()) {
-      const n = parseNum(costRaw)
-      if (n != null && n >= 0) updateData.costPriceUSD = n
-    }
-
+    if (costRaw.trim()) { const n = parseNum(costRaw); if (n != null && n >= 0) updateData.costPriceUSD = n }
     const ccRaw = g('costCurrency')
     if (ccRaw.trim() && /^[A-Z]{3}$/i.test(ccRaw.trim())) updateData.costCurrency = ccRaw.trim().toUpperCase()
-
     const spRaw = g('sellingPrice')
-    if (spRaw.trim()) {
-      const n = parseNum(spRaw)
-      if (n != null && n >= 0) updateData.priceUSD = n
-    }
-
+    if (spRaw.trim()) { const n = parseNum(spRaw); if (n != null && n >= 0) updateData.priceUSD = n }
     const scRaw = g('sellingCurrency')
     if (scRaw.trim() && /^[A-Z]{3}$/i.test(scRaw.trim())) updateData.currency = scRaw.trim().toUpperCase()
-
     const mpRaw = g('markupPercent')
-    if (mpRaw.trim()) {
-      const n = parseNum(mpRaw)
-      if (n != null && n >= 0) updateData.markupPercent = n
-    }
-
+    if (mpRaw.trim()) { const n = parseNum(mpRaw); if (n != null && n >= 0) updateData.markupPercent = n }
+    const rtpRaw = g('readyToPublish')
+    if (rtpRaw.trim()) { const b = parseBool(rtpRaw); if (b != null) ppUpdateData.readyToPublish = b }
     const iaRaw = g('isActive')
-    if (iaRaw.trim()) {
-      const b = parseBool(iaRaw)
-      if (b != null) updateData.isActive = b
-    }
-
+    if (iaRaw.trim()) { const b = parseBool(iaRaw); if (b != null) updateData.isActive = b }
     const hcRaw = g('hiddenFromCatalog')
-    if (hcRaw.trim()) {
-      const b = parseBool(hcRaw)
-      if (b != null) updateData.hiddenFromCatalog = b
-    }
-
+    if (hcRaw.trim()) { const b = parseBool(hcRaw); if (b != null) updateData.hiddenFromCatalog = b }
     const ptcRaw = g('publishToCatalog')
     const shouldPublish = ptcRaw.trim() ? parseBool(ptcRaw) : null
+
+    if (Object.keys(ppUpdateData).length > 0) {
+      await prisma.providerPackage.update({ where: { id: pp.id }, data: ppUpdateData })
+    }
 
     if (esim && Object.keys(updateData).length > 0) {
       await prisma.eSIMPackage.update({ where: { id: esim.id }, data: updateData })
     } else if (!esim && Object.keys(updateData).length > 0) {
-      const name = g('name') || pp.name
       esim = await prisma.eSIMPackage.create({
         data: {
-          name,
-          dataGB: pp.dataGB,
-          validityDays: pp.validityDays,
-          providerName: pp.provider?.code || '',
-          providerId: pp.providerId,
-          providerPlanId: pp.providerPlanId,
-          providerPackageId: pp.id,
-          source: 'PROVIDER_PLAN',
-          ...updateData,
-          priceUSD: updateData.priceUSD || 0,
-          currency: updateData.currency || 'USD',
+          name: g('name') || pp.name, dataGB: pp.dataGB, validityDays: pp.validityDays,
+          providerName: pp.provider?.code || '', providerId: pp.providerId, providerPlanId: pp.providerPlanId,
+          providerPackageId: pp.id, source: 'PROVIDER_PLAN',
+          ...updateData, priceUSD: updateData.priceUSD || 0, localPrice: 0, currency: updateData.currency || 'USD',
         },
       })
     }
 
     if (shouldPublish === true && esim) {
-      const hasCost = esim.costPriceUSD != null && Number(esim.costPriceUSD) > 0
-      const hasPrice = esim.priceUSD != null && Number(esim.priceUSD) > 0
-      if (hasCost && hasPrice) {
-        await prisma.eSIMPackage.update({
-          where: { id: esim.id },
-          data: { source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false, archivedAt: null },
-        })
+      const hasC = esim.costPriceUSD != null && Number(esim.costPriceUSD) > 0
+      const hasP = esim.priceUSD != null && Number(esim.priceUSD) > 0
+      if (hasC && hasP) {
+        await prisma.eSIMPackage.update({ where: { id: esim.id }, data: { source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false, archivedAt: null } })
       } else {
         errors.push({ line: ln, message: `publishToCatalog=true but cost/selling price missing` })
       }
     }
-
     applied++
   }
 
   await prisma.auditLog.create({
     data: {
-      userId: session.user.id,
-      action: 'IMPORTED_PLAN_CSV_IMPORTED',
-      entity: 'ProviderPackage',
-      details: `Imported plans CSV import applied — ${applied} rows, ${errors.length} errors`,
+      userId: session.user.id, action: 'IMPORTED_PLAN_CSV_IMPORTED',
+      entity: 'ProviderPackage', details: `Imported plans CSV import applied — ${applied} rows, ${errors.length} errors`,
     },
   })
 
