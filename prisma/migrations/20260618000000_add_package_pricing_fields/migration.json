@@ -1,0 +1,19 @@
+{
+  "version": "5.2",
+  "steps": [
+    {
+      "tag": "AlterTable",
+      "tableName": "esim_packages",
+      "operations": [
+        {
+          "tag": "AddColumn",
+          "column": {
+            "name": "costCurrency",
+            "type": "TEXT",
+            "default": "USD"
+          }
+        }
+      ]
+    }
+  ]
+}

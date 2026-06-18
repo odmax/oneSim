@@ -194,6 +194,8 @@ export async function savePackage(packageId: string, formData: FormData) {
   const localPrice = formData.get('localPrice') as string
   const providerId = formData.get('providerId') as string
   const providerPlanId = formData.get('providerPlanId') as string
+  const costPriceRaw = formData.get('costPriceUSD') as string
+  const costCurrencyRaw = formData.get('costCurrency') as string
   const isActive = formData.get('isActive') === 'on'
 
   const pkg = await prisma.eSIMPackage.findUnique({ where: { id: packageId } })
@@ -254,6 +256,14 @@ export async function savePackage(packageId: string, formData: FormData) {
     updateData.priceUSD = newPriceUSD
     updateData.localPrice = newLocalPrice
     updateData.markupPercent = markupPercent
+  }
+
+  if (costPriceRaw) {
+    const costN = parseFloat(costPriceRaw)
+    if (!isNaN(costN) && costN >= 0) updateData.costPriceUSD = costN
+  }
+  if (costCurrencyRaw && /^[A-Z]{3}$/i.test(costCurrencyRaw.trim())) {
+    updateData.costCurrency = costCurrencyRaw.trim().toUpperCase()
   }
 
   if (providerId !== undefined) updateData.providerId = providerId || null

@@ -6,6 +6,8 @@ import Link from 'next/link'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { bulkConvertToCatalog } from '@/lib/actions/catalog'
 import PackageActions from '@/components/admin/packages/PackageActions'
+import { importPricingCsvPreview, applyPricingCsvImport } from '@/lib/actions/pricing-csv'
+import PricingCsvImport from './PricingCsvImport'
 
 const TABS = [
   { id: 'all', label: 'All Packages' },
@@ -162,11 +164,15 @@ export default async function AdminPackagesPage({
                 </button>
               </form>
             )}
-            {tab !== 'provider' && (
-              <Link href="/admin/packages/new" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 shadow-sm">
-                Add Package
-              </Link>
-            )}
+              {tab !== 'provider' && (
+                <Link href="/admin/packages/new" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 shadow-sm">
+                  Add Package
+                </Link>
+              )}
+              <a href="/api/admin/pricing-csv/export" download className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 shadow-sm">
+                Export Pricing CSV
+              </a>
+              <PricingCsvImport />
           </div>
         </div>
       </div>
@@ -187,6 +193,8 @@ export default async function AdminPackagesPage({
             const costPrice = pkg.costPriceUSD ? parseFloat(pkg.costPriceUSD.toString()) : 0
             const sellingPrice = parseFloat(pkg.priceUSD.toString())
             const profitMargin = costPrice > 0 ? ((sellingPrice - costPrice) / costPrice * 100).toFixed(1) : null
+            const profitMarginAmount = costPrice > 0 ? (sellingPrice - costPrice).toFixed(2) : null
+            const markupPct = costPrice > 0 ? ((sellingPrice - costPrice) / costPrice * 100).toFixed(1) : null
             const needsConfig = pkg.source === 'PROVIDER_PLAN' && !pkg.displayName
 
             return (
@@ -234,25 +242,37 @@ export default async function AdminPackagesPage({
                     <span className="text-gray-500">Validity</span>
                     <span className="font-medium text-gray-900">{pkg.validityDays}d</span>
                   </div>
-                  {costPrice > 0 && (
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Cost</span>
-                      <span className="font-medium text-gray-500">${costPrice.toFixed(2)}</span>
-                    </div>
-                  )}
                   <div className="flex justify-between">
-                    <span className="text-gray-500">Price</span>
+                    <span className="text-gray-500">Cost</span>
+                    {costPrice > 0 ? (
+                      <span className="font-medium text-gray-700">${costPrice.toFixed(2)}</span>
+                    ) : (
+                      <span className="text-xs text-amber-600 font-medium">Cost missing</span>
+                    )}
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Sell Price</span>
                     <span className="font-semibold text-gray-900">${sellingPrice.toFixed(2)}</span>
                   </div>
-                  {profitMargin && (
-                    <div className="flex justify-between col-span-2">
-                      <span className="text-gray-500">Margin</span>
+                  <div className="flex justify-between col-span-2">
+                    <span className="text-gray-500">Margin</span>
+                    {profitMargin ? (
                       <span className={`font-medium ${parseFloat(profitMargin) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                        {profitMargin}%
-                        {parseFloat(profitMargin) < 0 && ' (below cost)'}
+                        ${profitMarginAmount} ({profitMargin}%)
+                        {parseFloat(profitMargin) < 0 && ' ↓'}
                       </span>
-                    </div>
-                  )}
+                    ) : (
+                      <span className="text-gray-400">N/A</span>
+                    )}
+                  </div>
+                  <div className="flex justify-between col-span-2">
+                    <span className="text-gray-500">Markup</span>
+                    {markupPct ? (
+                      <span className="font-medium text-gray-700">{markupPct}%</span>
+                    ) : (
+                      <span className="text-gray-400">N/A</span>
+                    )}
+                  </div>
                   <div className="flex justify-between col-span-2">
                     <span className="text-gray-500">Purchases</span>
                     <span className="font-medium text-gray-900">{pkg._count.purchases}</span>

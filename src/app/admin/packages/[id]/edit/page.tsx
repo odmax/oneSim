@@ -155,24 +155,41 @@ export default async function EditPackagePage({
             <p className="mb-5 text-sm text-gray-500">Set the selling price and margin</p>
 
             <div className="space-y-4">
-              {isImported && (
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-500">Cost Price</label>
+              <div className={`grid gap-4 ${isImported ? 'grid-cols-4' : 'grid-cols-1'}`}>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500">Cost Price</label>
+                  {isImported && costPrice > 0 ? (
                     <p className="mt-1 text-lg font-semibold text-gray-900">${costPrice.toFixed(2)}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-500">Current Markup</label>
-                    <p className="mt-1 text-lg font-semibold text-gray-900">{currentMarkupPct > 0 ? `${currentMarkupPct}%` : '—'}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-500">Current Margin</label>
-                    <p className={`mt-1 text-lg font-semibold ${currentMargin && parseFloat(currentMargin) >= 0 ? 'text-emerald-600' : 'text-gray-400'}`}>
-                      {currentMargin ? `${currentMargin}%` : '—'}
-                    </p>
-                  </div>
+                  ) : (
+                    <div className="mt-1 flex items-center gap-2">
+                      <input name="costPriceUSD" type="number" step="0.01" min="0" defaultValue={costPrice > 0 ? costPrice : ''}
+                        placeholder="0.00"
+                        className="block w-28 rounded-lg border border-gray-200 px-3 py-1.5 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+                      <input name="costCurrency" type="text" maxLength={3} defaultValue={pkg.costCurrency || 'USD'}
+                        className="block w-16 rounded-lg border border-gray-200 px-2 py-1.5 text-sm font-mono uppercase focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+                    </div>
+                  )}
+                  {!isImported && <p className="mt-1 text-xs text-gray-400">Enter wholesale cost for margin calculations</p>}
                 </div>
-              )}
+                {isImported && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-500">Cost Currency</label>
+                      <p className="mt-1 text-lg font-semibold text-gray-900">{pkg.costCurrency || 'USD'}</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-500">Current Markup</label>
+                      <p className="mt-1 text-lg font-semibold text-gray-900">{currentMarkupPct > 0 ? `${currentMarkupPct}%` : '—'}</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-500">Current Margin</label>
+                      <p className={`mt-1 text-lg font-semibold ${currentMargin && parseFloat(currentMargin) >= 0 ? 'text-emerald-600' : 'text-gray-400'}`}>
+                        {currentMargin ? `${currentMargin}%` : '—'}
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
