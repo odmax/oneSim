@@ -137,30 +137,15 @@ export async function syncProviderPlans(providerId: string) {
       }
     }
 
-    await prisma.provider.update({
-      where: { id: providerId },
-      data: {
-        lastSyncAt: new Date(),
-        lastSyncResult: `Synced ${plans.length} plans successfully`,
-        lastSyncCount: plans.length,
-        ...capabilitiesUpdate,
-      },
-    })
-
     console.log('[syncProviderPlans] responseListKey=' + resolvedResponseListKey + ' plans=' + plans.length + ' endpointMappings.GET_PLANS=' + (provider.endpointMappings as any)?.GET_PLANS)
 
-    // Create/update ProviderPackage records from synced plans
-    let imported = 0, duplicates = 0, skipped = 0
+    // Create/update ProviderPackage records from synced plans using upsert
+    let imported = 0, updated = 0, duplicatesSkipped = 0, skipped = 0
     for (const plan of plans) {
       const raw = plan.raw_data || {}
       const providerPlanId = plan.id || raw.id || raw.planCode || ''
       const providerPlanCode = raw.planCode || raw.sku || plan.sku || ''
       if (!providerPlanId) { skipped++; continue }
-
-      // Check for existing ProviderPackage by providerPlanId
-      const existing = await prisma.providerPackage.findFirst({
-        where: { providerId, providerPlanId },
-      })
 
       const pkgData = {
         providerPlanCode,
@@ -176,17 +161,78 @@ export async function syncProviderPlans(providerId: string) {
         providerRawData: raw,
       }
 
-      if (existing) {
-        await prisma.providerPackage.update({ where: { id: existing.id }, data: pkgData })
-        duplicates++
-      } else {
-        await prisma.providerPackage.create({
-          data: { providerId, providerPlanId, ...pkgData },
+      try {
+        // Primary dedup via unique constraint (providerId + providerPlanId)
+        const existing = await prisma.providerPackage.findUnique({
+          where: { providerId_providerPlanId: { providerId, providerPlanId } },
         })
-        imported++
+
+        if (existing) {
+          await prisma.providerPackage.update({
+            where: { id: existing.id },
+            data: {
+              ...pkgData,
+              // Preserve admin-configured readyToPublish flag
+              readyToPublish: existing.readyToPublish,
+              // Only overwrite costPrice if provider sends it and admin hasn't set a custom costPriceUSD on the linked ESIMPackage
+              ...(plan.price_usd ? {} : { costPrice: existing.costPrice }),
+            },
+          })
+          updated++
+        } else {
+          // Fallback: check by providerId + providerPlanCode if no match by planId
+          if (providerPlanCode) {
+            const fallback = await prisma.providerPackage.findFirst({
+              where: { providerId, providerPlanCode, providerPlanId: { not: providerPlanId } },
+            })
+            if (fallback) {
+              // Update existing record with correct providerPlanId
+              await prisma.providerPackage.update({
+                where: { id: fallback.id },
+                data: { ...pkgData, providerPlanId },
+              })
+              updated++
+              continue
+            }
+          }
+
+          await prisma.providerPackage.create({
+            data: { providerId, providerPlanId, ...pkgData },
+          })
+          imported++
+        }
+      } catch (e: any) {
+        // Unique constraint violation — another process created the same record
+        if (e.code === 'P2002') {
+          try {
+            const existing = await prisma.providerPackage.findUnique({
+              where: { providerId_providerPlanId: { providerId, providerPlanId } },
+            })
+            if (existing) {
+              await prisma.providerPackage.update({
+                where: { id: existing.id },
+                data: { ...pkgData, readyToPublish: existing.readyToPublish },
+              })
+              duplicatesSkipped++
+            }
+          } catch { skipped++ }
+        } else { skipped++ }
       }
     }
-    console.log('[syncProviderPlans] imported=' + imported + ' duplicates=' + duplicates + ' skipped=' + skipped + ' total=' + plans.length)
+
+    const syncResult = `Synced ${plans.length} plans: ${imported} created, ${updated} updated, ${duplicatesSkipped} duplicate attempts skipped`
+    console.log(`[syncProviderPlans] ${syncResult}`)
+
+    // Update sync result with detailed counts
+    await prisma.provider.update({
+      where: { id: providerId },
+      data: {
+        lastSyncAt: new Date(),
+        lastSyncResult: syncResult,
+        lastSyncCount: plans.length,
+        ...capabilitiesUpdate,
+      },
+    })
 
     await prisma.auditLog.create({
       data: {

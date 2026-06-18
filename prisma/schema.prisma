@@ -256,6 +256,7 @@ model ProviderPackage {
   provider      Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
   publishedAs   ESIMPackage?
 
+  @@unique([providerId, providerPlanId])
   @@index([providerId])
   @@map("provider_packages")
 }

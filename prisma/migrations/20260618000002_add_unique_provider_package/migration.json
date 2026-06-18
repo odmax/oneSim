@@ -1,0 +1,14 @@
+{
+  "version": "5.2",
+  "steps": [
+    {
+      "tag": "CreateIndex",
+      "tableName": "provider_packages",
+      "index": {
+        "name": "provider_packages_providerId_providerPlanId_key",
+        "columns": ["providerId", "providerPlanId"],
+        "unique": true
+      }
+    }
+  ]
+}
