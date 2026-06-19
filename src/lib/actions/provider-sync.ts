@@ -9,6 +9,7 @@ import { generateSku, generatePackageCode } from '@/lib/packages/resolve-package
 import { buildAdapter } from '@/lib/providers/adapter-manager'
 import { normalizePlan } from '@/lib/providers/plan-utils'
 import type { ProviderPlan } from '@/lib/providers/adapter-types'
+import { buildComparableKey, computeEffectiveCost } from '@/lib/packages/cheapest-utils'
 
 export type { ProviderPlan }
 
@@ -147,6 +148,11 @@ export async function syncProviderPlans(providerId: string) {
       const providerPlanCode = raw.planCode || raw.sku || plan.sku || ''
       if (!providerPlanId) { skipped++; continue }
 
+      // Look up existing first
+      let existing = await prisma.providerPackage.findUnique({
+        where: { providerId_providerPlanId: { providerId, providerPlanId } },
+      }).catch(() => null)
+
       const pkgData = {
         providerPlanCode,
         name: plan.name || raw.planName || '',
@@ -161,20 +167,27 @@ export async function syncProviderPlans(providerId: string) {
         providerRawData: raw,
       }
 
-      try {
-        // Primary dedup via unique constraint (providerId + providerPlanId)
-        const existing = await prisma.providerPackage.findUnique({
-          where: { providerId_providerPlanId: { providerId, providerPlanId } },
-        })
+      // Compute comparable key and effective cost
+      const comparableKey = buildComparableKey({
+        country: pkgData.country, region: pkgData.region, planType: pkgData.planType,
+        dataGB: pkgData.dataGB, validityDays: pkgData.validityDays,
+      })
+      const { effectiveCostPrice, costSource } = computeEffectiveCost(
+        Number(pkgData.costPrice),
+        existing?.adminCostPrice ? Number(existing.adminCostPrice) : null,
+      )
 
+      try {
         if (existing) {
           await prisma.providerPackage.update({
             where: { id: existing.id },
             data: {
               ...pkgData,
-              // Preserve admin-configured readyToPublish flag
+              comparableKey,
+              effectiveCostPrice,
+              costSource,
               readyToPublish: existing.readyToPublish,
-              // Only overwrite costPrice if provider sends it and admin hasn't set a custom costPriceUSD on the linked ESIMPackage
+              // Only overwrite costPrice if provider sends it and admin hasn't set a custom one
               ...(plan.price_usd ? {} : { costPrice: existing.costPrice }),
             },
           })
@@ -186,10 +199,9 @@ export async function syncProviderPlans(providerId: string) {
               where: { providerId, providerPlanCode, providerPlanId: { not: providerPlanId } },
             })
             if (fallback) {
-              // Update existing record with correct providerPlanId
               await prisma.providerPackage.update({
                 where: { id: fallback.id },
-                data: { ...pkgData, providerPlanId },
+                data: { ...pkgData, providerPlanId, comparableKey, effectiveCostPrice, costSource },
               })
               updated++
               continue
@@ -197,21 +209,20 @@ export async function syncProviderPlans(providerId: string) {
           }
 
           await prisma.providerPackage.create({
-            data: { providerId, providerPlanId, ...pkgData },
+            data: { providerId, providerPlanId, ...pkgData, comparableKey, effectiveCostPrice, costSource },
           })
           imported++
         }
       } catch (e: any) {
-        // Unique constraint violation — another process created the same record
         if (e.code === 'P2002') {
           try {
-            const existing = await prisma.providerPackage.findUnique({
+            const retry = await prisma.providerPackage.findUnique({
               where: { providerId_providerPlanId: { providerId, providerPlanId } },
             })
-            if (existing) {
+            if (retry) {
               await prisma.providerPackage.update({
-                where: { id: existing.id },
-                data: { ...pkgData, readyToPublish: existing.readyToPublish },
+                where: { id: retry.id },
+                data: { ...pkgData, comparableKey, effectiveCostPrice, costSource, readyToPublish: retry.readyToPublish },
               })
               duplicatesSkipped++
             }

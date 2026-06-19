@@ -34,7 +34,7 @@ function SummaryCard({ label, value, color, sub }: { label: string; value: numbe
 export default async function ImportedPlansPage({
   searchParams,
 }: {
-  searchParams?: { provider?: string; status?: string; costMissing?: string; sellPriceMissing?: string; readyToPublish?: string; notPublished?: string; recentlySynced?: string; hidden?: string; search?: string; error?: string; success?: string }
+  searchParams?: { provider?: string; status?: string; costMissing?: string; sellPriceMissing?: string; readyToPublish?: string; notPublished?: string; recentlySynced?: string; hidden?: string; cheapestOnly?: string; alternatives?: string; missingEffectiveCost?: string; excludedFromCheapest?: string; search?: string; error?: string; success?: string }
 }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
@@ -56,6 +56,10 @@ export default async function ImportedPlansPage({
     readyToPublish: searchParams?.readyToPublish === '1',
     notPublished: searchParams?.notPublished === '1',
     recentlySynced: searchParams?.recentlySynced === '1',
+    cheapestOnly: searchParams?.cheapestOnly === '1',
+    alternatives: searchParams?.alternatives === '1',
+    missingEffectiveCost: searchParams?.missingEffectiveCost === '1',
+    excludedFromCheapest: searchParams?.excludedFromCheapest === '1',
     hiddenFromCatalog: searchParams?.hidden === '1',
     search: searchParams?.search || undefined,
   }
@@ -110,6 +114,27 @@ export default async function ImportedPlansPage({
         <FilterLink current={searchParams} param="recentlySynced" label="Recently Synced" />
       </div>
 
+      {/* Cheapest Plans quick filter + Bulk actions */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
+          <FilterLink current={searchParams} param="cheapestOnly" label="Cheapest Only" />
+          <FilterLink current={searchParams} param="alternatives" label="Alternatives" />
+          <FilterLink current={searchParams} param="missingEffectiveCost" label="Missing Effective Cost" />
+          <FilterLink current={searchParams} param="excludedFromCheapest" label="Excluded From Cheapest" />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <form action={async () => { 'use server'; const { recalculateCheapestPlans } = await import('@/lib/packages/cheapest-utils'); await recalculateCheapestPlans() }}>
+            <button type="submit" className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 shadow-sm">Recalculate Cheapest</button>
+          </form>
+          <form action={async () => { 'use server'; const { markCheapestReady } = await import('@/lib/packages/cheapest-utils'); await markCheapestReady() }}>
+            <button type="submit" className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 shadow-sm">Mark Cheapest Ready</button>
+          </form>
+          <form action={async () => { 'use server'; const { publishCheapestOnly } = await import('@/lib/packages/cheapest-utils'); await publishCheapestOnly() }}>
+            <button type="submit" className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 shadow-sm">Publish Cheapest Only</button>
+          </form>
+        </div>
+      </div>
+
       <FilterBar providers={providers} />
 
       {/* Bulk Pricing Rules */}
@@ -131,13 +156,17 @@ export default async function ImportedPlansPage({
               <th className="px-4 py-3 text-right font-medium text-gray-500">Selling Price</th>
               <th className="px-4 py-3 text-right font-medium text-gray-500">Margin</th>
               <th className="px-4 py-3 text-right font-medium text-gray-500">Markup</th>
+              <th className="px-4 py-3 text-center font-medium text-gray-500">Eff. Cost</th>
+              <th className="px-4 py-3 text-center font-medium text-gray-500">Cost Source</th>
+              <th className="px-4 py-3 text-center font-medium text-gray-500">Rank</th>
+              <th className="px-4 py-3 text-center font-medium text-gray-500">Cheapest Status</th>
               <th className="px-4 py-3 text-center font-medium text-gray-500">Status</th>
               <th className="px-4 py-3 text-center font-medium text-gray-500" style={{ minWidth: 200 }}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {plans.length === 0 ? (
-              <tr><td colSpan={13} className="px-4 py-12 text-center text-gray-400">No imported plans found.</td></tr>
+              <tr><td colSpan={17} className="px-4 py-12 text-center text-gray-400">No imported plans found.</td></tr>
             ) : (
               plans.map(plan => {
                 const marginAmt = plan.costPriceUSD && plan.sellingPrice ? (plan.sellingPrice - plan.costPriceUSD) : null
@@ -190,6 +219,44 @@ export default async function ImportedPlansPage({
                     </td>
                     <td className="px-4 py-3 text-center">
                       <StatusBadge status={plan.status} />
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {plan.costSource === 'MISSING' ? (
+                        <span className="text-xs text-amber-600 font-medium">Missing</span>
+                      ) : plan.effectiveCostPrice != null ? (
+                        <span className="font-medium text-gray-900">${Number(plan.effectiveCostPrice).toFixed(2)}</span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {plan.costSource === 'ADMIN_OVERRIDE' ? (
+                        <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600">Admin Override</span>
+                      ) : plan.costSource === 'PROVIDER' ? (
+                        <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-medium text-green-600">Provider</span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-600">Missing</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {plan.cheapestRank != null ? (
+                        <span className={`font-mono text-xs font-bold ${plan.cheapestRank === 1 ? 'text-emerald-600' : 'text-gray-500'}`}>#{plan.cheapestRank}</span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {plan.isCheapestCandidate ? (
+                        <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-600">Cheapest</span>
+                      ) : plan.excludedFromCheapest ? (
+                        <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-500">Excluded</span>
+                      ) : plan.cheapestRank != null && plan.cheapestRank > 1 ? (
+                        <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500">Alt #{plan.cheapestRank}</span>
+                      ) : plan.costSource === 'MISSING' ? (
+                        <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-600">No Cost</span>
+                      ) : (
+                        <span className="text-gray-400 text-xs">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-center">
                       <ImportedPlansActions plan={plan} />

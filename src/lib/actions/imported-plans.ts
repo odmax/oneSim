@@ -33,6 +33,16 @@ export interface ImportedPlanRow {
   archivedAt: string | null
   packageId: string | null
   status: ImportedPlanStatus
+  // Cheapest fields
+  adminCostPrice: number | null
+  effectiveCostPrice: number | null
+  costSource: string | null
+  comparableKey: string | null
+  cheapestRank: number | null
+  isCheapestCandidate: boolean
+  cheapestReason: string | null
+  excludedFromCheapest: boolean
+  exclusionReason: string | null
 }
 
 function computeStatus(pp: { readyToPublish?: boolean }, esim: { isActive?: boolean; archivedAt?: Date | null; source?: string; costPriceUSD?: any; priceUSD?: any } | null): ImportedPlanStatus {
@@ -55,6 +65,11 @@ export interface ImportedPlansFilters {
   notPublished?: boolean
   recentlySynced?: boolean
   hiddenFromCatalog?: boolean
+  cheapestOnly?: boolean
+  alternatives?: boolean
+  missingEffectiveCost?: boolean
+  excludedFromCheapest?: boolean
+  comparableKey?: string
   search?: string
 }
 
@@ -120,6 +135,16 @@ export async function getImportedPlans(filters: ImportedPlansFilters): Promise<I
       archivedAt: esim?.archivedAt ? esim.archivedAt.toISOString() : null,
       packageId: esim?.id || null,
       status: computeStatus(pp, esim),
+      // Cheapest fields
+      adminCostPrice: pp.adminCostPrice ? Number(pp.adminCostPrice) : null,
+      effectiveCostPrice: pp.effectiveCostPrice ? Number(pp.effectiveCostPrice) : null,
+      costSource: pp.costSource,
+      comparableKey: pp.comparableKey,
+      cheapestRank: pp.cheapestRank,
+      isCheapestCandidate: pp.isCheapestCandidate,
+      cheapestReason: pp.cheapestReason,
+      excludedFromCheapest: pp.excludedFromCheapest,
+      exclusionReason: pp.exclusionReason,
     }
   })
 
@@ -129,6 +154,10 @@ export async function getImportedPlans(filters: ImportedPlansFilters): Promise<I
   if (filters.readyToPublish) rows = rows.filter(r => r.readyToPublish && r.status !== 'published' && r.status !== 'archived')
   if (filters.notPublished) rows = rows.filter(r => r.status !== 'published' && r.status !== 'archived')
   if (filters.hiddenFromCatalog) rows = rows.filter(r => r.hiddenFromCatalog)
+  if (filters.cheapestOnly) rows = rows.filter(r => r.isCheapestCandidate)
+  if (filters.alternatives) rows = rows.filter(r => r.cheapestRank != null && r.cheapestRank > 1)
+  if (filters.missingEffectiveCost) rows = rows.filter(r => r.effectiveCostPrice == null || r.effectiveCostPrice <= 0)
+  if (filters.excludedFromCheapest) rows = rows.filter(r => r.excludedFromCheapest)
 
   return rows
 }
@@ -143,6 +172,7 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
   const sellingPriceRaw = formData.get('sellingPrice') as string
   const sellingCurrencyRaw = formData.get('sellingCurrency') as string
   const markupRaw = formData.get('markupPercent') as string
+  const adminCostRaw = formData.get('adminCostPrice') as string
   const readyRaw = formData.get('readyToPublish') as string
 
   const pp = await prisma.providerPackage.findUnique({ where: { id: providerPackageId }, include: { provider: true } })
@@ -153,6 +183,33 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
   const sellingPrice = sellingPriceRaw ? parseFloat(sellingPriceRaw) : null
   const sellingCurrency = sellingCurrencyRaw?.trim().toUpperCase() || 'USD'
   const markupPercent = markupRaw ? parseFloat(markupRaw) : null
+  const adminCostPrice = adminCostRaw ? parseFloat(adminCostRaw) : null
+
+  // Compute effective cost with admin override
+  const { computeEffectiveCost } = await import('@/lib/packages/cheapest-utils')
+  const rawProviderCost = Number(pp.costPrice)
+  const { effectiveCostPrice, costSource } = computeEffectiveCost(rawProviderCost, adminCostPrice)
+
+  // Update ProviderPackage admin cost
+  const ppUpdateData: any = {}
+  if (adminCostRaw !== '') {
+    ppUpdateData.adminCostPrice = adminCostPrice
+    ppUpdateData.effectiveCostPrice = effectiveCostPrice
+    ppUpdateData.costSource = costSource
+  }
+  if (Object.keys(ppUpdateData).length > 0) {
+    await prisma.providerPackage.update({ where: { id: providerPackageId }, data: ppUpdateData })
+  }
+
+  if (adminCostPrice != null && adminCostPrice > 0) {
+    await prisma.auditLog.create({
+      data: {
+        userId: session.user.id, action: 'IMPORTED_PLAN_COST_OVERRIDE_SET',
+        entity: 'ProviderPackage', entityId: providerPackageId,
+        details: `Admin cost override: ${adminCostPrice} (was provider cost ${rawProviderCost})`,
+      },
+    })
+  }
 
   let esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId } })
 
@@ -445,9 +502,11 @@ export async function applyPricingRules(formData: FormData): Promise<{
 const CSV_COLS = [
   'packageId', 'source', 'providerCode', 'providerName', 'providerPlanId',
   'sku', 'name', 'dataGB', 'validityDays', 'country',
-  'providerPrice', 'providerCurrency', 'costPriceUSD', 'costCurrency',
+  'providerPrice', 'providerCurrency', 'adminCostPrice', 'effectiveCostPrice', 'costSource',
+  'costPriceUSD', 'costCurrency',
   'sellingPrice', 'sellingCurrency', 'markupPercent',
   'readyToPublish', 'isActive', 'hiddenFromCatalog', 'archivedAt', 'publishToCatalog',
+  'comparableKey', 'cheapestRank', 'isCheapestCandidate', 'excludedFromCheapest', 'exclusionReason',
 ]
 
 function sanitize(v: any): string {
@@ -505,6 +564,9 @@ export async function exportImportedPlansCsv(): Promise<string> {
       case 'country': return sanitize(r.country || '')
       case 'providerPrice': return sanitize(r.providerCostPrice)
       case 'providerCurrency': return sanitize(r.providerCurrency)
+      case 'adminCostPrice': return sanitize(r.adminCostPrice != null ? r.adminCostPrice : '')
+      case 'effectiveCostPrice': return sanitize(r.effectiveCostPrice != null ? r.effectiveCostPrice : '')
+      case 'costSource': return sanitize(r.costSource || '')
       case 'costPriceUSD': return sanitize(r.costPriceUSD != null ? r.costPriceUSD : '')
       case 'costCurrency': return sanitize(r.costCurrency || r.providerCurrency)
       case 'sellingPrice': return sanitize(r.sellingPrice != null ? r.sellingPrice : '')
@@ -515,6 +577,11 @@ export async function exportImportedPlansCsv(): Promise<string> {
       case 'hiddenFromCatalog': return sanitize(r.hiddenFromCatalog ? '1' : '0')
       case 'archivedAt': return sanitize(r.archivedAt || '')
       case 'publishToCatalog': return sanitize('')
+      case 'comparableKey': return sanitize(r.comparableKey || '')
+      case 'cheapestRank': return sanitize(r.cheapestRank != null ? r.cheapestRank : '')
+      case 'isCheapestCandidate': return sanitize(r.isCheapestCandidate ? '1' : '0')
+      case 'excludedFromCheapest': return sanitize(r.excludedFromCheapest ? '1' : '0')
+      case 'exclusionReason': return sanitize(r.exclusionReason || '')
       default: return ''
     }
   }).join(','))
