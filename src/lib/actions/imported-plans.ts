@@ -261,6 +261,12 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
     },
   })
 
+  // Recalculate cheapest rankings if cost changed
+  if (ppUpdateData.adminCostPrice !== undefined || ppUpdateData.effectiveCostPrice !== undefined) {
+    const { recalculateCheapestPlans } = await import('@/lib/packages/cheapest-utils')
+    await recalculateCheapestPlans().catch(() => {})
+  }
+
   revalidatePath('/admin/imported-plans')
   return { success: true }
 }
