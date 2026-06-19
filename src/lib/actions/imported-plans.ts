@@ -193,7 +193,7 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
   const adminCostPrice = parsePrice(adminCostRaw)
 
   // Compute effective cost with admin override
-  const { computeEffectiveCost } = await import('@/lib/packages/cheapest-utils')
+  const { computeEffectiveCost, calculatePackageProfit } = await import('@/lib/packages/cheapest-utils')
   const rawProviderCost = Number(pp.costPrice)
   const { effectiveCostPrice, costSource } = computeEffectiveCost(rawProviderCost, adminCostPrice)
 
@@ -208,6 +208,10 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
     await prisma.providerPackage.update({ where: { id: providerPackageId }, data: ppUpdateData })
   }
 
+  // When admin sets cost, also write to ESIMPackage.costPriceUSD so catalog queries see it
+  const esimCostPriceUSD = effectiveCostPrice != null && effectiveCostPrice > 0 ? effectiveCostPrice
+    : costPriceUSD
+
   if (adminCostPrice != null && adminCostPrice > 0) {
     await prisma.auditLog.create({
       data: {
@@ -220,6 +224,8 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
 
   let esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId } })
 
+  const profit = calculatePackageProfit({ sellingPrice, effectiveCostPrice })
+
   const updateData: any = {
     name: pp.name,
     dataGB: pp.dataGB,
@@ -227,12 +233,12 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
     providerName: pp.provider.code,
     providerId: pp.providerId,
     providerPlanId: pp.providerPlanId,
-    costPriceUSD,
+    costPriceUSD: esimCostPriceUSD,
     costCurrency,
     priceUSD: sellingPrice || 0,
     localPrice: 0,
     currency: sellingCurrency,
-    markupPercent,
+    markupPercent: profit.markupPercent,
   }
 
   if (esim) {

@@ -169,11 +169,17 @@ export default async function ImportedPlansPage({
               <tr><td colSpan={17} className="px-4 py-12 text-center text-gray-400">No imported plans found.</td></tr>
             ) : (
               plans.map(plan => {
-                const marginAmt = plan.costPriceUSD && plan.sellingPrice ? (plan.sellingPrice - plan.costPriceUSD) : null
+                // Use effectiveCostPrice for margin; fallback to costPriceUSD, then providerCostPrice (only if > 0)
+                const costForMargin = (plan.effectiveCostPrice != null && plan.effectiveCostPrice > 0) ? plan.effectiveCostPrice
+                  : (plan.costPriceUSD != null && plan.costPriceUSD > 0) ? plan.costPriceUSD
+                  : (plan.providerCostPrice > 0) ? plan.providerCostPrice
+                  : null
+                const marginAmt = costForMargin != null && plan.sellingPrice && plan.sellingPrice > 0
+                  ? (plan.sellingPrice - costForMargin) : null
                 const marginPct = marginAmt != null && plan.sellingPrice && plan.sellingPrice > 0
                   ? ((marginAmt / plan.sellingPrice) * 100).toFixed(1) : null
-                const markupPct = plan.costPriceUSD && plan.sellingPrice && plan.costPriceUSD > 0
-                  ? (((plan.sellingPrice - plan.costPriceUSD) / plan.costPriceUSD) * 100).toFixed(1) : null
+                const markupPct = costForMargin != null && costForMargin > 0 && marginAmt != null
+                  ? ((marginAmt / costForMargin) * 100).toFixed(1) : null
                 return (
                   <tr key={plan.providerPackageId} className="border-t border-gray-50 hover:bg-gray-50/50">
                     <td className="px-4 py-3 text-gray-700 font-medium">{plan.providerName}</td>
