@@ -3,8 +3,7 @@
 import { useState } from 'react'
 import type { ImportedPlanRow } from '@/lib/actions/imported-plans'
 
-export function InlinePricingForm({ plan, onSaved }: { plan: ImportedPlanRow; onSaved: () => void }) {
-  const [open, setOpen] = useState(false)
+export function InlinePricingForm({ plan, onSaved, onClose }: { plan: ImportedPlanRow; onSaved: () => void; onClose: () => void }) {
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
   const [costInput, setCostInput] = useState(plan.adminCostPrice != null ? String(plan.adminCostPrice) : '')
@@ -23,13 +22,11 @@ export function InlinePricingForm({ plan, onSaved }: { plan: ImportedPlanRow; on
       const res = await saveImportedPlanPricing(formData)
       if (res.success) {
         setMsg('Pricing saved ✓')
-        setTimeout(() => { setOpen(false); onSaved() }, 400)
+        setTimeout(() => { onClose(); onSaved() }, 400)
       } else setMsg(res.error || 'Failed to save')
     } catch (e: any) { setMsg(e.message || 'Error') }
     setSaving(false)
   }
-
-  if (!open) return null
 
   return (
     <div className="w-44">
@@ -61,7 +58,7 @@ export function InlinePricingForm({ plan, onSaved }: { plan: ImportedPlanRow; on
             className="flex-1 rounded bg-emerald-600 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
             {saving ? '...' : 'Save'}
           </button>
-          <button type="button" onClick={() => setOpen(false)}
+          <button type="button" onClick={onClose}
             className="rounded border border-gray-200 px-2 py-1 text-xs text-gray-500">Close</button>
         </div>
       </form>
@@ -83,7 +80,6 @@ export default function ImportedPlansActions({ plan }: { plan: ImportedPlanRow }
   const [showPricing, setShowPricing] = useState(false)
   const [loading, setLoading] = useState<string | null>(null)
   const [msg, setMsg] = useState('')
-  const [refreshKey, setRefreshKey] = useState(0)
 
   const effCost = plan.effectiveCostPrice
   const hasCost = effCost != null && effCost > 0
@@ -122,7 +118,7 @@ export default function ImportedPlansActions({ plan }: { plan: ImportedPlanRow }
       <div className="flex flex-wrap justify-center gap-1">
         <Btn onClick={() => setShowPricing(!showPricing)} label={showPricing ? 'Close' : 'Edit Pricing'} color="border border-gray-200 text-gray-600 hover:bg-gray-50" slim />
         <a href={`/admin/packages/${plan.packageId}/edit`} className="whitespace-nowrap rounded border border-emerald-200 px-2 py-1 text-[11px] font-medium text-emerald-600 hover:bg-emerald-50">View Product</a>
-        {showPricing && <InlinePricingForm plan={plan} onSaved={onSaved} />}
+      {showPricing && <InlinePricingForm plan={plan} onSaved={onSaved} onClose={() => setShowPricing(false)} />}
       </div>
     )
   }
@@ -130,7 +126,7 @@ export default function ImportedPlansActions({ plan }: { plan: ImportedPlanRow }
   return (
     <div className="flex flex-col items-center">
       {/* Pricing form (collapsible) */}
-      {showPricing && <InlinePricingForm plan={plan} onSaved={onSaved} />}
+        {showPricing && <InlinePricingForm plan={plan} onSaved={onSaved} onClose={() => setShowPricing(false)} />}
 
       {!showPricing && (
         <>
