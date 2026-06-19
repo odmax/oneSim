@@ -178,12 +178,19 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
   const pp = await prisma.providerPackage.findUnique({ where: { id: providerPackageId }, include: { provider: true } })
   if (!pp) return { success: false, error: 'Provider package not found' }
 
-  const costPriceUSD = costPriceRaw ? parseFloat(costPriceRaw) : null
+  function parsePrice(v: string | null): number | null {
+    if (!v) return null
+    const normalized = v.trim().replace(',', '.').replace(/[^0-9.]/g, '')
+    const n = parseFloat(normalized)
+    return isNaN(n) ? null : n
+  }
+
+  const costPriceUSD = parsePrice(costPriceRaw)
   const costCurrency = costCurrencyRaw?.trim().toUpperCase() || 'USD'
-  const sellingPrice = sellingPriceRaw ? parseFloat(sellingPriceRaw) : null
+  const sellingPrice = parsePrice(sellingPriceRaw)
   const sellingCurrency = sellingCurrencyRaw?.trim().toUpperCase() || 'USD'
-  const markupPercent = markupRaw ? parseFloat(markupRaw) : null
-  const adminCostPrice = adminCostRaw ? parseFloat(adminCostRaw) : null
+  const markupPercent = parsePrice(markupRaw)
+  const adminCostPrice = parsePrice(adminCostRaw)
 
   // Compute effective cost with admin override
   const { computeEffectiveCost } = await import('@/lib/packages/cheapest-utils')
