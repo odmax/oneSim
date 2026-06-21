@@ -23,6 +23,7 @@ ALTER TABLE "esims" ADD COLUMN IF NOT EXISTS "packageValidityDays" INTEGER;
 -- Fields added by archive (commit 270ec53 and later)
 ALTER TABLE "esim_packages" ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3);
 ALTER TABLE "esim_packages" ADD COLUMN IF NOT EXISTS "hiddenFromCatalog" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "esim_packages" ADD COLUMN IF NOT EXISTS "providerPackageId" TEXT;
 
 -- Top-up and usage fields (prior to activation detection) 
 ALTER TABLE "esims" ADD COLUMN IF NOT EXISTS "dataUsedMB" INTEGER NOT NULL DEFAULT 0;
