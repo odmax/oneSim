@@ -119,11 +119,14 @@ CREATE TABLE IF NOT EXISTS "customers" (
 );
 CREATE INDEX IF NOT EXISTS "customers_businessId_idx" ON "customers"("businessId");
 
--- Foreign keys for Customers (may fail if FK already exists via earlier migration on existing DBs)
-ALTER TABLE "customers" ADD CONSTRAINT IF NOT EXISTS "customers_businessId_fkey"
-  FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- Foreign keys for Customers (safe DO block — PostgreSQL does not support ADD CONSTRAINT IF NOT EXISTS)
+DO $$ BEGIN
+  ALTER TABLE "customers" ADD CONSTRAINT "customers_businessId_fkey"
+    FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
 
--- Enums (safe — CREATE TYPE IF NOT EXISTS is not supported; we use DO blocks)
+-- Enums (CREATE TYPE IF NOT EXISTS is not supported; use DO blocks)
 DO $$ BEGIN
   CREATE TYPE "ProductType" AS ENUM ('NEW_ESIM', 'TOP_UP', 'BOTH');
 EXCEPTION WHEN duplicate_object THEN NULL;
@@ -134,23 +137,41 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
--- Foreign keys for ESIMTopUp (safe — IF NOT EXISTS for constraints)
-ALTER TABLE "esim_top_ups" ADD CONSTRAINT IF NOT EXISTS "esim_top_ups_businessId_fkey"
-  FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "esim_top_ups" ADD CONSTRAINT IF NOT EXISTS "esim_top_ups_esimId_fkey"
-  FOREIGN KEY ("esimId") REFERENCES "esims"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-ALTER TABLE "esim_top_ups" ADD CONSTRAINT IF NOT EXISTS "esim_top_ups_packageId_fkey"
-  FOREIGN KEY ("packageId") REFERENCES "esim_packages"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-ALTER TABLE "esim_top_ups" ADD CONSTRAINT IF NOT EXISTS "esim_top_ups_customerId_fkey"
-  FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- Foreign keys for ESIMTopUp (safe DO blocks)
+DO $$ BEGIN
+  ALTER TABLE "esim_top_ups" ADD CONSTRAINT "esim_top_ups_businessId_fkey"
+    FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER TABLE "esim_top_ups" ADD CONSTRAINT "esim_top_ups_esimId_fkey"
+    FOREIGN KEY ("esimId") REFERENCES "esims"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER TABLE "esim_top_ups" ADD CONSTRAINT "esim_top_ups_packageId_fkey"
+    FOREIGN KEY ("packageId") REFERENCES "esim_packages"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER TABLE "esim_top_ups" ADD CONSTRAINT "esim_top_ups_customerId_fkey"
+    FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
 
--- Foreign key for Invoice.topUpId (safe)
-ALTER TABLE "invoices" ADD CONSTRAINT IF NOT EXISTS "invoices_topUpId_fkey"
-  FOREIGN KEY ("topUpId") REFERENCES "esim_top_ups"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- Foreign key for Invoice.topUpId (safe DO block)
+DO $$ BEGIN
+  ALTER TABLE "invoices" ADD CONSTRAINT "invoices_topUpId_fkey"
+    FOREIGN KEY ("topUpId") REFERENCES "esim_top_ups"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
 
 -- Foreign keys for ESIMShareToken
-ALTER TABLE "esim_share_tokens" ADD CONSTRAINT IF NOT EXISTS "esim_share_tokens_esimId_fkey"
-  FOREIGN KEY ("esimId") REFERENCES "esims"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "esim_share_tokens" ADD CONSTRAINT "esim_share_tokens_esimId_fkey"
+    FOREIGN KEY ("esimId") REFERENCES "esims"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
 
 -- Foreign keys for ProviderWebhookEvent (optional — no direct FK references needed)
 

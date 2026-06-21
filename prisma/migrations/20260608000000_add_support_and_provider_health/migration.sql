@@ -15,8 +15,11 @@ CREATE TABLE IF NOT EXISTS "provider_health_snapshots" (
 CREATE INDEX IF NOT EXISTS "provider_health_snapshots_providerId_idx" ON "provider_health_snapshots"("providerId");
 CREATE INDEX IF NOT EXISTS "provider_health_snapshots_status_idx" ON "provider_health_snapshots"("status");
 CREATE INDEX IF NOT EXISTS "provider_health_snapshots_createdAt_idx" ON "provider_health_snapshots"("createdAt");
-ALTER TABLE "provider_health_snapshots" ADD CONSTRAINT IF NOT EXISTS "provider_health_snapshots_providerId_fkey"
-  FOREIGN KEY ("providerId") REFERENCES "providers"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "provider_health_snapshots" ADD CONSTRAINT "provider_health_snapshots_providerId_fkey"
+    FOREIGN KEY ("providerId") REFERENCES "providers"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
 
 -- ProviderFailoverEvent
 CREATE TABLE IF NOT EXISTS "provider_failover_events" (
@@ -61,12 +64,21 @@ CREATE INDEX IF NOT EXISTS "support_tickets_priority_idx" ON "support_tickets"("
 CREATE INDEX IF NOT EXISTS "support_tickets_assignedToId_idx" ON "support_tickets"("assignedToId");
 CREATE INDEX IF NOT EXISTS "support_tickets_lastMessageAt_idx" ON "support_tickets"("lastMessageAt");
 CREATE INDEX IF NOT EXISTS "support_tickets_createdAt_idx" ON "support_tickets"("createdAt");
-ALTER TABLE "support_tickets" ADD CONSTRAINT IF NOT EXISTS "support_tickets_businessId_fkey"
-  FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "support_tickets" ADD CONSTRAINT IF NOT EXISTS "support_tickets_createdById_fkey"
-  FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-ALTER TABLE "support_tickets" ADD CONSTRAINT IF NOT EXISTS "support_tickets_assignedToId_fkey"
-  FOREIGN KEY ("assignedToId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "support_tickets" ADD CONSTRAINT "support_tickets_businessId_fkey"
+    FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER TABLE "support_tickets" ADD CONSTRAINT "support_tickets_createdById_fkey"
+    FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER TABLE "support_tickets" ADD CONSTRAINT "support_tickets_assignedToId_fkey"
+    FOREIGN KEY ("assignedToId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
 
 -- SupportMessage
 CREATE TABLE IF NOT EXISTS "support_messages" (
@@ -81,8 +93,11 @@ CREATE TABLE IF NOT EXISTS "support_messages" (
     CONSTRAINT "support_messages_pkey" PRIMARY KEY ("id")
 );
 CREATE INDEX IF NOT EXISTS "support_messages_ticketId_createdAt_idx" ON "support_messages"("ticketId", "createdAt");
-ALTER TABLE "support_messages" ADD CONSTRAINT IF NOT EXISTS "support_messages_ticketId_fkey"
-  FOREIGN KEY ("ticketId") REFERENCES "support_tickets"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "support_messages" ADD CONSTRAINT "support_messages_ticketId_fkey"
+    FOREIGN KEY ("ticketId") REFERENCES "support_tickets"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
 
 -- SupportTypingState
 CREATE TABLE IF NOT EXISTS "support_typing_states" (
@@ -106,5 +121,8 @@ CREATE TABLE IF NOT EXISTS "support_ticket_events" (
     CONSTRAINT "support_ticket_events_pkey" PRIMARY KEY ("id")
 );
 CREATE INDEX IF NOT EXISTS "support_ticket_events_ticketId_createdAt_idx" ON "support_ticket_events"("ticketId", "createdAt");
-ALTER TABLE "support_ticket_events" ADD CONSTRAINT IF NOT EXISTS "support_ticket_events_ticketId_fkey"
-  FOREIGN KEY ("ticketId") REFERENCES "support_tickets"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "support_ticket_events" ADD CONSTRAINT "support_ticket_events_ticketId_fkey"
+    FOREIGN KEY ("ticketId") REFERENCES "support_tickets"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;

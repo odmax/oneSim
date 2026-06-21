@@ -20,5 +20,8 @@ CREATE TABLE IF NOT EXISTS "provider_packages" (
 
 CREATE INDEX IF NOT EXISTS "provider_packages_providerId_idx" ON "provider_packages"("providerId");
 
-ALTER TABLE "provider_packages" ADD CONSTRAINT IF NOT EXISTS "provider_packages_providerId_fkey"
+DO $$ BEGIN
+  ALTER TABLE "provider_packages" ADD CONSTRAINT "provider_packages_providerId_fkey"
     FOREIGN KEY ("providerId") REFERENCES "providers"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
