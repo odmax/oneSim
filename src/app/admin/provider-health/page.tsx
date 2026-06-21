@@ -69,6 +69,7 @@ export default async function ProviderHealthPage({ searchParams }: { searchParam
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Success Rate</th>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Last Check</th>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Failures</th>
+              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Last Error</th>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Packages</th>
             </tr>
           </thead>
@@ -95,6 +96,7 @@ export default async function ProviderHealthPage({ searchParams }: { searchParam
                   <td className="whitespace-nowrap px-4 py-3 text-sm">
                     <span className={snap && snap.consecutiveFailures > 0 ? 'text-red-600 font-medium' : 'text-gray-500'}>{snap?.consecutiveFailures || 0}</span>
                   </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-xs text-gray-500 max-w-[200px] truncate" title={p.lastError || ''}>{p.lastError || '—'}</td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">{p._count.packages}</td>
                 </tr>
               )
