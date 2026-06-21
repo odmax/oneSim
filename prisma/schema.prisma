@@ -89,6 +89,7 @@ model User {
   auditLogs             AuditLog[]
   createdTickets        SupportTicket[]      @relation("TicketCreator")
   assignedTickets       SupportTicket[]      @relation("TicketAssignee")
+  auditNotes            ProviderAuditNote[]
 
   @@map("users")
 }
@@ -230,6 +231,7 @@ model Provider {
   packages        ESIMPackage[]
   providerPackages ProviderPackage[]
   healthSnapshots ProviderHealthSnapshot[]
+  audits          ProviderAudit[]
 
   @@map("providers")
 }
@@ -944,4 +946,57 @@ model ProviderTemplate {
   updatedAt              DateTime @updatedAt
 
   @@map("provider_templates")
+}
+
+model ProviderAudit {
+  id               String   @id @default(cuid())
+  providerId       String   @unique
+  certificationStatus String @default("NOT_STARTED") /// NOT_STARTED | IN_PROGRESS | CERTIFIED | FAILED
+  passCount        Int      @default(0)
+  failCount        Int      @default(0)
+  totalChecks      Int      @default(0)
+  startedAt        DateTime @default(now())
+  completedAt      DateTime?
+  updatedAt        DateTime @updatedAt
+
+  provider Provider    @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  checks   ProviderAuditCheck[]
+  notes    ProviderAuditNote[]
+
+  @@map("provider_audits")
+}
+
+model ProviderAuditCheck {
+  id          String   @id @default(cuid())
+  auditId     String
+  category    String   /// CONNECTIVITY | CATALOG | PRICING | PUBLISHING | PROVISIONING | FEATURES | COMMERCIAL | OPERATIONS
+  checkKey    String   /// test_connection, auth_success, sync_plans, etc.
+  label       String
+  description String?
+  status      String   @default("PENDING") /// PENDING | PASS | FAIL
+  isCritical  Boolean  @default(false)
+  notes       String?
+  checkedAt   DateTime?
+  checkedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  audit ProviderAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@index([auditId])
+  @@map("provider_audit_checks")
+}
+
+model ProviderAuditNote {
+  id        String   @id @default(cuid())
+  auditId   String
+  content   String
+  authorId  String?
+  createdAt DateTime @default(now())
+
+  audit    ProviderAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  author   User?         @relation(fields: [authorId], references: [id])
+
+  @@index([auditId])
+  @@map("provider_audit_notes")
 }
