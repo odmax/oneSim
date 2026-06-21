@@ -13,6 +13,7 @@ import { ProviderLifecycleActions } from '@/components/admin/providers/ProviderL
 import { SaveAsTemplateButton } from '@/components/admin/providers/SaveAsTemplateButton'
 import { getProviderAuthStatus } from '@/lib/actions/provider-auth'
 import { getRecentHealthLogs, type HealthEvent } from '@/lib/services/providers/health-monitor'
+import { inferProviderCapabilities } from '@/lib/providers/capabilities'
 
 function maskApiToken(token: string | null): string {
   if (!token) return ''
@@ -164,36 +165,47 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       <div className="grid gap-6 lg:grid-cols-2 mb-6">
         <div className="rounded-lg border bg-white p-6 shadow-sm">
           <h3 className="mb-4 text-lg font-semibold text-gray-900">Capabilities</h3>
-          <div className="grid grid-cols-2 gap-2">
-            {(() => {
-              const ep = (provider.endpointMappings || {}) as Record<string, string>
-              const p = provider as any
-              const hasEP = (k: string) => !!ep[k]
-              const caps = [
-                { key: 'supportsESIM', label: 'eSIM Provisioning', yes: p.supportsESIM || hasEP('PURCHASE_ESIM') },
-                { key: 'supportsQRCode', label: 'QR Code', yes: p.supportsQRCode || hasEP('GET_ACTIVATION_CODE') },
-                { key: 'supportsTopUp', label: 'Top-Up Support', yes: p.supportsTopUp || hasEP('PURCHASE_TOPUP') || hasEP('GET_TOPUP_PLANS') || hasEP('TOP_UP') || hasEP('RENEW_ESIM') },
-                { key: 'supportsUsage', label: 'Usage Tracking', yes: p.supportsUsage || hasEP('GET_USAGE') },
-                { key: 'supportsUsageSync', label: 'Usage Sync', yes: p.supportsUsageSync || hasEP('GET_USAGE') },
-                { key: 'supportsSuspend', label: 'Suspend', yes: p.supportsSuspend || hasEP('SUSPEND_ESIM') },
-                { key: 'supportsSuspendResume', label: 'Suspend/Resume', yes: p.supportsSuspendResume || (hasEP('SUSPEND_ESIM') && (hasEP('RESUME_ESIM') || hasEP('REACTIVATE_ESIM'))) },
-                { key: 'supportsPools', label: 'Data Pools', yes: p.supportsPools },
-                { key: 'supportsTemplates', label: 'Bundle Templates', yes: p.supportsTemplates },
-                { key: 'supportsWebhookPush', label: 'Webhook Push', yes: p.supportsWebhookPush },
-                { key: 'supportsRenewals', label: 'eSIM Renewal', yes: p.supportsRenewals || hasEP('RENEW_ESIM') || hasEP('INSERT_RENEW') || hasEP('GET_RENEW_DATA') || hasEP('TOP_UP') || hasEP('PURCHASE_TOPUP') },
-              ]
-              return caps
-            })().map(cap => (
-              <div key={cap.key} className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
-                <span className="text-sm text-gray-700">{cap.label}</span>
-                {cap.yes ? (
-                  <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">Yes</span>
-                ) : (
-                  <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">No</span>
+          {(() => {
+            const caps = inferProviderCapabilities(provider)
+            const entries: { key: string; label: string; yes: boolean }[] = [
+              { key: 'supportsESIM', label: 'eSIM Provisioning', yes: caps.supportsESIM },
+              { key: 'supportsPlanSync', label: 'Plan Sync', yes: caps.supportsPlanSync },
+              { key: 'supportsQRCode', label: 'QR Code', yes: caps.supportsQRCode },
+              { key: 'supportsTopUp', label: 'Top-Up', yes: caps.supportsTopUp },
+              { key: 'supportsRenewals', label: 'Renewals', yes: caps.supportsRenewals },
+              { key: 'supportsUsage', label: 'Usage Tracking', yes: caps.supportsUsage },
+              { key: 'supportsUsageSync', label: 'Usage Sync', yes: caps.supportsUsageSync },
+              { key: 'supportsSuspend', label: 'Suspend', yes: caps.supportsSuspend },
+              { key: 'supportsSuspendResume', label: 'Suspend/Resume', yes: caps.supportsSuspendResume },
+              { key: 'supportsWallet', label: 'Wallet', yes: caps.supportsWallet },
+              { key: 'supportsOrderLookup', label: 'Order Lookup', yes: caps.supportsOrderLookup },
+              { key: 'supportsInventory', label: 'Inventory', yes: caps.supportsInventory },
+              { key: 'supportsCountryCatalog', label: 'Country Catalog', yes: caps.supportsCountryCatalog },
+              { key: 'supportsWebhookPush', label: 'Webhook Push', yes: caps.supportsWebhookPush },
+              { key: 'supportsTemplates', label: 'Bundle Templates', yes: caps.supportsTemplates },
+            ]
+            return (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  {entries.map(entry => (
+                    <div key={entry.key} className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
+                      <span className="text-sm text-gray-700">{entry.label}</span>
+                      {entry.yes ? (
+                        <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">Yes</span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">No</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {caps.detectedFrom.endpointMappings.length > 0 && (
+                  <p className="mt-3 text-xs text-gray-400">
+                    Detected from endpointMappings: {caps.detectedFrom.endpointMappings.join(', ')}
+                  </p>
                 )}
-              </div>
-            ))}
-          </div>
+              </>
+            )
+          })()}
           {provider.authType && (
             <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
               <span className="font-medium">Auth:</span> {provider.authType}

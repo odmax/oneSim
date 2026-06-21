@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { getAdapterForType, isTemplateDrivenProvider, buildAdapter } from '@/lib/providers/adapter-manager'
+import { inferProviderCapabilities } from '@/lib/providers/capabilities'
 
 export interface DiagnosticResult {
   test: string
@@ -67,10 +68,11 @@ export async function runProviderDiagnostics(providerId: string): Promise<Diagno
         })
 
         // 5. Suspend/Resume capability
+        const dCaps = inferProviderCapabilities(provider)
         results.push({
           test: 'Suspend/Resume',
-          status: provider.supportsSuspend || provider.supportsSuspendResume ? 'pass' : 'skip',
-          message: provider.supportsSuspend || provider.supportsSuspendResume
+          status: dCaps.supportsSuspendResume ? 'pass' : 'skip',
+          message: dCaps.supportsSuspendResume
             ? 'Suspend/Resume enabled'
             : 'Not configured for this provider',
         })
@@ -78,8 +80,8 @@ export async function runProviderDiagnostics(providerId: string): Promise<Diagno
         // 6. Usage query
         results.push({
           test: 'Usage Query',
-          status: provider.supportsUsage ? 'pass' : 'skip',
-          message: provider.supportsUsage ? 'Usage tracking enabled' : 'Not configured for this provider',
+          status: dCaps.supportsUsage ? 'pass' : 'skip',
+          message: dCaps.supportsUsage ? 'Usage tracking enabled' : 'Not configured for this provider',
         })
       }
     } else {

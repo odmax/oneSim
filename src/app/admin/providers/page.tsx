@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { toggleProviderStatus } from '@/lib/actions/providers'
 import { restoreProvider } from '@/lib/actions/provider-lifecycle'
+import { inferProviderCapabilities } from '@/lib/providers/capabilities'
 
 function maskApiToken(token: string | null): string {
   if (!token || token.length <= 4) return token ? '••••' + token.slice(-4) : ''
@@ -118,10 +119,21 @@ export default async function AdminProvidersPage({ searchParams }: { searchParam
                 <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">{p.environment}</td>
                 <td className="whitespace-nowrap px-6 py-4">
                   <div className="flex gap-1 flex-wrap">
-                    {p.supportsESIM && <span className="inline-flex rounded bg-green-50 px-1.5 text-xs text-green-700">eSIM</span>}
-                    {p.supportsUsage && <span className="inline-flex rounded bg-blue-50 px-1.5 text-xs text-blue-700">Usage</span>}
-                    {p.supportsTopUp && <span className="inline-flex rounded bg-purple-50 px-1.5 text-xs text-purple-700">TopUp</span>}
-                    {p.supportsSuspend && <span className="inline-flex rounded bg-orange-50 px-1.5 text-xs text-orange-700">Suspend</span>}
+                    {(() => {
+                      const caps = inferProviderCapabilities(p)
+                      const tags: { key: string; label: string; yes: boolean }[] = [
+                        { key: 'eSIM', label: 'eSIM', yes: caps.supportsESIM },
+                        { key: 'QR', label: 'QR', yes: caps.supportsQRCode },
+                        { key: 'TopUp', label: 'TopUp', yes: caps.supportsTopUp },
+                        { key: 'Usage', label: 'Usage', yes: caps.supportsUsage },
+                        { key: 'Suspend', label: 'Suspend', yes: caps.supportsSuspend },
+                        { key: 'Wallet', label: 'Wallet', yes: caps.supportsWallet },
+                        { key: 'Renewals', label: 'Renew', yes: caps.supportsRenewals },
+                      ]
+                      return tags.filter(t => t.yes).map(t => (
+                        <span key={t.key} className="inline-flex rounded bg-green-50 px-1.5 text-xs text-green-700">{t.label}</span>
+                      ))
+                    })()}
                   </div>
                 </td>
                 <td className="whitespace-nowrap px-6 py-4 text-sm">

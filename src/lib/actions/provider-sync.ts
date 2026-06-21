@@ -10,6 +10,7 @@ import { buildAdapter } from '@/lib/providers/adapter-manager'
 import { normalizePlan } from '@/lib/providers/plan-utils'
 import type { ProviderPlan } from '@/lib/providers/adapter-types'
 import { buildComparableKey, computeEffectiveCost } from '@/lib/packages/cheapest-utils'
+import { inferProviderCapabilities, getPersistableCapabilities } from '@/lib/providers/capabilities'
 
 export type { ProviderPlan }
 
@@ -20,32 +21,6 @@ function extractCountry(rawData: string): string | null {
   } catch {
     return null
   }
-}
-
-function inferCapabilitiesFromProvider(provider: any): Record<string, boolean> {
-  const planListPath = provider.planListPath || ''
-  const responseListKey = provider.responseListKey || ''
-  const ep = (provider.endpointMappings || {}) as Record<string, string>
-
-  const capabilities: Record<string, boolean> = {}
-
-  // Direct path fields take priority, then endpoint mappings
-  capabilities.supportsESIM = true
-  capabilities.supportsPlanSync = !!(planListPath || ep.GET_PLANS)
-  capabilities.supportsQRCode = !!(provider.activationPath || ep.GET_ACTIVATION_CODE)
-  capabilities.supportsUsage = !!(provider.usagePath || provider.statusPath || ep.GET_USAGE)
-  capabilities.supportsUsageSync = !!(provider.usagePath || ep.GET_USAGE)
-  capabilities.supportsSuspend = !!(provider.suspendPath || ep.SUSPEND_ESIM)
-  capabilities.supportsSuspendResume = !!((provider.suspendPath && provider.resumePath) || (ep.SUSPEND_ESIM && ep.RESUME_ESIM))
-  capabilities.supportsTopUp = !!(provider.topUpPath || ep.PURCHASE_TOPUP || ep.GET_TOPUP_PLANS || ep.TOP_UP || ep.RENEW_ESIM)
-  capabilities.supportsWallet = !!(ep.GET_WALLET || ep.WALLET_BALANCE)
-  capabilities.supportsOrderLookup = !!(ep.GET_ORDER_DETAIL || ep.GET_ORDER_DETAILS || ep.ORDER_DETAILS)
-  capabilities.supportsInventory = !!(ep.GET_INVENTORY || ep.GET_PARTNER_INVENTORY_COUNT)
-  capabilities.supportsCountryCatalog = !!(ep.GET_COUNTRIES || ep.COUNTRY_REGION_DETAILS)
-  capabilities.supportsRenewals = !!(ep.INSERT_RENEW || ep.GET_RENEW_DATA || ep.RENEW_ESIM)
-  capabilities.supportsBundleTemplates = planListPath.includes('bundle_templates') || responseListKey === 'bundle_template_list'
-
-  return capabilities
 }
 
 export async function syncProviderPlans(providerId: string) {
@@ -128,15 +103,9 @@ export async function syncProviderPlans(providerId: string) {
       diagnostics.capabilities = adapter.getCapabilities().map((c: any) => c.key)
     }
 
-    // Auto-detect capabilities from provider config (don't override manual true settings)
-    const VALID_CAP_KEYS = new Set(['supportsESIM', 'supportsUsage', 'supportsTopUp', 'supportsSuspend', 'supportsQRCode', 'supportsPools', 'supportsTemplates', 'supportsUsageSync', 'supportsWebhookPush', 'supportsSuspendResume'])
-    const inferred = inferCapabilitiesFromProvider(provider)
-    const capabilitiesUpdate: Record<string, boolean> = {}
-    for (const [key, value] of Object.entries(inferred)) {
-      if (VALID_CAP_KEYS.has(key) && value && !(provider as any)[key]) {
-        capabilitiesUpdate[key] = true
-      }
-    }
+    // Auto-detect capabilities from provider config
+    const inferred = inferProviderCapabilities(provider)
+    const capabilitiesUpdate = getPersistableCapabilities(inferred, provider)
 
     console.log('[syncProviderPlans] responseListKey=' + resolvedResponseListKey + ' plans=' + plans.length + ' endpointMappings.GET_PLANS=' + (provider.endpointMappings as any)?.GET_PLANS)
 
