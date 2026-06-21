@@ -104,6 +104,25 @@ CREATE TABLE IF NOT EXISTS "esim_top_ups" (
     CONSTRAINT "esim_top_ups_pkey" PRIMARY KEY ("id")
 );
 
+-- Customers table (missing from migration chain — added here for fresh DB deployments)
+CREATE TABLE IF NOT EXISTS "customers" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "email" TEXT NOT NULL,
+    "phone" TEXT,
+    "country" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "customers_pkey" PRIMARY KEY ("id")
+);
+CREATE INDEX IF NOT EXISTS "customers_businessId_idx" ON "customers"("businessId");
+
+-- Foreign keys for Customers (may fail if FK already exists via earlier migration on existing DBs)
+ALTER TABLE "customers" ADD CONSTRAINT IF NOT EXISTS "customers_businessId_fkey"
+  FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
 -- Enums (safe — CREATE TYPE IF NOT EXISTS is not supported; we use DO blocks)
 DO $$ BEGIN
   CREATE TYPE "ProductType" AS ENUM ('NEW_ESIM', 'TOP_UP', 'BOTH');

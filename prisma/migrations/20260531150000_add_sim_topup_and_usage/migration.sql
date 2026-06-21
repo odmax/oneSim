@@ -50,7 +50,11 @@ CREATE TABLE IF NOT EXISTS "esim_top_ups" (
 ALTER TABLE "esim_top_ups" ADD CONSTRAINT "esim_top_ups_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "businesses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "esim_top_ups" ADD CONSTRAINT "esim_top_ups_esimId_fkey" FOREIGN KEY ("esimId") REFERENCES "esims"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "esim_top_ups" ADD CONSTRAINT "esim_top_ups_packageId_fkey" FOREIGN KEY ("packageId") REFERENCES "esim_packages"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "esim_top_ups" ADD CONSTRAINT "esim_top_ups_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- customers table may not exist yet in fresh DB; skip FK if so — production_schema_fix adds it later
+DO $$ BEGIN
+  ALTER TABLE "esim_top_ups" ADD CONSTRAINT "esim_top_ups_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN undefined_table THEN NULL;
+END $$;
 
 -- Invoice foreign key for topUpId
 ALTER TABLE "invoices" ADD CONSTRAINT "invoices_topUpId_fkey" FOREIGN KEY ("topUpId") REFERENCES "esim_top_ups"("id") ON DELETE SET NULL ON UPDATE CASCADE;
