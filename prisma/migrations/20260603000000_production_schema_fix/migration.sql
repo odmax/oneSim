@@ -45,6 +45,9 @@ ALTER TABLE "esim_packages" ADD COLUMN IF NOT EXISTS "compatibleTopUpPackageIds"
 ALTER TABLE "invoices" ADD COLUMN IF NOT EXISTS "topUpId" TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS "invoices_topUpId_key" ON "invoices"("topUpId");
 
+-- InternalAdmin lastLoginAt (missing from migration chain)
+ALTER TABLE "internal_admins" ADD COLUMN IF NOT EXISTS "lastLoginAt" TIMESTAMP(3);
+
 -- Provider Webhook Events table
 CREATE TABLE IF NOT EXISTS "provider_webhook_events" (
     "id" TEXT NOT NULL,
