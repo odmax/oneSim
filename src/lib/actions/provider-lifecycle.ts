@@ -112,6 +112,64 @@ export async function archiveProvider(providerId: string) {
   }
 }
 
+export async function restoreProvider(formData: FormData) {
+  const providerId = formData.get('providerId') as string
+  if (!providerId) return
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+
+    const provider = await prisma.provider.findUnique({ where: { id: providerId } })
+    if (!provider || provider.status !== 'ARCHIVED') return
+
+    await prisma.provider.update({
+      where: { id: providerId },
+      data: { status: 'ACTIVE' as any },
+    })
+
+    await prisma.auditLog.create({
+      data: {
+        userId: session.user.id,
+        action: 'PROVIDER_RESTORED',
+        entity: 'Provider',
+        entityId: provider.code,
+        details: `Provider "${provider.name}" restored from archive to ACTIVE.`,
+      },
+    })
+
+    revalidatePath('/admin/providers')
+    revalidatePath(`/admin/providers/${providerId}`)
+  } catch { /* ignore */ }
+}
+
+export async function restoreProviderById(providerId: string) {
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+
+    const provider = await prisma.provider.findUnique({ where: { id: providerId } })
+    if (!provider) return { success: false, error: 'Provider not found' }
+    if (provider.status !== 'ARCHIVED') return { success: false, error: 'Provider is not archived' }
+
+    await prisma.provider.update({ where: { id: providerId }, data: { status: 'ACTIVE' as any } })
+
+    await prisma.auditLog.create({
+      data: {
+        userId: session.user.id, action: 'PROVIDER_RESTORED',
+        entity: 'Provider', entityId: provider.code,
+        details: `Provider "${provider.name}" restored from archive to ACTIVE.`,
+      },
+    })
+
+    revalidatePath('/admin/providers')
+    revalidatePath(`/admin/providers/${providerId}`)
+    return { success: true, message: `Provider "${provider.name}" restored to ACTIVE.` }
+  } catch (error: any) {
+    const { message, code } = handlePrismaError(error, 'Failed to restore provider')
+    return { success: false, error: message, code }
+  }
+}
+
 export async function resetProviderConfiguration(providerId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {

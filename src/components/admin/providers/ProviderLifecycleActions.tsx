@@ -51,6 +51,23 @@ export function ProviderLifecycleActions({ providerId, providerName, providerSta
     setArchiveModal(null)
   }
 
+  async function handleRestore() {
+    setLoading('restore')
+    setError(null)
+    try {
+      const { restoreProviderById } = await import('@/lib/actions/provider-lifecycle')
+      const result = await restoreProviderById(providerId)
+      if (result?.success) {
+        router.refresh()
+      } else {
+        setError(result.error || 'Restore failed')
+      }
+    } catch (e: any) {
+      setError(e.message || 'Failed to restore')
+    }
+    setLoading(null)
+  }
+
   async function handleReset() {
     setLoading('reset')
     setError(null)
@@ -101,17 +118,23 @@ export function ProviderLifecycleActions({ providerId, providerName, providerSta
       )}
 
       <div className="flex flex-wrap gap-3">
-        <button
-          onClick={handleCheckArchive}
-          disabled={loading === 'archive' || isArchived}
-          className={`rounded-lg px-4 py-2 text-sm font-medium ${
-            isArchived
-              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-              : 'bg-amber-600 text-white hover:bg-amber-700'
-          }`}
-        >
-          {loading === 'archive' ? 'Checking...' : isArchived ? 'Archived' : 'Archive Provider'}
-        </button>
+        {isArchived ? (
+          <button
+            onClick={handleRestore}
+            disabled={loading === 'restore'}
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {loading === 'restore' ? 'Restoring...' : 'Restore Provider'}
+          </button>
+        ) : (
+          <button
+            onClick={handleCheckArchive}
+            disabled={loading === 'archive'}
+            className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+          >
+            {loading === 'archive' ? 'Checking...' : 'Archive Provider'}
+          </button>
+        )}
 
         <button
           onClick={() => setResetModal(true)}

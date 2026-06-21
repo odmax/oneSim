@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { toggleProviderStatus } from '@/lib/actions/providers'
+import { restoreProvider } from '@/lib/actions/provider-lifecycle'
 
 function maskApiToken(token: string | null): string {
   if (!token || token.length <= 4) return token ? '••••' + token.slice(-4) : ''
@@ -134,9 +135,14 @@ export default async function AdminProvidersPage({ searchParams }: { searchParam
                   <div className="flex items-center gap-2">
                     <Link href={`/admin/providers/${p.id}`} className="text-cyan-600 hover:text-cyan-800 font-medium">View</Link>
                     <Link href={`/admin/providers/${p.id}/edit`} className="text-blue-600 hover:text-blue-800 font-medium">Edit</Link>
-                    {p.status !== 'ARCHIVED' && (
+                    {p.status !== 'ARCHIVED' ? (
                       <form action={toggleProviderStatus.bind(null, p.id)} className="inline">
                         <button type="submit" className="font-medium text-gray-600 hover:text-gray-800">Cycle</button>
+                      </form>
+                    ) : (
+                      <form action={restoreProvider} className="inline">
+                        <input type="hidden" name="providerId" value={p.id} />
+                        <button type="submit" className="font-medium text-emerald-600 hover:text-emerald-800">Restore</button>
                       </form>
                     )}
                   </div>
