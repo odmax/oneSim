@@ -19,6 +19,7 @@ export interface ProviderCapabilities {
     dbFields: string[]
     endpointMappings: string[]
     enabledCapabilities: string[]
+    pathFields: string[]
   }
 }
 
@@ -52,7 +53,10 @@ export function inferProviderCapabilities(provider: any): ProviderCapabilities {
   const enabledCap = (p.enabledCapabilities || {}) as Record<string, boolean>
   const defaultCap = (p.defaultCapabilities || {}) as Record<string, boolean>
 
-  const track: { db: string[]; ep: string[]; en: string[] } = { db: [], ep: [], en: [] }
+  // Legacy path fields (used by non-template providers like Choice)
+  const pathField = (field: string) => !!p[field]
+
+  const track: { db: string[]; ep: string[]; en: string[]; path: string[] } = { db: [], ep: [], en: [], path: [] }
 
   const check = (field: string, ...epKeys: string[]): boolean => {
     if (dbField(field)) { track.db.push(field); return true }
@@ -62,19 +66,29 @@ export function inferProviderCapabilities(provider: any): ProviderCapabilities {
     return false
   }
 
+  const checkWithPath = (field: string, pathFieldName: string, ...epKeys: string[]): boolean => {
+    if (dbField(field)) { track.db.push(field); return true }
+    if (enabledCap[field]) { track.en.push(field); return true }
+    if (defaultCap[field]) { track.en.push(`defaultCapabilities.${field}`); return true }
+    if (pathField(pathFieldName)) { track.path.push(pathFieldName); return true }
+    if (hasEndpoint(ep, ...epKeys)) { track.ep.push(epKeys[0]); return true }
+    return false
+  }
+
   const caps: ProviderCapabilities = {
-    supportsESIM: check('supportsESIM', 'PURCHASE_ESIM'),
-    supportsPlanSync: check('supportsPlanSync', 'GET_PLANS'),
-    supportsQRCode: check('supportsQRCode', 'GET_ACTIVATION_CODE'),
-    supportsTopUp: check('supportsTopUp', 'TOP_UP'),
+    supportsESIM: true, // All providers can provision eSIM
+    supportsPlanSync: checkWithPath('supportsPlanSync', 'planListPath', 'GET_PLANS'),
+    supportsQRCode: checkWithPath('supportsQRCode', 'activationPath', 'GET_ACTIVATION_CODE'),
+    supportsTopUp: checkWithPath('supportsTopUp', 'topUpPath', 'TOP_UP'),
     supportsRenewals: check('supportsRenewals', 'RENEW_ESIM'),
-    supportsUsage: check('supportsUsage', 'GET_USAGE'),
-    supportsUsageSync: check('supportsUsageSync', 'GET_USAGE'),
-    supportsSuspend: check('supportsSuspend', 'SUSPEND_ESIM'),
+    supportsUsage: checkWithPath('supportsUsage', 'usagePath', 'GET_USAGE'),
+    supportsUsageSync: checkWithPath('supportsUsageSync', 'usagePath', 'GET_USAGE'),
+    supportsSuspend: checkWithPath('supportsSuspend', 'suspendPath', 'SUSPEND_ESIM'),
     supportsSuspendResume: (() => {
       if (dbField('supportsSuspendResume')) { track.db.push('supportsSuspendResume'); return true }
       if (enabledCap['supportsSuspendResume']) { track.en.push('supportsSuspendResume'); return true }
       if (defaultCap['supportsSuspendResume']) { track.en.push('defaultCapabilities.supportsSuspendResume'); return true }
+      if (pathField('suspendPath') && pathField('resumePath')) { track.path.push('suspendPath+resumePath'); return true }
       if ((ep.SUSPEND_ESIM || ep.TERMINATE_PACKAGE) && (ep.RESUME_ESIM || ep.REACTIVATE_ESIM)) {
         track.ep.push('SUSPEND_ESIM+RESUME_ESIM'); return true
       }
@@ -91,6 +105,7 @@ export function inferProviderCapabilities(provider: any): ProviderCapabilities {
       dbFields: [...new Set(track.db)],
       endpointMappings: [...new Set(track.ep)],
       enabledCapabilities: [...new Set(track.en)],
+      pathFields: [...new Set(track.path)],
     },
   }
 

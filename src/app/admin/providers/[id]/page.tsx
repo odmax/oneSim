@@ -203,6 +203,11 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
                     Detected from endpointMappings: {caps.detectedFrom.endpointMappings.join(', ')}
                   </p>
                 )}
+                {caps.detectedFrom.pathFields.length > 0 && (
+                  <p className="mt-1 text-xs text-gray-400">
+                    Detected from path fields: {caps.detectedFrom.pathFields.join(', ')}
+                  </p>
+                )}
               </>
             )
           })()}
