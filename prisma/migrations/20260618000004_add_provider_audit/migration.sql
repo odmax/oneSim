@@ -8,9 +8,15 @@ CREATE TABLE IF NOT EXISTS "provider_audits" (
   "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "completedAt" TIMESTAMP(3),
   "updatedAt" TIMESTAMP(3) NOT NULL,
-  CONSTRAINT "provider_audits_pkey" PRIMARY KEY ("id"),
-  CONSTRAINT "provider_audits_providerId_fkey" FOREIGN KEY ("providerId") REFERENCES "providers"("id") ON DELETE CASCADE
+  CONSTRAINT "provider_audits_pkey" PRIMARY KEY ("id")
 );
+
+-- FK to providers — added separately via DO block since providers table may not exist on all DBs yet
+DO $$ BEGIN
+  ALTER TABLE "provider_audits" ADD CONSTRAINT "provider_audits_providerId_fkey"
+    FOREIGN KEY ("providerId") REFERENCES "providers"("id") ON DELETE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;
 
 CREATE TABLE IF NOT EXISTS "provider_audit_checks" (
   "id" TEXT NOT NULL,

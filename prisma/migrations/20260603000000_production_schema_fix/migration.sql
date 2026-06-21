@@ -120,6 +120,66 @@ CREATE TABLE IF NOT EXISTS "customers" (
 );
 CREATE INDEX IF NOT EXISTS "customers_businessId_idx" ON "customers"("businessId");
 
+-- Providers table (missing from migration chain — added here for fresh DB deployments)
+CREATE TABLE IF NOT EXISTS "providers" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "code" TEXT NOT NULL,
+    "type" TEXT NOT NULL DEFAULT 'CUSTOM',
+    "adapterStrategy" TEXT,
+    "authType" TEXT DEFAULT 'bearer_token',
+    "apiVersion" TEXT DEFAULT 'v1',
+    "apiBaseUrl" TEXT,
+    "authUrl" TEXT,
+    "apiToken" TEXT,
+    "tokenPlacement" TEXT DEFAULT 'URL_PATH',
+    "planListPath" TEXT,
+    "activationPath" TEXT,
+    "statusPath" TEXT,
+    "usagePath" TEXT,
+    "suspendPath" TEXT,
+    "resumePath" TEXT,
+    "topUpPath" TEXT,
+    "responseListKey" TEXT,
+    "environment" TEXT NOT NULL DEFAULT 'staging',
+    "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+    "priority" INTEGER NOT NULL DEFAULT 0,
+    "isDefaultFallback" BOOLEAN NOT NULL DEFAULT false,
+    "regions" JSONB,
+    "supportsESIM" BOOLEAN NOT NULL DEFAULT true,
+    "supportsUsage" BOOLEAN NOT NULL DEFAULT false,
+    "supportsTopUp" BOOLEAN NOT NULL DEFAULT false,
+    "supportsSuspend" BOOLEAN NOT NULL DEFAULT false,
+    "supportsQRCode" BOOLEAN NOT NULL DEFAULT false,
+    "supportsPools" BOOLEAN NOT NULL DEFAULT false,
+    "supportsTemplates" BOOLEAN NOT NULL DEFAULT false,
+    "supportsUsageSync" BOOLEAN NOT NULL DEFAULT false,
+    "supportsWebhookPush" BOOLEAN NOT NULL DEFAULT false,
+    "supportsSuspendResume" BOOLEAN NOT NULL DEFAULT false,
+    "endpointMappings" JSONB,
+    "requestMappings" JSONB,
+    "responseMappings" JSONB,
+    "fieldMappings" JSONB,
+    "config" JSONB,
+    "providerTemplateId" TEXT,
+    "requiredConfigFields" JSONB,
+    "optionalConfigFields" JSONB,
+    "enabledCapabilities" JSONB,
+    "lastSuccessfulConnection" TIMESTAMP(3),
+    "lastFailedConnection" TIMESTAMP(3),
+    "activationSuccessRate" DOUBLE PRECISION,
+    "averageActivationTimeMs" INTEGER,
+    "errorCount" INTEGER DEFAULT 0,
+    "lastError" TEXT,
+    "lastSyncAt" TIMESTAMP(3),
+    "lastSyncResult" TEXT,
+    "lastSyncCount" INTEGER,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "providers_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "providers_code_key" ON "providers"("code");
+
 -- Foreign keys for Customers (safe DO block — PostgreSQL does not support ADD CONSTRAINT IF NOT EXISTS)
 DO $$ BEGIN
   ALTER TABLE "customers" ADD CONSTRAINT "customers_businessId_fkey"
