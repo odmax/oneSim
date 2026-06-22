@@ -15,7 +15,8 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
   })
   if (!adminUser) redirect('/admin/users')
 
-  const perms = (adminUser.permissions as string[]) || []
+  const rawPerms = adminUser.permissions as any
+  const perms: string[] = Array.isArray(rawPerms) ? rawPerms.filter((p: any) => typeof p === 'string') : []
   const auditCount = await prisma.auditLog.count({ where: { userId: adminUser.userId } })
 
   return (

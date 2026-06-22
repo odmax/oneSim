@@ -8,6 +8,14 @@ import { redirect } from 'next/navigation'
 import bcrypt from 'bcryptjs'
 import { handlePrismaError } from '@/lib/errors/handle-prisma-error'
 
+async function safeAuditLog(data: { userId: string; action: string; entity: string; entityId?: string; details?: string }) {
+  try {
+    await prisma.auditLog.create({ data })
+  } catch (e) {
+    console.error('audit log failed (non-fatal):', e)
+  }
+}
+
 const basePath = (role: string) => role === 'INTERNAL_ADMIN' ? '/admin/account' : '/business/account'
 
 export async function updateAccount(formData: FormData) {
@@ -44,9 +52,7 @@ export async function updateAccount(formData: FormData) {
         data: { passwordHash: newPasswordHash },
       })
 
-      await prisma.auditLog.create({
-        data: { userId: session.user.id, action: 'UPDATE', entity: 'User', entityId: session.user.id, details: 'Changed password' },
-      })
+      await safeAuditLog({ userId: session.user.id, action: 'UPDATE', entity: 'User', entityId: session.user.id, details: 'Changed password' })
     } catch (error: any) {
       const { message } = handlePrismaError(error, 'Password update failed')
       console.error('Password change error:', message)
@@ -75,9 +81,7 @@ export async function updateAccount(formData: FormData) {
         data: { name, email },
       })
 
-      await prisma.auditLog.create({
-        data: { userId: session.user.id, action: 'UPDATE', entity: 'User', entityId: session.user.id, details: `Updated profile: name=${name}, email=${email}` },
-      })
+      await safeAuditLog({ userId: session.user.id, action: 'UPDATE', entity: 'User', entityId: session.user.id, details: `Updated profile: name=${name}, email=${email}` })
     } catch (error: any) {
       const { message } = handlePrismaError(error, 'Profile update failed')
       console.error('Profile update error:', message)
