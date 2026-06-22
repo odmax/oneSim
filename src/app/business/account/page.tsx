@@ -37,6 +37,7 @@ export default async function BusinessAccountPage({
             {searchParams.error === 'invalid_input' && 'Invalid input. Please check your entries.'}
             {searchParams.error === 'password_mismatch' && 'New passwords do not match.'}
             {searchParams.error === 'wrong_password' && 'Current password is incorrect.'}
+            {searchParams.error === 'email_duplicate' && 'Email address is already in use by another account.'}
             {searchParams.error === 'update_failed' && 'Failed to update account. Please try again.'}
           </p>
         </div>
@@ -46,6 +47,7 @@ export default async function BusinessAccountPage({
         <div className="mb-6 rounded-lg bg-green-50 p-4">
           <p className="text-sm text-green-800">
             {searchParams.success === 'profile' && 'Profile updated successfully!'}
+            {searchParams.success === 'email_changed' && 'Email updated. You may need to sign out and back in for the change to take full effect.'}
             {searchParams.success === 'password' && 'Password changed successfully!'}
           </p>
         </div>
