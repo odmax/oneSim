@@ -7,6 +7,14 @@ import bcrypt from 'bcryptjs'
 import { authOptions } from '@/lib/auth/config'
 import { getServerSession } from 'next-auth'
 
+async function safeAuditLog(data: { userId: string; action: string; entity: string; entityId?: string; details?: string }) {
+  try {
+    await prisma.auditLog.create({ data })
+  } catch (e) {
+    console.error('audit log failed (non-fatal):', e)
+  }
+}
+
 export async function updateBusiness(formData: FormData) {
   const session = await getServerSession(authOptions)
   
@@ -43,9 +51,7 @@ export async function updateBusiness(formData: FormData) {
       },
     })
 
-    await prisma.auditLog.create({
-      data: { userId: session.user.id, action: 'UPDATE', entity: 'Business', entityId: businessId, details: `Updated business profile${status ? ` (status: ${status})` : ''}` },
-    })
+      await safeAuditLog({ userId: session.user.id, action: 'UPDATE', entity: 'Business', entityId: businessId, details: `Updated business profile${status ? ` (status: ${status})` : ''}` })
 
     revalidatePath('/admin/businesses')
     revalidatePath(`/admin/businesses/${businessId}`)
@@ -62,9 +68,7 @@ export async function updateBusinessStatus(businessId: string, status: string) {
 
   try {
     await prisma.business.update({ where: { id: businessId }, data: { status: status as any } })
-    await prisma.auditLog.create({
-      data: { userId: session.user.id, action: status === 'APPROVED' ? 'APPROVE' : 'SUSPEND', entity: 'Business', entityId: businessId, details: `Business status changed to ${status}` },
-    })
+      await safeAuditLog({ userId: session.user.id, action: status === 'APPROVED' ? 'APPROVE' : 'SUSPEND', entity: 'Business', entityId: businessId, details: `Business status changed to ${status}` })
     revalidatePath('/admin/businesses')
     revalidatePath(`/admin/businesses/${businessId}`)
     redirect('/admin/businesses?success=status_updated')
@@ -110,9 +114,15 @@ export async function createBusiness(formData: FormData) {
       })
 
       await tx.businessUser.create({ data: { userId: user.id, businessId: business.id, role: 'ADMIN' } })
-      await tx.auditLog.create({
-        data: { userId: session.user.id, action: 'CREATE', entity: 'Business', entityId: business.id, details: `Created business: ${name} with admin: ${adminEmail}` },
-      })
+
+      // Best-effort audit log — must not fail the transaction
+      try {
+        await tx.auditLog.create({
+          data: { userId: session.user.id, action: 'CREATE', entity: 'Business', entityId: business.id, details: `Created business: ${name} with admin: ${adminEmail}` },
+        })
+      } catch (e) {
+        console.error('audit log failed (non-fatal, within transaction):', e)
+      }
     })
 
     revalidatePath('/admin/businesses')
@@ -153,9 +163,7 @@ export async function deleteBusiness(businessId: string) {
 
     await prisma.business.delete({ where: { id: businessId } })
 
-    await prisma.auditLog.create({
-      data: { userId: session.user.id, action: 'DELETE', entity: 'Business', entityId: businessId, details: `Deleted business: ${business.name} (${purchaseCount} purchases, ${esimCount} eSIMs, ${topUpCount} top-ups cascade-deleted)` },
-    })
+    await safeAuditLog({ userId: session.user.id, action: 'DELETE', entity: 'Business', entityId: businessId, details: `Deleted business: ${business.name} (${purchaseCount} purchases, ${esimCount} eSIMs, ${topUpCount} top-ups cascade-deleted)` })
 
     revalidatePath('/admin/businesses')
     redirect('/admin/businesses?success=business_deleted')
