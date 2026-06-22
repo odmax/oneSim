@@ -30,7 +30,6 @@ ALTER TYPE "InternalAdminRole" ADD VALUE IF NOT EXISTS 'READ_ONLY';
 -- ── Missing columns on existing tables ───────────────────────────────────────
 ALTER TABLE "audit_logs" ADD COLUMN IF NOT EXISTS "action" TEXT NOT NULL DEFAULT '';
 ALTER TABLE "businesses" ADD COLUMN IF NOT EXISTS "rateLimitPerMinute" INTEGER;
-ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "status" "CustomerStatus" NOT NULL DEFAULT 'ACTIVE';
 ALTER TABLE "esim_packages" ADD COLUMN IF NOT EXISTS "costPriceUSD" DECIMAL(65,30);
 ALTER TABLE "esim_packages" ADD COLUMN IF NOT EXISTS "customerDescription" TEXT;
 ALTER TABLE "esim_packages" ADD COLUMN IF NOT EXISTS "displayName" TEXT;
@@ -70,11 +69,29 @@ ALTER TABLE "wallet_transactions" ADD COLUMN IF NOT EXISTS "type" TEXT NOT NULL 
 ALTER TABLE "provider_packages" ALTER COLUMN "adminCostPrice" SET DATA TYPE DECIMAL(65,30);
 ALTER TABLE "provider_packages" ALTER COLUMN "effectiveCostPrice" SET DATA TYPE DECIMAL(65,30);
 
--- Convert TEXT to enum types where schema expects enums
--- (data must already contain valid enum values)
-ALTER TABLE "customers" ALTER COLUMN "status" TYPE "CustomerStatus" USING "status"::"CustomerStatus";
-ALTER TABLE "providers" ALTER COLUMN "type" TYPE "ProviderType" USING "type"::"ProviderType";
-ALTER TABLE "providers" ALTER COLUMN "status" TYPE "ProviderStatus" USING "status"::"ProviderStatus";
+-- ── Safe enum conversions ────────────────────────────────────────────────────
+-- Pattern: DROP DEFAULT → normalize data → ALTER TYPE with USING → SET DEFAULT
+
+-- customers.status => CustomerStatus
+ALTER TABLE "customers" ALTER COLUMN "status" DROP DEFAULT;
+UPDATE "customers" SET "status" = 'ACTIVE' WHERE "status" IS NULL OR "status"::text NOT IN ('ACTIVE', 'INACTIVE');
+ALTER TABLE "customers" ALTER COLUMN "status" TYPE "CustomerStatus" USING "status"::text::"CustomerStatus";
+ALTER TABLE "customers" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::"CustomerStatus";
+
+-- If customers.status column doesn't exist yet as enum (fresh DB), add it
+ALTER TABLE "customers" ADD COLUMN IF NOT EXISTS "status" "CustomerStatus" NOT NULL DEFAULT 'ACTIVE';
+
+-- providers.type => ProviderType
+ALTER TABLE "providers" ALTER COLUMN "type" DROP DEFAULT;
+UPDATE "providers" SET "type" = 'CUSTOM' WHERE "type" IS NULL OR "type"::text NOT IN ('IBASIS', 'CHOICE', 'MOCK', 'CUSTOM');
+ALTER TABLE "providers" ALTER COLUMN "type" TYPE "ProviderType" USING "type"::text::"ProviderType";
+ALTER TABLE "providers" ALTER COLUMN "type" SET DEFAULT 'CUSTOM'::"ProviderType";
+
+-- providers.status => ProviderStatus
+ALTER TABLE "providers" ALTER COLUMN "status" DROP DEFAULT;
+UPDATE "providers" SET "status" = 'ACTIVE' WHERE "status" IS NULL OR "status"::text NOT IN ('ACTIVE', 'DEGRADED', 'MAINTENANCE', 'INACTIVE', 'TESTING', 'ARCHIVED');
+ALTER TABLE "providers" ALTER COLUMN "status" TYPE "ProviderStatus" USING "status"::text::"ProviderStatus";
+ALTER TABLE "providers" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::"ProviderStatus";
 
 -- ── New tables ───────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS "password_reset_tokens" (
