@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { getAppUrl } from '@/lib/config/urls'
 
 const BASE_URL = `${getAppUrl()}/api/v1`
+const STAGING_URL = 'https://staging.onetelecom.cloud/api/v1'
+const PROD_URL = 'https://m2m.onetelecom.cloud/api/v1'
 const JS_FETCH = `// OneSim Business API — JavaScript Integration Example
 const ONESIM_API_KEY = 'your_api_key_here';
 const BASE_URL = '${BASE_URL}';
@@ -12,7 +14,7 @@ async function createESIMOrder() {
   const response = await fetch(\`\${BASE_URL}/esims/order\`, {
     method: 'POST',
     headers: {
-      'Authorization': \`Bearer \${ONESIM_API_KEY}\`,
+      'x-api-key': ONESIM_API_KEY,
       'Content-Type': 'application/json',
       'Idempotency-Key': crypto.randomUUID(),
     },
@@ -28,27 +30,30 @@ async function createESIMOrder() {
 
 async function getPackages() {
   const response = await fetch(\`\${BASE_URL}/packages\`, {
-    headers: { 'Authorization': \`Bearer \${ONESIM_API_KEY}\` },
+    headers: { 'x-api-key': ONESIM_API_KEY },
   });
   return response.json();
 }
 
 async function getEsimStatus(esimId) {
   const response = await fetch(\`\${BASE_URL}/esims/\${esimId}\`, {
-    headers: { 'Authorization': \`Bearer \${ONESIM_API_KEY}\` },
+    headers: { 'x-api-key': ONESIM_API_KEY },
   });
   return response.json();
 }`
 
-const CURL_EXAMPLE = `# List available packages
-curl -X GET "${BASE_URL}/packages" \\
-  -H "Authorization: Bearer YOUR_API_KEY"
+const CURL_EXAMPLE = `# ── Staging (testing) ──
+# Export your key: export ONESIM_API_KEY=your_key_here
 
-# Buy an eSIM
-curl -X POST "${BASE_URL}/esims/order" \\
-  -H "Authorization: Bearer YOUR_API_KEY" \\
+# List available packages
+curl -X GET "https://staging.onetelecom.cloud/api/v1/packages" \\
+  -H "x-api-key: $ONESIM_API_KEY"
+
+# Buy an eSIM (staging)
+curl -X POST "https://staging.onetelecom.cloud/api/v1/esims/order" \\
+  -H "x-api-key: $ONESIM_API_KEY" \\
   -H "Content-Type: application/json" \\
-  -H "Idempotency-Key: unique-request-id-123" \\
+  -H "Idempotency-Key: $(uuidgen)" \\
   -d '{
     "customerName": "John Doe",
     "customerEmail": "john@example.com",
@@ -56,23 +61,35 @@ curl -X POST "${BASE_URL}/esims/order" \\
     "quantity": 1
   }'
 
+# ── Production (live) ──
+# curl -X GET "https://m2m.onetelecom.cloud/api/v1/packages" \\
+#   -H "x-api-key: $ONESIM_API_KEY"
+
 # Check eSIM status
 curl -X GET "${BASE_URL}/esims/{esimId}" \\
-  -H "Authorization: Bearer YOUR_API_KEY"
+  -H "x-api-key: $ONESIM_API_KEY"
 
 # Get wallet balance
 curl -X GET "${BASE_URL}/wallet" \\
-  -H "Authorization: Bearer YOUR_API_KEY"
+  -H "x-api-key: $ONESIM_API_KEY"
 
 # Top up an eSIM
 curl -X POST "${BASE_URL}/esims/{esimId}/top-up" \\
-  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "x-api-key: $ONESIM_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"packageId": "TOPUP_PACKAGE_ID"}'`
 
-const ENV_TEMPLATE = `# OneSim Business API Configuration
-ONESIM_API_BASE_URL=${BASE_URL}
-ONESIM_API_KEY=your_api_key_here
+const ENV_TEMPLATE = `# ── OneSim Business API Configuration ──
+# Use staging while testing, production after approval
+
+# Staging (testing):
+ONESIM_API_BASE_URL=${STAGING_URL}
+ONESIM_API_KEY=your_staging_api_key_here
+
+# Production (live — uncomment after approval):
+# ONESIM_API_BASE_URL=${PROD_URL}
+# ONESIM_API_KEY=your_production_api_key_here
+
 ONESIM_IDEMPOTENCY_PREFIX=onesim_`
 
 const DOWNLOAD_TEMPLATE = {
@@ -191,17 +208,30 @@ export default function IntegrationTemplatePage() {
       {/* Base URL */}
       <section>
         <h2 className="text-lg font-semibold text-gray-900 mb-3">1. Base URL</h2>
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-2">
-          <div className="flex justify-between items-center">
-            <span className="text-sm font-medium text-gray-700">Staging:</span>
-            <code className="rounded bg-gray-200 px-2 py-1 text-sm font-mono">{BASE_URL}</code>
-            <CopyButton text={BASE_URL} />
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">Staging</span>
+              <span className="text-xs text-gray-500">Use for testing and development</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <code className="rounded bg-gray-200 px-2 py-1 text-sm font-mono">{STAGING_URL}</code>
+              <CopyButton text={STAGING_URL} />
+            </div>
           </div>
-          <div className="flex justify-between items-center text-gray-400">
-            <span className="text-sm font-medium">Production:</span>
-            <code className="text-sm font-mono">https://api.onesim.africa/api/v1</code>
-            <span className="text-xs">(configure when live)</span>
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">Production</span>
+              <span className="text-xs text-gray-500">Use only after account approval and live API key activation</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <code className="rounded bg-gray-200 px-2 py-1 text-sm font-mono">{PROD_URL}</code>
+              <CopyButton text={PROD_URL} />
+            </div>
           </div>
+          <p className="text-xs text-gray-400 mt-1">
+            ⚠ Provider URLs for Choice/Rakuten/AirHub production are pending from providers. Staging URLs are pre-configured.
+          </p>
         </div>
       </section>
 
@@ -210,12 +240,12 @@ export default function IntegrationTemplatePage() {
         <h2 className="text-lg font-semibold text-gray-900 mb-3">2. Authentication</h2>
         <div className="space-y-3">
           <div className="rounded-lg border border-gray-200 bg-amber-50 p-4 text-sm text-amber-800">
-            <strong>Header:</strong> <code>Authorization: Bearer ONESIM_CLIENT_API_KEY</code>
-            <p className="mt-1 text-xs">All requests require this header. Get your API key from the <strong>API Keys</strong> page.</p>
+            <strong>Header:</strong> <code>x-api-key: YOUR_API_KEY</code>
+            <p className="mt-1 text-xs">All requests require this header. Get your API key from the <strong>API Keys</strong> page. <br/>Set <code>Content-Type: application/json</code> for POST/PATCH requests.</p>
           </div>
           <div className="rounded-lg border border-gray-200 bg-blue-50 p-4 text-sm text-blue-800">
-            <strong>Idempotency:</strong> <code>Idempotency-Key: {"{unique-id}"}</code>
-            <p className="mt-1 text-xs">Send a unique UUID per order to prevent duplicate charges. Keys expire after 24 hours.</p>
+            <strong>Idempotency:</strong> <code>Idempotency-Key: {"{unique-uuid}"}</code>
+            <p className="mt-1 text-xs">Always send a unique UUID per order to prevent duplicate charges. Keys expire after 24 hours.</p>
           </div>
         </div>
       </section>

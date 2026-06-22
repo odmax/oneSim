@@ -208,12 +208,12 @@ export default function DevelopersClient({ packages, apiKeys, isAdmin, baseUrl }
 
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="rounded-lg bg-gray-50 p-4">
-              <p className="text-sm font-medium text-gray-700">Base URL</p>
+              <p className="text-sm font-medium text-gray-700">API Base URL</p>
               <code className="mt-1 block text-sm text-blue-600">{baseUrl}/api/v1</code>
             </div>
             <div className="rounded-lg bg-gray-50 p-4">
               <p className="text-sm font-medium text-gray-700">Auth Method</p>
-              <code className="mt-1 block text-sm text-blue-600">Bearer Token (API Key)</code>
+              <code className="mt-1 block text-sm text-blue-600">x-api-key header</code>
             </div>
             <div className="rounded-lg bg-gray-50 p-4">
               <p className="text-sm font-medium text-gray-700">Content Type</p>
@@ -224,6 +224,31 @@ export default function DevelopersClient({ packages, apiKeys, isAdmin, baseUrl }
           <p className="mt-4 text-xs text-gray-500">
             All dates and times are in UTC. Monetary values are in USD.
           </p>
+        </Section>
+      </div>
+
+      {/* Environment */}
+      <div className="rounded-lg border bg-white p-6">
+        <Section title="Environment">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="inline-flex items-center rounded-full bg-amber-200 px-2 py-0.5 text-xs font-medium text-amber-800">Staging</span>
+                <span className="text-xs text-amber-700">For testing and development</span>
+              </div>
+              <code className="block text-sm font-mono text-amber-900 break-all">https://staging.onetelecom.cloud/api/v1</code>
+              <p className="mt-2 text-xs text-amber-700">Free credits available for testing. No real charges.</p>
+            </div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="inline-flex items-center rounded-full bg-emerald-200 px-2 py-0.5 text-xs font-medium text-emerald-800">Production</span>
+                <span className="text-xs text-emerald-700">Live — real charges apply</span>
+              </div>
+              <code className="block text-sm font-mono text-emerald-900 break-all">https://m2m.onetelecom.cloud/api/v1</code>
+              <p className="mt-2 text-xs text-emerald-700">Use only after account approval and live API key activation.</p>
+            </div>
+          </div>
+          <p className="mt-3 text-xs text-gray-400">⚠ Production provider URLs for Choice/Rakuten/AirHub are pending from providers. Use staging URLs while testing.</p>
         </Section>
       </div>
 
@@ -975,6 +1000,35 @@ console.log(data);`} />
                 <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-red-100 px-2 text-xs font-semibold text-red-800">FAILED</span></td><td className="px-4 py-2 text-gray-600">Activation failed, no wallet charge</td></tr>
               </tbody>
             </table>
+          </div>
+        </Section>
+      </div>
+
+      {/* ===== CONNECTION CHECKLIST ===== */}
+      <div className="rounded-lg border bg-white p-6">
+        <Section title="Go-Live Checklist">
+          <p className="mb-4 text-sm text-gray-600">Follow these steps to certify your integration before going live:</p>
+          <div className="space-y-3">
+            {[
+              { step: '1', title: 'Create business account', done: true },
+              { step: '2', title: 'Generate an API key from the API Keys page', done: true },
+              { step: '3', title: 'Test the verify endpoint: GET /api/v1/auth/verify', done: false },
+              { step: '4', title: 'Check wallet balance: GET /api/v1/wallet', done: false },
+              { step: '5', title: 'Fetch available packages: GET /api/v1/packages', done: false },
+              { step: '6', title: 'Place a test order on staging: POST /api/v1/esims/order', done: false },
+              { step: '7', title: 'Configure a webhook endpoint for delivery notifications', done: false },
+              { step: '8', title: 'Run Provider Certification in Admin → Provider Audit', done: false },
+              { step: '9', title: 'Switch to production URL and live API key', done: false },
+            ].map(s => (
+              <div key={s.step} className="flex items-center gap-3">
+                <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${s.done ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-400'}`}>
+                  {s.done ? '✓' : s.step}
+                </div>
+                <div>
+                  <p className={`text-sm ${s.done ? 'text-gray-500' : 'text-gray-700'}`}>{s.title}</p>
+                </div>
+              </div>
+            ))}
           </div>
         </Section>
       </div>
