@@ -6,7 +6,8 @@ import Link from 'next/link'
 import { updateAdminUser } from '@/lib/actions/admin-users'
 
 const ROLE_LABELS: Record<string, string> = {
-  SUPER_ADMIN: 'Super Admin', ADMIN: 'Admin', OPERATIONS_MANAGER: 'Operations Manager',
+  CEO: 'CEO', SUPER_ADMIN: 'Super Admin', ADMIN: 'Admin',
+  SALES_TEAM: 'Sales Team', OPERATIONS_MANAGER: 'Operations Manager',
   PRODUCT_MANAGER: 'Product Manager', SUPPORT_MANAGER: 'Support Manager',
   SUPPORT_AGENT: 'Support Agent', FINANCE_MANAGER: 'Finance Manager',
   ANALYTICS_MANAGER: 'Analytics Manager', READ_ONLY: 'Read Only',
