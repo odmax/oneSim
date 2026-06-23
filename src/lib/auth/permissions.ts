@@ -8,12 +8,14 @@ export type RolePermission = InternalAdminRole
 const roleHierarchy: Record<InternalAdminRole, number> = {
   READ_ONLY: 0,
   SUPPORT_AGENT: 1,
+  SALES_TEAM: 10,
   SUPPORT_MANAGER: 20,
   ANALYTICS_MANAGER: 30,
   FINANCE_MANAGER: 35,
   PRODUCT_MANAGER: 40,
   OPERATIONS_MANAGER: 80,
   ADMIN: 90,
+  CEO: 100,
   SUPER_ADMIN: 100,
 }
 
@@ -64,14 +66,14 @@ export async function requireAdmin() {
 }
 
 export const Permissions = {
-  VIEW_ANALYTICS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.ANALYTICS_MANAGER, InternalAdminRole.OPERATIONS_MANAGER],
-  MANAGE_PRODUCTS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.PRODUCT_MANAGER, InternalAdminRole.OPERATIONS_MANAGER],
-  MANAGE_PROVIDERS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.OPERATIONS_MANAGER],
-  MANAGE_PRICING: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.PRODUCT_MANAGER],
-  MANAGE_ORDERS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SUPPORT_MANAGER, InternalAdminRole.SUPPORT_AGENT],
-  MANAGE_BUSINESSES: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.OPERATIONS_MANAGER],
-  MANAGE_ADMINS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN],
-  VIEW_LOGS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SUPPORT_MANAGER],
-  MANAGE_SETTINGS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN],
-  MANAGE_JOBS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.OPERATIONS_MANAGER],
+  VIEW_ANALYTICS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.ANALYTICS_MANAGER, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SALES_TEAM],
+  MANAGE_PRODUCTS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.PRODUCT_MANAGER, InternalAdminRole.OPERATIONS_MANAGER],
+  MANAGE_PROVIDERS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.OPERATIONS_MANAGER],
+  MANAGE_PRICING: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.PRODUCT_MANAGER],
+  MANAGE_ORDERS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SUPPORT_MANAGER, InternalAdminRole.SUPPORT_AGENT, InternalAdminRole.SALES_TEAM],
+  MANAGE_BUSINESSES: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SALES_TEAM],
+  MANAGE_ADMINS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO],
+  VIEW_LOGS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SUPPORT_MANAGER],
+  MANAGE_SETTINGS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO],
+  MANAGE_JOBS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.OPERATIONS_MANAGER],
 }

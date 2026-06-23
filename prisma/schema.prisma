@@ -29,8 +29,10 @@ enum CustomerStatus {
 }
 
 enum InternalAdminRole {
-  ADMIN
   SUPER_ADMIN
+  ADMIN
+  CEO
+  SALES_TEAM
   OPERATIONS_MANAGER
   PRODUCT_MANAGER
   SUPPORT_MANAGER
@@ -137,6 +139,9 @@ model Business {
   apiRequestLogs     ApiRequestLog[]
   rateLimitPerMinute Int?
   pricingRules       PricingRule[]
+  assignedSalesUserId String?
+
+  salesAgent InternalAdmin? @relation("SalesAssignment", fields: [assignedSalesUserId], references: [id])
 
   @@map("businesses")
 }
@@ -149,7 +154,8 @@ model BusinessUser {
   createdAt  DateTime         @default(now())
   updatedAt  DateTime         @updatedAt
 
-  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@unique([userId, businessId])
@@ -167,6 +173,8 @@ model InternalAdmin {
   updatedAt   DateTime          @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  assignedBusinesses Business[] @relation("SalesAssignment")
 
   @@map("internal_admins")
 }

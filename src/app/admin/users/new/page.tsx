@@ -5,14 +5,16 @@ import { ADMIN_PERMISSIONS, DEFAULT_PERMISSIONS } from '@/lib/auth/admin-permiss
 import { createAdminUser } from '@/lib/actions/admin-users'
 
 const ROLES = [
+  { id: 'CEO', label: 'CEO' },
   { id: 'SUPER_ADMIN', label: 'Super Admin' },
   { id: 'ADMIN', label: 'Admin' },
+  { id: 'SALES_TEAM', label: 'Sales Team' },
   { id: 'OPERATIONS_MANAGER', label: 'Operations Manager' },
   { id: 'PRODUCT_MANAGER', label: 'Product Manager' },
   { id: 'SUPPORT_MANAGER', label: 'Support Manager' },
   { id: 'SUPPORT_AGENT', label: 'Support Agent' },
-  { id: 'FINANCE_MANAGER', label: 'Finance Manager' },
   { id: 'ANALYTICS_MANAGER', label: 'Analytics Manager' },
+  { id: 'FINANCE_MANAGER', label: 'Finance Manager' },
   { id: 'READ_ONLY', label: 'Read Only' },
 ]
 
