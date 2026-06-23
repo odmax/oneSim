@@ -39,10 +39,14 @@ export async function createAdminUser(formData: FormData) {
     })
     await prisma.internalAdmin.create({
       data: { userId: user.id, role: role as any, permissions, isActive },
-    })
-    await prisma.auditLog.create({
-      data: { userId: session.user.id, action: 'ADMIN_CREATED', entity: 'InternalAdmin', entityId: user.id, details: `Admin user created: ${name} (${email}) as ${role}` },
-    })
+    }).catch(e => { console.error('admin-users: internalAdmin create failed:', e); throw e })
+    try {
+      await prisma.auditLog.create({
+        data: { userId: session.user.id, action: 'ADMIN_CREATED', entity: 'InternalAdmin', entityId: user.id, details: `Admin user created: ${name} (${email}) as ${role}` },
+      })
+    } catch (e) {
+      console.error('audit log failed (non-fatal):', e)
+    }
     revalidatePath('/admin/users')
     redirect('/admin/users?success=Admin+user+created')
   } catch (error: any) {

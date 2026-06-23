@@ -144,9 +144,9 @@ export async function createProvider(formData: FormData) {
     },
   })
 
-  await prisma.auditLog.create({
+  try { await prisma.auditLog.create({
     data: { userId: session.user.id, action: 'PROVIDER_CREATED', entity: 'Provider', entityId: code.toUpperCase(), details: `Provider "${name}" (${code.toUpperCase()}) created` },
-  })
+  }) } catch (e) { console.error('audit log failed (non-fatal):', e) }
 
   revalidatePath('/admin/providers')
   redirect(`/admin/providers/${provider.id}?setup=true`)
