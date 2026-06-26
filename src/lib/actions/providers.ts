@@ -107,8 +107,10 @@ export async function createProvider(formData: FormData) {
     await prisma.provider.updateMany({ where: { isDefaultFallback: true }, data: { isDefaultFallback: false } })
   }
 
-  const provider = await prisma.provider.create({
-    data: {
+  const provider = await prisma.provider.upsert({
+    where: { code: code.toUpperCase() },
+    update: {}, // no-op on conflict — pre-check above already redirects
+    create: {
       name,
       code: code.toUpperCase(),
       type: type === 'MOCK' ? 'MOCK' : 'CUSTOM',

@@ -129,8 +129,10 @@ export function isTemplateDrivenProvider(provider: {
   template?: any
   providerTemplateId?: string | null
 }): boolean {
-  if (provider.providerTemplateId) return true
+  // adapterStrategy is the primary signal — explicit non-template strategies must be respected
   if (provider.adapterStrategy === 'TEMPLATE') return true
+  if (provider.adapterStrategy && !['TEMPLATE', 'MOCK'].includes(provider.adapterStrategy)) return false
+  if (provider.providerTemplateId) return true
   if (provider.type === 'TEMPLATE') return true
   const cfg = provider.config || {}
   if (cfg.providerMode === 'TEMPLATE') return true

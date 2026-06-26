@@ -37,8 +37,10 @@ export async function saveAdaptiveProvider(input: AdaptiveProviderInput) {
 
   const regions = input.authUrl ? [input.authUrl.replace(/https?:\/\//, '').split('/')[0]] : []
 
-  const provider = await prisma.provider.create({
-    data: {
+  const provider = await prisma.provider.upsert({
+    where: { code: input.code.toUpperCase() },
+    update: {},
+    create: {
       name: input.name,
       code: input.code.toUpperCase(),
       type: 'CUSTOM',
