@@ -21,9 +21,9 @@ async function main() {
   console.log(`Templates (${templates.length}):`)
   console.log('─'.repeat(60))
   for (const t of templates) {
-    const missing = REQUIRED_TEMPLATE_FIELDS.filter(f => !(t as any)[f])
-    const hasEP = t.endpointMappings ? Object.keys(t.endpointMappings as any).length : 0
-    const hasRM = t.requestMappings ? Object.keys(t.requestMappings as any).length : 0
+    const missing = REQUIRED_TEMPLATE_FIELDS.filter(f => !t[f])
+    const hasEP = t.endpointMappings ? Object.keys(t.endpointMappings).length : 0
+    const hasRM = t.requestMappings ? Object.keys(t.requestMappings).length : 0
     console.log(`  ${t.name.padEnd(25)} ${'✓'.repeat(REQUIRED_TEMPLATE_FIELDS.length - missing.length)}${'✗'.repeat(missing.length)}`)
     if (missing.length) console.log(`    Missing: ${missing.join(', ')}`)
     console.log(`    Endpoint mappings: ${hasEP} · Request mappings: ${hasRM ? '✓' : '—'}`)
@@ -45,7 +45,7 @@ async function main() {
   if (dupes.length > 0) console.log(`\n⚠ DUPLICATE CODES: ${[...new Set(dupes)].join(', ')}\n`)
 
   for (const p of providers) {
-    const missing: string[] = []
+    const missing = []
     if (!p.adapterStrategy) missing.push('adapterStrategy')
     if (!p.authType) missing.push('authType')
     if (p.adapterStrategy === 'TEMPLATE' && !p.endpointMappings) missing.push('endpointMappings')

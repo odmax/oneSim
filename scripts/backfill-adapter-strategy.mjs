@@ -17,8 +17,8 @@ async function backfillAdapterStrategies() {
   for (const p of providers) {
     if (p.adapterStrategy) continue // Already set
 
-    let strategy: string | null = null
-    const config = p.config as any
+    let strategy = null
+    const config = p.config || {}
 
     // Smart detection: has planListPath + responseListKey → TEMPLATE_SKU
     if (config?.planListPath && config?.responseListKey) {

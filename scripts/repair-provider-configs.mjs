@@ -98,7 +98,7 @@ async function main() {
       if (DRY_RUN) continue
       await prisma.provider.update({
         where: { id: dup.id },
-        data: { status: 'ARCHIVED', config: { ...((dup.config as any) || {}), _duplicateOf: keep.id, _archivedByRepair: true } },
+        data: { status: 'ARCHIVED', config: { ...(dup.config || {}), _duplicateOf: keep.id, _archivedByRepair: true } },
       })
       console.log(`    Archived duplicate ID=${dup.id.slice(-8)}`)
     }
@@ -115,7 +115,7 @@ async function main() {
       orderBy: { createdAt: 'asc' },
     })
 
-    const providerData: any = {
+    const providerData = {
       name: cfg.name,
       type: cfg.type,
       adapterStrategy: cfg.adapterStrategy,
