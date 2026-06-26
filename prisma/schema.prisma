@@ -245,6 +245,7 @@ model Provider {
   providerPackages ProviderPackage[]
   healthSnapshots ProviderHealthSnapshot[]
   audits          ProviderAudit[]
+  providerTemplate ProviderTemplate? @relation("ProviderTemplateRelation", fields: [providerTemplateId], references: [id])
 
   @@map("providers")
 }
@@ -957,6 +958,8 @@ model ProviderTemplate {
   createdBy              String?
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
+
+  providers Provider[] @relation("ProviderTemplateRelation")
 
   @@map("provider_templates")
 }
