@@ -1,0 +1,4 @@
+ALTER TABLE "providers" ADD COLUMN IF NOT EXISTS "certificationStatus" TEXT DEFAULT 'CONFIGURING';
+ALTER TABLE "providers" ADD COLUMN IF NOT EXISTS "certifiedAt" TIMESTAMP(3);
+ALTER TABLE "providers" ADD COLUMN IF NOT EXISTS "certificationNotes" TEXT;
+ALTER TABLE "providers" ADD COLUMN IF NOT EXISTS "lastCertificationRunAt" TIMESTAMP(3);

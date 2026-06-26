@@ -233,6 +233,11 @@ model Provider {
   lastSyncAt               DateTime? /// Last successful plan sync
   lastSyncResult           String? /// Summary of last sync result
   lastSyncCount            Int? /// Number of plans fetched in last sync
+  /// Certification workflow fields
+  certificationStatus      String? @default("CONFIGURING")
+  certifiedAt              DateTime?
+  certificationNotes       String?
+  lastCertificationRunAt   DateTime?
   createdAt                DateTime       @default(now())
   updatedAt                DateTime       @updatedAt
 
