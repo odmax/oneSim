@@ -389,7 +389,7 @@ export class UrlTokenConnector extends RestCatalogConnector {
     const topUpPath = this.fieldMappings.topUpPath || `/account/v03_09/update_imsi/${token}`
     const maskedPath = topUpPath.replace(token, token.slice(0, 4) + '••••')
 
-    const payloadType = this.fieldMappings.topUpPayloadType || 'CHOICE_UPDATE_IMSI'
+    const payloadType = this.fieldMappings.topUpPayloadType
 
     let body: Record<string, any>
 

@@ -255,6 +255,14 @@ export async function testProviderConnection(providerId: string) {
       const durationMs = Date.now() - startTime
       const diagnostics = {
         adapter: 'TemplateProviderAdapter',
+        providerCode: provider.code,
+        adapterStrategy: provider.adapterStrategy,
+        providerType: provider.type,
+        authType: provider.authType,
+        authUrl: provider.authUrl || '(from endpointMappings)',
+        apiBaseUrl: provider.apiBaseUrl || '(not set)',
+        apiVersion: provider.apiVersion || '(not set)',
+        tokenPlacement: provider.tokenPlacement,
         endpointMappings: provider.endpointMappings,
         config: { ...config, password: undefined, apiToken: undefined },
       }
@@ -315,14 +323,18 @@ export async function testProviderConnection(providerId: string) {
       const diag = diagResult.data
 
       const diagnostics = {
+        adapter: 'Connector',
+        providerCode: provider.code,
+        adapterStrategy: provider.adapterStrategy,
+        providerType: provider.type,
+        authType: provider.authType,
         connectorClass: diag?.connectorClass || '—',
         method: diag?.method || '—',
         baseUrl: diag?.baseUrl || '—',
-        authUrl: diag?.authUrl || '—',
+        authUrl: provider.authUrl || '—',
         path: diag?.path || '—',
         finalUrl: diag?.finalUrl || '—',
         tokenPlacement: diag?.tokenPlacement || '—',
-        authType: diag?.authType || '—',
         authHeaderPresent: diag?.authHeaderPresent ?? false,
         tokenReplaced: diag?.tokenReplaced ?? false,
         responseStatus: diag?.responseStatus ?? null,
