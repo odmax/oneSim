@@ -295,16 +295,37 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     if (result.error) return { success: false, error: result.error }
     if (!result.data) return { success: false, error: { code: 'EMPTY_AUTH', message: 'Empty auth response' } }
 
+    // Log auth response structure (no token values)
+    const respKeys = Object.keys(result.data)
+    const nestedData = result.data?.data ? Object.keys(result.data.data) : []
+    const nestedResponse = result.data?.response ? Object.keys(result.data.response) : []
+    console.log('[AUTH_RESPONSE]', JSON.stringify({
+      status: result.status,
+      topKeys: respKeys.filter(k => !['token', 'access_token', 'apiKey', 'apiToken', 'password'].includes(k)),
+      dataKeys: nestedData,
+      responseKeys: nestedResponse,
+    }))
+
     const tokenPath = this.config?.tokenPath || this.provider.responseMappings?.tokenPath
     const token = extractToken(result.data, tokenPath)
+
+    // Validate token
+    if (!token || token.length < 8) {
+      const reason = !token ? 'No token found' : `Token too short (${token.length} chars)`
+      console.log('[TOKEN_EXTRACT]', JSON.stringify({
+        tokenPath: tokenPath || 'undefined (fallback)',
+        found: !!token,
+        length: token ? token.length : 0,
+        topKeys: Object.keys(result.data).filter(k => !['token', 'access_token'].includes(k)),
+      }))
+      return { success: false, error: { code: 'NO_TOKEN', message: `Authentication succeeded but no valid token was found in response. ${reason}` } }
+    }
 
     console.log('[TOKEN_EXTRACT]', JSON.stringify({
       tokenPath: tokenPath || 'undefined (fallback)',
       found: !!token,
-      // Log top-level keys only (no values)
-      topKeys: Object.keys(result.data).filter(k => k !== 'token' && k !== 'access_token' && k !== 'apiKey' && k !== 'apiToken'),
+      length: token.length,
     }))
-    if (!token) return { success: false, error: { code: 'NO_TOKEN', message: 'No token in auth response' } }
 
     this.token = token
     return { success: true, data: { token, accountInfo: result.data } }
