@@ -55,6 +55,11 @@ export async function authenticateProvider(providerId: string, formData: FormDat
     authMethod: provider.type.toLowerCase(),
     authAccounts: accounts,
     authEnvironmentAtAuth: env,
+    // Preserve credentials for subsequent testConnection calls
+    ...(credentials.username ? { username: credentials.username } : {}),
+    ...(credentials.password ? { password: credentials.password } : {}),
+    ...(credentials.apiKey ? { apiKey: credentials.apiKey } : {}),
+    ...(credentials.clientId ? { clientId: credentials.clientId } : {}),
   }
 
   const updateData: any = {

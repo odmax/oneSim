@@ -258,6 +258,8 @@ export class TemplateProviderAdapter implements ProviderAdapter {
       ...credentials,
     }
 
+    console.log(`[TemplateProviderAdapter] Credential keys loaded: ${Object.keys(allCreds).filter(k => k !== 'password' && k !== 'apiKey' && k !== 'apiToken').join(', ')} ${allCreds.password ? '+ password ✓' : 'password ✗'}`)
+
     // Build body using requestMappings template or defaults
     let body: any
     if (authMapping && typeof authMapping === 'object') {
