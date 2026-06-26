@@ -14,6 +14,7 @@ import { SaveAsTemplateButton } from '@/components/admin/providers/SaveAsTemplat
 import { getProviderAuthStatus } from '@/lib/actions/provider-auth'
 import { getRecentHealthLogs, type HealthEvent } from '@/lib/services/providers/health-monitor'
 import { inferProviderCapabilities } from '@/lib/providers/capabilities'
+import { ProviderActionButton, ActionForm } from '@/components/admin/providers/ActionButtons'
 
 function maskApiToken(token: string | null): string {
   if (!token) return ''
@@ -221,19 +222,8 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
 
           <div className="mt-6 flex flex-wrap gap-3">
             <Link href={`/admin/providers/${provider.id}/edit`} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">Edit Provider</Link>
-            <form action={toggleProviderStatus.bind(null, provider.id)}>
-              <button type="submit" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
-                Cycle Status ({provider.status})
-              </button>
-            </form>
-            <form action={async () => {
-              'use server'
-              const result = await testProviderConnection(provider.id)
-              if (result.success) redirect(`/admin/providers/${provider.id}?success=${encodeURIComponent(result.message || 'Connection successful')}`)
-              else redirect(`/admin/providers/${provider.id}?error=${encodeURIComponent(result.error || 'Connection failed')}`)
-            }}>
-              <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Test Connection</button>
-            </form>
+            <ActionForm action={async (fd) => { 'use server'; await toggleProviderStatus(provider.id) }} label="Cycle Status" loadingLabel="Cycling..." color="outline" />
+            <ActionForm action={async () => { 'use server'; const result = await testProviderConnection(provider.id); if (!result.success) throw new Error(result.error) }} label="Test Connection" loadingLabel="Testing..." color="cyan" />
             <Link href={`/admin/providers/${provider.id}/diagnostics`} className="rounded-lg border border-purple-300 px-4 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50">
               Diagnostics
             </Link>
