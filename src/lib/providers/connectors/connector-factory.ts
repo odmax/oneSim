@@ -13,6 +13,7 @@ export function resolveConnectorType(adapterStrategy: string | null | undefined,
   if (providerType === 'MOCK') return 'MOCK'
   switch (adapterStrategy) {
     case 'STANDARD': return 'STANDARD'
+    case 'CHOICE': return 'URL_TOKEN'
     case 'URL_TOKEN': return 'URL_TOKEN'
     case 'HEADER_TOKEN': return 'HEADER_TOKEN'
     case 'REST_CATALOG': return 'REST_CATALOG'
