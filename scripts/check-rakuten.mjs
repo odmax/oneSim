@@ -1,0 +1,12 @@
+import { PrismaClient } from '@prisma/client'
+const prisma = new PrismaClient()
+const t = await prisma.providerTemplate.findMany({ where: { name: { contains: 'Rakuten' } } })
+console.log('Templates:', t.length)
+t.forEach(x => console.log(' ', x.id.slice(-8), x.name))
+const r = await prisma.provider.findMany({ where: { code: 'RAKUTEN' } })
+console.log('Providers by code:', r.length)
+r.forEach(x => console.log(' ', x.id.slice(-8), x.name, x.adapterStrategy, x.status))
+const r2 = await prisma.provider.findMany({ where: { name: { contains: 'Rakuten' } } })
+console.log('Providers by name:', r2.length)
+r2.forEach(x => console.log(' ', x.id.slice(-8), x.code, x.adapterStrategy, x.status))
+await prisma.$disconnect()
