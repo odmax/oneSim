@@ -328,6 +328,40 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     }))
 
     this.token = token
+
+    // Step 2: If provider requires API key generation (e.g. Rakuten), generate it using the login token
+    const genKeyEp = resolveEndpoint(this.endpointMappings, 'GENERATE_API_KEY')
+    if (genKeyEp) {
+      const clientId = this.config?.clientId || credentials.clientId || ''
+      if (!clientId) {
+        return { success: false, error: { code: 'MISSING_CLIENT_ID', message: 'Rakuten clientId is required to generate API key.' } }
+      }
+
+      console.log(`[TemplateProviderAdapter] GENERATE_API_KEY POST ${buildUrl(this.baseUrl, genKeyEp.path)}`)
+      const genResult = await this.callCapability('GENERATE_API_KEY', {
+        clientId,
+        validityDays: parseInt(this.config?.validityDays || '365'),
+        name: this.config?.apiKeyName || 'OneSim Integration',
+        purpose: this.config?.purpose || 'OneSim provider integration',
+      })
+
+      if (genResult.error) {
+        console.log('[GENERATE_API_KEY] Failed:', genResult.error.message)
+        // Login token may still work for basic operations — don't fail auth entirely
+        return { success: true, data: { token, accountInfo: { ...result.data, _apiKeyGenerationFailed: genResult.error.message } } }
+      }
+
+      if (genResult.data) {
+        const apiKey = genResult.data.apiKey || genResult.data.result?.apiKey || genResult.data.data?.apiKey || null
+        if (apiKey && apiKey.length >= 8) {
+          console.log(`[GENERATE_API_KEY] API key generated (${apiKey.length} chars)`)
+          this.token = apiKey
+          return { success: true, data: { token: apiKey, accountInfo: { ...result.data, _apiKeyGenerated: true, _loginToken: token } } }
+        }
+        console.log('[GENERATE_API_KEY] Response had no usable apiKey key. Keys:', Object.keys(genResult.data))
+      }
+    }
+
     return { success: true, data: { token, accountInfo: result.data } }
   }
 
