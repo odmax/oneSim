@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
-import { providerRouter } from '@/lib/services/providers/router'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
+import { createTimelineEvent, transitionOrder } from './order-state-machine'
+import { initiateAndFulfillPurchase } from './provider-purchase'
 
 export interface CreateOrderCustomer {
   name: string
@@ -42,6 +43,8 @@ export interface CreateOrderResult {
   errorStatus?: number
 }
 
+const DUP_WINDOW_MS = 30_000
+
 export async function createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
   const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl } = params
 
@@ -71,9 +74,33 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
   }
 
   // Check wallet
-  const totalAmount = parseFloat(pkg.priceUSD.toString()) * quantity
+  const unitPrice = parseFloat(pkg.priceUSD.toString())
+  const totalAmount = unitPrice * quantity
   if (parseFloat(business.walletBalance.toString()) < totalAmount) {
     return { success: false, error: 'Insufficient wallet balance', errorStatus: 402 }
+  }
+
+  // Idempotency: reject duplicate orders within 30s
+  const recent = await prisma.eSIMPurchase.findFirst({
+    where: {
+      businessId,
+      packageId: pkg.id,
+      quantity,
+      totalAmount,
+      createdAt: { gte: new Date(Date.now() - DUP_WINDOW_MS) },
+      status: { notIn: ['FAILED', 'CANCELLED', 'REFUNDED'] },
+    },
+  })
+  if (recent) {
+    return {
+      success: true,
+      orderId: recent.id,
+      status: recent.status,
+      unitCost: unitPrice,
+      totalCost: totalAmount,
+      quantity,
+      currency: pkg.currency || 'USD',
+    }
   }
 
   // Find or create customer
@@ -106,33 +133,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     customerId = dbCustomer.id
   }
 
-  // Route to provider
-  const providerResult = await providerRouter.routeOrder({
-    businessId,
-    customerId: customerId || 'unknown',
-    customerName: customer?.name || 'Business Order',
-    customerEmail: customer?.email || '',
-    packageId: pkg.id,
-    quantity,
-  })
-
-  if (!providerResult.success) {
-    ;(async () => {
-      try {
-        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
-        await enqueueBusinessWebhooks(businessId, 'order.failed', {
-          packageId: pkg.id,
-          packageName: pkg.displayName || pkg.name,
-          quantity,
-          error: providerResult.error,
-        })
-      } catch { }
-    })()
-    return { success: false, error: providerResult.error || 'Provider activation failed', errorStatus: 502 }
-  }
-
   const displayName = pkg.displayName || pkg.name
-  const unitPrice = parseFloat(pkg.priceUSD.toString())
 
   const packageSnapshot = {
     packageId: pkg.id,
@@ -152,18 +153,18 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     purchasedAt: new Date().toISOString(),
   }
 
-  // Create order with real ICCIDs from provider
-  const result = await prisma.$transaction(async (tx) => {
-    const purchase = await tx.eSIMPurchase.create({
+  // Create order in CREATED status
+  let orderId: string
+
+  try {
+    const order = await prisma.eSIMPurchase.create({
       data: {
         businessId,
         userId,
         packageId: pkg.id,
         quantity,
         totalAmount,
-        status: 'PENDING_ACTIVATION',
-        providerStatus: providerResult.providerStatus || 'PENDING',
-        providerResponse: providerResult as any,
+        status: 'CREATED',
         callbackUrl: callbackUrl || null,
         packageSnapshot: packageSnapshot as any,
         packageName: displayName,
@@ -173,98 +174,81 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
         packageCurrency: pkg.currency || 'USD',
       },
     })
+    orderId = order.id
+  } catch (e: any) {
+    return { success: false, error: 'Failed to create order', errorStatus: 500 }
+  }
 
-    const esims = []
-    for (let i = 0; i < quantity; i++) {
-      const esimData = providerResult.esims?.[i]
-      const esim = await tx.eSIM.create({
-        data: {
-          purchaseId: purchase.id,
-          customerId: customerId || null,
-          iccid: esimData!.iccid,
-          imsi: esimData?.imsi != null ? String(esimData.imsi) : null,
-          activationCode: esimData?.activationCode != null ? String(esimData.activationCode) : null,
-          qrCodeUrl: esimData?.qrCodeUrl || null,
-          status: 'PENDING_ACTIVATION',
-          providerStatus: 'PENDING',
-          expiresAt: new Date(Date.now() + pkg.validityDays * 24 * 60 * 60 * 1000),
-          packageSnapshot: packageSnapshot as any,
-          packageName: displayName,
-          packageDataGB: pkg.dataGB,
-          packageValidityDays: pkg.validityDays,
-        },
-      })
-      esims.push(esim)
-    }
+  await createTimelineEvent(orderId, { eventType: 'ORDER_CREATED', message: `Order created: ${quantity}x ${displayName}` })
+  await transitionOrder(orderId, 'CREATED')
 
-    await tx.business.update({
-      where: { id: businessId },
-      data: { walletBalance: { decrement: totalAmount } },
-    })
-
-    await tx.walletTransaction.create({
-      data: {
-        businessId,
-        amount: -totalAmount,
-        type: 'PURCHASE',
-        description: customer
-          ? `Order: ${quantity}x ${displayName} for ${customer.email}`
-          : `Purchased ${quantity}x ${displayName}`,
-      },
-    })
-
-    await tx.invoice.create({
-      data: { businessId, purchaseId: purchase.id, amount: totalAmount, status: 'PAID', paidAt: new Date() },
-    })
-
-    await tx.auditLog.create({
-      data: {
-        userId,
-        action: 'PURCHASE_ESIM',
-        entity: 'ESIMPurchase',
-        entityId: purchase.id,
-        details: customer
-          ? `Order placed: ${quantity}x ${displayName} for ${customer.email} at $${totalAmount}`
-          : `Purchased ${quantity}x ${displayName} for $${totalAmount}`,
-      },
-    })
-
-    return { purchase, esims }
+  // Dispatch to provider via purchase service
+  const purchase = await initiateAndFulfillPurchase(orderId, { totalAmount, packageSnapshot }, {
+    businessId,
+    userId,
+    customerId,
+    customerName: customer?.name,
+    customerEmail: customer?.email,
+    packageId: pkg.id,
+    quantity,
   })
 
-  // Fire webhook events (non-blocking, fire-and-forget)
+  if (!purchase.success) {
+    // Fire failure webhook
+    ;(async () => {
+      try {
+        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+        await enqueueBusinessWebhooks(businessId, 'order.failed', {
+          orderId,
+          packageId: pkg.id,
+          packageName: displayName,
+          quantity,
+          error: purchase.error,
+        })
+      } catch { }
+    })()
+
+    return { success: false, error: purchase.error || 'Purchase failed', errorStatus: purchase.errorStatus || 502 }
+  }
+
+  // Fire success webhook
   ;(async () => {
     try {
       const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
       await enqueueBusinessWebhooks(businessId, 'order.completed', {
-        orderId: result.purchase.id,
+        orderId,
         packageId: pkg.id,
         packageName: displayName,
         quantity,
         totalAmount,
         currency: pkg.currency || 'USD',
         customer: customer ? { name: customer.name, email: customer.email } : null,
-        esims: result.esims.map(e => ({ id: e.id, iccid: e.iccid })),
-        providerName: providerResult.providerName || null,
+        esims: purchase.esims?.map(e => ({ id: undefined, iccid: e.iccid })) || [],
       })
       await enqueueBusinessWebhooks(businessId, 'esim.provisioned', {
-        orderId: result.purchase.id,
+        orderId,
         quantity,
-        esims: result.esims.map(e => ({ id: e.id, iccid: e.iccid, status: e.status })),
+        esims: purchase.esims?.map(e => ({ id: undefined, iccid: e.iccid, status: 'PENDING_ACTIVATION' })) || [],
       })
-    } catch { /* webhook must never block purchase */ }
+    } catch { }
   })()
+
+  // Load created eSIMs for response
+  const createdESIMs = await prisma.eSIM.findMany({
+    where: { purchaseId: orderId },
+    select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true },
+  })
 
   return {
     success: true,
-    orderId: result.purchase.id,
+    orderId,
     customerId,
-    status: result.purchase.status,
+    status: 'FULFILLED',
     unitCost: unitPrice,
     totalCost: totalAmount,
     quantity,
     currency: pkg.currency || 'USD',
-    esims: result.esims.map((e) => ({
+    esims: createdESIMs.map(e => ({
       id: e.id,
       iccid: e.iccid,
       imsi: e.imsi,
