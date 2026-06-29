@@ -19,6 +19,7 @@ export default function AdminLayout({
     { title: 'eSIMs', href: '/admin/esims' },
     { title: 'Usage Analytics', href: '/admin/usage' },
     { title: 'Invoices', href: '/admin/invoices' },
+    { title: 'Finance Dashboard', href: '/admin/finance' },
     { title: 'Credit Allocations', href: '/admin/wallet-topups' },
     { title: 'MONITORING', href: '#', sectionHeader: true },
     { title: 'Analytics', href: '/admin/analytics' },

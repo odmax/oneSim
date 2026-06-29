@@ -143,6 +143,7 @@ model Business {
   assignedSalesUserId String?
 
   salesAgent InternalAdmin? @relation("SalesAssignment", fields: [assignedSalesUserId], references: [id])
+  billingRecords BillingRecord[] @relation("BillingRecordBusiness")
 
   @@map("businesses")
 }
@@ -176,6 +177,7 @@ model InternalAdmin {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   assignedBusinesses Business[] @relation("SalesAssignment")
+  billingRecords     BillingRecord[] @relation("BillingRecordSalesAgent")
 
   @@map("internal_admins")
 }
@@ -248,6 +250,7 @@ model Provider {
   audits          ProviderAudit[]
   providerTemplate ProviderTemplate? @relation("ProviderTemplateRelation", fields: [providerTemplateId], references: [id])
   purchases       ESIMPurchase[]
+  billingRecords  BillingRecord[] @relation("BillingRecordProvider")
 
   @@map("providers")
 }
@@ -388,6 +391,7 @@ model ESIMPurchase {
   events   OrderTimelineEvent[]
   provider Provider?   @relation(fields: [providerId], references: [id], onDelete: SetNull)
   walletTransactions WalletTransaction[]
+  billingRecords     BillingRecord[] @relation("BillingRecordOrder")
 
   @@map("esim_purchases")
 }
@@ -449,6 +453,7 @@ model ESIM {
   usageRecords UsageRecord[]
   topUps       ESIMTopUp[]      @relation("ESIMTopUps")
   shareTokens  ESIMShareToken[]
+  billingRecords BillingRecord[] @relation("BillingRecordESIM")
 
   @@map("esims")
 }
@@ -514,6 +519,8 @@ model Invoice {
   topUpId       String?
   type          String    @default("MANUAL")
   amount        Decimal
+  subtotal      Decimal?
+  taxTotal      Decimal?  @default(0)
   currency      String    @default("USD")
   status        String    @default("DRAFT")
   dueDate       DateTime?
@@ -523,9 +530,11 @@ model Invoice {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  business Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  purchase ESIMPurchase? @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
-  topUp    ESIMTopUp?    @relation(fields: [topUpId], references: [id], onDelete: SetNull)
+  business  Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  purchase  ESIMPurchase?     @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  topUp     ESIMTopUp?        @relation(fields: [topUpId], references: [id], onDelete: SetNull)
+  lineItems InvoiceLineItem[]
+  billingRecords BillingRecord[]
 
   @@unique([purchaseId])
   @@unique([topUpId])
@@ -545,6 +554,54 @@ model WalletTransaction {
   order    ESIMPurchase? @relation(fields: [orderId], references: [id], onDelete: SetNull)
 
   @@map("wallet_transactions")
+}
+
+model BillingRecord {
+  id            String   @id @default(cuid())
+  businessId    String
+  orderId       String?
+  esimId        String?
+  invoiceId     String?
+  type          String   /// PURCHASE | TOPUP | REFUND | CREDIT | DEBIT | COST_ADJUSTMENT
+  amount        Decimal
+  cost          Decimal? /// provider cost (nullable for non-purchases)
+  marginAmount  Decimal? /// amount - cost
+  marginPercent Float?   /// (margin/amount) * 100
+  currency      String   @default("USD")
+  providerId    String?
+  salesAgentId  String?
+  status        String   @default("COMPLETED")
+  description   String?
+  createdAt     DateTime @default(now())
+
+  business   Business      @relation("BillingRecordBusiness", fields: [businessId], references: [id])
+  order      ESIMPurchase? @relation("BillingRecordOrder", fields: [orderId], references: [id], onDelete: SetNull)
+  esim       ESIM?         @relation("BillingRecordESIM", fields: [esimId], references: [id], onDelete: SetNull)
+  invoice    Invoice?      @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  provider   Provider?     @relation("BillingRecordProvider", fields: [providerId], references: [id], onDelete: SetNull)
+  salesAgent InternalAdmin? @relation("BillingRecordSalesAgent", fields: [salesAgentId], references: [id], onDelete: SetNull)
+
+  @@index([businessId, createdAt])
+  @@index([providerId, createdAt])
+  @@index([salesAgentId, createdAt])
+  @@map("billing_records")
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Int      @default(1)
+  unitPrice   Decimal
+  totalPrice  Decimal
+  taxRate     Decimal? @default(0)
+  taxAmount   Decimal? @default(0)
+  type        String?  /// PURCHASE | TOPUP | REFUND | CREDIT | ADJUSTMENT
+  createdAt   DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_line_items")
 }
 
 enum TopUpRequestStatus {
