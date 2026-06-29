@@ -305,9 +305,9 @@ export async function importProviderPlan(providerId: string, formData: FormData)
         },
       })
 
-    await advanceCertificationTo(providerId, 'PLANS_SYNCED')
+      await advanceCertificationTo(providerId, 'PLANS_IMPORTED')
 
-    await prisma.auditLog.create({
+      await prisma.auditLog.create({
         data: { userId: session.user.id, action: 'PROVIDER_PLAN_UPDATED', entity: 'ESIMPackage', entityId: existingPackage.id, details: `Updated package from ${provider.code} plan: ${resolvedName} (${resolvedPlanId})` },
       })
 
@@ -336,6 +336,8 @@ export async function importProviderPlan(providerId: string, formData: FormData)
         costPriceUSD: resolvedCostPriceUSD,
       },
     })
+
+    await advanceCertificationTo(providerId, 'PLANS_IMPORTED')
 
     await prisma.auditLog.create({
       data: { userId: session.user.id, action: 'PROVIDER_PLAN_IMPORTED', entity: 'ESIMPackage', entityId: resolvedPlanId, details: `Imported package from ${provider.code} plan: ${resolvedName} (${resolvedPlanId})` },

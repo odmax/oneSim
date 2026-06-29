@@ -11,6 +11,7 @@ import { ProviderAuthPanel } from '@/components/admin/providers/ProviderAuthPane
 import { SetupWizard } from '@/components/admin/providers/SetupWizard'
 import { ProviderLifecycleActions } from '@/components/admin/providers/ProviderLifecycleActions'
 import ProviderCertificationWizard from '@/components/admin/providers/ProviderCertificationWizard'
+import { ProviderHealthCards, ProviderCapabilityMatrix } from '@/components/admin/providers/ProviderHealthCards'
 import { SaveAsTemplateButton } from '@/components/admin/providers/SaveAsTemplateButton'
 import { getProviderAuthStatus } from '@/lib/actions/provider-auth'
 import { getRecentHealthLogs, type HealthEvent } from '@/lib/services/providers/health-monitor'
@@ -289,6 +290,12 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
             <div className="flex justify-between"><dt className="text-gray-500">Regions</dt><dd className="font-mono text-xs text-gray-600">{(provider.regions as string[]).join(', ')}</dd></div>
           )}
         </dl>
+      </div>
+
+      {/* Health Cards + Capability Matrix */}
+      <div className="mb-6 grid gap-6 lg:grid-cols-2">
+        <ProviderHealthCards provider={provider} />
+        <ProviderCapabilityMatrix provider={provider} />
       </div>
 
       {/* Certification Wizard */}
