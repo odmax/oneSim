@@ -28,6 +28,7 @@ export async function purchaseESIMs(formData: FormData) {
   const validatedFields = purchaseESIMSchema.safeParse({
     packageId: formData.get('packageId'),
     quantity: parseInt(formData.get('quantity') as string),
+    idempotencyKey: formData.get('idempotencyKey') as string,
   })
 
   if (!validatedFields.success) {
@@ -57,9 +58,11 @@ export async function purchaseESIMs(formData: FormData) {
   }
 
   revalidatePath('/business/orders')
+  revalidatePath('/business/orders/[id]')
   revalidatePath('/business/esims')
   revalidatePath('/business/wallet')
   revalidatePath('/business/dashboard')
 
-  redirect('/business/orders')
+  // Redirect to order detail page on success
+  redirect(`/business/orders/${result.orderId}`)
 }

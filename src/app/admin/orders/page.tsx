@@ -14,6 +14,21 @@ const STATUS_COLORS: Record<string, string> = {
   FAILED: 'bg-red-100 text-red-700', REFUNDED: 'bg-rose-100 text-rose-700',
 }
 
+function WalletBadge({ orderId, status }: { orderId: string; status: string }) {
+  if (['CANCELLED', 'REFUNDED'].includes(status)) return <span className="text-[10px] text-gray-400">Released</span>
+  if (status === 'FAILED') return <span className="text-[10px] text-red-500">Released</span>
+  if (status === 'CREATED') return <span className="text-[10px] text-gray-400">Not reserved</span>
+  if (['PAYMENT_RESERVED', 'PENDING_PROVIDER'].includes(status)) return <span className="text-[10px] text-amber-600">Reserved</span>
+  if (['FULFILLED', 'ACTIVE', 'INSTALLING', 'INSTALLED'].includes(status)) return <span className="text-[10px] text-emerald-600">Captured</span>
+  return <span className="text-[10px] text-gray-400">—</span>
+}
+
+function RetryableBadge({ status, retryCount, maxRetries }: { status: string; retryCount: number; maxRetries: number }) {
+  if (status !== 'FAILED') return null
+  if (retryCount >= maxRetries) return <span className="text-[10px] text-red-500">Exhausted</span>
+  return <span className="text-[10px] text-amber-600">{maxRetries - retryCount} left</span>
+}
+
 export default async function AdminOrdersPage({ searchParams }: { searchParams?: { status?: string; search?: string; retryable?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
@@ -22,7 +37,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams?:
   if (searchParams?.status) where.status = searchParams.status
   if (searchParams?.retryable === '1') {
     where.status = 'FAILED'
-    where.retryCount = { lt: 3 }  // maxRetries default is 3
+    where.retryCount = { lt: 3 }
   }
   if (searchParams?.search) {
     where.OR = [
@@ -40,7 +55,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams?:
       package: { select: { name: true } },
       user: { select: { name: true } },
       esims: { take: 1, orderBy: { createdAt: 'desc' }, select: { iccid: true, status: true } },
-      provider: { select: { name: true } },
+      provider: { select: { name: true, id: true } },
     },
     orderBy: { createdAt: 'desc' },
     take: 100,
@@ -62,7 +77,6 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams?:
         </div>
       </div>
 
-      {/* Filters */}
       <div className="mb-4 flex flex-wrap gap-2">
         <Link href="/admin/orders" className={`rounded-full px-3 py-1 text-xs font-medium ${!searchParams?.status ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>All</Link>
         {['PENDING_PROVIDER', 'FAILED', 'ACTIVE', 'CANCELLED', 'REFUNDED'].map(s => (
@@ -81,31 +95,61 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams?:
         <table className="w-full">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Order</th>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Business</th>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Package</th>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Amount</th>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Status</th>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">eSIM</th>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Provider</th>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Retry</th>
-              <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">Date</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Order</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Business</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Package</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Amount</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Status</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Provider</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Wallet</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Retry</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">eSIM</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Date</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
             {purchases.length === 0 ? (
-              <tr><td colSpan={9} className="px-4 py-12 text-center text-sm text-gray-400">No orders found.</td></tr>
+              <tr><td colSpan={10} className="px-4 py-12 text-center text-sm text-gray-400">No orders found.</td></tr>
             ) : purchases.map(p => (
               <tr key={p.id} className="hover:bg-gray-50">
-                <td className="px-4 py-3"><Link href={`/admin/orders/${p.id}`} className="font-mono text-xs text-cyan-600 hover:underline">#{p.id.slice(-8)}</Link></td>
-                <td className="px-4 py-3"><div className="text-sm font-medium text-gray-900">{p.business.name}</div><div className="text-xs text-gray-500">{p.user.name}</div></td>
-                <td className="px-4 py-3 text-sm text-gray-900">{p.package.name}</td>
-                <td className="px-4 py-3 text-sm font-medium text-gray-900">${Number(p.totalAmount).toFixed(2)}</td>
-                <td className="px-4 py-3"><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[p.status] || 'bg-gray-100 text-gray-700'}`}>{p.status}</span></td>
-                <td className="px-4 py-3 text-xs text-gray-500">{p.esims[0]?.iccid?.slice(-8) || '—'}<br/>{p.esims[0]?.status ? <span className="text-gray-400">{p.esims[0].status}</span> : null}</td>
-                <td className="px-4 py-3 text-sm text-gray-600">{p.provider?.name || '—'}</td>
-                <td className="px-4 py-3 text-xs text-gray-500">{p.retryCount > 0 ? `${p.retryCount}/${p.maxRetries}` : '—'}</td>
-                <td className="px-4 py-3 text-sm text-gray-500">{new Date(p.createdAt).toLocaleDateString()}</td>
+                <td className="px-3 py-3">
+                  <Link href={`/admin/orders/${p.id}`} className="font-mono text-xs text-cyan-600 hover:underline">#{p.id.slice(-8)}</Link>
+                  {p.status === 'PENDING_PROVIDER' && <div className="text-[10px] text-amber-600 mt-0.5">In flight</div>}
+                  {p.status === 'FAILED' && p.failureReason && (
+                    <div className="text-[10px] text-red-500 mt-0.5 max-w-[120px] truncate" title={p.failureReason}>{p.failureReason}</div>
+                  )}
+                </td>
+                <td className="px-3 py-3">
+                  <div className="text-sm font-medium text-gray-900">{p.business.name}</div>
+                  <div className="text-xs text-gray-500">{p.user.name}</div>
+                </td>
+                <td className="px-3 py-3 text-sm text-gray-900">{p.package.name}</td>
+                <td className="px-3 py-3 text-sm font-medium text-gray-900">${Number(p.totalAmount).toFixed(2)}</td>
+                <td className="px-3 py-3">
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[p.status] || 'bg-gray-100 text-gray-700'}`}>{p.status}</span>
+                  {p.providerErrorCode && (
+                    <span className="block text-[10px] text-red-500 mt-0.5" title={p.providerErrorMessage || ''}>Error: {p.providerErrorCode}</span>
+                  )}
+                </td>
+                <td className="px-3 py-3">
+                  <div className="text-sm text-gray-600">{p.provider?.name || '—'}</div>
+                  {p.provider?.id && (
+                    <Link href={`/admin/providers/${p.provider.id}`} className="text-[10px] text-cyan-600 hover:underline">View provider</Link>
+                  )}
+                </td>
+                <td className="px-3 py-3">
+                  <WalletBadge orderId={p.id} status={p.status} />
+                </td>
+                <td className="px-3 py-3">
+                  <div className="text-xs text-gray-500">{p.retryCount > 0 ? `${p.retryCount}/${p.maxRetries}` : '—'}</div>
+                  <RetryableBadge status={p.status} retryCount={p.retryCount} maxRetries={p.maxRetries} />
+                </td>
+                <td className="px-3 py-3 text-xs text-gray-500">
+                  {p.esims[0]?.iccid ? (
+                    <><span className="font-mono">{p.esims[0].iccid.slice(-8)}</span><br /><span className="text-gray-400">{p.esims[0].status}</span></>
+                  ) : '—'}
+                </td>
+                <td className="px-3 py-3 text-sm text-gray-500">{new Date(p.createdAt).toLocaleDateString()}</td>
               </tr>
             ))}
           </tbody>

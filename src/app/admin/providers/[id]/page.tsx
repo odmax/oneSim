@@ -17,6 +17,8 @@ import { getProviderAuthStatus } from '@/lib/actions/provider-auth'
 import { getRecentHealthLogs, type HealthEvent } from '@/lib/services/providers/health-monitor'
 import { inferProviderCapabilities } from '@/lib/providers/capabilities'
 import { ProviderActionButton, ActionForm } from '@/components/admin/providers/ActionButtons'
+import { MappingValidator } from '@/components/admin/providers/MappingValidator'
+import { TestPurchasePanel } from '@/components/admin/providers/TestPurchasePanel'
 
 function maskApiToken(token: string | null): string {
   if (!token) return ''
@@ -215,6 +217,16 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
               </>
             )
           })()}
+
+          {/* Mapping Validator */}
+          <div className="mt-4">
+            <MappingValidator
+              endpointMappings={provider.endpointMappings as Record<string, string> | null}
+              requestMappings={provider.requestMappings as Record<string, any> | null}
+              responseMappings={provider.responseMappings as Record<string, any> | null}
+            />
+          </div>
+
           {provider.authType && (
             <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
               <span className="font-medium">Auth:</span> {provider.authType}
@@ -430,6 +442,26 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
           </div>
         )}
       </div>
+
+      {/* Test Purchase Panel */}
+      {importedPackages.length > 0 && (
+        <div className="mt-6">
+          <TestPurchasePanel
+            providerId={provider.id}
+            packages={importedPackages.map(p => ({
+              id: p.id,
+              name: p.name,
+              dataGB: p.dataGB,
+              validityDays: p.validityDays,
+              priceUSD: p.priceUSD,
+              providerPlanId: p.providerPlanId,
+            }))}
+            endpointMappings={provider.endpointMappings as Record<string, string> | null}
+            requestMappings={provider.requestMappings as Record<string, any> | null}
+            responseMappings={provider.responseMappings as Record<string, any> | null}
+          />
+        </div>
+      )}
     </div>
   )
 }

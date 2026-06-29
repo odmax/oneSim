@@ -14,6 +14,14 @@ interface DebugLog {
   durationMs?: number
   timestamp: string
   error?: string
+  mappedFields?: {
+    iccid?: string | null
+    activationCode?: string | null
+    qrCodeUrl?: string | null
+    providerOrderId?: string | null
+    smdpAddress?: string | null
+    mappingErrors?: string[]
+  }
 }
 
 export function ProviderDebugConsole({ logs }: { logs: DebugLog[] }) {
@@ -53,6 +61,10 @@ export function ProviderDebugConsole({ logs }: { logs: DebugLog[] }) {
                 </div>
                 <div className="flex items-center gap-2 text-xs text-gray-400">
                   {log.durationMs != null && <span>{log.durationMs}ms</span>}
+                  {log.mappedFields?.iccid && <span className="text-emerald-600 font-medium">ICCID ✓</span>}
+                  {log.mappedFields?.mappingErrors && log.mappedFields.mappingErrors.length > 0 && (
+                    <span className="text-red-500 font-medium">!Map</span>
+                  )}
                   <svg className={`w-3 h-3 transition-transform ${expanded === log.id ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
@@ -102,6 +114,53 @@ export function ProviderDebugConsole({ logs }: { logs: DebugLog[] }) {
                       <pre className="rounded bg-gray-50 p-2 text-[10px] font-mono text-gray-600 overflow-x-auto max-h-48">
                         {typeof log.responseBody === 'string' ? log.responseBody : maskSecrets(JSON.stringify(log.responseBody, null, 2))}
                       </pre>
+                    </div>
+                  )}
+
+                  {/* Mapped fields section */}
+                  {log.mappedFields && (
+                    <div>
+                      <p className="text-[10px] font-medium text-gray-400 uppercase mb-1">Mapped Fields</p>
+                      <div className="rounded bg-indigo-50 p-2 space-y-1">
+                        {log.mappedFields.iccid != null && (
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-gray-500 font-medium">ICCID</span>
+                            <code className="font-mono text-indigo-700">{log.mappedFields.iccid}</code>
+                          </div>
+                        )}
+                        {log.mappedFields.activationCode != null && (
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-gray-500 font-medium">Activation Code</span>
+                            <code className="font-mono text-indigo-700">{log.mappedFields.activationCode}</code>
+                          </div>
+                        )}
+                        {log.mappedFields.qrCodeUrl != null && (
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-gray-500 font-medium">QR Code URL</span>
+                            <code className="font-mono text-indigo-700 text-[9px] break-all max-w-[200px]">{log.mappedFields.qrCodeUrl}</code>
+                          </div>
+                        )}
+                        {log.mappedFields.providerOrderId != null && (
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-gray-500 font-medium">Provider Order ID</span>
+                            <code className="font-mono text-indigo-700">{log.mappedFields.providerOrderId}</code>
+                          </div>
+                        )}
+                        {log.mappedFields.smdpAddress != null && (
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-gray-500 font-medium">SMDP Address</span>
+                            <code className="font-mono text-indigo-700">{log.mappedFields.smdpAddress}</code>
+                          </div>
+                        )}
+                        {log.mappedFields.mappingErrors && log.mappedFields.mappingErrors.length > 0 && (
+                          <div className="mt-1 pt-1 border-t border-indigo-200">
+                            <p className="text-[10px] font-medium text-red-500 mb-0.5">Mapping Errors</p>
+                            {log.mappedFields.mappingErrors.map((err, i) => (
+                              <p key={i} className="text-[10px] text-red-600">• {err}</p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>

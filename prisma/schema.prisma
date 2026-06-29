@@ -366,9 +366,11 @@ model ESIMPurchase {
   providerErrorCode   String?
   providerErrorMessage String?
   /// Provider dispatch fields
-  providerId          String?
+  providerId            String?
   providerReservationId String?
-  providerFulfillId    String?
+  providerFulfillId     String?
+  /// Idempotency key for duplicate prevention
+  providerPurchaseKey   String?  @unique
   /// Retry fields
   retryCount          Int      @default(0)
   maxRetries          Int      @default(3)
