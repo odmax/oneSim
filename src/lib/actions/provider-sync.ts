@@ -117,9 +117,9 @@ export async function syncProviderPlans(providerId: string) {
       const providerPlanCode = raw.planCode || raw.sku || plan.sku || ''
       if (!providerPlanId) { skipped++; continue }
 
-      // Look up existing first
-      let existing = await prisma.providerPackage.findUnique({
-        where: { providerId_providerPlanId: { providerId, providerPlanId } },
+      // Look up existing first — use findFirst to avoid "subquery returns more than 1 row" on duplicate data
+      let existing = await prisma.providerPackage.findFirst({
+        where: { providerId, providerPlanId },
       }).catch(() => null)
 
       const pkgData = {
@@ -185,8 +185,8 @@ export async function syncProviderPlans(providerId: string) {
       } catch (e: any) {
         if (e.code === 'P2002') {
           try {
-            const retry = await prisma.providerPackage.findUnique({
-              where: { providerId_providerPlanId: { providerId, providerPlanId } },
+            const retry = await prisma.providerPackage.findFirst({
+              where: { providerId, providerPlanId },
             })
             if (retry) {
               await prisma.providerPackage.update({
