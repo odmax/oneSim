@@ -92,6 +92,7 @@ model User {
   createdTickets        SupportTicket[]      @relation("TicketCreator")
   assignedTickets       SupportTicket[]      @relation("TicketAssignee")
   auditNotes            ProviderAuditNote[]
+  orderTimelineEvents   OrderTimelineEvent[]
 
   @@map("users")
 }
@@ -246,6 +247,7 @@ model Provider {
   healthSnapshots ProviderHealthSnapshot[]
   audits          ProviderAudit[]
   providerTemplate ProviderTemplate? @relation("ProviderTemplateRelation", fields: [providerTemplateId], references: [id])
+  purchases       ESIMPurchase[]
 
   @@map("providers")
 }
@@ -357,6 +359,22 @@ model ESIMPurchase {
   packageValidityDays Int?
   packageUnitPrice    Decimal?
   packageCurrency     String?
+  /// State machine fields
+  previousStatus      String?
+  statusChangedAt     DateTime?
+  failureReason       String?
+  providerErrorCode   String?
+  providerErrorMessage String?
+  /// Provider dispatch fields
+  providerId          String?
+  providerReservationId String?
+  providerFulfillId    String?
+  /// Retry fields
+  retryCount          Int      @default(0)
+  maxRetries          Int      @default(3)
+  nextRetryAt         DateTime?
+  lastRetryAt         DateTime?
+  retryReason         String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -365,8 +383,28 @@ model ESIMPurchase {
   package  ESIMPackage @relation(fields: [packageId], references: [id], onDelete: Restrict)
   esims    ESIM[]
   invoice  Invoice?
+  events   OrderTimelineEvent[]
+  provider Provider?   @relation(fields: [providerId], references: [id], onDelete: SetNull)
 
   @@map("esim_purchases")
+}
+
+model OrderTimelineEvent {
+  id          String   @id @default(cuid())
+  orderId     String
+  eventType   String
+  oldStatus   String?
+  newStatus   String?
+  message     String?
+  metadata    Json?
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  order   ESIMPurchase @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdBy User?      @relation(fields: [createdById], references: [id])
+
+  @@index([orderId, createdAt])
+  @@map("order_timeline_events")
 }
 
 model ESIM {
