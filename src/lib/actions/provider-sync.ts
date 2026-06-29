@@ -11,6 +11,7 @@ import { normalizePlan } from '@/lib/providers/plan-utils'
 import type { ProviderPlan } from '@/lib/providers/adapter-types'
 import { buildComparableKey, computeEffectiveCost } from '@/lib/packages/cheapest-utils'
 import { inferProviderCapabilities, getPersistableCapabilities } from '@/lib/providers/capabilities'
+import { advanceCertificationTo } from '@/lib/providers/certification-machine'
 
 export type { ProviderPlan }
 
@@ -304,7 +305,9 @@ export async function importProviderPlan(providerId: string, formData: FormData)
         },
       })
 
-      await prisma.auditLog.create({
+    await advanceCertificationTo(providerId, 'PLANS_SYNCED')
+
+    await prisma.auditLog.create({
         data: { userId: session.user.id, action: 'PROVIDER_PLAN_UPDATED', entity: 'ESIMPackage', entityId: existingPackage.id, details: `Updated package from ${provider.code} plan: ${resolvedName} (${resolvedPlanId})` },
       })
 

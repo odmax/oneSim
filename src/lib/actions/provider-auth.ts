@@ -10,6 +10,7 @@ import { classifyError } from '@/lib/providers/connectors/connector-interface'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import { encryptToken } from '@/lib/encryption'
 import { registry } from '@/services/providerRegistry'
+import { advanceCertificationTo, markCertificationFailed } from '@/lib/providers/certification-machine'
 
 export async function authenticateProvider(providerId: string, formData: FormData) {
   const session = await getServerSession(authOptions)
@@ -282,11 +283,13 @@ export async function testProviderConnection(providerId: string) {
             lastError: null,
           },
         })
+        await advanceCertificationTo(providerId, 'AUTHENTICATED')
         await recordHealthEvent(providerId, { eventType: 'CONNECTION_TEST', success: true, message: 'Template provider authenticated', durationMs })
 
         // Verify token works by calling testConnection (GET_PLANS)
         const testResult = await adapter.testConnection()
         if (testResult.success) {
+          await advanceCertificationTo(providerId, 'CONNECTED')
           return { success: true, message: `Connected. ${testResult.data?.message || ''}`, diagnostics }
         }
         return { success: true, message: `Authenticated. Token stored, but GET_PLANS: ${testResult.error?.message || 'failed'}`, diagnostics }
