@@ -346,9 +346,17 @@ export class TemplateProviderAdapter implements ProviderAdapter {
       })
 
       if (genResult.error) {
-        console.log('[GENERATE_API_KEY] Failed:', genResult.error.message)
-        // Login token may still work for basic operations — don't fail auth entirely
-        return { success: true, data: { token, accountInfo: { ...result.data, _apiKeyGenerationFailed: genResult.error.message } } }
+        const msg = genResult.error.message || ''
+        const statusMatch = msg.match(/HTTP_(\d+)/)
+        const httpStatus = statusMatch ? statusMatch[1] : 'unknown'
+        console.log('[GENERATE_API_KEY] Failed:', msg)
+        return {
+          success: false,
+          error: {
+            code: 'API_KEY_GENERATION_FAILED',
+            message: `Rakuten API key generation failed: HTTP ${httpStatus}${msg.includes('403') ? '. Your Rakuten staging account may not have API key generation enabled.' : `. ${msg.slice(0, 200)}`}`,
+          },
+        }
       }
 
       if (genResult.data) {
@@ -358,7 +366,8 @@ export class TemplateProviderAdapter implements ProviderAdapter {
           this.token = apiKey
           return { success: true, data: { token: apiKey, accountInfo: { ...result.data, _apiKeyGenerated: true, _loginToken: token } } }
         }
-        console.log('[GENERATE_API_KEY] Response had no usable apiKey key. Keys:', Object.keys(genResult.data))
+        console.log('[GENERATE_API_KEY] No usable API key in response. Keys:', Object.keys(genResult.data))
+        return { success: false, error: { code: 'API_KEY_EXTRACTION_FAILED', message: 'Rakuten API key generation returned a response but no apiKey was found. Check the API key generation endpoint response format.' } }
       }
     }
 
