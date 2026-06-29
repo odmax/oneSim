@@ -3,6 +3,8 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { UsageSummary } from '@/components/admin/esims/UsageBar'
+import { refreshEsimStatusAction, refreshEsimUsageAction } from '@/lib/actions/esim-lifecycle'
 
 const STATUS_COLORS: Record<string, string> = {
   CREATED: 'bg-gray-100 text-gray-700', PAYMENT_RESERVED: 'bg-blue-100 text-blue-700',
@@ -78,6 +80,30 @@ export default async function BusinessOrderDetailPage({ params }: { params: { id
                 {esim.activationCode && <li className="mt-2">Or enter code manually: <code className="font-mono text-blue-800">{esim.activationCode}</code></li>}
               </ol>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Usage Section */}
+      {esim && (
+        <div className="rounded-xl border bg-white p-5 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-900 mb-3">Data Usage</h3>
+          <UsageSummary
+            dataUsedMB={esim.dataUsedMB}
+            dataTotalMB={esim.dataTotalMB}
+            dataRemainingMB={esim.dataRemainingMB}
+            lastUsageAt={esim.lastUsageAt}
+            lastUsageSyncAt={esim.lastUsageSyncAt}
+            expiresAt={esim.expiresAt}
+            status={esim.status}
+          />
+          <div className="mt-3 flex gap-2">
+            <form action={async () => { 'use server'; await refreshEsimUsageAction(esim.id); }}>
+              <button type="submit" className="rounded-lg border border-cyan-300 px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50">Refresh Usage</button>
+            </form>
+            <form action={async () => { 'use server'; await refreshEsimStatusAction(esim.id); }}>
+              <button type="submit" className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">Refresh Status</button>
+            </form>
           </div>
         </div>
       )}

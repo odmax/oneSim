@@ -4,8 +4,9 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { syncEsimStatus, syncEsimUsage, getQrCode, suspendEsim, resumeEsim } from '@/lib/actions/esim-sync'
-import { syncESIMStatus as enhancedSyncStatus } from '@/lib/services/esims/sync-esim-status'
+import { refreshEsimStatusAction, refreshEsimUsageAction } from '@/lib/actions/esim-lifecycle'
 import { getPackageDisplayName, getPackageDataGB, getPackageValidityDays } from '@/lib/packages/snapshot-utils'
+import { UsageBar, UsageSummary } from '@/components/admin/esims/UsageBar'
 
 export default async function AdminEsimDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
   const session = await getServerSession(authOptions)
@@ -73,10 +74,15 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
           )}
 
           <div className="mb-4 rounded-lg bg-gray-50 p-4">
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Data Usage</p>
-            <p className="text-2xl font-bold text-gray-900">{totalUsage} <span className="text-sm font-normal text-gray-500">MB total</span></p>
-            {latestUsage && <p className="text-xs text-gray-400 mt-1">Last recorded: {latestUsage.timestamp.toLocaleString()} — {latestUsage.dataUsedMB} MB</p>}
-            {!latestUsage && <p className="text-xs text-gray-400 mt-1">No usage data recorded yet.</p>}
+            <UsageSummary
+              dataUsedMB={esim.dataUsedMB}
+              dataTotalMB={esim.dataTotalMB}
+              dataRemainingMB={esim.dataRemainingMB}
+              lastUsageAt={esim.lastUsageAt}
+              lastUsageSyncAt={esim.lastUsageSyncAt}
+              expiresAt={esim.expiresAt}
+              status={esim.status}
+            />
           </div>
 
           {esim.usageRecords.length > 0 && (
@@ -100,11 +106,11 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
         <div className="mb-6 rounded-lg border bg-white p-6 shadow-sm">
           <h3 className="mb-4 text-lg font-semibold text-gray-900">Provider Actions</h3>
           <div className="flex flex-wrap gap-3">
-            <form action={async () => { 'use server'; const r = await enhancedSyncStatus(esim.id); if (r.success) { const msg = r.activated ? 'Activation+detected' : 'Status+synced'; redirect(`/admin/esims/${esim.id}?success=${msg}`) } else { redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Failed')}`) } }}>
+            <form action={async () => { 'use server'; const { refreshEsimStatusAction } = await import('@/lib/actions/esim-lifecycle'); const r = await refreshEsimStatusAction(esim.id); if (r.success) { const msg = r.activated ? 'Activation+detected' : 'Status+synced'; redirect(`/admin/esims/${esim.id}?success=${msg}`) } else { redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Failed')}`) } }}>
               <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Refresh Status</button>
             </form>
-            <form action={async () => { 'use server'; const r = await syncEsimUsage(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=Usage+synced`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}>
-              <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Sync Usage</button>
+            <form action={async () => { 'use server'; const { refreshEsimUsageAction } = await import('@/lib/actions/esim-lifecycle'); const r = await refreshEsimUsageAction(esim.id); if (r.success) redirect(`/admin/esims/${esim.id}?success=Usage+synced`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Failed')}`) }}>
+              <button type="submit" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Refresh Usage</button>
             </form>
             <form action={async () => { 'use server'; const r = await getQrCode(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=QR+code+retrieved`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}>
               <button type="submit" className="rounded-lg border border-purple-300 px-4 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50">Get QR Code</button>

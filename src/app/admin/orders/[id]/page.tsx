@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { retryFailedOrder, cancelOrder, refundOrder } from '@/lib/actions/order-actions'
+import { UsageBar, UsageSummary } from '@/components/admin/esims/UsageBar'
 
 const STATUS_COLORS: Record<string, string> = {
   CREATED: 'bg-gray-100 text-gray-700', PAYMENT_RESERVED: 'bg-blue-100 text-blue-700',
@@ -33,6 +34,19 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
   const canRetry = order.status === 'FAILED' && order.retryCount < order.maxRetries
   const canCancel = ['CREATED', 'PAYMENT_RESERVED', 'PENDING_PROVIDER', 'FAILED'].includes(order.status)
   const canRefund = ['CANCELLED', 'FAILED', 'EXPIRED'].includes(order.status)
+
+  // Find compatible top-up packages if eSIM is active
+  const topUpPkgs = esim && ['ACTIVE', 'PENDING_ACTIVATION'].includes(esim.status)
+    ? await prisma.eSIMPackage.findMany({
+        where: {
+          isActive: true,
+          productType: { in: ['TOP_UP', 'BOTH'] },
+          providerId: order.providerId || order.package.providerId || undefined,
+        },
+        orderBy: { priceUSD: 'asc' },
+        take: 5,
+      })
+    : []
 
   return (
     <div className="p-6 space-y-6 max-w-5xl">
@@ -70,10 +84,56 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
               {esim.activationCode && <div className="flex justify-between"><dt className="text-gray-500">Activation Code</dt><dd className="font-mono text-xs text-gray-900 break-all">{esim.activationCode}</dd></div>}
               {esim.qrCodeUrl && <div className="flex justify-between"><dt className="text-gray-500">QR Code</dt><dd><a href={esim.qrCodeUrl} target="_blank" className="text-xs text-cyan-600 hover:underline">Open QR</a></dd></div>}
               <div className="flex justify-between"><dt className="text-gray-500">eSIM Status</dt><dd className="font-medium text-gray-900">{esim.status}</dd></div>
+              {esim.expiresAt && <div className="flex justify-between"><dt className="text-gray-500">Expires</dt><dd className="text-sm text-gray-600">{new Date(esim.expiresAt).toLocaleDateString()}</dd></div>}
+              {esim.lastUsageSyncAt ? <div className="flex justify-between"><dt className="text-gray-500">Usage Refreshed</dt><dd className="text-xs text-gray-500">{new Date(esim.lastUsageSyncAt).toLocaleString()}</dd></div> : null}
+              <div className="pt-2">
+                <Link href={`/admin/esims/${esim.id}`} className="text-xs text-cyan-600 hover:underline">View eSIM Detail →</Link>
+              </div>
             </dl>
           ) : <p className="text-sm text-gray-400">No eSIM data</p>}
         </div>
       </div>
+
+      {/* Usage Section */}
+      {esim && (
+        <div className="rounded-xl border bg-white p-5 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-900 mb-3">Data Usage</h3>
+          <UsageSummary
+            dataUsedMB={esim.dataUsedMB}
+            dataTotalMB={esim.dataTotalMB}
+            dataRemainingMB={esim.dataRemainingMB}
+            lastUsageAt={esim.lastUsageAt}
+            lastUsageSyncAt={esim.lastUsageSyncAt}
+            expiresAt={esim.expiresAt}
+            status={esim.status}
+          />
+          <div className="mt-3 flex gap-2">
+            <form action={async () => { 'use server'; const { refreshEsimUsageAction } = await import('@/lib/actions/esim-lifecycle'); await refreshEsimUsageAction(esim.id); }}>
+              <button type="submit" className="rounded-lg border border-cyan-300 px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50">Refresh Usage</button>
+            </form>
+            <form action={async () => { 'use server'; const { refreshEsimStatusAction } = await import('@/lib/actions/esim-lifecycle'); await refreshEsimStatusAction(esim.id); }}>
+              <button type="submit" className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">Refresh Status</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Top-up Section */}
+      {topUpPkgs.length > 0 && (
+        <div className="rounded-xl border bg-white p-5 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-900 mb-3">Top-Up Available</h3>
+          <div className="space-y-2">
+            {topUpPkgs.map(pkg => (
+              <form key={pkg.id} action={async () => { 'use server'; const { adminTopUpEsim } = await import('@/lib/actions/esim-lifecycle'); await adminTopUpEsim(esim!.id, pkg.id, order.businessId, session!.user.id); }}>
+                <button type="submit" className="flex w-full items-center justify-between rounded-lg border border-gray-100 p-3 text-sm hover:bg-gray-50">
+                  <span className="font-medium text-gray-900">{pkg.displayName || pkg.name}</span>
+                  <span className="text-emerald-600 font-semibold">${parseFloat(pkg.priceUSD.toString()).toFixed(2)}</span>
+                </button>
+              </form>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Retry/Cancel/Refund actions */}
       <div className="rounded-xl border bg-white p-5 shadow-sm">
