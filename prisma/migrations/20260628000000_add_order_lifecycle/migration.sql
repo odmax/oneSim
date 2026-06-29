@@ -35,3 +35,11 @@ DO $$ BEGIN
     FOREIGN KEY ("providerId") REFERENCES "providers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
 END $$;
+
+-- Add orderId to wallet_transactions for order-linked ledger entries
+ALTER TABLE "wallet_transactions" ADD COLUMN IF NOT EXISTS "orderId" TEXT;
+DO $$ BEGIN
+  ALTER TABLE "wallet_transactions" ADD CONSTRAINT "wallet_transactions_orderId_fkey"
+    FOREIGN KEY ("orderId") REFERENCES "esim_purchases"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_table THEN NULL;
+END $$;

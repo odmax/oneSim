@@ -385,6 +385,7 @@ model ESIMPurchase {
   invoice  Invoice?
   events   OrderTimelineEvent[]
   provider Provider?   @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  walletTransactions WalletTransaction[]
 
   @@map("esim_purchases")
 }
@@ -532,12 +533,14 @@ model Invoice {
 model WalletTransaction {
   id          String   @id @default(cuid())
   businessId  String
+  orderId     String?
   amount      Decimal
   type        String
   description String?
   createdAt   DateTime @default(now())
 
-  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  order    ESIMPurchase? @relation(fields: [orderId], references: [id], onDelete: SetNull)
 
   @@map("wallet_transactions")
 }
