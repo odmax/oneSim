@@ -24,6 +24,7 @@ export default function AdminLayout({
     { title: 'MONITORING', href: '#', sectionHeader: true },
     { title: 'Analytics', href: '/admin/analytics' },
     { title: 'API Analytics', href: '/admin/api-analytics' },
+    { title: 'Alerts & Events', href: '/admin/alerts' },
     { title: 'Provider Health', href: '/admin/provider-health' },
     { title: 'Support Queue', href: '/admin/support' },
     // Jobs — hidden for now
