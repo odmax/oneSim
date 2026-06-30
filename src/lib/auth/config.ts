@@ -5,8 +5,26 @@ import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcryptjs'
 import type { UserRole, InternalAdminRole } from '@prisma/client'
 
+// Validate NEXTAUTH_SECRET at startup — never fall back to random in production/staging
+const nextAuthSecret = process.env.NEXTAUTH_SECRET
+if (!nextAuthSecret) {
+  console.error('========================================')
+  console.error('  FATAL: NEXTAUTH_SECRET is not set!')
+  console.error('  Set NEXTAUTH_SECRET in .env or .env.production')
+  console.error('  All sessions will be invalidated on restart.')
+  console.error('  Generate with: openssl rand -base64 32')
+  console.error('========================================')
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('NEXTAUTH_SECRET is required in production')
+  }
+}
+if (nextAuthSecret && nextAuthSecret.length < 16) {
+  console.error('WARNING: NEXTAUTH_SECRET is too short (< 16 chars). Use a strong random secret.')
+}
+
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
+  secret: nextAuthSecret || (process.env.NODE_ENV !== 'production' ? 'dev-fallback-secret-do-not-use-in-production' : undefined),
   session: {
     strategy: 'jwt',
   },
