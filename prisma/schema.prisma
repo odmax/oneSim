@@ -740,6 +740,7 @@ model BusinessApiKey {
   keyPrefix  String       @unique
   status     ApiKeyStatus @default(ACTIVE)
   lastUsedAt DateTime?
+  expiresAt  DateTime?
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
 
