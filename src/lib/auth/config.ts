@@ -102,6 +102,21 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
+    async redirect({ url, baseUrl }) {
+      // baseUrl comes from NEXTAUTH_URL. url is the requested callback.
+      // If the callback URL is relative, prefix with the request origin.
+      if (url.startsWith('/')) {
+        // Use the baseUrl from NextAuth (NEXTAUTH_URL) for relative paths
+        return `${baseUrl}${url}`
+      }
+      // For absolute URLs, only allow same-origin redirects
+      try {
+        const callbackOrigin = new URL(url).origin
+        if (callbackOrigin === baseUrl) return url
+      } catch {}
+      // Fall back to baseUrl for any cross-origin callback
+      return baseUrl
+    },
     async session({ session, token }) {
       if (token) {
         session.user.id = token.id as string

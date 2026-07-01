@@ -79,7 +79,7 @@ export default function Sidebar({ items, portalName }: SidebarProps) {
       <div className="border-t border-gray-800 p-4">
         <button
           onClick={() => {
-            import('next-auth/react').then((mod) => mod.signOut({ callbackUrl: window.location.origin + '/login' }))
+            import('next-auth/react').then((mod) => mod.signOut({ callbackUrl: '/login' }))
           }}
           className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-300 hover:bg-white/10 transition-all"
         >
