@@ -3,7 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { getSkuExportData } from '@/lib/services/exports/sku-export'
-import Link from 'next/link'
+import { CopyButton } from './CopyButton'
 
 export default async function SkuDownloadsPage() {
   const session = await getServerSession(authOptions)
@@ -35,21 +35,21 @@ export default async function SkuDownloadsPage() {
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-3">
-            <a href="/api/business/sku-downloads/json"
+            <a href="/api/business/sku-downloads/json" download="onesim-sku-list.json"
               className="flex flex-col items-center gap-3 rounded-xl border border-gray-200 p-6 hover:border-emerald-300 hover:bg-emerald-50 transition-all group">
               <span className="text-3xl">{'{ }'}</span>
               <span className="font-semibold text-gray-900 group-hover:text-emerald-700">Download JSON</span>
               <span className="text-xs text-gray-400">onesim-sku-list.json</span>
             </a>
 
-            <a href="/api/business/sku-downloads/csv"
+            <a href="/api/business/sku-downloads/csv" download="onesim-sku-list.csv"
               className="flex flex-col items-center gap-3 rounded-xl border border-gray-200 p-6 hover:border-blue-300 hover:bg-blue-50 transition-all group">
               <span className="text-3xl">CSV</span>
               <span className="font-semibold text-gray-900 group-hover:text-blue-700">Download CSV</span>
               <span className="text-xs text-gray-400">onesim-sku-list.csv</span>
             </a>
 
-            <a href="/api/business/sku-downloads/xlsx"
+            <a href="/api/business/sku-downloads/xlsx" download="onesim-sku-list.xlsx"
               className="flex flex-col items-center gap-3 rounded-xl border border-gray-200 p-6 hover:border-purple-300 hover:bg-purple-50 transition-all group">
               <span className="text-3xl">XLS</span>
               <span className="font-semibold text-gray-900 group-hover:text-purple-700">Download Excel</span>
@@ -65,23 +65,20 @@ export default async function SkuDownloadsPage() {
       <div className="rounded-xl border bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-900 mb-3">API Endpoints</h3>
         <p className="text-xs text-gray-500 mb-3">Use these endpoints to automate SKU downloads from your scripts:</p>
-        <div className="space-y-2 text-xs font-mono">
-          <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
-            <span className="text-gray-700">GET /api/business/sku-downloads/json</span>
-            <button onClick={() => navigator.clipboard?.writeText(baseUrl + '/api/business/sku-downloads/json')}
-              className="text-emerald-600 hover:text-emerald-700 font-medium">Copy</button>
+          <div className="space-y-2 text-xs font-mono">
+            <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
+              <span className="text-gray-700">GET /api/business/sku-downloads/json</span>
+              <CopyButton text={baseUrl + '/api/business/sku-downloads/json'} />
+            </div>
+            <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
+              <span className="text-gray-700">GET /api/business/sku-downloads/csv</span>
+              <CopyButton text={baseUrl + '/api/business/sku-downloads/csv'} />
+            </div>
+            <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
+              <span className="text-gray-700">GET /api/business/sku-downloads/xlsx</span>
+              <CopyButton text={baseUrl + '/api/business/sku-downloads/xlsx'} />
+            </div>
           </div>
-          <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
-            <span className="text-gray-700">GET /api/business/sku-downloads/csv</span>
-            <button onClick={() => navigator.clipboard?.writeText(baseUrl + '/api/business/sku-downloads/csv')}
-              className="text-emerald-600 hover:text-emerald-700 font-medium">Copy</button>
-          </div>
-          <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
-            <span className="text-gray-700">GET /api/business/sku-downloads/xlsx</span>
-            <button onClick={() => navigator.clipboard?.writeText(baseUrl + '/api/business/sku-downloads/xlsx')}
-              className="text-emerald-600 hover:text-emerald-700 font-medium">Copy</button>
-          </div>
-        </div>
         <p className="mt-3 text-xs text-gray-400">Requires authentication via session cookie (browser) or API key header (automated).</p>
       </div>
 
