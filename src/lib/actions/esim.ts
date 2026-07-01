@@ -7,7 +7,7 @@ import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
 import { registry } from '@/services/providerRegistry'
 import { sendEmail } from '@/lib/email/send-email'
-import { getAppUrl } from '@/lib/config/urls'
+import { getAppBaseUrl } from '@/lib/config/app-url'
 import { buildESIMInstallEmail } from '@/lib/email/esim-share-email'
 import crypto from 'crypto'
 
@@ -263,7 +263,7 @@ export async function shareEsimViaEmail(esimId: string, recipientEmail: string) 
   if (!esim) return { success: false, error: 'eSIM not found' }
 
   const pkg = esim.purchase.package
-  const installLink = `${getAppUrl()}/install/esim/${esim.id}`
+  const installLink = `${getAppBaseUrl()}/install/esim/${esim.id}`
 
   const emailContent = buildESIMInstallEmail({
     recipientName: recipientEmail.split('@')[0] || 'Customer',
@@ -319,6 +319,6 @@ export async function createShareToken(esimId: string): Promise<{ success: boole
     },
   })
 
-  const url = `${getAppUrl()}/install/esim/${token}`
+  const url = `${getAppBaseUrl()}/install/esim/${token}`
   return { success: true, token, url }
 }

@@ -8,7 +8,7 @@ import { redirect } from 'next/navigation'
 import bcrypt from 'bcryptjs'
 import crypto from 'crypto'
 import { headers } from 'next/headers'
-import { getAppUrl, getAppBaseUrl } from '@/lib/config/urls'
+import { getAppBaseUrl } from '@/lib/config/app-url'
 import { sendEmail, buildResetPasswordEmail } from '@/lib/email/send-email'
 
 function generateRawToken(): string {
@@ -22,11 +22,10 @@ function hashToken(token: string): string {
 function getAppBase(): string {
   try {
     const h = headers()
-    const host = h.get('host') || ''
-    const proto = h.get('x-forwarded-proto') || 'https'
-    if (host) return `${proto}://${host}`.replace(/\/+$/, '')
-  } catch {}
-  return getAppUrl().replace(/\/+$/, '')
+    return getAppBaseUrl({ headers: h })
+  } catch {
+    return getAppBaseUrl()
+  }
 }
 
 export async function requestPasswordReset(formData: FormData) {
