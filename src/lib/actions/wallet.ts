@@ -65,7 +65,11 @@ export async function adminCreditWallet(formData: FormData) {
   const amount = parseFloat(formData.get('amount') as string)
   const reason = (formData.get('reason') as string)?.trim()
 
-  if (!businessId || isNaN(amount) || amount <= 0) {
+  if (!businessId) {
+    redirect('/admin/businesses?error=invalid_business')
+  }
+
+  if (isNaN(amount) || amount <= 0) {
     redirect(`/admin/businesses/${businessId}?error=invalid_amount`)
   }
 
@@ -74,6 +78,12 @@ export async function adminCreditWallet(formData: FormData) {
   }
 
   try {
+    // Verify business exists before transaction
+    const business = await prisma.business.findUnique({ where: { id: businessId }, select: { id: true } })
+    if (!business) {
+      redirect(`/admin/businesses?error=not_found`)
+    }
+
     await prisma.$transaction(async (tx) => {
       await tx.business.update({
         where: { id: businessId },
@@ -104,6 +114,17 @@ export async function adminCreditWallet(formData: FormData) {
     revalidatePath(`/admin/businesses/${businessId}`)
     redirect(`/admin/businesses/${businessId}?success=wallet_credited`)
   } catch (error: any) {
+    if (error?.digest?.startsWith('NEXT_REDIRECT')) throw error
+    const errMsg = error?.message || ''
+    if (errMsg.includes('Insufficient') || errMsg.includes('balance')) {
+      redirect(`/admin/businesses/${businessId}?error=insufficient_balance`)
+    }
+    if (errMsg.includes('not found') || errMsg.includes('Record to update not found')) {
+      redirect(`/admin/businesses?error=not_found`)
+    }
+    if (errMsg.includes('timeout') || errMsg.includes('Connection')) {
+      redirect(`/admin/businesses/${businessId}?error=database_error`)
+    }
     handleServerActionError(error, `/admin/businesses/${businessId}`, 'wallet_action_failed')
   }
 }
@@ -119,7 +140,11 @@ export async function adminDebitWallet(formData: FormData) {
   const amount = parseFloat(formData.get('amount') as string)
   const reason = (formData.get('reason') as string)?.trim()
 
-  if (!businessId || isNaN(amount) || amount <= 0) {
+  if (!businessId) {
+    redirect('/admin/businesses?error=invalid_business')
+  }
+
+  if (isNaN(amount) || amount <= 0) {
     redirect(`/admin/businesses/${businessId}?error=invalid_amount`)
   }
 
@@ -128,13 +153,19 @@ export async function adminDebitWallet(formData: FormData) {
   }
 
   try {
+    // Verify business exists before transaction
+    const business = await prisma.business.findUnique({ where: { id: businessId }, select: { id: true } })
+    if (!business) {
+      redirect(`/admin/businesses?error=not_found`)
+    }
+
     await prisma.$transaction(async (tx) => {
-      const business = await tx.business.findUnique({
+      const biz = await tx.business.findUnique({
         where: { id: businessId },
         select: { walletBalance: true },
       })
 
-      if (!business || Number(business.walletBalance) < amount) {
+      if (!biz || Number(biz.walletBalance) < amount) {
         throw new Error('Insufficient balance')
       }
 
@@ -171,7 +202,12 @@ export async function adminDebitWallet(formData: FormData) {
     if (error?.message?.includes('Insufficient balance')) {
       redirect(`/admin/businesses/${businessId}?error=insufficient_balance`)
     }
-    const { message } = handlePrismaError(error, 'Debit failed')
-    redirect(`/admin/businesses/${businessId}?error=${encodeURIComponent(message)}`)
+    if (error?.message?.includes('not found') || error?.message?.includes('Record to update not found')) {
+      redirect(`/admin/businesses?error=not_found`)
+    }
+    if (error?.message?.includes('timeout') || error?.message?.includes('Connection')) {
+      redirect(`/admin/businesses/${businessId}?error=database_error`)
+    }
+    handleServerActionError(error, `/admin/businesses/${businessId}`, 'debit_failed')
   }
 }

@@ -80,13 +80,29 @@ export default async function BusinessDetailPage({
         </div>
       )}
 
+      {searchParams.success && (
+        <div className="rounded-lg bg-green-50 p-4 border border-green-200">
+          <p className="text-sm text-green-800">
+            {searchParams.success === 'wallet_credited' && 'Wallet credited successfully.'}
+            {searchParams.success === 'wallet_debited' && 'Wallet debited successfully.'}
+            {!['wallet_credited', 'wallet_debited'].includes(searchParams.success) && decodeURIComponent(searchParams.success)}
+          </p>
+        </div>
+      )}
+
       {searchParams.error && (
         <div className="rounded-lg bg-red-50 p-4 border border-red-200">
           <p className="text-sm text-red-800">
             {searchParams.error === 'invalid_amount' && 'Please enter a valid amount.'}
+            {searchParams.error === 'invalid_business' && 'Business ID is required.'}
             {searchParams.error === 'missing_reason' && 'Reason/notes are required.'}
             {searchParams.error === 'insufficient_balance' && 'Insufficient wallet balance.'}
             {searchParams.error === 'wallet_action_failed' && 'Wallet action failed. Please try again.'}
+            {searchParams.error === 'debit_failed' && 'Wallet debit failed. Please try again.'}
+            {searchParams.error === 'database_error' && 'Database connection issue. Please try again.'}
+            {searchParams.error === 'not_found' && 'Business not found.'}
+            {searchParams.error === 'wallet_credited' && 'Wallet credited successfully.'}
+            {searchParams.error === 'wallet_debited' && 'Wallet debited successfully.'}
           </p>
         </div>
       )}
