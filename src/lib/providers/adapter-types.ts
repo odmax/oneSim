@@ -32,6 +32,8 @@ export interface ActivateESIMResult {
   activationCodes?: string[]
   qrCodeUrl?: string
   status?: string
+  /** Reservation ID for two-step purchase workflows */
+  reservationId?: string
 }
 
 export interface UsageResult {

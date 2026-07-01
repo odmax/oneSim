@@ -201,8 +201,32 @@ export async function initiateAndFulfillPurchase(orderId: string, order: any, pa
   const providerData = dispatch.data
   const providerOrderId = extractString(providerData.activationId) || undefined
   const providerStatus = providerData.status || 'ACTIVE'
+  const reservationId = extractString(providerData.reservationId) || undefined
 
-  // 5. Map response to standardized fields
+  // 5. Handle two-step reservation state
+  if (reservationId && (!providerData.iccids || providerData.iccids.length === 0)) {
+    // Reservation created but no ICCIDs yet — order is reserved, not fulfilled
+    await prisma.eSIMPurchase.update({
+      where: { id: orderId },
+      data: {
+        providerId: sel.providerId,
+        providerReservationId: reservationId,
+        providerStatus: 'RESERVED',
+      },
+    })
+    await transitionOrder(orderId, 'RESERVED')
+    await createTimelineEvent(orderId, { eventType: 'PROVIDER_RESERVATION_CREATED', message: `Reservation: ${reservationId} at ${sel.providerName}` })
+    return {
+      success: true,
+      orderId,
+      esims: [],
+      providerReservationId: reservationId,
+      providerFulfillId: undefined,
+      providerStatus: 'RESERVED',
+    }
+  }
+
+  // 6. Map response to standardized fields
   const esims: MappedESIMData[] = []
   for (let i = 0; i < params.quantity; i++) {
     esims.push(mapProviderResponse(providerData, i))
@@ -210,26 +234,32 @@ export async function initiateAndFulfillPurchase(orderId: string, order: any, pa
 
   const missingIccid = esims.some(e => !e.iccid)
   if (missingIccid) {
+    // If we have a reservation, try to cancel it before failing
+    if (reservationId) {
+      await cancelPurchase(orderId, params.businessId, totalAmount).catch(() => {})
+    }
     await releaseReservedFunds(orderId, params.businessId, totalAmount)
     await failOrder(orderId, 'Provider returned incomplete ICCID data')
     await createTimelineEvent(orderId, { eventType: 'PROVIDER_FAILED', message: 'Missing ICCID in response' })
     return { success: false, error: 'Provider returned incomplete data', errorStatus: 502 }
   }
 
-  // 6. Save eSIM records
+  // 7. Save eSIM records
   const packageSnapshot = order.packageSnapshot || {}
   await saveESIMs(orderId, esims, params.customerId || null, packageSnapshot, pkg.validityDays)
 
-  // 7. Capture wallet funds
+  // 8. Capture wallet funds
   await captureReservedFunds(orderId, params.businessId, totalAmount)
 
-  // 8. Mark order as fulfilled
+  // 9. Mark order as fulfilled
+  const updateData: any = {
+    providerFulfillId: providerOrderId || null,
+    providerStatus,
+  }
+  if (reservationId) updateData.providerReservationId = reservationId
   await prisma.eSIMPurchase.update({
     where: { id: orderId },
-    data: {
-      providerFulfillId: providerOrderId || null,
-      providerStatus,
-    },
+    data: updateData,
   })
   await transitionOrder(orderId, 'FULFILLED')
   await createTimelineEvent(orderId, { eventType: 'PROVIDER_FULFILLED', message: `Provider: ${sel.providerName}, Reference: ${providerOrderId || 'N/A'}` })
@@ -238,7 +268,7 @@ export async function initiateAndFulfillPurchase(orderId: string, order: any, pa
     success: true,
     orderId,
     esims,
-    providerReservationId: undefined,
+    providerReservationId: reservationId,
     providerFulfillId: providerOrderId,
     providerStatus,
   }

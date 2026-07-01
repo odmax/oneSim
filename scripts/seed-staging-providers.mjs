@@ -114,10 +114,22 @@ const templates = [
         supported_countries: 'supported_countries',
       },
       defaultCapabilities: { supportsESIM: true, supportsQRCode: true, supportsUsage: true },
-      responseMappings: { tokenPath: 'result.access_token' },
+      responseMappings: {
+        tokenPath: 'result.access_token',
+        iccidPath: 'result.iccid',
+        reservationIdPath: 'result.reservationId',
+        reservationIdFallbackPaths: ['result.id', 'result.reservation_id'],
+        reservationExpiresAtPath: 'result.expired_at',
+        activationCodePath: 'result.activationCode',
+        providerOrderIdPath: 'result.packageId',
+        packageIdPath: 'result.packageId',
+      },
       endpointMappings: {
         AUTH_LOGIN: 'POST /client/auth/token',
         GET_PLANS: 'GET /client/package-templates/all?page=1&pageSize=50&inventoryId=4ca24027-e2fc-4abc-9c06-7cee7a56cc61&coverageType=&coverageRegion=&includeCountries=true',
+        INITIATE_PURCHASE: 'POST /purchase/initiate-purchase',
+        FULFILL_PURCHASE: 'POST /purchase/fulfill-purchase?reservationId={reservationId}',
+        CANCEL_PURCHASE: 'POST /purchase/cancel-purchase?reservationId={reservationId}',
         PURCHASE_INITIATE: 'POST /purchase/initiate-purchase',
         PURCHASE_FULFILL: 'POST /purchase/fulfill-purchase?reservationId={{reservationId}}',
         GET_PACKAGES: 'GET /client/packages',
@@ -146,7 +158,7 @@ const templates = [
       environment: 'staging',
       status: 'TESTING',
       priority: 20,
-      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, configurationFields: [
+      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, purchaseWorkflow: 'TWO_STEP_RESERVATION_FULFILLMENT', configurationFields: [
         { key: 'username', label: 'API Username', type: 'text', required: true, secret: false, group: 'credentials', placeholder: 'Rakuten API username' },
         { key: 'password', label: 'API Password', type: 'password', required: true, secret: true, group: 'credentials', placeholder: 'Rakuten API password' },
         { key: 'baseUrl', label: 'Base URL', type: 'url', required: true, group: 'endpoints', default: 'https://stg-api-b2b-prepaid-sim.rmb-lab.jp/v1/esim' },

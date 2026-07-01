@@ -486,11 +486,32 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
     return { success: true, data: plans }
   }
 
-  async activateESIM(params: import('./adapter-types').ActivateESIMParams): Promise<ProviderResult<import('./adapter-types').ActivateESIMResult>> {
-    const authResult = await this.authenticate({})
-    if (!authResult.success) return { success: false, error: authResult.error }
+  private extractField(path: string | undefined, data: any): string | undefined {
+    if (!path) return undefined
+    const parts = path.split('.')
+    let current = data
+    for (const p of parts) {
+      if (current && typeof current === 'object') current = current[p]
+      else return undefined
+    }
+    return current != null ? String(current) : undefined
+  }
 
-    // Build body from requestMappings, override with standard params
+  private extractReservationId(data: any, responseMappings: any): string | null {
+    const primaryPath = responseMappings?.reservationIdPath
+    const id = this.extractField(primaryPath, data)
+    if (id && id.length > 0) return id
+
+    const fallbacks: string[] = responseMappings?.reservationIdFallbackPaths || ['result.id', 'result.reservation_id']
+    for (const fb of fallbacks) {
+      const val = this.extractField(fb, data)
+      if (val && val.length > 0) return val
+    }
+
+    return null
+  }
+
+  private async doSingleStepPurchase(params: import('./adapter-types').ActivateESIMParams): Promise<ProviderResult<import('./adapter-types').ActivateESIMResult>> {
     const reqBody = this.buildRequestBody('PURCHASE_ESIM')
     const body = { ...reqBody, planCode: params.planId, quantity: params.quantity }
     if (params.subscriber.email) body.email = params.subscriber.email
@@ -506,17 +527,7 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
     if (!result.data) return { success: false, error: { code: 'EMPTY', message: 'Empty purchase response' } }
 
     const d = result.data
-    const iccids: string[] = (() => {
-      if (Array.isArray(d.iccids)) return d.iccids
-      if (d.iccid) return [d.iccid]
-      if (d.data?.iccid) return [d.data.iccid]
-      if (d.data?.iccids) return d.data.iccids
-      if (d.esim?.iccid) return [d.esim.iccid]
-      if (d.order?.iccids) return d.order.iccids
-      if (d.result?.iccid) return [d.result.iccid]
-      return []
-    })()
-
+    const iccids = this.extractIccids(d, params.quantity)
     if (iccids.length < params.quantity) {
       return { success: false, error: { code: 'NO_ICCIDS', message: `Provider returned ${iccids.length} ICCIDs, need ${params.quantity}` } }
     }
@@ -532,6 +543,147 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
         status: d.status || d.orderStatus || 'ACTIVATED',
       },
     }
+  }
+
+  private async doTwoStepPurchase(params: import('./adapter-types').ActivateESIMParams): Promise<ProviderResult<import('./adapter-types').ActivateESIMResult>> {
+    const rm = this.provider.requestMappings || {}
+    const responseMappings = this.provider.responseMappings || {}
+    const initBody = this.buildRequestBody('INITIATE_PURCHASE')
+    const body = { ...initBody, planCode: params.planId, quantity: params.quantity }
+
+    console.log('[TWO_STEP] Step 1: INITIATE_PURCHASE planId=' + params.planId)
+
+    // Step 1: Initiate purchase
+    const initResult = await this.callCapability('INITIATE_PURCHASE', body)
+    if (initResult.error) {
+      console.log('[TWO_STEP] INITIATE_PURCHASE failed:', initResult.error.message)
+      return { success: false, error: initResult.error }
+    }
+    if (!initResult.data) return { success: false, error: { code: 'EMPTY_INIT', message: 'Empty initiate purchase response' } }
+
+    const initData = initResult.data
+    console.log('[TWO_STEP] INITIATE_PURCHASE response keys:', Object.keys(initData))
+
+    const reservationId = this.extractReservationId(initData, responseMappings)
+    const iccid = this.extractField(responseMappings?.iccidPath, initData) || this.extractField('result.iccid', initData) || ''
+    const initStatus = this.extractField(responseMappings?.reservationExpiresAtPath, initData)
+
+    console.log('[TWO_STEP] Init result:', { reservationId, iccid, initStatus })
+
+    if (!reservationId) {
+      return { success: false, error: { code: 'NO_RESERVATION_ID', message: 'Provider reservationId missing; cannot fulfill purchase. Initiate response did not include a reservation identifier.' } }
+    }
+
+    if (!iccid) {
+      return { success: false, error: { code: 'NO_ICCIDS', message: 'Provider did not return ICCID during initiation' } }
+    }
+
+    // Step 2: Fulfill purchase
+    const fulfillEp = resolveEndpoint(this.endpointMappings, 'FULFILL_PURCHASE')
+    if (!fulfillEp) {
+      // No fulfill endpoint — mark as reserved only
+      console.log('[TWO_STEP] No FULFILL_PURCHASE endpoint — returning reserved state')
+      return {
+        success: true,
+        data: {
+          activationId: reservationId,
+          iccids: [iccid],
+          status: 'RESERVED',
+          reservationId,
+        },
+      }
+    }
+
+    // Substitute reservationId in the fulfill path
+    const fulfillPath = fulfillEp.path.replace('{{reservationId}}', reservationId).replace('{reservationId}', reservationId)
+    const fulfillUrl = buildUrl(this.baseUrl, fulfillPath)
+    const headers: Record<string, string> = {}
+    applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
+
+    console.log('[TWO_STEP] Step 2: FULFILL_PURCHASE ' + fulfillEp.method + ' ' + fulfillUrl)
+
+    const fulfillResult = await rawFetch(fulfillUrl, { method: fulfillEp.method, headers })
+    if (fulfillResult.error) {
+      console.log('[TWO_STEP] FULFILL_PURCHASE failed:', fulfillResult.error.message)
+      // Attempt cancellation
+      await this.cancelReservation(reservationId)
+      return { success: false, error: fulfillResult.error }
+    }
+    if (!fulfillResult.data) {
+      await this.cancelReservation(reservationId)
+      return { success: false, error: { code: 'EMPTY_FULFILL', message: 'Empty fulfill purchase response' } }
+    }
+
+    const fulfillData = fulfillResult.data
+    console.log('[TWO_STEP] FULFILL_PURCHASE response keys:', Object.keys(fulfillData))
+
+    const fulfillIccid = this.extractField(responseMappings?.iccidPath, fulfillData) || this.extractField('result.iccid', fulfillData) || iccid
+    const activationCode = this.extractField(responseMappings?.activationCodePath, fulfillData) || this.extractField('result.activationCode', fulfillData) || ''
+    const packageId = this.extractField(responseMappings?.packageIdPath || responseMappings?.providerOrderIdPath, fulfillData) || this.extractField('result.packageId', fulfillData) || ''
+    const fulfillStatus = this.extractField('result.status', fulfillData) || 'ACTIVE'
+
+    // Generate QR from activationCode if present (Rakuten does not return QR)
+    let qrCodeUrl: string | undefined
+    if (activationCode) {
+      qrCodeUrl = activationCode.startsWith('http') ? activationCode : undefined
+    }
+
+    console.log('[TWO_STEP] Fulfill result:', { iccid: fulfillIccid, activationCode: activationCode ? activationCode.slice(0, 20) + '...' : null, packageId, status: fulfillStatus })
+
+    return {
+      success: true,
+      data: {
+        activationId: packageId || reservationId,
+        iccids: [fulfillIccid],
+        activationCodes: activationCode ? [activationCode] : undefined,
+        qrCodeUrl,
+        status: fulfillStatus,
+        reservationId,
+      },
+    }
+  }
+
+  private async cancelReservation(reservationId: string): Promise<void> {
+    const cancelEp = resolveEndpoint(this.endpointMappings, 'CANCEL_PURCHASE')
+    if (!cancelEp) {
+      console.log('[TWO_STEP] No CANCEL_PURCHASE endpoint — reservation ' + reservationId + ' may remain active')
+      return
+    }
+    const cancelPath = cancelEp.path.replace('{{reservationId}}', reservationId).replace('{reservationId}', reservationId)
+    const cancelUrl = buildUrl(this.baseUrl, cancelPath)
+    const headers: Record<string, string> = {}
+    applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
+    try {
+      await rawFetch(cancelUrl, { method: cancelEp.method, headers })
+      console.log('[TWO_STEP] Reservation ' + reservationId + ' cancelled')
+    } catch (e: any) {
+      console.log('[TWO_STEP] Failed to cancel reservation ' + reservationId + ': ' + e.message)
+    }
+  }
+
+  private extractIccids(d: any, minCount: number): string[] {
+    if (Array.isArray(d.iccids)) return d.iccids
+    if (d.iccid) return [d.iccid]
+    if (d.data?.iccid) return [d.data.iccid]
+    if (d.data?.iccids) return d.data.iccids
+    if (d.esim?.iccid) return [d.esim.iccid]
+    if (d.order?.iccids) return d.order.iccids
+    if (d.result?.iccid) return [d.result.iccid]
+    return []
+  }
+
+  async activateESIM(params: import('./adapter-types').ActivateESIMParams): Promise<ProviderResult<import('./adapter-types').ActivateESIMResult>> {
+    const authResult = await this.authenticate({})
+    if (!authResult.success) return { success: false, error: authResult.error }
+
+    const purchaseWorkflow = this.config?.purchaseWorkflow || this.config?.purchase_workflow || 'SINGLE_STEP'
+    console.log('[TemplateProviderAdapter] activateESIM workflow=' + purchaseWorkflow + ' planId=' + params.planId)
+
+    if (purchaseWorkflow === 'TWO_STEP_RESERVATION_FULFILLMENT') {
+      return this.doTwoStepPurchase(params)
+    }
+
+    return this.doSingleStepPurchase(params)
   }
 
   async getActivationStatus(activationId: string): Promise<ProviderResult<{ status: string; iccids?: string[] }>> {

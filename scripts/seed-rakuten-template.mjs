@@ -4,8 +4,9 @@ const prisma = new PrismaClient()
 const rakutenEndpoints = {
   AUTH_LOGIN: 'POST /client/auth/token',
   GET_PLANS: 'GET /client/package-templates/all?page=1&pageSize=50&inventoryId=4ca24027-e2fc-4abc-9c06-7cee7a56cc61&coverageType=&coverageRegion=&includeCountries=true',
-  PURCHASE_INITIATE: 'POST /purchase/initiate-purchase',
-  PURCHASE_FULFILL: 'POST /purchase/fulfill-purchase?reservationId={{reservationId}}',
+  INITIATE_PURCHASE: 'POST /purchase/initiate-purchase',
+  FULFILL_PURCHASE: 'POST /purchase/fulfill-purchase?reservationId={reservationId}',
+  CANCEL_PURCHASE: 'POST /purchase/cancel-purchase?reservationId={reservationId}',
   GET_PACKAGES: 'GET /client/packages',
   GET_USAGE: 'GET /client/packages/usage?iccid={{iccid}}',
   GET_READY_SIMS: 'GET /client/sim-registries/ready?inventoryId={{inventoryId}}',
@@ -46,6 +47,13 @@ try {
     },
     responseMappings: {
       tokenPath: 'result.access_token',
+      iccidPath: 'result.iccid',
+      reservationIdPath: 'result.reservationId',
+      reservationIdFallbackPaths: ['result.id', 'result.reservation_id'],
+      reservationExpiresAtPath: 'result.expired_at',
+      activationCodePath: 'result.activationCode',
+      providerOrderIdPath: 'result.packageId',
+      packageIdPath: 'result.packageId',
     },
     endpointMappings: rakutenEndpoints,
     requestMappings: {
