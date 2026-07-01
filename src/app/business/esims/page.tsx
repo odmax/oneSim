@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { assignESIM, unassignESIM, markAsSent, sendToCustomer, syncEsimStatusAction, shareEsimViaEmail, createShareToken } from '@/lib/actions/esim'
 import { getPackageDisplayName, getPackageDataGB, isPackageArchived } from '@/lib/packages/snapshot-utils'
+import { getAppUrl } from '@/lib/config/urls'
 import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
 
@@ -59,8 +60,6 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
     select: { id: true, name: true },
     orderBy: { name: 'asc' },
   }) : []
-
-  const getAppUrl = () => process.env.NEXT_PUBLIC_APP_URL || 'https://staging.onetelecom.cloud'
 
   return (
     <div className="space-y-6">

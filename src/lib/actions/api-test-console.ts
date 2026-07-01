@@ -6,6 +6,7 @@ import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
 import { providerRouter } from '@/lib/services/providers/router'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
+import { getAppUrl } from '@/lib/config/urls'
 import crypto from 'crypto'
 
 function hashApiKey(key: string): string {
@@ -197,7 +198,7 @@ export async function testApiOrder(formData: FormData): Promise<{
 
     const identifierKey = resolution.resolvedBy
     const identifierValue = resolution.identifier
-    const curl = `curl -X POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://onesim.africa'}/api/v1/esims/order \\
+    const curl = `curl -X POST ${getAppUrl()}/api/v1/esims/order \\
   -H "Authorization: Bearer ${apiKeyPrefix || 'ONESIM_API_KEY'}" \\
   -H "Content-Type: application/json" \\
   -H "Idempotency-Key: unique-request-id-123" \\
