@@ -53,6 +53,7 @@ export default async function BusinessLayout({
     { title: 'API Analytics', href: '/business/api-analytics', icon: 'BarChart3' as const },
     { title: 'API Logs', href: '/business/api-usage', icon: 'List' as const },
     { title: 'Webhooks', href: '/business/webhooks', icon: 'Webhook' as const, readOnly: isMember },
+    { title: 'SKU Downloads', href: '/business/sku-downloads', icon: 'Download' as const, readOnly: isMember },
 
     { title: 'Account', href: '#', sectionHeader: true },
     { title: 'Team Members', href: '/business/users', icon: 'Users' as const },
