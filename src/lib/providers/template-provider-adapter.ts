@@ -171,7 +171,10 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     const mapping = reqMap[capability]
     if (!mapping || typeof mapping !== 'object') return {}
 
-    const resolveVar = (tmpl: string): string | number | boolean => {
+    // Numeric fields from provider config — values for these keys will be coerced to numbers
+    const numericFields: string[] = this.config?.numericFields || []
+
+    const resolveVar = (tmpl: string, fieldName?: string): string | number | boolean => {
       const match = tmpl.match(/^\{\{(.+?)\}\}$/)
       if (!match) return tmpl
       const parts = match[1].split('|')
@@ -181,23 +184,28 @@ export class TemplateProviderAdapter implements ProviderAdapter {
         ?? this.provider[varName]
         ?? process.env[varName]
         ?? defaultValue
+      // Coerce to number if field is in numericFields list
+      if (fieldName && numericFields.includes(fieldName) && val !== '' && val != null) {
+        const num = Number(val)
+        if (!isNaN(num)) return num
+      }
       return val ?? ''
     }
 
-    const resolveValue = (val: any): any => {
+    const resolveValue = (val: any, key?: string): any => {
       // Preserve number and boolean literals from the mapping
       if (typeof val === 'number') return val
       if (typeof val === 'boolean') return val
       if (Array.isArray(val)) return val.map(v => resolveValue(v))
       // Template variables resolve as strings (from config/form)
-      if (typeof val === 'string' && val.match(/^\{\{(.+?)\}\}$/)) return resolveVar(String(val))
+      if (typeof val === 'string' && val.match(/^\{\{(.+?)\}\}$/)) return resolveVar(String(val), key)
       // Static strings passed through
       return String(val)
     }
 
     const body: any = {}
     for (const [key, val] of Object.entries(mapping)) {
-      body[key] = resolveValue(val)
+      body[key] = resolveValue(val, key)
     }
     return body
   }

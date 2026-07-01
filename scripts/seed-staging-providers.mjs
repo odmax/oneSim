@@ -82,7 +82,7 @@ const templates = [
       environment: 'staging',
       status: 'TESTING',
       priority: 10,
-      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, configurationFields: [
+      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, numericFields: ['partnerCode'], configurationFields: [
         { key: 'username', label: 'Username', type: 'text', required: true, secret: false, group: 'credentials', placeholder: 'Airhub API username' },
         { key: 'password', label: 'Password', type: 'password', required: true, secret: true, group: 'credentials', placeholder: 'Airhub API password' },
         { key: 'environment', label: 'Environment', type: 'select', required: true, group: 'environment', options: [{ value: 'staging', label: 'Staging' }, { value: 'production', label: 'Production' }] },
