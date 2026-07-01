@@ -3,8 +3,7 @@ const prisma = new PrismaClient()
 
 const rakutenEndpoints = {
   AUTH_LOGIN: 'POST /client/auth/token',
-  GENERATE_API_KEY: 'POST /api-key/generate',
-  GET_PLANS: 'GET /client/package-templates/all?page=0&pageSize=250',
+  GET_PLANS: 'GET /client/package-templates/all?page=1&pageSize=50&inventoryId=4ca24027-e2fc-4abc-9c06-7cee7a56cc61&coverageType=&coverageRegion=&includeCountries=true',
   PURCHASE_INITIATE: 'POST /purchase/initiate-purchase',
   PURCHASE_FULFILL: 'POST /purchase/fulfill-purchase?reservationId={{reservationId}}',
   GET_PACKAGES: 'GET /client/packages',
@@ -26,7 +25,7 @@ try {
     tokenPlacement: 'BEARER_HEADER',
     defaultBaseUrl: 'https://stg-api-b2b-prepaid-sim.rmb-lab.jp/v1/esim',
     defaultAuthUrl: '/client/auth/token',
-    defaultPlanListPath: '/client/package-templates/all?page=0&pageSize=250',
+    defaultPlanListPath: '/client/package-templates/all?page=1&pageSize=50&inventoryId=4ca24027-e2fc-4abc-9c06-7cee7a56cc61&coverageType=&coverageRegion=&includeCountries=true',
     defaultActivationPath: '/purchase/initiate-purchase',
     defaultResponseListKey: 'result.package_templates',
     defaultFieldMappings: {
@@ -51,18 +50,11 @@ try {
     endpointMappings: rakutenEndpoints,
     requestMappings: {
       AUTH_LOGIN: { username: '{{username}}', password: '{{password}}' },
-      GENERATE_API_KEY: { clientId: '{{clientId}}', validityDays: '{{validityDays|365}}', name: '{{apiKeyName|OneSim Integration}}', purpose: '{{purpose|OneSim provider integration}}' },
       PURCHASE_INITIATE: { packageTemplateId: '{{planCode}}' },
     },
     requiredConfigFields: [
       { name: 'username', label: 'API Username', type: 'text', required: true, placeholder: 'Rakuten API username' },
       { name: 'password', label: 'API Password', type: 'password', required: true, placeholder: 'Rakuten API password' },
-      { name: 'clientId', label: 'Client ID', type: 'text', required: true, placeholder: 'Rakuten client ID' },
-    ],
-    optionalConfigFields: [
-      { name: 'apiKeyName', label: 'API Key Name', type: 'text', required: false, placeholder: 'OneSim Integration' },
-      { name: 'validityDays', label: 'API Key Validity (days)', type: 'text', required: false, placeholder: '365' },
-      { name: 'purpose', label: 'API Key Purpose', type: 'text', required: false, placeholder: 'OneSim provider integration' },
     ],
     isSystemTemplate: true,
   }
@@ -79,8 +71,8 @@ try {
   console.log('To connect Rakuten as a provider:')
   console.log('  1. Admin → Providers → Add Provider')
   console.log('  2. Select template: Rakuten Mobile')
-  console.log('  3. Enter base URL, username, password, clientId')
-  console.log('  4. Save → Test Connection → Sync Plans')
+  console.log('  3. Enter base URL, username, password')
+  console.log('  4. Save → Authenticate → Sync Plans')
   console.log('')
 
   await prisma.$disconnect()

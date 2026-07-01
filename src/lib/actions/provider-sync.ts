@@ -54,7 +54,7 @@ export async function syncProviderPlans(providerId: string) {
     baseUrl: provider.apiBaseUrl || '(not set)',
     authUrl: provider.authUrl || '(not set)',
     tokenPresent: !!provider.apiToken,
-    tokenLength: provider.apiToken ? 1 : 0,
+    tokenLength: provider.apiToken ? provider.apiToken.length : 0,
     tokenPlacement: provider.tokenPlacement || 'BEARER_HEADER',
     planListPath: resolvedPlanListPath,
     responseListKey: resolvedResponseListKey,

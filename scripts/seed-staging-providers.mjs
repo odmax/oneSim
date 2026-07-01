@@ -104,7 +104,7 @@ const templates = [
       tokenPlacement: 'BEARER_HEADER',
       defaultBaseUrl: 'https://stg-api-b2b-prepaid-sim.rmb-lab.jp/v1/esim',
       defaultAuthUrl: '/client/auth/token',
-      defaultPlanListPath: '/client/package-templates/all?page=0&pageSize=250',
+      defaultPlanListPath: '/client/package-templates/all?page=1&pageSize=50&inventoryId=4ca24027-e2fc-4abc-9c06-7cee7a56cc61&coverageType=&coverageRegion=&includeCountries=true',
       defaultActivationPath: '/purchase/initiate-purchase',
       defaultResponseListKey: 'result.package_templates',
       defaultFieldMappings: {
@@ -117,8 +117,7 @@ const templates = [
       responseMappings: { tokenPath: 'result.access_token' },
       endpointMappings: {
         AUTH_LOGIN: 'POST /client/auth/token',
-        GENERATE_API_KEY: 'POST /api-key/generate',
-        GET_PLANS: 'GET /client/package-templates/all?page=0&pageSize=250',
+        GET_PLANS: 'GET /client/package-templates/all?page=1&pageSize=50&inventoryId=4ca24027-e2fc-4abc-9c06-7cee7a56cc61&coverageType=&coverageRegion=&includeCountries=true',
         PURCHASE_INITIATE: 'POST /purchase/initiate-purchase',
         PURCHASE_FULFILL: 'POST /purchase/fulfill-purchase?reservationId={{reservationId}}',
         GET_PACKAGES: 'GET /client/packages',
@@ -129,18 +128,11 @@ const templates = [
       },
       requestMappings: {
         AUTH_LOGIN: { username: '{{username}}', password: '{{password}}' },
-        GENERATE_API_KEY: { clientId: '{{clientId}}', validityDays: '{{validityDays|365}}', name: '{{apiKeyName|OneSim Integration}}', purpose: '{{purpose|OneSim provider integration}}' },
         PURCHASE_INITIATE: { packageTemplateId: '{{planCode}}' },
       },
       requiredConfigFields: [
         { name: 'username', label: 'API Username', type: 'text', required: true, placeholder: 'Rakuten API username' },
         { name: 'password', label: 'API Password', type: 'password', required: true, placeholder: 'Rakuten API password' },
-        { name: 'clientId', label: 'Client ID', type: 'text', required: true, placeholder: 'Rakuten client ID' },
-      ],
-      optionalConfigFields: [
-        { name: 'apiKeyName', label: 'API Key Name', type: 'text', required: false, placeholder: 'OneSim Integration' },
-        { name: 'validityDays', label: 'API Key Validity (days)', type: 'text', required: false, placeholder: '365' },
-        { name: 'purpose', label: 'API Key Purpose', type: 'text', required: false, placeholder: 'OneSim provider integration' },
       ],
       isSystemTemplate: true,
     },
@@ -157,12 +149,8 @@ const templates = [
       config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, configurationFields: [
         { key: 'username', label: 'API Username', type: 'text', required: true, secret: false, group: 'credentials', placeholder: 'Rakuten API username' },
         { key: 'password', label: 'API Password', type: 'password', required: true, secret: true, group: 'credentials', placeholder: 'Rakuten API password' },
-        { key: 'clientId', label: 'Client ID', type: 'text', required: true, group: 'credentials', placeholder: 'Rakuten client ID' },
         { key: 'baseUrl', label: 'Base URL', type: 'url', required: true, group: 'endpoints', default: 'https://stg-api-b2b-prepaid-sim.rmb-lab.jp/v1/esim' },
         { key: 'authPath', label: 'Auth Path', type: 'readonly', required: true, group: 'endpoints', default: '/client/auth/token' },
-        { key: 'apiKeyName', label: 'API Key Name', type: 'text', required: false, group: 'testing', placeholder: 'OneSim Integration' },
-        { key: 'validityDays', label: 'API Key Validity (days)', type: 'number', required: false, group: 'testing', default: '365' },
-        { key: 'purpose', label: 'API Key Purpose', type: 'text', required: false, group: 'testing', placeholder: 'OneSim provider integration' },
       ] },
       supportsESIM: true, supportsQRCode: true, supportsUsage: true,
     },
