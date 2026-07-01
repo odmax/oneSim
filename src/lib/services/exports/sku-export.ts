@@ -36,6 +36,7 @@ export async function getSkuExportData(): Promise<SkuExportRow[]> {
       providerName: true,
       productType: true,
       isActive: true,
+      providerPackage: { select: { country: true, region: true } },
     },
   })
 
@@ -50,8 +51,8 @@ export async function getSkuExportData(): Promise<SkuExportRow[]> {
     validityDays: pkg.validityDays,
     currency: pkg.currency || 'USD',
     price: parseFloat(pkg.priceUSD.toString()),
-    country: null,
-    region: null,
+    country: pkg.providerPackage?.country || null,
+    region: pkg.providerPackage?.region || null,
     productType: pkg.productType,
     providerName: pkg.providerName || null,
     isActive: pkg.isActive,
@@ -63,7 +64,7 @@ export function skuToJson(data: SkuExportRow[]): string {
 }
 
 export function skuToCsv(data: SkuExportRow[]): string {
-  const headers = ['sku', 'packageCode', 'name', 'displayName', 'description', 'customerDescription', 'dataGB', 'validityDays', 'currency', 'price', 'productType', 'providerName', 'isActive']
+  const headers = ['sku', 'packageCode', 'name', 'displayName', 'description', 'dataGB', 'validityDays', 'currency', 'price', 'country', 'region', 'productType', 'providerName', 'isActive']
   const lines = [headers.join(',')]
 
   for (const row of data) {
@@ -80,7 +81,7 @@ export function skuToCsv(data: SkuExportRow[]): string {
 }
 
 export function skuToXlsx(data: SkuExportRow[]): string {
-  const headers = ['sku', 'packageCode', 'name', 'displayName', 'description', 'customerDescription', 'dataGB', 'validityDays', 'currency', 'price', 'productType', 'providerName', 'isActive']
+  const headers = ['sku', 'packageCode', 'name', 'displayName', 'description', 'dataGB', 'validityDays', 'currency', 'price', 'country', 'region', 'productType', 'providerName', 'isActive']
 
   let html = '<table>'
   html += '<tr>' + headers.map(h => '<th>' + h + '</th>').join('') + '</tr>'

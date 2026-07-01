@@ -53,7 +53,7 @@ export default async function SkuDownloadsPage() {
               className="flex flex-col items-center gap-3 rounded-xl border border-gray-200 p-6 hover:border-purple-300 hover:bg-purple-50 transition-all group">
               <span className="text-3xl">XLS</span>
               <span className="font-semibold text-gray-900 group-hover:text-purple-700">Download Excel</span>
-              <span className="text-xs text-gray-400">onesim-sku-list.xls</span>
+              <span className="text-xs text-gray-400">onesim-sku-list.xlsx</span>
             </a>
           </div>
         )}

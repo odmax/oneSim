@@ -15,7 +15,7 @@ export async function GET() {
   return new NextResponse(html, {
     headers: {
       'Content-Type': 'application/vnd.ms-excel',
-      'Content-Disposition': 'attachment; filename="onesim-sku-list.xls"',
+      'Content-Disposition': 'attachment; filename="onesim-sku-list.xlsx"',
     },
   })
 }
