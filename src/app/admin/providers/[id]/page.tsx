@@ -372,12 +372,15 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
                 <div className="grid grid-cols-[200px_1fr] gap-x-4 gap-y-1">
                   <span className="text-gray-500">Protocol / Strategy:</span><span>{syncDiagnostics.adapterStrategy || '—'}</span>
                   <span className="text-gray-500">Provider Type:</span><span>{syncDiagnostics.providerType}</span>
-                  <span className="text-gray-500">Base URL:</span><span>{syncDiagnostics.baseUrl || '—'}</span>
+                  <span className="text-gray-500">Request Endpoint:</span><span className="break-all text-[10px]">{syncDiagnostics.endpoint || syncDiagnostics.baseUrl || '—'}</span>
                   <span className="text-gray-500">Plan List Path:</span><span className="break-all">{syncDiagnostics.planListPath || '—'}</span>
                   <span className="text-gray-500">Response List Key:</span><span>{syncDiagnostics.responseListKey || '—'}</span>
                   <span className="text-gray-500">Token Placement:</span><span>{syncDiagnostics.tokenPlacement || '—'}</span>
                   <span className="text-gray-500">Token Present:</span><span>{syncDiagnostics.tokenPresent ? `Yes (${syncDiagnostics.tokenLength} chars)` : 'No'}</span>
-                  <span className="text-gray-500">Fetched:</span><span>{syncDiagnostics.fetchedCount}</span>
+                  <span className="text-gray-500">HTTP Status:</span><span>{syncDiagnostics.responseStatus || '—'}</span>
+                  <span className="text-gray-500">Response Keys:</span><span className="break-all">{(syncDiagnostics.responseKeys || []).join(', ') || '—'}</span>
+                  <span className="text-gray-500">Resolved Array Length:</span><span>{syncDiagnostics.resolvedArrayLength || 0}</span>
+                  <span className="text-gray-500">Mapped Packages:</span><span>{syncDiagnostics.mappedPackageCount || 0}</span>
                   <span className="text-gray-500">Already Imported:</span><span>{fetchedPlans.filter(p => importedPlanIds.has(p.id)).length}</span>
                   <span className="text-gray-500">New (ready to import):</span><span>{fetchedPlans.length - fetchedPlans.filter(p => importedPlanIds.has(p.id)).length}</span>
                   {syncDiagnostics.providerError && <><span className="text-gray-500">Error:</span><span className="text-red-600">{syncDiagnostics.providerError}</span></>}

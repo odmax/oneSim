@@ -29,21 +29,24 @@ export function MappingValidator({ endpointMappings, requestMappings, responseMa
   const checks: MappingResult[] = []
 
   if (isTwoStep) {
+    const hasInitiateMapping = rq.INITIATE_PURCHASE && typeof rq.INITIATE_PURCHASE === 'object' && Object.keys(rq.INITIATE_PURCHASE).length > 0
+
     checks.push(
       { key: 'initiate_endpoint', label: 'INITIATE_PURCHASE endpoint', found: hasInitiate, source: hasInitiate ? 'endpointMappings.INITIATE_PURCHASE' : undefined },
       { key: 'fulfill_endpoint', label: 'FULFILL_PURCHASE endpoint', found: hasFulfill, source: hasFulfill ? 'endpointMappings.FULFILL_PURCHASE' : undefined },
-      { key: 'cancel_endpoint', label: 'CANCEL_PURCHASE endpoint', found: hasCancel, source: hasCancel ? 'endpointMappings.CANCEL_PURCHASE' : 'optional but recommended' },
-      { key: 'request_package_id', label: 'Request: packageTemplateId', found: !!rq.INITIATE_PURCHASE || !!rq.packageTemplateId, source: rq.INITIATE_PURCHASE ? 'requestMappings.INITIATE_PURCHASE' : undefined },
+      { key: 'cancel_endpoint', label: 'CANCEL_PURCHASE endpoint (recommended)', found: hasCancel, source: hasCancel ? 'endpointMappings.CANCEL_PURCHASE' : 'optional but recommended' },
+      { key: 'request_initiate_mapping', label: 'Request mapping: INITIATE_PURCHASE', found: hasInitiateMapping, source: hasInitiateMapping ? 'requestMappings.INITIATE_PURCHASE' : undefined },
       { key: 'response_reservation_id', label: 'Response: reservationId path', found: !!(rs.reservationIdPath), source: rs.reservationIdPath ? 'responseMappings.reservationIdPath' : undefined },
       { key: 'response_iccid', label: 'Response: ICCID path', found: !!(rs.iccidPath || rs.iccidsPath), source: rs.iccidPath ? 'responseMappings.iccidPath' : rs.iccidsPath ? 'responseMappings.iccidsPath' : undefined },
       { key: 'response_activation_code', label: 'Response: Activation Code path', found: !!(rs.activationCodePath), source: rs.activationCodePath ? 'responseMappings.activationCodePath' : undefined },
       { key: 'response_provider_order_id', label: 'Response: Provider Order ID path', found: !!(rs.providerOrderIdPath || rs.packageIdPath), source: rs.providerOrderIdPath ? 'responseMappings.providerOrderIdPath' : rs.packageIdPath ? 'responseMappings.packageIdPath' : undefined },
     )
   } else {
+    const hasPurchaseMapping = rq.PURCHASE_ESIM && typeof rq.PURCHASE_ESIM === 'object' && Object.keys(rq.PURCHASE_ESIM).length > 0
+
     checks.push(
       { key: 'purchase_endpoint', label: 'Purchase Endpoint (PURCHASE_ESIM)', found: !!purchaseEndpoint, source: purchaseEndpoint ? 'endpointMappings.' + purchaseEndpoint : undefined },
-      { key: 'status_endpoint', label: 'Status Endpoint (GET_ORDER_DETAILS)', found: hasStatusEndpoint, source: hasStatusEndpoint ? 'endpointMappings' : undefined },
-      { key: 'request_plan_id', label: 'Request: planId / template_id', found: !!rq.PURCHASE_ESIM || !!rq.planId || !!rq.template_id, source: rq.PURCHASE_ESIM ? 'requestMappings.PURCHASE_ESIM' : undefined },
+      { key: 'request_purchase_mapping', label: 'Request mapping: PURCHASE_ESIM', found: hasPurchaseMapping, source: hasPurchaseMapping ? 'requestMappings.PURCHASE_ESIM' : undefined },
       { key: 'response_iccid', label: 'Response: ICCID path', found: !!(rs.iccidPath || rs.iccidsPath || rs.iccids), source: rs.iccidPath ? 'responseMappings.iccidPath' : rs.iccidsPath ? 'responseMappings.iccidsPath' : undefined },
       { key: 'response_activation_code', label: 'Response: Activation Code path', found: !!(rs.activationCodePath || rs.activationCodesPath), source: rs.activationCodePath ? 'responseMappings.activationCodePath' : rs.activationCodesPath ? 'responseMappings.activationCodesPath' : undefined },
       { key: 'response_provider_order_id', label: 'Response: Provider Order ID path', found: !!(rs.providerOrderIdPath || rs.activationIdPath), source: rs.providerOrderIdPath ? 'responseMappings.providerOrderIdPath' : rs.activationIdPath ? 'responseMappings.activationIdPath' : undefined },

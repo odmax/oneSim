@@ -58,10 +58,13 @@ export async function syncProviderPlans(providerId: string) {
     tokenPlacement: provider.tokenPlacement || 'BEARER_HEADER',
     planListPath: resolvedPlanListPath,
     responseListKey: resolvedResponseListKey,
-    endpoint: '',
+    endpoint: provider.apiBaseUrl ? provider.apiBaseUrl + (provider.planListPath || '/plans') : '(not set)',
     responseStatus: 0,
     responseKeys: [],
     fetchedCount: 0,
+    rawResponsePreview: '',
+    resolvedArrayLength: 0,
+    mappedPackageCount: 0,
     lowCountWarning: false,
   }
 
@@ -98,6 +101,8 @@ export async function syncProviderPlans(providerId: string) {
     const plans = result.data || []
 
     diagnostics.fetchedCount = plans.length
+    diagnostics.resolvedArrayLength = plans.length
+    diagnostics.mappedPackageCount = plans.length
     diagnostics.lowCountWarning = plans.length > 0 && plans.length < 10
 
     if (adapter && 'getCapabilities' in adapter) {
