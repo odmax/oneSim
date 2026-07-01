@@ -61,14 +61,12 @@ const templates = [
       },
       requestMappings: {
         AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-        GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 5, countryCode: 'US', multiplecountrycode: ['US'] },
+        GET_PLANS: { partnerCode: 89508211, flag: 5, countryCode: 'US', multiplecountrycode: ['US'] },
         PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
       },
       requiredConfigFields: [
         { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'Airhub API username' },
         { name: 'password', label: 'Password', type: 'password', required: true, placeholder: 'Airhub API password' },
-        { name: 'partnerCode', label: 'Partner Code', type: 'text', required: false, placeholder: 'Optional partner code' },
-        { name: 'countryCode', label: 'Country Code', type: 'text', required: false, placeholder: 'UK (default)' },
       ],
       isSystemTemplate: true,
     },
@@ -82,11 +80,10 @@ const templates = [
       environment: 'staging',
       status: 'TESTING',
       priority: 10,
-      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, numericFields: ['partnerCode'], responseListKey: 'getInformation', configurationFields: [
+      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, responseListKey: 'getInformation', configurationFields: [
         { key: 'username', label: 'Username', type: 'text', required: true, secret: false, group: 'credentials', placeholder: 'Airhub API username' },
         { key: 'password', label: 'Password', type: 'password', required: true, secret: true, group: 'credentials', placeholder: 'Airhub API password' },
         { key: 'environment', label: 'Environment', type: 'select', required: true, group: 'environment', options: [{ value: 'staging', label: 'Staging' }, { value: 'production', label: 'Production' }] },
-        { key: 'partnerCode', label: 'Partner Code', type: 'text', required: false, group: 'config', placeholder: 'Optional partner code' },
       ] },
       supportsESIM: true, supportsTopUp: true, supportsQRCode: true,
     },
