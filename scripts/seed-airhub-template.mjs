@@ -29,7 +29,7 @@ console.log('Seeding Airhub Outreach system template...')
         defaultAuthUrl: '/api/Authentication/UserLogin',
         defaultPlanListPath: '/api/ESIM/GetPlanInformation',
         defaultActivationPath: '/api/ESIM/PurchaseEsim',
-        defaultResponseListKey: 'data',
+        defaultResponseListKey: 'getInformation',
         defaultFieldMappings: {
           sku: 'planCode',
           name: 'planName',
@@ -52,7 +52,7 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 0, countryCode: '{{countryCode|UK}}', multiplecountrycode: ['{{countryCode|UK}}'] },
+          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 5, countryCode: 'US', multiplecountrycode: ['US'] },
 
           PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
@@ -76,7 +76,7 @@ console.log('Seeding Airhub Outreach system template...')
         defaultAuthUrl: '/api/Authentication/UserLogin',
         defaultPlanListPath: '/api/ESIM/GetPlanInformation',
         defaultActivationPath: '/api/ESIM/PurchaseEsim',
-        defaultResponseListKey: 'data',
+        defaultResponseListKey: 'getInformation',
         defaultFieldMappings: {
           sku: 'planCode',
           name: 'planName',
@@ -99,7 +99,7 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 0, countryCode: '{{countryCode|UK}}', multiplecountrycode: ['{{countryCode|UK}}'] },
+          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 5, countryCode: 'US', multiplecountrycode: ['US'] },
           PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
         requiredConfigFields: [

@@ -82,23 +82,50 @@ function findFirstArray(obj: any, depth = 0, maxDepth = 5): any[] | null {
   return null
 }
 
+const FALLBACK_LIST_KEYS = ['data', 'result', 'plans', 'items', 'list', 'records', 'package_templates']
+
 function extractList(data: any, listKey?: string): any[] {
   if (Array.isArray(data)) return data
+
+  // Try configured list key first
   if (listKey) {
     const parts = listKey.split('.')
     let current = data
     for (const p of parts) { if (current) current = current[p] }
     if (Array.isArray(current)) return current
   }
-  const resp = data?.response
-  if (resp?.data) {
-    if (Array.isArray(resp.data)) return resp.data
-    const firstArr = Object.values(resp.data).find(v => Array.isArray(v))
-    if (firstArr) return firstArr as any[]
+
+  // Try fallback list keys from responseMappings
+  const fallbackPaths = ['getInformation', 'getPlanInformation', 'planInformation', 'plans', 'result.plans', 'result.items', 'result.package_templates']
+  for (const path of fallbackPaths) {
+    const parts = path.split('.')
+    let current = data
+    for (const p of parts) { if (current) current = current[p] }
+    if (Array.isArray(current)) return current
   }
+
+  // Try known response wrapper patterns
+  if (data?.result) {
+    if (Array.isArray(data.result)) return data.result
+    // Try result.{knownKey}
+    for (const key of FALLBACK_LIST_KEYS) {
+      if (Array.isArray(data.result[key])) return data.result[key]
+    }
+  }
+  if (data?.data) {
+    if (Array.isArray(data.data)) return data.data
+    for (const key of FALLBACK_LIST_KEYS) {
+      if (Array.isArray(data.data[key])) return data.data[key]
+    }
+  }
+  if (data?.response?.data) {
+    if (Array.isArray(data.response.data)) return data.response.data
+  }
+
+  // Try the first array found in the response object
   const firstArr = Object.values(data).find(v => Array.isArray(v))
   if (firstArr) return firstArr as any[]
-  // Recursive search into nested objects (handles { isSuccess, data: { plans: [...] } })
+  // Recursive search into nested objects
   const deepArr = findFirstArray(data)
   if (deepArr) return deepArr
   return []
@@ -210,7 +237,7 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     return body
   }
 
-  private async callCapabilityWithBody(capability: string): Promise<{ data?: any; error?: { code: string; message: string; details?: any } }> {
+  private async callCapabilityWithBody(capability: string): Promise<{ data?: any; error?: { code: string; message: string; details?: any }; status?: number }> {
     const ep = resolveEndpoint(this.endpointMappings, capability)
     if (!ep) return { error: { code: 'NOT_SUPPORTED', message: `Capability ${capability} not configured` } }
     const url = buildUrl(this.baseUrl, ep.path)
@@ -228,16 +255,15 @@ export class TemplateProviderAdapter implements ProviderAdapter {
       body,
     })
     const fetchOpts: any = { method: ep.method, headers }
-    // Only send body for methods that support it
     if (['POST', 'PUT', 'PATCH'].includes(ep.method.toUpperCase())) {
       fetchOpts.body = JSON.stringify(body)
     }
     const result = await rawFetch(url, fetchOpts)
+    const responsePreview = result.data ? JSON.stringify(result.data).substring(0, 300) : ''
     if (result.error) {
-      const responsePreview = result.data ? JSON.stringify(result.data).substring(0, 200) : ''
-      return { error: { code: result.error.code, message: `${capability} failed: ${ep.method} ${url} returned ${result.status || 'error'}: ${result.error.message}${responsePreview ? ` | Response: ${responsePreview}` : ''}`, details: { capability, url, method: ep.method, status: result.status, responseBody: responsePreview } } }
+      return { error: { code: result.error.code, message: `${capability} failed: ${ep.method} ${url} returned ${result.status || 'error'}: ${result.error.message}${responsePreview ? ` | Response: ${responsePreview}` : ''}`, details: { capability, url, method: ep.method, status: result.status, responseBody: responsePreview } }, status: result.status }
     }
-    return { data: result.data }
+    return { data: result.data, status: result.status }
   }
 
   private async callCapability(capability: string, body?: any): Promise<{ data?: any; error?: { code: string; message: string }; status?: number }> {

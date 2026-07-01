@@ -40,7 +40,7 @@ const templates = [
       defaultAuthUrl: '/api/Authentication/UserLogin',
       defaultPlanListPath: '/api/ESIM/GetPlanInformation',
       defaultActivationPath: '/api/ESIM/PurchaseEsim',
-      defaultResponseListKey: 'data',
+      defaultResponseListKey: 'getInformation',
       defaultFieldMappings: {
         sku: 'planCode', name: 'planName', price_usd: 'price', currency: 'currency',
         validity_days: 'vaildity', data_amount: 'capacity', data_unit: 'capacityUnit',
@@ -61,7 +61,7 @@ const templates = [
       },
       requestMappings: {
         AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-        GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 0, countryCode: '{{countryCode|UK}}', multiplecountrycode: ['{{countryCode|UK}}'] },
+        GET_PLANS: { partnerCode: '{{partnerCode}}', flag: 5, countryCode: 'US', multiplecountrycode: ['US'] },
         PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
       },
       requiredConfigFields: [
@@ -82,12 +82,11 @@ const templates = [
       environment: 'staging',
       status: 'TESTING',
       priority: 10,
-      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, numericFields: ['partnerCode'], configurationFields: [
+      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, numericFields: ['partnerCode'], responseListKey: 'getInformation', configurationFields: [
         { key: 'username', label: 'Username', type: 'text', required: true, secret: false, group: 'credentials', placeholder: 'Airhub API username' },
         { key: 'password', label: 'Password', type: 'password', required: true, secret: true, group: 'credentials', placeholder: 'Airhub API password' },
         { key: 'environment', label: 'Environment', type: 'select', required: true, group: 'environment', options: [{ value: 'staging', label: 'Staging' }, { value: 'production', label: 'Production' }] },
         { key: 'partnerCode', label: 'Partner Code', type: 'text', required: false, group: 'config', placeholder: 'Optional partner code' },
-        { key: 'countryCode', label: 'Country Code', type: 'text', required: false, group: 'testing', default: 'UK', placeholder: 'UK (default)' },
       ] },
       supportsESIM: true, supportsTopUp: true, supportsQRCode: true,
     },
