@@ -193,15 +193,34 @@ export class TemplateProviderAdapter implements ProviderAdapter {
    * Supports {{variableName}} and {{variableName|defaultValue}} syntax.
    * Variables are resolved from: provider.config, provider record fields, environment.
    */
-  private buildRequestBody(capability: string): any {
+  private getCapabilityMapping(capability: string): any {
+    // Priority: provider record's requestMappings > provider.config.requestBodies > provider.config.defaultRequestBody > template's defaultRequestMappings
     const reqMap = this.provider.requestMappings || {}
-    const mapping = reqMap[capability]
+    let mapping = reqMap[capability]
+
+    if (!mapping || typeof mapping !== 'object') {
+      mapping = this.config?.requestBodies?.[capability]
+    }
+    if (!mapping || typeof mapping !== 'object') {
+      mapping = this.config?.defaultRequestBody?.[capability]
+    }
+    if (!mapping || typeof mapping !== 'object') {
+      const tpl = this.provider.providerTemplate || this.provider.template
+      if (tpl?.requestMappings) {
+        mapping = tpl.requestMappings[capability]
+      }
+    }
+    if (!mapping || typeof mapping !== 'object') return {}
+    return mapping
+  }
+
+  private buildRequestBody(capability: string): any {
+    const mapping = this.getCapabilityMapping(capability)
     if (!mapping || typeof mapping !== 'object') return {}
 
-    // Numeric fields from provider config — values for these keys will be coerced to numbers
     const numericFields: string[] = this.config?.numericFields || []
 
-    const resolveVar = (tmpl: string, fieldName?: string): string | number | boolean => {
+    const resolveVar = (tmpl: string, fieldName?: string): any => {
       const match = tmpl.match(/^\{\{(.+?)\}\}$/)
       if (!match) return tmpl
       const parts = match[1].split('|')
@@ -211,7 +230,6 @@ export class TemplateProviderAdapter implements ProviderAdapter {
         ?? this.provider[varName]
         ?? process.env[varName]
         ?? defaultValue
-      // Coerce to number if field is in numericFields list
       if (fieldName && numericFields.includes(fieldName) && val !== '' && val != null) {
         const num = Number(val)
         if (!isNaN(num)) return num
@@ -220,14 +238,17 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     }
 
     const resolveValue = (val: any, key?: string): any => {
-      // Preserve number and boolean literals from the mapping
       if (typeof val === 'number') return val
       if (typeof val === 'boolean') return val
       if (Array.isArray(val)) return val.map(v => resolveValue(v))
-      // Template variables resolve as strings (from config/form)
       if (typeof val === 'string' && val.match(/^\{\{(.+?)\}\}$/)) return resolveVar(String(val), key)
-      // Static strings passed through
-      return String(val)
+      if (typeof val === 'object' && val !== null) {
+        const result: any = {}
+        for (const [k, v] of Object.entries(val)) result[k] = resolveValue(v, k)
+        return result
+      }
+      if (val === null) return null
+      return val
     }
 
     const body: any = {}
