@@ -3,21 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-
-const PUBLISH_COLORS: Record<string, string> = {
-  DRAFT: 'bg-gray-100 text-gray-600',
-  READY: 'bg-blue-100 text-blue-700',
-  PUBLISHED: 'bg-emerald-100 text-emerald-700',
-  HIDDEN: 'bg-amber-100 text-amber-700',
-  ARCHIVED: 'bg-red-100 text-red-600',
-}
-
-const CONFIG_COLORS: Record<string, string> = {
-  UNCONFIGURED: 'bg-gray-100 text-gray-600',
-  PARTIAL: 'bg-amber-100 text-amber-700',
-  CONFIGURED: 'bg-blue-100 text-blue-700',
-  AUTO_CONFIGURED: 'bg-emerald-100 text-emerald-700',
-}
+import { BulkConfigTable } from './BulkConfigTable'
 
 export default async function ProviderCatalogPage({ searchParams }: { searchParams?: { provider?: string; publishStatus?: string; configStatus?: string; search?: string; country?: string; page?: string } }) {
   const session = await getServerSession(authOptions)
@@ -142,76 +128,29 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
 
       {/* Table */}
       <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Provider</th>
-                <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Plan ID / Code</th>
-                <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Name</th>
-                <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Country</th>
-                <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Data</th>
-                <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Validity</th>
-                <th className="px-3 py-3 text-right text-xs font-medium uppercase text-gray-500">Cost</th>
-                <th className="px-3 py-3 text-right text-xs font-medium uppercase text-gray-500">Selling</th>
-                <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Markup</th>
-                <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Config</th>
-                <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Publish</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {packages.length === 0 ? (
-                <tr><td colSpan={11} className="px-4 py-12 text-center text-sm text-gray-400">No packages found.</td></tr>
-              ) : packages.map(pkg => (
-                <tr key={pkg.id} className="hover:bg-gray-50">
-                  <td className="px-3 py-3 text-sm text-gray-900">{pkg.provider?.name || '—'}</td>
-                  <td className="px-3 py-3">
-                    <span className="font-mono text-xs text-gray-900">{pkg.providerPlanId}</span>
-                    {pkg.providerPlanCode && <span className="block font-mono text-[10px] text-gray-400">{pkg.providerPlanCode}</span>}
-                  </td>
-                  <td className="px-3 py-3 text-sm text-gray-900 max-w-[200px] truncate">{pkg.name}</td>
-                  <td className="px-3 py-3 text-xs text-gray-500">{pkg.country || '—'}{pkg.region ? ` · ${pkg.region}` : ''}</td>
-                  <td className="px-3 py-3 text-xs text-center text-gray-600">{pkg.dataGB} GB</td>
-                  <td className="px-3 py-3 text-xs text-center text-gray-600">{pkg.validityDays}d</td>
-                  <td className="px-3 py-3 text-xs text-right font-medium text-gray-900">${parseFloat(pkg.costPrice.toString()).toFixed(2)}</td>
-                  <td className="px-3 py-3 text-xs text-right font-medium text-gray-900">
-                    {pkg.sellingPrice ? `$${parseFloat(pkg.sellingPrice.toString()).toFixed(2)}` : <span className="text-gray-400">—</span>}
-                  </td>
-                  <td className="px-3 py-3 text-xs text-center">
-                    {pkg.markupPercent ? (
-                      <span className="font-medium text-emerald-600">{parseFloat(pkg.markupPercent.toString())}%</span>
-                    ) : <span className="text-gray-400">—</span>}
-                  </td>
-                  <td className="px-3 py-3 text-center">
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${CONFIG_COLORS[pkg.configurationStatus || 'UNCONFIGURED']}`}>
-                      {pkg.configurationStatus || 'UNCONFIGURED'}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3 text-center">
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${PUBLISH_COLORS[pkg.publishStatus || 'DRAFT']}`}>
-                      {pkg.publishStatus || 'DRAFT'}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
-            <span className="text-gray-500">{total} packages · Page {page} of {totalPages}</span>
-            <div className="flex gap-2">
-              {page > 1 && (
-                <Link href={`/admin/provider-catalog?page=${page - 1}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Previous</Link>
-              )}
-              {page < totalPages && (
-                <Link href={`/admin/provider-catalog?page=${page + 1}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Next</Link>
-              )}
-            </div>
-          </div>
-        )}
+        <BulkConfigTable
+          initialPackages={packages.map(p => ({
+            id: p.id,
+            providerId: p.providerId,
+            providerPlanId: p.providerPlanId,
+            providerPlanCode: p.providerPlanCode,
+            name: p.name,
+            dataGB: p.dataGB,
+            validityDays: p.validityDays,
+            costPrice: p.costPrice,
+            currency: p.currency,
+            country: p.country,
+            region: p.region,
+            sellingPrice: p.sellingPrice,
+            markupPercent: p.markupPercent,
+            configurationStatus: p.configurationStatus,
+            publishStatus: p.publishStatus,
+            provider: p.provider ? { id: p.provider.id, name: p.provider.name, code: p.provider.code } : null,
+          }))}
+          total={total}
+          page={page}
+          totalPages={totalPages}
+        />
       </div>
     </div>
   )
