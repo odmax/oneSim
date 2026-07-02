@@ -11,6 +11,7 @@ export default function AdminLayout({
     { title: 'Businesses', href: '/admin/businesses' },
     { title: 'PROVIDERS & PRODUCTS', href: '#', sectionHeader: true },
     { title: 'Providers', href: '/admin/providers' },
+    { title: 'Provider Catalog', href: '/admin/provider-catalog' },
     { title: 'Provider Templates', href: '/admin/provider-templates' },
     { title: 'Pricing Rules', href: '/admin/pricing-rules' },
     { title: 'eSIM Packages', href: '/admin/packages' },

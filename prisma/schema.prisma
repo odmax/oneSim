@@ -251,6 +251,7 @@ model Provider {
   providerTemplate ProviderTemplate? @relation("ProviderTemplateRelation", fields: [providerTemplateId], references: [id])
   purchases       ESIMPurchase[]
   billingRecords  BillingRecord[] @relation("BillingRecordProvider")
+  configurationRules PackageConfigurationRule[] @relation("ProviderConfigurationRules")
 
   @@map("providers")
 }
@@ -276,6 +277,18 @@ model ProviderPackage {
   effectiveCostPrice      Decimal?
   costSource              String?  /// PROVIDER | ADMIN_OVERRIDE | MISSING
 
+  // Package management engine fields
+  publishStatus           String?  @default("DRAFT") /// DRAFT | READY | PUBLISHED | HIDDEN | ARCHIVED
+  configurationStatus     String?  @default("UNCONFIGURED") /// UNCONFIGURED | PARTIAL | CONFIGURED | AUTO_CONFIGURED
+  sellingPrice            Decimal?
+  sellingCurrency         String?  @default("USD")
+  markupPercent           Decimal?
+  pricingMode             String?  @default("MARKUP_PERCENT") /// MARKUP_PERCENT | FIXED_PRICE | FIXED_MARGIN
+  autoConfiguredByRuleId  String?
+  lastConfiguredAt        DateTime?
+  tags                    Json?
+  notes                   String?
+
   // Normalization fields
   comparableKey           String?
   normalizedCountry       String?
@@ -296,10 +309,42 @@ model ProviderPackage {
 
   provider      Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
   publishedAs   ESIMPackage?
+  configuredByRule PackageConfigurationRule? @relation("PackageAutoConfiguration", fields: [autoConfiguredByRuleId], references: [id], onDelete: SetNull)
 
   @@unique([providerId, providerPlanId])
   @@index([providerId])
+  @@index([publishStatus])
+  @@index([configurationStatus])
   @@map("provider_packages")
+}
+
+model PackageConfigurationRule {
+  id              String   @id @default(cuid())
+  name            String
+  providerId      String?
+  country         String?
+  region          String?
+  productType     String?  /// NEW_ESIM | TOP_UP | BOTH
+  dataMinGB       Int?
+  dataMaxGB       Int?
+  validityMinDays Int?
+  validityMaxDays Int?
+  markupPercent   Decimal?
+  fixedPrice      Decimal?
+  sellingCurrency String   @default("USD")
+  publishStatus   String?  @default("READY")
+  priority        Int      @default(0)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  provider Provider? @relation("ProviderConfigurationRules", fields: [providerId], references: [id], onDelete: SetNull)
+  configuredPackages ProviderPackage[] @relation("PackageAutoConfiguration")
+
+  @@index([providerId])
+  @@index([priority])
+  @@index([isActive])
+  @@map("package_configuration_rules")
 }
 
 model ESIMPackage {
