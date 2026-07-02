@@ -61,12 +61,18 @@ const templates = [
       },
       requestMappings: {
         AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-        GET_PLANS: { partnerCode: 89508211, flag: 5, countryCode: 'US', multiplecountrycode: ['US'] },
+        GET_PLANS: { partnerCode: '{{partnerCode}}', flag: '{{flag|5}}', countryCode: '{{countryCode|US}}', multiplecountrycode: '{{multiplecountrycode}}' },
         PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
       },
       requiredConfigFields: [
         { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'Airhub API username' },
         { name: 'password', label: 'Password', type: 'password', required: true, placeholder: 'Airhub API password' },
+      ],
+      optionalConfigFields: [
+        { name: 'partnerCode', label: 'Partner Code', type: 'number', required: false, placeholder: '89508211' },
+        { name: 'countryCode', label: 'Country Code', type: 'text', required: false, placeholder: 'US' },
+        { name: 'multiplecountrycode', label: 'Countries (comma separated)', type: 'text', required: false, placeholder: 'US,GB,ZA' },
+        { name: 'flag', label: 'Flag', type: 'number', required: false, placeholder: '5' },
       ],
       isSystemTemplate: true,
     },
@@ -80,10 +86,13 @@ const templates = [
       environment: 'staging',
       status: 'TESTING',
       priority: 10,
-      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, responseListKey: 'getInformation', configurationFields: [
+      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, numericFields: ['partnerCode', 'flag'], arrayFields: ['multiplecountrycode'], responseListKey: 'getInformation', configurationFields: [
         { key: 'username', label: 'Username', type: 'text', required: true, secret: false, group: 'credentials', placeholder: 'Airhub API username' },
         { key: 'password', label: 'Password', type: 'password', required: true, secret: true, group: 'credentials', placeholder: 'Airhub API password' },
-        { key: 'environment', label: 'Environment', type: 'select', required: true, group: 'environment', options: [{ value: 'staging', label: 'Staging' }, { value: 'production', label: 'Production' }] },
+        { key: 'partnerCode', label: 'Partner Code', type: 'number', required: false, group: 'config', placeholder: '89508211' },
+        { key: 'countryCode', label: 'Country Code', type: 'text', required: false, group: 'config', placeholder: 'US' },
+        { key: 'multiplecountrycode', label: 'Countries', type: 'text', required: false, group: 'config', placeholder: 'US,GB,ZA' },
+        { key: 'flag', label: 'Flag', type: 'number', required: false, group: 'config', placeholder: '5' },
       ] },
       supportsESIM: true, supportsTopUp: true, supportsQRCode: true,
     },

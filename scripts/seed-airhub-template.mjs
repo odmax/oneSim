@@ -52,7 +52,7 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: 89508211, flag: 5, countryCode: 'US', multiplecountrycode: ['US'] },
+          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: '{{flag|5}}', countryCode: '{{countryCode|US}}', multiplecountrycode: '{{multiplecountrycode}}' },
 
           PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
@@ -97,7 +97,7 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: 89508211, flag: 5, countryCode: 'US', multiplecountrycode: ['US'] },
+          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: '{{flag|5}}', countryCode: '{{countryCode|US}}', multiplecountrycode: '{{multiplecountrycode}}' },
           PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
         requiredConfigFields: [

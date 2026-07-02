@@ -219,6 +219,7 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     if (!mapping || typeof mapping !== 'object') return {}
 
     const numericFields: string[] = this.config?.numericFields || []
+    const arrayFields: string[] = this.config?.arrayFields || []
 
     const resolveVar = (tmpl: string, fieldName?: string): any => {
       const match = tmpl.match(/^\{\{(.+?)\}\}$/)
@@ -226,14 +227,38 @@ export class TemplateProviderAdapter implements ProviderAdapter {
       const parts = match[1].split('|')
       const varName = parts[0]
       const defaultValue = parts[1] || ''
-      const val = this.config?.[varName]
+
+      // Resolve value from config > provider fields > env > default
+      let val = this.config?.[varName]
         ?? this.provider[varName]
         ?? process.env[varName]
         ?? defaultValue
-      if (fieldName && numericFields.includes(fieldName) && val !== '' && val != null) {
-        const num = Number(val)
-        if (!isNaN(num)) return num
+
+      // Numeric coercion: if field is in numericFields, convert to number
+      if (fieldName && numericFields.includes(fieldName)) {
+        if (val !== '' && val != null) {
+          const num = Number(val)
+          if (!isNaN(num)) return num
+        }
       }
+
+      // Array coercion: if field is in arrayFields and value is comma-separated string, split
+      if (fieldName && arrayFields.includes(fieldName)) {
+        if (typeof val === 'string' && val.includes(',')) {
+          return val.split(',').map(s => s.trim()).filter(Boolean)
+        }
+        if (typeof val === 'string' && val.length > 0 && !val.includes(',')) {
+          return [val.trim()]
+        }
+        if (Array.isArray(val)) return val
+        // Default: use default value or empty array
+        if (defaultValue && defaultValue.includes(',')) {
+          return defaultValue.split(',').map(s => s.trim()).filter(Boolean)
+        }
+        return defaultValue ? [defaultValue] : []
+      }
+
+      // For template-only strings, return raw config value — preserving type
       return val ?? ''
     }
 
@@ -274,6 +299,7 @@ export class TemplateProviderAdapter implements ProviderAdapter {
       authType: this.provider.authType,
       headers: Object.keys(headers),
       body,
+      bodyTypes: Object.fromEntries(Object.entries(body).map(([k, v]) => [k, Array.isArray(v) ? `array[${v.length}]` : typeof v])),
     })
     const fetchOpts: any = { method: ep.method, headers }
     if (['POST', 'PUT', 'PATCH'].includes(ep.method.toUpperCase())) {
@@ -383,6 +409,15 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     }))
 
     this.token = token
+
+    // Extract partnerCode from auth response if not already configured (AirHub fallback)
+    if (!this.config?.partnerCode) {
+      const pc = result.data?.partnerCode ?? result.data?.data?.partnerCode ?? result.data?.result?.partnerCode
+      if (pc != null) {
+        this.config.partnerCode = pc
+        console.log(`[TemplateProviderAdapter] Extracted partnerCode from auth: ${pc}`)
+      }
+    }
 
     // Step 2: If provider requires API key generation (e.g. Rakuten), generate it using the login token
     const genKeyEp = resolveEndpoint(this.endpointMappings, 'GENERATE_API_KEY')
