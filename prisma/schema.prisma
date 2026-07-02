@@ -303,6 +303,13 @@ model ProviderPackage {
   excludedFromCheapest    Boolean  @default(false)
   exclusionReason         String?
 
+  // Preferred package & auto-pick fields
+  isPreferred             Boolean  @default(false)
+  preferredReason         String?
+  preferredAt             DateTime?
+  excludedFromAutoPick    Boolean  @default(false)
+  autoPickReason          String?
+
   providerRawData Json?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

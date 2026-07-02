@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { markPreferred, hideDuplicatesInGroup, autoPickCheapestForGroup, autoPickAllGroups, excludeFromAutoPick } from '@/lib/actions/auto-pick'
 
 export default async function CatalogHealthPage() {
   const session = await getServerSession(authOptions)
@@ -65,6 +66,9 @@ export default async function CatalogHealthPage() {
         publishStatus: p.publishStatus,
         configurationStatus: p.configurationStatus,
         isCheapest: p === pkgs[cheapestIdx],
+        isPreferred: p.isPreferred,
+        excludedFromAutoPick: p.excludedFromAutoPick,
+        autoPickReason: p.autoPickReason,
       })),
     }
   })
@@ -76,9 +80,18 @@ export default async function CatalogHealthPage() {
           <h2 className="text-2xl font-bold text-gray-900">Catalog Health</h2>
           <p className="text-gray-600">Detect duplicates, conflicts, and coverage gaps</p>
         </div>
-        <Link href="/admin/provider-catalog" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
-          ← Back to Catalog
-        </Link>
+        <div className="flex gap-2">
+          {duplicates.length > 0 && (
+            <form action={autoPickAllGroups}>
+              <button type="submit" className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700">
+                Auto-Pick Cheapest for All Groups
+              </button>
+            </form>
+          )}
+          <Link href="/admin/provider-catalog" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+            ← Back to Catalog
+          </Link>
+        </div>
       </div>
 
       {/* Stats */}
@@ -139,6 +152,14 @@ export default async function CatalogHealthPage() {
                       {group.published.length} published
                     </span>
                   )}
+                  <div className="ml-auto flex gap-1">
+                    <form action={autoPickCheapestForGroup.bind(null, group.key)}>
+                      <button type="submit" className="rounded border border-cyan-200 px-2 py-0.5 text-[10px] font-medium text-cyan-700 hover:bg-cyan-50">Auto-Pick</button>
+                    </form>
+                    <form action={hideDuplicatesInGroup.bind(null, group.key)}>
+                      <button type="submit" className="rounded border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50">Hide Duplicates</button>
+                    </form>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
@@ -150,12 +171,17 @@ export default async function CatalogHealthPage() {
                         <th className="pb-1 text-right">Selling</th>
                         <th className="pb-1">Config</th>
                         <th className="pb-1">Publish</th>
+                      <th className="pb-1 w-16">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {group.packages.map(pkg => (
                         <tr key={pkg.id} className={`border-t ${pkg.isCheapest ? 'bg-emerald-50' : ''}`}>
-                          <td className="py-1 pr-3 text-gray-600">{pkg.provider}</td>
+                          <td className="py-1 pr-3 text-gray-600">
+                            {pkg.provider}
+                            {pkg.isPreferred && <span className="ml-1 inline-flex rounded-full bg-cyan-100 px-1.5 py-0.5 text-[9px] font-medium text-cyan-700">Preferred</span>}
+                            {pkg.excludedFromAutoPick && <span className="ml-1 inline-flex rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-medium text-gray-500">Excluded</span>}
+                          </td>
                           <td className="py-1 pr-3 text-gray-900 truncate max-w-[200px]">{pkg.name}</td>
                           <td className={`py-1 pr-3 text-right font-mono ${pkg.isCheapest ? 'text-emerald-700 font-medium' : 'text-gray-600'}`}>
                             ${parseFloat(pkg.costPrice).toFixed(2)} {pkg.isCheapest ? '←' : ''}
@@ -167,6 +193,16 @@ export default async function CatalogHealthPage() {
                             {pkg.configurationStatus || '—'}
                           </td>
                           <td className="py-1">{pkg.publishStatus || '—'}</td>
+                          <td className="py-1">
+                            <div className="flex gap-1">
+                              <form action={markPreferred.bind(null, pkg.id)}>
+                                <button type="submit" className="text-[10px] text-cyan-600 hover:text-cyan-700">Pref</button>
+                              </form>
+                              <form action={excludeFromAutoPick.bind(null, pkg.id)}>
+                                <button type="submit" className="text-[10px] text-gray-400 hover:text-gray-600">Excl</button>
+                              </form>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
