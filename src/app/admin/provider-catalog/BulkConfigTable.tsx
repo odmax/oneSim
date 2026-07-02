@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { bulkConfigurePackages } from '@/lib/actions/bulk-configure'
 import { publishToCatalog } from '@/lib/actions/publish-packages'
+import { applyRulesToPackages } from '@/lib/actions/package-rules'
 import Link from 'next/link'
 
 const PUBLISH_COLORS: Record<string, string> = {
@@ -49,6 +50,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
   const [showForm, setShowForm] = useState(false)
   const [loading, setLoading] = useState(false)
   const [publishLoading, setPublishLoading] = useState(false)
+  const [rulesLoading, setRulesLoading] = useState(false)
   const [result, setResult] = useState<{ success?: boolean; updated?: number; created?: number; skipped?: number; error?: string } | null>(null)
 
   // Form state
@@ -73,6 +75,17 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     if (next.has(id)) next.delete(id)
     else next.add(id)
     setSelected(next)
+  }
+
+  const handleApplyRules = async () => {
+    setRulesLoading(true)
+    setResult(null)
+    const res = await applyRulesToPackages(undefined)
+    setResult({ success: res.success, created: res.matched, updated: 0, skipped: 0, error: res.error })
+    if (res.success) {
+      setTimeout(() => window.location.reload(), 1500)
+    }
+    setRulesLoading(false)
   }
 
   const handlePublish = async () => {
@@ -135,6 +148,10 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
           <button onClick={handlePublish} disabled={publishLoading}
             className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
             {publishLoading ? 'Publishing...' : 'Publish Selected'}
+          </button>
+          <button onClick={handleApplyRules} disabled={rulesLoading}
+            className="rounded-lg bg-purple-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50">
+            {rulesLoading ? 'Applying...' : 'Auto-Configure All'}
           </button>
           <button onClick={() => setSelected(new Set())}
             className="rounded-lg border border-gray-200 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50">
@@ -218,6 +235,13 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
       )}
 
       {/* Table */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b">
+        <button onClick={handleApplyRules} disabled={rulesLoading}
+          className="rounded-lg bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50">
+          {rulesLoading ? 'Applying...' : 'Apply Rules to Unconfigured'}
+        </button>
+        <span className="text-xs text-gray-400">Auto-configure all unconfigured packages using active rules</span>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="bg-gray-50">

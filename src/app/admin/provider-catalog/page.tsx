@@ -54,6 +54,9 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
           <h2 className="text-2xl font-bold text-gray-900">Provider Catalog</h2>
           <p className="text-gray-600">Raw provider packages — configure pricing and publishing before making sellable</p>
         </div>
+        <Link href="/admin/package-rules" className="rounded-lg border border-purple-300 px-4 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50">
+          Manage Rules
+        </Link>
       </div>
 
       {/* Stats */}
