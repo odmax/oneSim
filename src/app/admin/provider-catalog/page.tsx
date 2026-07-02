@@ -59,6 +59,10 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
             className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
             Export CSV
           </a>
+          <Link href="/admin/provider-catalog/health"
+            className="rounded-lg border border-amber-300 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-50">
+            Health
+          </Link>
           <Link href="/admin/provider-catalog?configStatus=AUTO_CONFIGURED&publishStatus=READY"
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
             Ready to Publish
