@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { bulkConfigurePackages } from '@/lib/actions/bulk-configure'
+import { publishToCatalog } from '@/lib/actions/publish-packages'
 import Link from 'next/link'
 
 const PUBLISH_COLORS: Record<string, string> = {
@@ -47,7 +48,8 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [showForm, setShowForm] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<{ success?: boolean; updated?: number; error?: string } | null>(null)
+  const [publishLoading, setPublishLoading] = useState(false)
+  const [result, setResult] = useState<{ success?: boolean; updated?: number; created?: number; skipped?: number; error?: string } | null>(null)
 
   // Form state
   const [markupPercent, setMarkupPercent] = useState('')
@@ -71,6 +73,19 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     if (next.has(id)) next.delete(id)
     else next.add(id)
     setSelected(next)
+  }
+
+  const handlePublish = async () => {
+    if (selected.size === 0) return
+    setPublishLoading(true)
+    setResult(null)
+    const res = await publishToCatalog(Array.from(selected))
+    setResult(res)
+    if (res.success) {
+      setSelected(new Set())
+      setTimeout(() => window.location.reload(), 1500)
+    }
+    setPublishLoading(false)
   }
 
   const handleSubmit = async () => {
@@ -103,7 +118,9 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
       {/* Result alert */}
       {result && (
         <div className={`mb-4 rounded-lg p-4 text-sm ${result.success ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-          {result.success ? `Updated ${result.updated} packages. Refreshing...` : result.error}
+          {result.created != null
+            ? `Published ${result.created} new, ${result.updated || 0} updated${result.skipped ? `, ${result.skipped} skipped` : ''}. Refreshing...`
+            : result.success ? `Updated ${result.updated} packages. Refreshing...` : result.error}
         </div>
       )}
 
@@ -114,6 +131,10 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
           <button onClick={() => setShowForm(!showForm)}
             className="rounded-lg bg-cyan-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-cyan-700">
             Configure Selected
+          </button>
+          <button onClick={handlePublish} disabled={publishLoading}
+            className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+            {publishLoading ? 'Publishing...' : 'Publish Selected'}
           </button>
           <button onClick={() => setSelected(new Set())}
             className="rounded-lg border border-gray-200 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50">
