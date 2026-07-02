@@ -160,6 +160,7 @@ export class TemplateProviderAdapter implements ProviderAdapter {
   private token: string | null = null
   private provider: any
   private config: any
+  private authContext: Record<string, any> = {}
 
   constructor(provider: any) {
     this.providerId = provider.id
@@ -221,44 +222,70 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     const numericFields: string[] = this.config?.numericFields || []
     const arrayFields: string[] = this.config?.arrayFields || []
 
+    /**
+     * Resolves a {{variable}} expression with namespace support:
+     *   {{auth.partnerCode}}     → authContext
+     *   {{config.flag|5}}        → provider.config (with default)
+     *   {{credentials.username}} → this.config
+     *   {{partnerCode}}          → backward compat: config > auth > credentials
+     */
     const resolveVar = (tmpl: string, fieldName?: string): any => {
       const match = tmpl.match(/^\{\{(.+?)\}\}$/)
       if (!match) return tmpl
-      const parts = match[1].split('|')
-      const varName = parts[0]
-      const defaultValue = parts[1] || ''
 
-      // Resolve value from config > provider fields > env > default
-      let val = this.config?.[varName]
-        ?? this.provider[varName]
-        ?? process.env[varName]
-        ?? defaultValue
+      const inner = match[1]
+      const pipeIdx = inner.indexOf('|')
+      const rawExpr = pipeIdx >= 0 ? inner.substring(0, pipeIdx) : inner
+      const defaultValue = pipeIdx >= 0 ? inner.substring(pipeIdx + 1) : ''
 
-      // Numeric coercion: if field is in numericFields, convert to number
-      if (fieldName && numericFields.includes(fieldName)) {
-        if (val !== '' && val != null) {
-          const num = Number(val)
-          if (!isNaN(num)) return num
-        }
+      // Parse namespace: "auth.partnerCode" or "config.flag" or plain "partnerCode"
+      const dotIdx = rawExpr.indexOf('.')
+      const namespace = dotIdx >= 0 ? rawExpr.substring(0, dotIdx) : null
+      const varName = dotIdx >= 0 ? rawExpr.substring(dotIdx + 1) : rawExpr
+
+      // Resolve value based on namespace
+      let val: any = undefined
+      if (namespace === 'auth') {
+        // Auth namespace checks config first (override), then auth context
+        val = this.config?.[varName] ?? this.authContext?.[varName]
+      } else if (namespace === 'config') {
+        val = this.config?.[varName]
+      } else if (namespace === 'credentials') {
+        val = this.config?.[varName] ?? this.provider[varName]
+      } else {
+        // Plain variable: backward compat priority: config > auth > provider > env
+        val = this.config?.[varName]
+          ?? this.authContext?.[varName]
+          ?? this.provider[varName]
+          ?? process.env[varName]
       }
 
-      // Array coercion: if field is in arrayFields and value is comma-separated string, split
+      if (val == null || val === '') {
+        val = defaultValue
+      }
+
+      // Numeric coercion
+      if (fieldName && numericFields.includes(fieldName) && val !== '' && val != null) {
+        const num = Number(val)
+        if (!isNaN(num)) return num
+      }
+
+      // Array coercion: comma-separated string → array
       if (fieldName && arrayFields.includes(fieldName)) {
         if (typeof val === 'string' && val.includes(',')) {
-          return val.split(',').map(s => s.trim()).filter(Boolean)
+          return val.split(',').map((s: string) => s.trim()).filter(Boolean)
         }
         if (typeof val === 'string' && val.length > 0 && !val.includes(',')) {
           return [val.trim()]
         }
         if (Array.isArray(val)) return val
-        // Default: use default value or empty array
         if (defaultValue && defaultValue.includes(',')) {
-          return defaultValue.split(',').map(s => s.trim()).filter(Boolean)
+          return defaultValue.split(',').map((s: string) => s.trim()).filter(Boolean)
         }
         return defaultValue ? [defaultValue] : []
       }
 
-      // For template-only strings, return raw config value — preserving type
+      // Return raw value — preserving original type (number, string, array, etc.)
       return val ?? ''
     }
 
@@ -410,13 +437,16 @@ export class TemplateProviderAdapter implements ProviderAdapter {
 
     this.token = token
 
-    // Extract partnerCode from auth response if not already configured (AirHub fallback)
-    if (!this.config?.partnerCode) {
-      const pc = result.data?.partnerCode ?? result.data?.data?.partnerCode ?? result.data?.result?.partnerCode
-      if (pc != null) {
-        this.config.partnerCode = pc
-        console.log(`[TemplateProviderAdapter] Extracted partnerCode from auth: ${pc}`)
-      }
+    // Extract auth context values from login response for use in subsequent requests
+    const authData = result.data
+    this.authContext = {
+      partnerCode: authData?.partnerCode ?? authData?.data?.partnerCode ?? authData?.result?.partnerCode,
+      userID: authData?.userID ?? authData?.data?.userID ?? authData?.result?.userID,
+      userName: authData?.userName ?? authData?.data?.userName ?? authData?.result?.userName,
+      role: authData?.role ?? authData?.data?.role ?? authData?.result?.role,
+    }
+    if (this.authContext.partnerCode != null) {
+      console.log(`[TemplateProviderAdapter] Auth context: partnerCode=${this.authContext.partnerCode}`)
     }
 
     // Step 2: If provider requires API key generation (e.g. Rakuten), generate it using the login token
@@ -531,6 +561,20 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
 
     if (result.error) return { success: false, error: result.error }
     if (!result.data) return { success: false, error: { code: 'EMPTY', message: 'Empty plans response' } }
+
+    // Check for provider-level isSuccess: false (AirHub pattern)
+    if (result.data.isSuccess === false) {
+      const providerMsg = result.data.message || result.data.errorMessage || 'Unknown provider error'
+      console.log('[GET_PLANS] Provider returned isSuccess=false message=' + providerMsg)
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: `Provider returned failure: ${providerMsg}` } }
+    }
+
+    // Check for errorCode pattern (AirHub: errorCode != 0 means failure)
+    if (result.data.errorCode != null && result.data.errorCode !== 0) {
+      const errMsg = result.data.message || result.data.errorMessage || `Error code: ${result.data.errorCode}`
+      console.log('[GET_PLANS] Provider returned errorCode=' + result.data.errorCode + ' message=' + errMsg)
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: `Provider returned failure: ${errMsg}` } }
+    }
 
     const listKey = this.provider.responseListKey || this.config?.responseListKey || 'data'
     const ep = this.endpointMappings

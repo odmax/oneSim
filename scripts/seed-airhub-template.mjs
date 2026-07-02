@@ -52,13 +52,19 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: '{{flag|5}}', countryCode: '{{countryCode|US}}', multiplecountrycode: '{{multiplecountrycode}}' },
+          GET_PLANS: { partnerCode: '{{auth.partnerCode}}', flag: '{{config.flag|5}}', countryCode: '{{config.countryCode|US}}', multiplecountrycode: '{{config.multiplecountrycode}}' },
 
-          PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
+          PURCHASE_ESIM: { partnerCode: '{{auth.partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
         requiredConfigFields: [
           { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'Airhub API username' },
           { name: 'password', label: 'Password', type: 'password', required: true, placeholder: 'Airhub API password' },
+        ],
+        optionalConfigFields: [
+          { name: 'countryCode', label: 'Country Code', type: 'text', required: false, placeholder: 'US' },
+          { name: 'multiplecountrycode', label: 'Countries (comma separated)', type: 'text', required: false, placeholder: 'US,GB,ZA' },
+          { name: 'flag', label: 'Flag', type: 'number', required: false, placeholder: '5' },
+          { name: 'partnerCodeOverride', label: 'Partner Code Override', type: 'number', required: false, placeholder: 'Only set if auth-derived code differs' },
         ],
         isSystemTemplate: true,
       },
@@ -97,12 +103,18 @@ console.log('Seeding Airhub Outreach system template...')
         endpointMappings: airhubEndpoints,
         requestMappings: {
           AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-          GET_PLANS: { partnerCode: '{{partnerCode}}', flag: '{{flag|5}}', countryCode: '{{countryCode|US}}', multiplecountrycode: '{{multiplecountrycode}}' },
-          PURCHASE_ESIM: { partnerCode: '{{partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
+          GET_PLANS: { partnerCode: '{{auth.partnerCode}}', flag: '{{config.flag|5}}', countryCode: '{{config.countryCode|US}}', multiplecountrycode: '{{config.multiplecountrycode}}' },
+          PURCHASE_ESIM: { partnerCode: '{{auth.partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
         },
         requiredConfigFields: [
           { name: 'username', label: 'Username', type: 'text', required: true, placeholder: 'Airhub API username' },
           { name: 'password', label: 'Password', type: 'password', required: true, placeholder: 'Airhub API password' },
+        ],
+        optionalConfigFields: [
+          { name: 'countryCode', label: 'Country Code', type: 'text', required: false, placeholder: 'US' },
+          { name: 'multiplecountrycode', label: 'Countries (comma separated)', type: 'text', required: false, placeholder: 'US,GB,ZA' },
+          { name: 'flag', label: 'Flag', type: 'number', required: false, placeholder: '5' },
+          { name: 'partnerCodeOverride', label: 'Partner Code Override', type: 'number', required: false, placeholder: 'Only set if auth-derived code differs' },
         ],
         isSystemTemplate: true,
       },
