@@ -126,3 +126,50 @@ export async function publishToCatalog(packageIds: string[]): Promise<{ success:
 
   return { success: true, created, updated, skipped }
 }
+
+export async function bulkSetPublishStatus(packageIds: string[], status: 'HIDDEN' | 'ARCHIVED'): Promise<{ success: boolean; updated?: number; error?: string }> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!packageIds || packageIds.length === 0) return { success: false, error: 'No packages selected' }
+
+  const validStatuses = ['HIDDEN', 'ARCHIVED']
+  if (!validStatuses.includes(status)) return { success: false, error: 'Invalid status' }
+
+  const result = await prisma.providerPackage.updateMany({
+    where: { id: { in: packageIds } },
+    data: { publishStatus: status },
+  })
+
+  await prisma.auditLog.create({
+    data: { userId: session.user.id, action: `BULK_${status}`, entity: 'ProviderPackage', details: `Set ${result.count} packages to ${status}` },
+  }).catch(() => {})
+
+  revalidatePath('/admin/provider-catalog')
+  return { success: true, updated: result.count }
+}
+
+export async function getPublishSummary(packageIds: string[]) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return null
+
+  const packages = await prisma.providerPackage.findMany({
+    where: { id: { in: packageIds }, sellingPrice: { not: undefined } },
+    include: { provider: { select: { id: true, name: true } } },
+  })
+
+  if (packages.length === 0) return { total: 0, providers: [], countries: [], minPrice: 0, maxPrice: 0 }
+
+  const providers = [...new Set(packages.map(p => p.provider?.name).filter(Boolean))]
+  const countries = [...new Set(packages.map(p => p.country).filter(Boolean))]
+  const prices = packages.map(p => parseFloat(p.sellingPrice!.toString())).filter(p => !isNaN(p))
+
+  return {
+    total: packages.length,
+    providers: providers.length,
+    providerNames: providers.join(', '),
+    countries: countries.length,
+    countryNames: countries.join(', '),
+    minPrice: Math.min(...prices),
+    maxPrice: Math.max(...prices),
+  }
+}

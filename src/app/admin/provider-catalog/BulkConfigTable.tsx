@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { bulkConfigurePackages } from '@/lib/actions/bulk-configure'
-import { publishToCatalog } from '@/lib/actions/publish-packages'
+import { publishToCatalog, bulkSetPublishStatus, getPublishSummary } from '@/lib/actions/publish-packages'
 import { applyRulesToPackages } from '@/lib/actions/package-rules'
 import Link from 'next/link'
 
@@ -51,6 +51,8 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
   const [loading, setLoading] = useState(false)
   const [publishLoading, setPublishLoading] = useState(false)
   const [rulesLoading, setRulesLoading] = useState(false)
+  const [publishSummary, setPublishSummary] = useState<any>(null)
+  const [showConfirm, setShowConfirm] = useState(false)
   const [result, setResult] = useState<{ success?: boolean; updated?: number; created?: number; skipped?: number; error?: string } | null>(null)
 
   // Form state
@@ -90,15 +92,43 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
 
   const handlePublish = async () => {
     if (selected.size === 0) return
+
+    // First show summary
+    const summary = await getPublishSummary(Array.from(selected))
+    if (!summary || summary.total === 0) {
+      setResult({ success: false, error: 'No publishable packages selected. Ensure selling price is set and status is configured.' })
+      return
+    }
+    setPublishSummary(summary)
+    setShowConfirm(true)
+  }
+
+  const confirmPublish = async () => {
     setPublishLoading(true)
-    setResult(null)
+    setShowConfirm(false)
+    setPublishSummary(null)
     const res = await publishToCatalog(Array.from(selected))
-    setResult(res)
+    setResult({ success: res.success, created: res.created, updated: res.updated, skipped: res.skipped, error: res.error })
     if (res.success) {
       setSelected(new Set())
-      setTimeout(() => window.location.reload(), 1500)
+      setTimeout(() => window.location.reload(), 2000)
     }
     setPublishLoading(false)
+  }
+
+  const handleBulkHide = async () => {
+    if (selected.size === 0) return
+    const res = await bulkSetPublishStatus(Array.from(selected), 'HIDDEN')
+    setResult(res)
+    if (res.success) { setSelected(new Set()); setTimeout(() => window.location.reload(), 1500) }
+  }
+
+  const handleBulkArchive = async () => {
+    if (selected.size === 0) return
+    if (!confirm(`Archive ${selected.size} packages? They will be hidden from all views.`)) return
+    const res = await bulkSetPublishStatus(Array.from(selected), 'ARCHIVED')
+    setResult(res)
+    if (res.success) { setSelected(new Set()); setTimeout(() => window.location.reload(), 1500) }
   }
 
   const handleSubmit = async () => {
@@ -139,24 +169,73 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
 
       {/* Bulk action bar */}
       {selected.size > 0 && (
-        <div className="mb-4 flex items-center gap-3 rounded-lg bg-cyan-50 border border-cyan-200 p-3">
-          <span className="text-sm font-medium text-cyan-800">{selected.size} selected</span>
-          <button onClick={() => setShowForm(!showForm)}
-            className="rounded-lg bg-cyan-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-cyan-700">
-            Configure Selected
-          </button>
-          <button onClick={handlePublish} disabled={publishLoading}
-            className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-            {publishLoading ? 'Publishing...' : 'Publish Selected'}
-          </button>
-          <button onClick={handleApplyRules} disabled={rulesLoading}
-            className="rounded-lg bg-purple-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50">
-            {rulesLoading ? 'Applying...' : 'Auto-Configure All'}
-          </button>
-          <button onClick={() => setSelected(new Set())}
-            className="rounded-lg border border-gray-200 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50">
-            Clear Selection
-          </button>
+        <div className="mb-4 rounded-lg bg-cyan-50 border border-cyan-200 p-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-cyan-800">{selected.size} selected</span>
+            <div className="flex gap-1 flex-wrap">
+              <button onClick={() => setShowForm(!showForm)}
+                className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-700">
+                Configure
+              </button>
+              <button onClick={handlePublish} disabled={publishLoading}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                {publishLoading ? 'Publishing...' : 'Publish'}
+              </button>
+              <button onClick={handleApplyRules} disabled={rulesLoading}
+                className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50">
+                {rulesLoading ? 'Applying...' : 'Apply Rules'}
+              </button>
+              <button onClick={handleBulkHide}
+                className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700">
+                Hide
+              </button>
+              <button onClick={handleBulkArchive}
+                className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700">
+                Archive
+              </button>
+            </div>
+            <button onClick={() => setSelected(new Set())}
+              className="ml-auto rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50">
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Publish Confirmation Modal */}
+      {showConfirm && publishSummary && (
+        <div className="mb-4 rounded-xl border-2 border-emerald-300 bg-emerald-50 p-5 shadow-lg">
+          <h3 className="text-base font-bold text-emerald-800 mb-3">Confirm Publish</h3>
+          <div className="grid gap-3 sm:grid-cols-2 mb-4">
+            <div className="rounded-lg bg-white p-3">
+              <p className="text-xs text-gray-500">Packages ready</p>
+              <p className="text-xl font-bold text-gray-900">{publishSummary.total}</p>
+            </div>
+            <div className="rounded-lg bg-white p-3">
+              <p className="text-xs text-gray-500">Providers affected</p>
+              <p className="text-xl font-bold text-gray-900">{publishSummary.providers}</p>
+              <p className="text-[10px] text-gray-400 truncate">{publishSummary.providerNames}</p>
+            </div>
+            <div className="rounded-lg bg-white p-3">
+              <p className="text-xs text-gray-500">Countries</p>
+              <p className="text-xl font-bold text-gray-900">{publishSummary.countries}</p>
+              <p className="text-[10px] text-gray-400 truncate">{publishSummary.countryNames}</p>
+            </div>
+            <div className="rounded-lg bg-white p-3">
+              <p className="text-xs text-gray-500">Price Range</p>
+              <p className="text-xl font-bold text-gray-900">${publishSummary.minPrice.toFixed(2)} — ${publishSummary.maxPrice.toFixed(2)}</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={confirmPublish} disabled={publishLoading}
+              className="rounded-lg bg-emerald-600 px-5 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+              {publishLoading ? 'Publishing...' : `Publish ${publishSummary.total} packages`}
+            </button>
+            <button onClick={() => { setShowConfirm(false); setPublishSummary(null) }}
+              className="rounded-lg border border-gray-200 px-5 py-2 text-sm text-gray-600 hover:bg-gray-50">
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 

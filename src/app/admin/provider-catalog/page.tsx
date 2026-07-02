@@ -54,9 +54,25 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
           <h2 className="text-2xl font-bold text-gray-900">Provider Catalog</h2>
           <p className="text-gray-600">Raw provider packages — configure pricing and publishing before making sellable</p>
         </div>
-        <Link href="/admin/package-rules" className="rounded-lg border border-purple-300 px-4 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50">
-          Manage Rules
-        </Link>
+        <div className="flex gap-2">
+          <Link href="/admin/provider-catalog?configStatus=AUTO_CONFIGURED&publishStatus=READY"
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
+            Ready to Publish
+          </Link>
+          <Link href="/admin/package-rules" className="rounded-lg border border-purple-300 px-4 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50">
+            Manage Rules
+          </Link>
+        </div>
+      </div>
+
+      {/* Quick filter tabs */}
+      <div className="flex flex-wrap gap-2">
+        <Link href="/admin/provider-catalog" className={`rounded-full px-3 py-1 text-xs font-medium ${!searchParams?.configStatus && !searchParams?.publishStatus ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>All</Link>
+        <Link href="/admin/provider-catalog?configStatus=UNCONFIGURED" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.configStatus === 'UNCONFIGURED' && !searchParams?.publishStatus ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Unconfigured</Link>
+        <Link href="/admin/provider-catalog?configStatus=AUTO_CONFIGURED" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.configStatus === 'AUTO_CONFIGURED' && !searchParams?.publishStatus ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Auto Configured</Link>
+        <Link href="/admin/provider-catalog?configStatus=CONFIGURED" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.configStatus === 'CONFIGURED' && !searchParams?.publishStatus ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Configured</Link>
+        <Link href="/admin/provider-catalog?publishStatus=PUBLISHED" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.publishStatus === 'PUBLISHED' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Published</Link>
+        <Link href="/admin/provider-catalog?publishStatus=READY" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.publishStatus === 'READY' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Ready</Link>
       </div>
 
       {/* Stats */}
