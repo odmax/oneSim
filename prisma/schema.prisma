@@ -93,6 +93,7 @@ model User {
   assignedTickets       SupportTicket[]      @relation("TicketAssignee")
   auditNotes            ProviderAuditNote[]
   orderTimelineEvents   OrderTimelineEvent[]
+  catalogChangeSets     CatalogChangeSet[]  @relation("UserChangeSets")
 
   @@map("users")
 }
@@ -320,6 +321,7 @@ model ProviderPackage {
   provider      Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
   publishedAs   ESIMPackage?
   configuredByRule PackageConfigurationRule? @relation("PackageAutoConfiguration", fields: [autoConfiguredByRuleId], references: [id], onDelete: SetNull)
+  changeItems  CatalogChangeItem[] @relation("PackageChangeItems")
 
   @@unique([providerId, providerPlanId])
   @@index([providerId])
@@ -355,6 +357,35 @@ model PackageConfigurationRule {
   @@index([priority])
   @@index([isActive])
   @@map("package_configuration_rules")
+}
+
+model CatalogChangeSet {
+  id           String   @id @default(cuid())
+  actionType   String
+  description  String?
+  createdById  String?
+  createdAt    DateTime @default(now())
+  totalChanged Int      @default(0)
+  metadata     Json?
+
+  createdBy User?              @relation("UserChangeSets", fields: [createdById], references: [id], onDelete: SetNull)
+  items     CatalogChangeItem[]
+
+  @@map("catalog_change_sets")
+}
+
+model CatalogChangeItem {
+  id               String   @id @default(cuid())
+  changeSetId      String
+  providerPackageId String
+  before           Json
+  after            Json
+  createdAt        DateTime @default(now())
+
+  changeSet CatalogChangeSet @relation(fields: [changeSetId], references: [id], onDelete: Cascade)
+  pkg       ProviderPackage  @relation("PackageChangeItems", fields: [providerPackageId], references: [id], onDelete: Cascade)
+
+  @@map("catalog_change_items")
 }
 
 model ESIMPackage {
