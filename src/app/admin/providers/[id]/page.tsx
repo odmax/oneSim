@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { toggleProviderStatus, testProviderConnection } from '@/lib/actions/providers'
 import { syncProviderPlans } from '@/lib/actions/provider-sync'
+import { previewSync, applySafeSync } from '@/lib/actions/provider-sync-preview'
 import { DeletePackageButton } from '@/components/admin/providers/DeletePackageButton'
 import { PlanImportTable } from '@/components/admin/providers/PlanImportTable'
 import { ProviderAuthPanel } from '@/components/admin/providers/ProviderAuthPanel'
@@ -38,7 +39,7 @@ function healthEventIcon(type: string): string {
   }
 }
 
-export default async function ProviderDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string; synced?: string; setup?: string; tab?: string } }) {
+export default async function ProviderDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string; synced?: string; setup?: string; tab?: string; preview?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
@@ -72,6 +73,14 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       syncDiagnostics = (result as any).diagnostics || null
       inferredCapabilities = (result as any).inferredCapabilities || null
     }
+  }
+
+  // Preview sync
+  let previewData: any = null
+  if (searchParams?.preview === 'true') {
+    const preview = await previewSync(provider.id)
+    if ('error' in preview) syncError = preview.error
+    else previewData = preview
   }
 
   // Show setup wizard on first creation
@@ -338,6 +347,12 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
           </div>
           <div className="flex gap-2">
             <Link
+              href={`/admin/providers/${provider.id}?preview=true`}
+              className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50"
+            >
+              Preview Sync
+            </Link>
+            <Link
               href={`/admin/providers/${provider.id}?synced=true`}
               className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700"
             >
@@ -345,6 +360,20 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
             </Link>
           </div>
         </div>
+
+        {previewData && (
+          <div className="mb-4 rounded-lg border border-cyan-200 bg-cyan-50 p-4">
+            <h4 className="text-sm font-semibold text-cyan-800 mb-2">Sync Preview — {previewData.totalIncoming} incoming plans</h4>
+            <div className="grid grid-cols-5 gap-2 text-center text-xs mb-3">
+              <div className="rounded bg-white p-2"><p className="text-gray-500">New</p><p className="text-lg font-bold text-emerald-600">{previewData.newCount}</p></div>
+              <div className="rounded bg-white p-2"><p className="text-gray-500">Updated</p><p className="text-lg font-bold text-amber-600">{previewData.updatedCount}</p></div>
+              <div className="rounded bg-white p-2"><p className="text-gray-500">Unchanged</p><p className="text-lg font-bold text-gray-600">{previewData.unchangedCount}</p></div>
+              <div className="rounded bg-white p-2"><p className="text-gray-500">Removed</p><p className="text-lg font-bold text-red-600">{previewData.removedCount}</p></div>
+              <div className="rounded bg-white p-2"><p className="text-gray-500">Duplicates</p><p className="text-lg font-bold text-purple-600">{previewData.duplicateCount}</p></div>
+            </div>
+            <p className="text-xs text-cyan-700">No data written. Click Sync Plans to apply changes, or use safe sync modes.</p>
+          </div>
+        )}
 
         {fetchedPlans && fetchedPlans.length > 0 && (
           <div>
