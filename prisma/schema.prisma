@@ -241,7 +241,10 @@ model Provider {
   certifiedAt              DateTime?
   certificationNotes       String?
   lastCertificationRunAt   DateTime?
-  createdAt                DateTime       @default(now())
+  /// Catalog management fields
+  catalogPriority           Int       @default(100)
+  autoPublishEnabled        Boolean   @default(false)
+  createdAt                 DateTime  @default(now())
   updatedAt                DateTime       @updatedAt
 
   packages        ESIMPackage[]

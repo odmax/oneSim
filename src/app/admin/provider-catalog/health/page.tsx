@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { markPreferred, hideDuplicatesInGroup, autoPickCheapestForGroup, autoPickAllGroups, excludeFromAutoPick } from '@/lib/actions/auto-pick'
+import { autoPickAndPublishWinners, publishPreferredOnly } from '@/lib/actions/auto-publish'
 
 export default async function CatalogHealthPage() {
   const session = await getServerSession(authOptions)
@@ -82,11 +83,23 @@ export default async function CatalogHealthPage() {
         </div>
         <div className="flex gap-2">
           {duplicates.length > 0 && (
-            <form action={autoPickAllGroups}>
-              <button type="submit" className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700">
-                Auto-Pick Cheapest for All Groups
-              </button>
-            </form>
+            <div className="flex gap-2">
+              <form action={autoPickAllGroups}>
+                <button type="submit" className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700">
+                  Auto-Pick Cheapest
+                </button>
+              </form>
+              <form action={async () => { 'use server'; await autoPickAndPublishWinners() }}>
+                <button type="submit" className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
+                  Auto-Pick + Publish
+                </button>
+              </form>
+              <form action={async () => { 'use server'; await publishPreferredOnly() }}>
+                <button type="submit" className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700">
+                  Publish Preferred Only
+                </button>
+              </form>
+            </div>
           )}
           <Link href="/admin/provider-catalog" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
             ← Back to Catalog

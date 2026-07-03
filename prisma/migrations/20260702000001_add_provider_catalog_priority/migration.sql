@@ -1,0 +1,2 @@
+ALTER TABLE "providers" ADD COLUMN IF NOT EXISTS "catalog_priority" INTEGER NOT NULL DEFAULT 100;
+ALTER TABLE "providers" ADD COLUMN IF NOT EXISTS "auto_publish_enabled" BOOLEAN NOT NULL DEFAULT false;

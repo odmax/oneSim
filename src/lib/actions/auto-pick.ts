@@ -36,28 +36,28 @@ export async function autoPickCheapestForGroup(groupKey: string) {
   const [country, data, validity] = groupKey.split('|')
 
   const packages = await prisma.providerPackage.findMany({
-    where: {
-      country: country === 'XX' ? null : country,
-      dataGB: parseInt(data),
-      validityDays: parseInt(validity),
-      publishStatus: { not: 'ARCHIVED' },
-    },
+    where: { country: country === 'XX' ? null : country, dataGB: parseInt(data), validityDays: parseInt(validity), publishStatus: { not: 'ARCHIVED' } },
+    include: { provider: { select: { catalogPriority: true } } },
   })
 
   const candidates = packages.filter(p => !p.excludedFromAutoPick && p.publishStatus !== 'ARCHIVED')
   if (candidates.length < 2) return
 
-  // Sort by: configured > published > provider priority > newest
+  // Tiebreak: 1. lowest cost 2. configured 3. published 4. provider priority 5. newest
   candidates.sort((a, b) => {
+    const aCost = parseFloat(a.costPrice.toString())
+    const bCost = parseFloat(b.costPrice.toString())
+    if (aCost !== bCost) return aCost - bCost
     const aConf = (a.configurationStatus === 'CONFIGURED' || a.configurationStatus === 'AUTO_CONFIGURED') ? 1 : 0
     const bConf = (b.configurationStatus === 'CONFIGURED' || b.configurationStatus === 'AUTO_CONFIGURED') ? 1 : 0
     if (bConf !== aConf) return bConf - aConf
     const aPub = a.publishStatus === 'PUBLISHED' ? 1 : 0
     const bPub = b.publishStatus === 'PUBLISHED' ? 1 : 0
     if (bPub !== aPub) return bPub - aPub
-    const aCost = parseFloat(a.costPrice.toString())
-    const bCost = parseFloat(b.costPrice.toString())
-    return aCost - bCost
+    const aPri = a.provider?.catalogPriority ?? 100
+    const bPri = b.provider?.catalogPriority ?? 100
+    if (aPri !== bPri) return aPri - bPri
+    return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()
   })
 
   const chosen = candidates[0]
@@ -74,7 +74,10 @@ export async function autoPickAllGroups() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return
 
-  const all = await prisma.providerPackage.findMany({ where: { publishStatus: { not: 'ARCHIVED' } } })
+  const all = await prisma.providerPackage.findMany({
+    where: { publishStatus: { not: 'ARCHIVED' } },
+    include: { provider: { select: { catalogPriority: true } } },
+  })
   const groups = new Map<string, typeof all>()
   for (const pkg of all) {
     const key = `${pkg.country || 'XX'}|${pkg.dataGB}|${pkg.validityDays}`
@@ -88,7 +91,21 @@ export async function autoPickAllGroups() {
   for (const [key, pkgs] of duplicates) {
     const candidates = pkgs.filter(p => !p.excludedFromAutoPick && p.publishStatus !== 'ARCHIVED')
     if (candidates.length < 2) continue
-    candidates.sort((a, b) => parseFloat(a.costPrice.toString()) - parseFloat(b.costPrice.toString()))
+    candidates.sort((a, b) => {
+      const aCost = parseFloat(a.costPrice.toString())
+      const bCost = parseFloat(b.costPrice.toString())
+      if (aCost !== bCost) return aCost - bCost
+      const aConf = (a.configurationStatus === 'CONFIGURED' || a.configurationStatus === 'AUTO_CONFIGURED') ? 1 : 0
+      const bConf = (b.configurationStatus === 'CONFIGURED' || b.configurationStatus === 'AUTO_CONFIGURED') ? 1 : 0
+      if (bConf !== aConf) return bConf - aConf
+      const aPub = a.publishStatus === 'PUBLISHED' ? 1 : 0
+      const bPub = b.publishStatus === 'PUBLISHED' ? 1 : 0
+      if (bPub !== aPub) return bPub - aPub
+      const aPri = a.provider?.catalogPriority ?? 100
+      const bPri = b.provider?.catalogPriority ?? 100
+      if (aPri !== bPri) return aPri - bPri
+      return new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()
+    })
     const chosen = candidates[0]
     await prisma.providerPackage.update({ where: { id: chosen.id }, data: { isPreferred: true, preferredReason: 'Cheapest cost in duplicate group', preferredAt: new Date() } })
     await prisma.providerPackage.updateMany({ where: { id: { in: candidates.filter(p => p.id !== chosen.id).map(p => p.id) } }, data: { isPreferred: false, autoPickReason: 'Not cheapest in duplicate group' } })
