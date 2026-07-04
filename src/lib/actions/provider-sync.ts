@@ -209,6 +209,12 @@ export async function syncProviderPlans(providerId: string) {
     const syncResult = `Synced ${plans.length} plans: ${imported} created, ${updated} updated, ${duplicatesSkipped} duplicate attempts skipped`
     console.log(`[syncProviderPlans] ${syncResult}`)
 
+    // Update diagnostics with counts after processing loop
+    diagnostics.imported = imported
+    diagnostics.updated = updated
+    diagnostics.skipped = skipped
+    diagnostics.duplicatesSkipped = duplicatesSkipped
+
     // Update sync result with detailed counts
     await prisma.provider.update({
       where: { id: providerId },

@@ -410,6 +410,9 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
                   <span className="text-gray-500">Response Keys:</span><span className="break-all">{(syncDiagnostics.responseKeys || []).join(', ') || '—'}</span>
                   <span className="text-gray-500">Resolved Array Length:</span><span>{syncDiagnostics.resolvedArrayLength || 0}</span>
                   <span className="text-gray-500">Mapped Packages:</span><span>{syncDiagnostics.mappedPackageCount || 0}</span>
+                  <span className="text-gray-500">Created:</span><span className="text-emerald-600">{syncDiagnostics.imported || 0}</span>
+                  <span className="text-gray-500">Updated:</span><span className="text-amber-600">{syncDiagnostics.updated || 0}</span>
+                  <span className="text-gray-500">Skipped:</span><span className="text-gray-400">{syncDiagnostics.skipped || 0}</span>
                   <span className="text-gray-500">Already Imported:</span><span>{fetchedPlans.filter(p => importedPlanIds.has(p.id)).length}</span>
                   <span className="text-gray-500">New (ready to import):</span><span>{fetchedPlans.length - fetchedPlans.filter(p => importedPlanIds.has(p.id)).length}</span>
                   {syncDiagnostics.providerError && <><span className="text-gray-500">Error:</span><span className="text-red-600">{syncDiagnostics.providerError}</span></>}
