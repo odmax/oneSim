@@ -59,6 +59,10 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
             className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
             Export CSV
           </a>
+          <a href="/api/admin/provider-catalog-export/xlsx"
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+            Export XLSX
+          </a>
           <Link href="/admin/provider-catalog/history"
             className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
             History
