@@ -77,20 +77,20 @@ export default async function PackageRulesPage({ searchParams }: { searchParams?
                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Data Range (GB)</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Data Range (GB)<span className="text-gray-400 ml-1">— set both min+max for an exact match</span></label>
               <div className="flex gap-2">
-                <input type="number" name="dataMinGB" placeholder="Min" defaultValue={editRule?.dataMinGB || ''}
+                <input type="number" name="dataMinGB" placeholder="Min GB" defaultValue={editRule?.dataMinGB || ''}
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
-                <input type="number" name="dataMaxGB" placeholder="Max" defaultValue={editRule?.dataMaxGB || ''}
+                <input type="number" name="dataMaxGB" placeholder="Max GB" defaultValue={editRule?.dataMaxGB || ''}
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
               </div>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Validity Range (Days)</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Validity Range (Days)<span className="text-gray-400 ml-1">— set both for exact match</span></label>
               <div className="flex gap-2">
-                <input type="number" name="validityMinDays" placeholder="Min" defaultValue={editRule?.validityMinDays || ''}
+                <input type="number" name="validityMinDays" placeholder="Min Days" defaultValue={editRule?.validityMinDays || ''}
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
-                <input type="number" name="validityMaxDays" placeholder="Max" defaultValue={editRule?.validityMaxDays || ''}
+                <input type="number" name="validityMaxDays" placeholder="Max Days" defaultValue={editRule?.validityMaxDays || ''}
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
               </div>
             </div>
