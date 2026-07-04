@@ -3,7 +3,8 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { createRule, updateRule, deleteRule, toggleRuleActive } from '@/lib/actions/package-rules'
+import { createRule, updateRule, toggleRuleActive } from '@/lib/actions/package-rules'
+import { DeleteRuleButton } from './DeleteRuleButton'
 
 export default async function PackageRulesPage({ searchParams }: { searchParams?: { success?: string; error?: string; edit?: string } }) {
   const session = await getServerSession(authOptions)
@@ -200,9 +201,7 @@ export default async function PackageRulesPage({ searchParams }: { searchParams?
                   <td className="px-3 py-3">
                     <div className="flex gap-2">
                       <Link href={`/admin/package-rules?edit=${rule.id}`} className="text-xs text-cyan-600 hover:text-cyan-700">Edit</Link>
-                      <form action={deleteRule.bind(null, rule.id)}>
-                        <button type="submit" className="text-xs text-red-500 hover:text-red-700" onClick={e => { if (!confirm('Delete this rule?')) e.preventDefault() }}>Delete</button>
-                      </form>
+                      <DeleteRuleButton ruleId={rule.id} />
                     </div>
                   </td>
                 </tr>
