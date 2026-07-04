@@ -28,7 +28,7 @@ export async function syncProviderPlans(providerId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
-  const provider = await prisma.provider.findUnique({ where: { id: providerId } })
+  const provider = await prisma.provider.findUnique({ where: { id: providerId }, include: { providerTemplate: true } })
   if (!provider) return { error: 'Provider not found' }
 
   // Resolve plan list path from endpointMappings or template for template-driven providers
