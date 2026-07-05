@@ -5,7 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { BulkConfigTable } from './BulkConfigTable'
 
-export default async function ProviderCatalogPage({ searchParams }: { searchParams?: { provider?: string; publishStatus?: string; configStatus?: string; search?: string; country?: string; page?: string } }) {
+export default async function ProviderCatalogPage({ searchParams }: { searchParams?: { provider?: string; publishStatus?: string; configStatus?: string; search?: string; country?: string; page?: string; costFilter?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
@@ -18,7 +18,19 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
   if (searchParams?.publishStatus) where.publishStatus = searchParams.publishStatus
   if (searchParams?.configStatus) where.configurationStatus = searchParams.configStatus
   if (searchParams?.country) where.country = searchParams.country
+  if (searchParams?.costFilter === 'missing') {
+    where.OR = [
+      { costPrice: { equals: 0 } },
+      { costPrice: null },
+    ]
+  }
   if (searchParams?.search) {
+    where.AND = where.AND || []
+    where.AND.push({ OR: [
+      { name: { contains: searchParams.search, mode: 'insensitive' } },
+      { providerPlanId: { contains: searchParams.search, mode: 'insensitive' } },
+      { providerPlanCode: { contains: searchParams.search, mode: 'insensitive' } },
+    ]})
     where.OR = [
       { name: { contains: searchParams.search, mode: 'insensitive' } },
       { providerPlanId: { contains: searchParams.search, mode: 'insensitive' } },
@@ -89,6 +101,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
         <Link href="/admin/provider-catalog?configStatus=CONFIGURED" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.configStatus === 'CONFIGURED' && !searchParams?.publishStatus ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Configured</Link>
         <Link href="/admin/provider-catalog?publishStatus=PUBLISHED" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.publishStatus === 'PUBLISHED' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Published</Link>
         <Link href="/admin/provider-catalog?publishStatus=READY" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.publishStatus === 'READY' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Ready</Link>
+        <Link href="/admin/provider-catalog?costFilter=missing" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.costFilter === 'missing' ? 'bg-red-900 text-white' : 'bg-red-50 text-red-600 hover:bg-red-100'}`}>Missing Cost</Link>
       </div>
 
       {/* Stats */}

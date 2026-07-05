@@ -7,6 +7,8 @@ import { revalidatePath } from 'next/cache'
 
 export interface BulkConfigureParams {
   packageIds: string[]
+  costPrice?: number
+  sellingPrice?: number
   markupPercent?: number
   pricingMode?: string
   sellingCurrency?: string
@@ -30,6 +32,12 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
 
   const updateData: any = {}
 
+  if (configUpdates.costPrice != null) {
+    updateData.costPrice = configUpdates.costPrice
+  }
+  if (configUpdates.sellingPrice != null) {
+    updateData.sellingPrice = configUpdates.sellingPrice
+  }
   if (configUpdates.markupPercent != null) {
     updateData.markupPercent = configUpdates.markupPercent
   }

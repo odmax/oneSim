@@ -56,6 +56,8 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
   const [result, setResult] = useState<{ success?: boolean; updated?: number; created?: number; skipped?: number; error?: string } | null>(null)
 
   // Form state
+  const [costPrice, setCostPrice] = useState('')
+  const [sellingPrice, setSellingPrice] = useState('')
   const [markupPercent, setMarkupPercent] = useState('')
   const [pricingMode, setPricingMode] = useState('')
   const [sellingCurrency, setSellingCurrency] = useState('')
@@ -137,6 +139,8 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     setResult(null)
 
     const params: any = { packageIds: Array.from(selected) }
+    if (costPrice) params.costPrice = parseFloat(costPrice)
+    if (sellingPrice) params.sellingPrice = parseFloat(sellingPrice)
     if (markupPercent) params.markupPercent = parseFloat(markupPercent)
     if (pricingMode) params.pricingMode = pricingMode
     if (sellingCurrency) params.sellingCurrency = sellingCurrency
@@ -244,6 +248,16 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
         <div className="mb-4 rounded-xl border bg-white p-5 shadow-sm">
           <h3 className="text-sm font-semibold text-gray-900 mb-3">Configure {selected.size} Packages</h3>
           <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Cost Price</label>
+              <input type="number" step="0.01" value={costPrice} onChange={e => setCostPrice(e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" placeholder="e.g. 1.50" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Selling Price</label>
+              <input type="number" step="0.01" value={sellingPrice} onChange={e => setSellingPrice(e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" placeholder="e.g. 3.00" />
+            </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Markup %</label>
               <input type="number" step="0.01" value={markupPercent} onChange={e => setMarkupPercent(e.target.value)}
