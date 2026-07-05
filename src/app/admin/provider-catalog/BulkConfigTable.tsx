@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { bulkConfigurePackages } from '@/lib/actions/bulk-configure'
 import { publishToCatalog, bulkSetPublishStatus, getPublishSummary } from '@/lib/actions/publish-packages'
 import { applyRulesToPackages } from '@/lib/actions/package-rules'
+import { resetPricing } from '@/lib/actions/reset-pricing'
 import Link from 'next/link'
 
 const PUBLISH_COLORS: Record<string, string> = {
@@ -118,6 +119,14 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     setPublishLoading(false)
   }
 
+  const handleResetPricing = async () => {
+    if (selected.size === 0) return
+    if (!confirm(`Reset pricing for ${selected.size} packages? This will clear selling prices, markups, and configuration status.`)) return
+    const res = await resetPricing(Array.from(selected))
+    setResult(res as any)
+    if (res.success) { setSelected(new Set()); setTimeout(() => window.location.reload(), 1500) }
+  }
+
   const handleBulkHide = async () => {
     if (selected.size === 0) return
     const res = await bulkSetPublishStatus(Array.from(selected), 'HIDDEN')
@@ -196,6 +205,10 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
               <button onClick={handleBulkArchive}
                 className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700">
                 Archive
+              </button>
+              <button onClick={handleResetPricing}
+                className="rounded-lg bg-gray-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700">
+                Reset
               </button>
             </div>
             <button onClick={() => setSelected(new Set())}
