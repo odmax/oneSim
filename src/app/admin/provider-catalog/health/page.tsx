@@ -3,7 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { markPreferred, unmarkPreferredPackage, hideDuplicatesInGroup, autoPickCheapestForGroup, autoPickAllGroups, excludeFromAutoPick, includePackageInAutoPick } from '@/lib/actions/auto-pick'
+import { markPreferredPackage, unmarkPreferredPackage, hideDuplicatesInGroup, autoPickCheapestForGroup, autoPickAllGroups, excludePackageFromAutoPick, includePackageInAutoPick } from '@/lib/actions/auto-pick'
 import { autoPickAndPublishWinners, publishPreferredOnly } from '@/lib/actions/auto-publish'
 
 function isValidForHealth(pkg: { configurationStatus: string | null; sellingPrice: any; sellingCurrency: string | null; publishStatus: string | null }) {
@@ -215,20 +215,20 @@ export default async function CatalogHealthPage() {
                             <div className="flex gap-1">
                               {pkg.isPreferred ? (
                                 <form action={unmarkPreferredPackage.bind(null, pkg.id)}>
-                                  <button type="submit" className="text-[10px] text-amber-600 hover:text-amber-700">Unmark Pref</button>
+                                  <button type="submit" className="rounded border border-amber-200 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50">Unmark Preferred</button>
                                 </form>
                               ) : (
-                                <form action={markPreferred.bind(null, pkg.id)}>
-                                  <button type="submit" className="text-[10px] text-cyan-600 hover:text-cyan-700">Pref</button>
+                                <form action={markPreferredPackage.bind(null, pkg.id)}>
+                                  <button type="submit" className="rounded border border-cyan-200 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700 hover:bg-cyan-50">Mark Preferred</button>
                                 </form>
                               )}
                               {pkg.excludedFromAutoPick ? (
                                 <form action={includePackageInAutoPick.bind(null, pkg.id)}>
-                                  <button type="submit" className="text-[10px] text-emerald-600 hover:text-emerald-700">Include</button>
+                                  <button type="submit" className="rounded border border-emerald-200 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 hover:bg-emerald-50">Include in Auto-Pick</button>
                                 </form>
                               ) : (
-                                <form action={excludeFromAutoPick.bind(null, pkg.id)}>
-                                  <button type="submit" className="text-[10px] text-gray-400 hover:text-gray-600">Excl</button>
+                                <form action={excludePackageFromAutoPick.bind(null, pkg.id)}>
+                                  <button type="submit" className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50">Exclude</button>
                                 </form>
                               )}
                             </div>

@@ -68,10 +68,10 @@ export default async function AdminPackagesPage({
     orderBy: { priceUSD: 'asc' },
   })
 
-  const totalCatalog = await prisma.eSIMPackage.count({ where: { source: 'CATALOG_PRODUCT' } })
-  const totalLive = await prisma.eSIMPackage.count({ where: { source: 'CATALOG_PRODUCT', isActive: true } })
-  const totalHidden = await prisma.eSIMPackage.count({ where: { source: 'CATALOG_PRODUCT', isActive: false, hiddenFromCatalog: false } })
-  const totalArchived = await prisma.eSIMPackage.count({ where: { source: 'CATALOG_PRODUCT', hiddenFromCatalog: true } })
+  const totalPublished = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } } })
+  const totalLive = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, isActive: true } })
+  const totalDraft = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, isActive: false } })
+  const totalNeedsPricing = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, priceUSD: { lte: 0 } } })
 
   return (
     <div className="p-6">
@@ -87,14 +87,12 @@ export default async function AdminPackagesPage({
       </div>
 
       {/* Summary cards */}
-      {tab === 'catalog' && (
-        <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryCard label="Catalog Products" value={totalCatalog} color="text-blue-600" />
-          <SummaryCard label="Active / Live" value={totalLive} color="text-emerald-600" />
-          <SummaryCard label="Hidden" value={totalHidden} color="text-amber-600" />
-          <SummaryCard label="Archived" value={totalArchived} color="text-red-600" />
-        </div>
-      )}
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <SummaryCard label="Published Packages" value={totalPublished} color="text-blue-600" />
+        <SummaryCard label="Live Products" value={totalLive} color="text-emerald-600" />
+        <SummaryCard label="Draft / Inactive" value={totalDraft} color="text-amber-600" />
+        <SummaryCard label="Needs Pricing" value={totalNeedsPricing} color="text-red-600" />
+      </div>
 
       {searchParams?.error && (
         <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">{decodeURIComponent(searchParams.error)}</div>
@@ -159,7 +157,8 @@ export default async function AdminPackagesPage({
                 {/* Header */}
                 <div className="mb-3 flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <h3 className="text-base font-semibold text-gray-900 truncate">{pkg.name}</h3>
+                    <h3 className="text-base font-semibold text-gray-900 truncate">{pkg.displayName || pkg.name}</h3>
+                    {pkg.displayName && <p className="text-xs text-gray-400 truncate">{pkg.name}</p>}
                     <div className="mt-1 flex flex-wrap gap-1.5">
                       {pkg.sku && <span className="rounded-md bg-gray-50 px-1.5 py-0.5 text-[11px] font-mono text-gray-500">{pkg.sku}</span>}
                       {pkg.packageCode && <span className="rounded-md bg-gray-50 px-1.5 py-0.5 text-[11px] font-mono text-gray-500">{pkg.packageCode}</span>}
@@ -171,6 +170,10 @@ export default async function AdminPackagesPage({
                 <div className="mb-3">
                   <StatusBadge source={pkg.source} isActive={pkg.isActive} hiddenFromCatalog={pkg.hiddenFromCatalog || undefined} />
                 </div>
+
+                {(pkg.customerDescription || pkg.description) && (
+                  <p className="mb-3 text-xs text-gray-500 line-clamp-2">{pkg.customerDescription || pkg.description}</p>
+                )}
 
                 {/* Details grid */}
                 <div className="mb-4 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">

@@ -5,7 +5,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 
-export async function markPreferred(packageId: string) {
+export async function markPreferredPackage(packageId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return
   await prisma.providerPackage.update({ where: { id: packageId }, data: { isPreferred: true, preferredReason: 'Manually selected', preferredAt: new Date() } })
@@ -117,7 +117,7 @@ export async function autoPickAllGroups() {
   revalidatePath('/admin/provider-catalog')
 }
 
-export async function excludeFromAutoPick(packageId: string) {
+export async function excludePackageFromAutoPick(packageId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return
   await prisma.providerPackage.update({ where: { id: packageId }, data: { excludedFromAutoPick: true } })
