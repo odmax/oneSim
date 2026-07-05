@@ -95,6 +95,11 @@ export default async function PackageRulesPage({ searchParams }: { searchParams?
               </div>
             </div>
             <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Cost Price <span className="text-gray-400 font-normal">(optional — applies only if package has no cost)</span></label>
+              <input type="number" step="0.01" name="costPrice" defaultValue={editRule?.costPrice ? parseFloat(editRule.costPrice.toString()) : ''}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
+            </div>
+            <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Markup %</label>
               <input type="number" step="0.01" name="markupPercent" defaultValue={editRule?.markupPercent ? parseFloat(editRule.markupPercent.toString()) : ''}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
@@ -180,6 +185,7 @@ export default async function PackageRulesPage({ searchParams }: { searchParams?
                 !rule.validityMinDays && rule.validityMaxDays != null && `Validity: ≤ ${rule.validityMaxDays}d`,
               ].filter(Boolean)
               const pricing = rule.fixedPrice ? `$${rule.fixedPrice} fixed` : rule.markupPercent ? `${rule.markupPercent}% markup` : '—'
+              const costText = rule.costPrice ? `$${parseFloat(rule.costPrice.toString()).toFixed(2)} cost` : ''
               const providerName = providers.find(p => p.id === rule.providerId)?.name
               return (
                 <tr key={rule.id} className="hover:bg-gray-50">
@@ -187,6 +193,7 @@ export default async function PackageRulesPage({ searchParams }: { searchParams?
                   <td className="px-3 py-3 text-xs text-gray-500">{providerName || 'Any'}</td>
                   <td className="px-3 py-3 text-xs text-gray-500">{criteria.join(', ') || 'Match all'}</td>
                   <td className="px-3 py-3 text-xs text-gray-900">
+                    {costText && <span className="text-gray-500">{costText}<br /></span>}
                     {rule.fixedPrice ? <span className="font-medium text-blue-600">{pricing}</span> : rule.markupPercent ? <span className="font-medium text-emerald-600">{pricing}</span> : <span className="text-gray-400">—</span>}
                     <span className="text-gray-400 ml-1">{rule.sellingCurrency}</span>
                   </td>

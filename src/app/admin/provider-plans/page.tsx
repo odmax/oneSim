@@ -29,7 +29,7 @@ export default async function ProviderPlansPage({
     <div className="p-6">
       <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700">
         This section now lives under{' '}
-        <Link href="/admin/packages?tab=provider" className="font-semibold underline">eSIM Packages → Provider Plans</Link>.
+        <Link href="/admin/provider-catalog" className="font-semibold underline">Provider Catalog</Link>.
       </div>
 
       <div className="mb-6 flex items-center justify-between">

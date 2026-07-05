@@ -19,6 +19,7 @@ export async function createRule(formData: FormData) {
   const dataMaxGB = formData.get('dataMaxGB') ? parseInt(formData.get('dataMaxGB') as string) : undefined
   const validityMinDays = formData.get('validityMinDays') ? parseInt(formData.get('validityMinDays') as string) : undefined
   const validityMaxDays = formData.get('validityMaxDays') ? parseInt(formData.get('validityMaxDays') as string) : undefined
+  const costPrice = formData.get('costPrice') ? parseFloat(formData.get('costPrice') as string) : undefined
   const markupPercent = formData.get('markupPercent') ? parseFloat(formData.get('markupPercent') as string) : undefined
   const fixedPrice = formData.get('fixedPrice') ? parseFloat(formData.get('fixedPrice') as string) : undefined
   const sellingCurrency = (formData.get('sellingCurrency') as string) || 'USD'
@@ -29,7 +30,7 @@ export async function createRule(formData: FormData) {
   if (!name) redirect('/admin/package-rules?error=Name required')
 
   await prisma.packageConfigurationRule.create({
-    data: { name, providerId, country, region, productType, dataMinGB, dataMaxGB, validityMinDays, validityMaxDays, markupPercent, fixedPrice, sellingCurrency, publishStatus, priority, isActive },
+    data: { name, providerId, country, region, productType, dataMinGB, dataMaxGB, validityMinDays, validityMaxDays, costPrice, markupPercent, fixedPrice, sellingCurrency, publishStatus, priority, isActive },
   })
 
   await prisma.auditLog.create({ data: { userId: session.user.id, action: 'RULE_CREATED', entity: 'PackageConfigurationRule', details: name } }).catch(() => {})
@@ -50,6 +51,7 @@ export async function updateRule(ruleId: string, formData: FormData) {
   const dataMaxGB = formData.get('dataMaxGB') ? parseInt(formData.get('dataMaxGB') as string) : undefined
   const validityMinDays = formData.get('validityMinDays') ? parseInt(formData.get('validityMinDays') as string) : undefined
   const validityMaxDays = formData.get('validityMaxDays') ? parseInt(formData.get('validityMaxDays') as string) : undefined
+  const costPrice = formData.get('costPrice') ? parseFloat(formData.get('costPrice') as string) : undefined
   const markupPercent = formData.get('markupPercent') ? parseFloat(formData.get('markupPercent') as string) : undefined
   const fixedPrice = formData.get('fixedPrice') ? parseFloat(formData.get('fixedPrice') as string) : undefined
   const sellingCurrency = (formData.get('sellingCurrency') as string) || 'USD'
@@ -59,7 +61,7 @@ export async function updateRule(ruleId: string, formData: FormData) {
 
   if (!name) redirect('/admin/package-rules?error=Name required')
 
-  const update: any = { name, providerId, country, region, productType, dataMinGB, dataMaxGB, validityMinDays, validityMaxDays, markupPercent, fixedPrice, sellingCurrency, publishStatus, priority, isActive }
+  const update: any = { name, providerId, country, region, productType, dataMinGB, dataMaxGB, validityMinDays, validityMaxDays, costPrice, markupPercent, fixedPrice, sellingCurrency, publishStatus, priority, isActive }
   Object.keys(update).forEach(k => { if (update[k] === undefined) delete update[k] })
 
   await prisma.packageConfigurationRule.update({ where: { id: ruleId }, data: update })
@@ -123,30 +125,43 @@ export async function applyRulesToPackages(packageIds?: string[]): Promise<{ suc
 
     if (!rule) continue
 
-    const costPrice = parseFloat(pp.costPrice.toString())
+    // Cost price: keep existing if > 0, else use rule.costPrice if set
+    let effectiveCost = parseFloat(pp.costPrice.toString())
+    if (effectiveCost <= 0 && rule.costPrice && parseFloat(rule.costPrice.toString()) > 0) {
+      effectiveCost = parseFloat(rule.costPrice.toString())
+    }
+
+    // Selling price calculation
     let sellingPrice: number | undefined
 
-    if (rule.fixedPrice) {
+    if (rule.fixedPrice && parseFloat(rule.fixedPrice.toString()) > 0) {
       sellingPrice = parseFloat(rule.fixedPrice.toString())
-    } else if (rule.markupPercent && costPrice > 0) {
+    } else if (rule.markupPercent && effectiveCost > 0) {
       const markup = parseFloat(rule.markupPercent.toString())
-      sellingPrice = parseFloat((costPrice * (1 + markup / 100)).toFixed(2))
+      sellingPrice = parseFloat((effectiveCost * (1 + markup / 100)).toFixed(2))
     }
 
     if (!sellingPrice || sellingPrice <= 0) continue
 
+    const updateData: any = {
+      sellingPrice,
+      sellingCurrency: rule.sellingCurrency,
+      markupPercent: rule.markupPercent,
+      pricingMode: rule.fixedPrice ? 'FIXED_PRICE' : 'MARKUP_PERCENT',
+      publishStatus: rule.publishStatus || 'READY',
+      configurationStatus: 'AUTO_CONFIGURED',
+      autoConfiguredByRuleId: rule.id,
+      lastConfiguredAt: new Date(),
+    }
+
+    // Only set costPrice from rule if provider cost was missing and rule has costPrice
+    if (effectiveCost !== parseFloat(pp.costPrice.toString())) {
+      updateData.costPrice = effectiveCost
+    }
+
     await prisma.providerPackage.update({
       where: { id: pp.id },
-      data: {
-        sellingPrice,
-        sellingCurrency: rule.sellingCurrency,
-        markupPercent: rule.markupPercent,
-        pricingMode: rule.fixedPrice ? 'FIXED_PRICE' : 'MARKUP_PERCENT',
-        publishStatus: rule.publishStatus || 'READY',
-        configurationStatus: 'AUTO_CONFIGURED',
-        autoConfiguredByRuleId: rule.id,
-        lastConfiguredAt: new Date(),
-      },
+      data: updateData,
     })
 
     matched++

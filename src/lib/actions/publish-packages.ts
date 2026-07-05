@@ -68,7 +68,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{ success:
             costPriceUSD: pp.costPrice,
             costCurrency: pp.currency,
             markupPercent: pp.markupPercent ? parseFloat(pp.markupPercent.toString()) : null,
-            source: 'PROVIDER_PLAN',
+            source: 'CATALOG_PRODUCT',
             isActive: true,
           },
         })
@@ -92,7 +92,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{ success:
             costPriceUSD: pp.costPrice,
             costCurrency: pp.currency,
             markupPercent: pp.markupPercent ? parseFloat(pp.markupPercent.toString()) : null,
-            source: 'PROVIDER_PLAN',
+            source: 'CATALOG_PRODUCT',
             isActive: true,
             providerPackageId: pp.id,
           },

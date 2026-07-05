@@ -341,6 +341,7 @@ model PackageConfigurationRule {
   dataMaxGB       Int?
   validityMinDays Int?
   validityMaxDays Int?
+  costPrice       Decimal?
   markupPercent   Decimal?
   fixedPrice      Decimal?
   sellingCurrency String   @default("USD")

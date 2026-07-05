@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import { PackageBuyCard } from './PackageBuyCard'
 
 export default async function BuyESIMPage({
@@ -61,7 +62,7 @@ export default async function BuyESIMPage({
       {/* Package grid */}
       <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
         {packages.map((pkg) => (
-          <PackageBuyCard key={pkg.id} pkg={pkg} walletBalance={walletBalance} />
+          <PackageBuyCard key={pkg.id} pkg={stripPackageProviderFields(pkg)} walletBalance={walletBalance} />
         ))}
       </div>
     </div>

@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import TopUpForm from './TopUpForm'
 
 export default async function BusinessTopUpPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
@@ -75,7 +76,7 @@ export default async function BusinessTopUpPage({ params, searchParams }: { para
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           {canTopUp ? (
-            <TopUpForm esimId={params.id} topUpPackages={JSON.parse(JSON.stringify(topUpPackages))} />
+            <TopUpForm esimId={params.id} topUpPackages={JSON.parse(JSON.stringify(topUpPackages.map(stripPackageProviderFields)))} />
           ) : (
             <div className="rounded-xl border-2 border-dashed border-gray-200 bg-white p-12 text-center">
               <p className="text-gray-500">Top-up is not available for this eSIM.</p>

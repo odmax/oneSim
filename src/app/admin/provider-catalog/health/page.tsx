@@ -3,8 +3,16 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { markPreferred, hideDuplicatesInGroup, autoPickCheapestForGroup, autoPickAllGroups, excludeFromAutoPick } from '@/lib/actions/auto-pick'
+import { markPreferred, unmarkPreferredPackage, hideDuplicatesInGroup, autoPickCheapestForGroup, autoPickAllGroups, excludeFromAutoPick, includePackageInAutoPick } from '@/lib/actions/auto-pick'
 import { autoPickAndPublishWinners, publishPreferredOnly } from '@/lib/actions/auto-publish'
+
+function isValidForHealth(pkg: { configurationStatus: string | null; sellingPrice: any; sellingCurrency: string | null; publishStatus: string | null }) {
+  const configured = pkg.configurationStatus === 'CONFIGURED' || pkg.configurationStatus === 'AUTO_CONFIGURED'
+  const hasPrice = pkg.sellingPrice && parseFloat(pkg.sellingPrice.toString()) > 0
+  const hasCurrency = !!pkg.sellingCurrency
+  const notHidden = pkg.publishStatus !== 'HIDDEN' && pkg.publishStatus !== 'ARCHIVED'
+  return configured && hasPrice && hasCurrency && notHidden
+}
 
 export default async function CatalogHealthPage() {
   const session = await getServerSession(authOptions)
@@ -15,9 +23,13 @@ export default async function CatalogHealthPage() {
     orderBy: { name: 'asc' },
   })
 
-  // Stats
+  // Only show configured/valid packages in health
+  const validPackages = all.filter(isValidForHealth)
+
+  // Stats (total still from all, health from valid)
   const stats = {
     total: all.length,
+    validForHealth: validPackages.length,
     unconfigured: all.filter(p => p.configurationStatus === 'UNCONFIGURED').length,
     missingPrice: all.filter(p => !p.sellingPrice || parseFloat(p.sellingPrice.toString()) <= 0).length,
     published: all.filter(p => p.publishStatus === 'PUBLISHED').length,
@@ -26,9 +38,9 @@ export default async function CatalogHealthPage() {
     configured: all.filter(p => p.configurationStatus === 'CONFIGURED' || p.configurationStatus === 'AUTO_CONFIGURED').length,
   }
 
-  // Duplicate detection: group by country + dataGB + validityDays
-  const groups = new Map<string, typeof all>()
-  for (const pkg of all) {
+  // Duplicate detection: group by country + dataGB + validityDays (only valid packages)
+  const groups = new Map<string, typeof validPackages>()
+  for (const pkg of validPackages) {
     const key = `${pkg.country || 'XX'}|${pkg.dataGB}|${pkg.validityDays}`
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key)!.push(pkg)
@@ -79,7 +91,7 @@ export default async function CatalogHealthPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Catalog Health</h2>
-          <p className="text-gray-600">Detect duplicates, conflicts, and coverage gaps</p>
+          <p className="text-gray-600">Detect duplicates and conflicts among configured, priced packages only</p>
         </div>
         <div className="flex gap-2">
           {duplicates.length > 0 && (
@@ -108,26 +120,19 @@ export default async function CatalogHealthPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-6">
+      <div className="grid gap-4 md:grid-cols-4">
         <div className="rounded-xl border bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Total</p>
-          <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
+          <p className="text-xs text-gray-500 uppercase">In Health Scope</p>
+          <p className="text-2xl font-bold text-gray-900">{stats.validForHealth}</p>
+          <p className="text-[10px] text-gray-400">Configured + priced + not hidden/archived</p>
         </div>
         <div className="rounded-xl border bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Configured</p>
-          <p className="text-2xl font-bold text-emerald-600">{stats.configured}</p>
-        </div>
-        <div className="rounded-xl border bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Unconfigured</p>
+          <p className="text-xs text-gray-500 uppercase">Unconfigured (excluded)</p>
           <p className="text-2xl font-bold text-amber-600">{stats.unconfigured}</p>
         </div>
         <div className="rounded-xl border bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Missing Price</p>
+          <p className="text-xs text-gray-500 uppercase">Missing Price (excluded)</p>
           <p className="text-2xl font-bold text-red-600">{stats.missingPrice}</p>
-        </div>
-        <div className="rounded-xl border bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Published</p>
-          <p className="text-2xl font-bold text-blue-600">{stats.published}</p>
         </div>
         <div className={`rounded-xl border bg-white p-4 shadow-sm ${duplicates.length > 0 ? 'border-amber-300' : ''}`}>
           <p className="text-xs text-gray-500 uppercase">Duplicate Groups</p>
@@ -208,12 +213,24 @@ export default async function CatalogHealthPage() {
                           <td className="py-1">{pkg.publishStatus || '—'}</td>
                           <td className="py-1">
                             <div className="flex gap-1">
-                              <form action={markPreferred.bind(null, pkg.id)}>
-                                <button type="submit" className="text-[10px] text-cyan-600 hover:text-cyan-700">Pref</button>
-                              </form>
-                              <form action={excludeFromAutoPick.bind(null, pkg.id)}>
-                                <button type="submit" className="text-[10px] text-gray-400 hover:text-gray-600">Excl</button>
-                              </form>
+                              {pkg.isPreferred ? (
+                                <form action={unmarkPreferredPackage.bind(null, pkg.id)}>
+                                  <button type="submit" className="text-[10px] text-amber-600 hover:text-amber-700">Unmark Pref</button>
+                                </form>
+                              ) : (
+                                <form action={markPreferred.bind(null, pkg.id)}>
+                                  <button type="submit" className="text-[10px] text-cyan-600 hover:text-cyan-700">Pref</button>
+                                </form>
+                              )}
+                              {pkg.excludedFromAutoPick ? (
+                                <form action={includePackageInAutoPick.bind(null, pkg.id)}>
+                                  <button type="submit" className="text-[10px] text-emerald-600 hover:text-emerald-700">Include</button>
+                                </form>
+                              ) : (
+                                <form action={excludeFromAutoPick.bind(null, pkg.id)}>
+                                  <button type="submit" className="text-[10px] text-gray-400 hover:text-gray-600">Excl</button>
+                                </form>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -230,7 +247,7 @@ export default async function CatalogHealthPage() {
       {duplicates.length === 0 && (
         <div className="rounded-xl border-2 border-dashed border-gray-200 bg-white p-16 text-center">
           <p className="text-gray-500">No duplicate or overlapping packages detected.</p>
-          <p className="text-xs text-gray-400 mt-1">All packages have unique country + data + validity combinations.</p>
+          <p className="text-xs text-gray-400 mt-1">All configured/priced packages have unique country + data + validity combinations.</p>
         </div>
       )}
     </div>

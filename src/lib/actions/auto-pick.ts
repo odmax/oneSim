@@ -124,3 +124,20 @@ export async function excludeFromAutoPick(packageId: string) {
   await prisma.auditLog.create({ data: { userId: session.user.id, action: 'PACKAGE_EXCLUDED_FROM_AUTOPICK', entity: 'ProviderPackage', entityId: packageId } }).catch(() => {})
   revalidatePath('/admin/provider-catalog/health')
 }
+
+export async function unmarkPreferredPackage(packageId: string) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+  await prisma.providerPackage.update({ where: { id: packageId }, data: { isPreferred: false, preferredReason: null, preferredAt: null } })
+  await prisma.auditLog.create({ data: { userId: session.user.id, action: 'PACKAGE_UNMARK_PREFERRED', entity: 'ProviderPackage', entityId: packageId } }).catch(() => {})
+  revalidatePath('/admin/provider-catalog/health')
+  revalidatePath('/admin/provider-catalog')
+}
+
+export async function includePackageInAutoPick(packageId: string) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+  await prisma.providerPackage.update({ where: { id: packageId }, data: { excludedFromAutoPick: false, autoPickReason: null } })
+  await prisma.auditLog.create({ data: { userId: session.user.id, action: 'PACKAGE_INCLUDED_IN_AUTOPICK', entity: 'ProviderPackage', entityId: packageId } }).catch(() => {})
+  revalidatePath('/admin/provider-catalog/health')
+}

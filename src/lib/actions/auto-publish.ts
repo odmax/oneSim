@@ -86,7 +86,7 @@ export async function autoPickAndPublishWinners() {
           providerId: winner.providerId, sku: winner.providerPlanCode || undefined,
           packageCode: winner.providerPlanCode || undefined, costPriceUSD: winner.costPrice,
           costCurrency: winner.currency, markupPercent: winner.markupPercent ? parseFloat(winner.markupPercent.toString()) : null,
-          source: 'PROVIDER_PLAN', isActive: true, providerPackageId: winner.id,
+          source: 'CATALOG_PRODUCT', isActive: true, providerPackageId: winner.id,
         },
       })
     }
@@ -129,7 +129,7 @@ export async function publishPreferredOnly() {
           name: pp.name, displayName: pp.name, dataGB: pp.dataGB, validityDays: pp.validityDays,
           priceUSD: sellPrice, localPrice: sellPrice, currency: pp.sellingCurrency,
           providerName: null, providerPlanId: pp.providerPlanId,
-          providerId: pp.providerId, source: 'PROVIDER_PLAN', isActive: true, providerPackageId: pp.id,
+          providerId: pp.providerId, source: 'CATALOG_PRODUCT', isActive: true, providerPackageId: pp.id,
         },
       })
     }

@@ -104,6 +104,18 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
         <Link href="/admin/provider-catalog?costFilter=missing" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.costFilter === 'missing' ? 'bg-red-900 text-white' : 'bg-red-50 text-red-600 hover:bg-red-100'}`}>Missing Cost</Link>
       </div>
 
+      {/* Direction — how manual configuration works */}
+      <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-sm text-cyan-800">
+        <p className="font-medium mb-1">How to configure packages</p>
+        <ol className="list-decimal list-inside space-y-1 text-cyan-700">
+          <li><strong>Set cost price</strong> — enter the provider cost (raw or admin-override). Edit a row or select multiple and click <strong>Configure</strong>.</li>
+          <li><strong>Set selling price</strong> — enter a client-facing price, or use Markup % to auto-calculate from cost.</li>
+          <li><strong>Mark as Configured</strong> — set Config Status to <strong>Configured</strong> (or let <strong>Apply Rules</strong> do this automatically).</li>
+          <li><strong>Publish</strong> — set Publish Status to <strong>Published</strong>. The package then appears in the Published Packages page for client activation.</li>
+        </ol>
+        <p className="mt-2 text-cyan-600">Use <strong>Apply Rules</strong> to auto-configure all unconfigured packages. Use <strong>Undo Last Rules</strong> to rollback. Click <strong>Edit</strong> per row for fine-grained control.</p>
+      </div>
+
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-4">
         <div className="rounded-xl border bg-white p-4 shadow-sm">
@@ -190,9 +202,12 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
             country: p.country,
             region: p.region,
             sellingPrice: p.sellingPrice,
+            sellingCurrency: p.sellingCurrency,
             markupPercent: p.markupPercent,
+            pricingMode: p.pricingMode,
             configurationStatus: p.configurationStatus,
             publishStatus: p.publishStatus,
+            notes: p.notes,
             provider: p.provider ? { id: p.provider.id, name: p.provider.name, code: p.provider.code } : null,
           }))}
           total={total}

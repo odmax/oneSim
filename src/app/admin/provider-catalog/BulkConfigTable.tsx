@@ -5,6 +5,7 @@ import { bulkConfigurePackages } from '@/lib/actions/bulk-configure'
 import { publishToCatalog, bulkSetPublishStatus, getPublishSummary } from '@/lib/actions/publish-packages'
 import { applyRulesToPackages } from '@/lib/actions/package-rules'
 import { resetPricing } from '@/lib/actions/reset-pricing'
+import { updateSinglePackage, undoLastRules } from '@/lib/actions/package-edit'
 import Link from 'next/link'
 
 const PUBLISH_COLORS: Record<string, string> = {
@@ -35,9 +36,12 @@ interface Package {
   country: string | null
   region: string | null
   sellingPrice: { toString(): string } | null
+  sellingCurrency: string | null
   markupPercent: { toString(): string } | null
+  pricingMode: string | null
   configurationStatus: string | null
   publishStatus: string | null
+  notes: string | null
   provider: { id: string; name: string; code: string } | null
 }
 
@@ -54,6 +58,9 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
   const [rulesLoading, setRulesLoading] = useState(false)
   const [publishSummary, setPublishSummary] = useState<any>(null)
   const [showConfirm, setShowConfirm] = useState(false)
+  const [editPkg, setEditPkg] = useState<Package | null>(null)
+  const [editForm, setEditForm] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<{ success?: boolean; updated?: number; created?: number; skipped?: number; error?: string } | null>(null)
 
   // Form state
@@ -121,10 +128,62 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
 
   const handleResetPricing = async () => {
     if (selected.size === 0) return
-    if (!confirm(`Reset pricing for ${selected.size} packages? This will clear selling prices, markups, and configuration status.`)) return
+    if (!confirm(`Reset ${selected.size} packages to factory defaults? This will clear all pricing, configuration, publish status, tags, notes, and auto-pick preferences.`)) return
     const res = await resetPricing(Array.from(selected))
     setResult(res as any)
     if (res.success) { setSelected(new Set()); setTimeout(() => window.location.reload(), 1500) }
+  }
+
+  const handleRowReset = async (pkgId: string) => {
+    if (!confirm('Reset this package to factory defaults? This will clear all pricing, configuration, publish status, tags, notes, and auto-pick preferences.')) return
+    const res = await resetPricing([pkgId])
+    setResult(res as any)
+    if (res.success) setTimeout(() => window.location.reload(), 1500)
+  }
+
+  const handleUndoRules = async () => {
+    if (!confirm('Undo the last rules application? This will revert packages to their previous state.')) return
+    const res = await undoLastRules()
+    setResult(res as any)
+    if (res.success) setTimeout(() => window.location.reload(), 1500)
+  }
+
+  const openEdit = (pkg: Package) => {
+    setEditPkg(pkg)
+    setEditForm({
+      costPrice: pkg.costPrice?.toString() || '',
+      sellingPrice: pkg.sellingPrice?.toString() || '',
+      sellingCurrency: pkg.sellingCurrency || '',
+      markupPercent: pkg.markupPercent?.toString() || '',
+      pricingMode: pkg.pricingMode || '',
+      publishStatus: pkg.publishStatus || '',
+      configurationStatus: pkg.configurationStatus || '',
+      notes: pkg.notes || '',
+    })
+  }
+
+  const closeEdit = () => {
+    setEditPkg(null)
+    setEditForm({})
+  }
+
+  const handleEditSave = async () => {
+    if (!editPkg) return
+    setSaving(true)
+    const data: any = {}
+    if (editForm.costPrice) data.costPrice = parseFloat(editForm.costPrice)
+    if (editForm.sellingPrice) data.sellingPrice = parseFloat(editForm.sellingPrice)
+    if (editForm.sellingCurrency) data.sellingCurrency = editForm.sellingCurrency
+    if (editForm.markupPercent) data.markupPercent = parseFloat(editForm.markupPercent)
+    if (editForm.pricingMode) data.pricingMode = editForm.pricingMode
+    if (editForm.publishStatus) data.publishStatus = editForm.publishStatus
+    if (editForm.configurationStatus) data.configurationStatus = editForm.configurationStatus
+    if (editForm.notes) data.notes = editForm.notes
+    if (Object.keys(data).length === 0) { setSaving(false); closeEdit(); return }
+    const res = await updateSinglePackage(editPkg.id, data)
+    setSaving(false)
+    if (res.success) { closeEdit(); window.location.reload() }
+    else { setResult(res); closeEdit() }
   }
 
   const handleBulkHide = async () => {
@@ -208,7 +267,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
               </button>
               <button onClick={handleResetPricing}
                 className="rounded-lg bg-gray-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700">
-                Reset
+                Reset to Factory
               </button>
             </div>
             <button onClick={() => setSelected(new Set())}
@@ -340,11 +399,97 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
         </div>
       )}
 
+      {/* Edit Package Modal */}
+      {editPkg && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={closeEdit}>
+          <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-gray-900 mb-1">Configure Package</h3>
+            <p className="text-sm text-gray-500 mb-4 truncate">{editPkg.provider?.name} — {editPkg.name}</p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Cost Price</label>
+                <input type="number" step="0.01" value={editForm.costPrice} onChange={e => setEditForm(f => ({ ...f, costPrice: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Selling Price</label>
+                <input type="number" step="0.01" value={editForm.sellingPrice} onChange={e => setEditForm(f => ({ ...f, sellingPrice: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Selling Currency</label>
+                <select value={editForm.sellingCurrency} onChange={e => setEditForm(f => ({ ...f, sellingCurrency: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none">
+                  <option value="">None</option>
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                  <option value="GBP">GBP</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Markup %</label>
+                <input type="number" step="0.01" value={editForm.markupPercent} onChange={e => setEditForm(f => ({ ...f, markupPercent: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Pricing Mode</label>
+                <select value={editForm.pricingMode} onChange={e => setEditForm(f => ({ ...f, pricingMode: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none">
+                  <option value="">None</option>
+                  <option value="MARKUP_PERCENT">Markup %</option>
+                  <option value="FIXED_PRICE">Fixed Price</option>
+                  <option value="FIXED_MARGIN">Fixed Margin</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Publish Status</label>
+                <select value={editForm.publishStatus} onChange={e => setEditForm(f => ({ ...f, publishStatus: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none">
+                  <option value="">None</option>
+                  <option value="DRAFT">Draft</option>
+                  <option value="READY">Ready</option>
+                  <option value="PUBLISHED">Published</option>
+                  <option value="HIDDEN">Hidden</option>
+                  <option value="ARCHIVED">Archived</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Config Status</label>
+                <select value={editForm.configurationStatus} onChange={e => setEditForm(f => ({ ...f, configurationStatus: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none">
+                  <option value="">None</option>
+                  <option value="UNCONFIGURED">Unconfigured</option>
+                  <option value="PARTIAL">Partial</option>
+                  <option value="CONFIGURED">Configured</option>
+                  <option value="AUTO_CONFIGURED">Auto Configured</option>
+                </select>
+              </div>
+            </div>
+            <div className="mt-4">
+              <label className="block text-xs font-medium text-gray-500 mb-1">Notes</label>
+              <textarea value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" rows={2} />
+            </div>
+            <div className="mt-5 flex justify-end gap-3">
+              <button onClick={closeEdit} className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+              <button onClick={handleEditSave} disabled={saving}
+                className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700 disabled:opacity-50">
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <div className="flex items-center gap-2 px-4 py-2 border-b">
         <button onClick={handleApplyRules} disabled={rulesLoading}
           className="rounded-lg bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50">
           {rulesLoading ? 'Applying...' : 'Apply Rules to Unconfigured'}
+        </button>
+        <button onClick={handleUndoRules}
+          className="rounded-lg border border-amber-300 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50">
+          Undo Last Rules
         </button>
         <span className="text-xs text-gray-400">Auto-configure all unconfigured packages using active rules</span>
       </div>
@@ -367,11 +512,12 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
               <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Markup</th>
               <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Config</th>
               <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Publish</th>
+              <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {initialPackages.length === 0 ? (
-              <tr><td colSpan={12} className="px-4 py-12 text-center text-sm text-gray-400">No packages found.</td></tr>
+              <tr><td colSpan={13} className="px-4 py-12 text-center text-sm text-gray-400">No packages found.</td></tr>
             ) : initialPackages.map(pkg => (
               <tr key={pkg.id} className={`hover:bg-gray-50 ${selected.has(pkg.id) ? 'bg-cyan-50' : ''}`}>
                 <td className="px-3 py-3">
@@ -405,6 +551,18 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
                   <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${PUBLISH_COLORS[pkg.publishStatus || 'DRAFT']}`}>
                     {pkg.publishStatus || 'DRAFT'}
                   </span>
+                </td>
+                <td className="px-3 py-3 text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    <button onClick={() => openEdit(pkg)}
+                      className="rounded px-2 py-1 text-xs font-medium text-cyan-600 hover:bg-cyan-50 border border-cyan-200">
+                      Edit
+                    </button>
+                    <button onClick={() => handleRowReset(pkg.id)}
+                      className="rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 border border-red-200">
+                      Reset
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
