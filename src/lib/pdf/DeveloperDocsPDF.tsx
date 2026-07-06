@@ -445,14 +445,14 @@ export default function DeveloperDocsPDF({
 
   return (
     <Document
-      title="OneSim Developer API Documentation"
+      title="OneSIM Developer API Documentation"
       author="OneTelecom"
-      subject="OneSim Africa Developer API"
+      subject="OneSIM Africa Developer API"
     >
       {/* Cover Page */}
       <Page size="A4" style={styles.page}>
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingBottom: 60 }}>
-          <Text style={{ fontSize: 28, fontWeight: 700, color: '#111827', marginBottom: 8 }}>OneSim Africa</Text>
+          <Text style={{ fontSize: 28, fontWeight: 700, color: '#111827', marginBottom: 8 }}>OneSIM Africa</Text>
           <Text style={{ fontSize: 20, fontWeight: 700, color: '#0891b2', marginBottom: 16 }}>Developer API Documentation</Text>
           <View style={{ width: 60, height: 2, backgroundColor: '#0891b2', marginBottom: 16 }} />
           <Text style={{ fontSize: 10, color: '#6b7280', textAlign: 'center', maxWidth: 400, lineHeight: 1.6 }}>
@@ -466,7 +466,7 @@ export default function DeveloperDocsPDF({
           <Text style={{ fontSize: 8, color: '#9ca3af', marginTop: 40 }}>Generated on {new Date().toISOString().split('T')[0]}</Text>
         </View>
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -492,7 +492,7 @@ export default function DeveloperDocsPDF({
           ))}
         </View>
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -500,7 +500,7 @@ export default function DeveloperDocsPDF({
       <Page size="A4" style={styles.page}>
         <Text style={styles.h1}>1. Overview</Text>
         <Text style={styles.p}>
-          The OneSim API lets you order and manage eSIMs from your own systems. You send a simple HTTP request — we handle the rest.
+          The OneSIM API lets you order and manage eSIMs from your own systems. You send a simple HTTP request — we handle the rest.
         </Text>
 
         <View style={styles.grid3}>
@@ -632,7 +632,7 @@ curl -X POST "${apiBase}/esims/order" \\
         </StepCard>
 
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -663,7 +663,7 @@ curl -X POST "${apiBase}/esims/order" \\
           </Text>
           <View style={{ marginTop: 4 }}>
             <Text style={{ fontSize: 8, color: '#4b5563', fontFamily: 'Courier' }}>
-              packageId — Internal OneSim package ID (e.g. {samplePackageId}). Get from GET /v1/packages.{'\n'}
+              packageId — Internal OneSIM package ID (e.g. {samplePackageId}). Get from GET /v1/packages.{'\n'}
               sku — Human-readable stock keeping unit (e.g. ONESIM-AFRICA-5GB-30D).{'\n'}
               packageCode — Short auto-generated code (e.g. PKG-5GB-30D-X1A2B3C).{'\n'}
               providerPlanId — The provider original plan ID (e.g. ext-provider-plan-5gb).
@@ -674,14 +674,14 @@ curl -X POST "${apiBase}/esims/order" \\
         <View style={styles.infoBox}>
           <Text style={styles.h3}>Pricing Fields</Text>
           <Text style={styles.p}>
-            Every package and order response includes the OneSim client price. You may add your own markup when reselling to your customers.
+            Every package and order response includes the OneSIM client price. You may add your own markup when reselling to your customers.
           </Text>
           <Text style={{ fontSize: 8, color: '#4b5563', fontFamily: 'Courier', marginTop: 4 }}>
-            unitCost / unitPrice — The OneSim price per eSIM (maps from priceUSD). This is your cost.{'\n'}
+            unitCost / unitPrice — The OneSIM price per eSIM (maps from priceUSD). This is your cost.{'\n'}
             totalCost — unitCost × quantity. The total charged to your wallet.{'\n'}
             quantity — Number of eSIMs purchased in this order.{'\n'}
             currency — Always USD.{'\n'}
-            Note: unitCost is the OneSim client price. You may set a higher suggestedRetailPrice on your platform.
+            Note: unitCost is the OneSIM client price. You may set a higher suggestedRetailPrice on your platform.
           </Text>
         </View>
 
@@ -715,7 +715,7 @@ curl -X POST "${apiBase}/esims/order" \\
         </View>
 
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -731,7 +731,7 @@ curl -X POST "${apiBase}/esims/order" \\
         </Text>
 
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -882,7 +882,7 @@ curl -X POST "${apiBase}/esims/order" \\
         </EndpointCard>
 
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -915,7 +915,7 @@ curl -X POST "${apiBase}/esims/order" \\
         </View>
 
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -974,7 +974,7 @@ curl -X POST "${apiBase}/esims/order" \\
         </View>
 
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -1088,7 +1088,7 @@ with urllib.request.urlopen(req) as resp:
 
         <Text style={styles.h3}>No-Code / Low-Code Tools</Text>
         <Text style={styles.p}>
-          You do not need to write code to use the OneSim API. These tools let you send HTTP requests visually:
+          You do not need to write code to use the OneSIM API. These tools let you send HTTP requests visually:
         </Text>
 
         <View style={styles.card}>
@@ -1109,7 +1109,7 @@ with urllib.request.urlopen(req) as resp:
         </View>
 
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -1132,7 +1132,7 @@ with urllib.request.urlopen(req) as resp:
         </View>
 
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
 
@@ -1140,7 +1140,7 @@ with urllib.request.urlopen(req) as resp:
       <Page size="A4" style={styles.page}>
         <Text style={styles.h1}>10. Webhooks & Callbacks</Text>
         <Text style={styles.p}>
-          OneSim can notify your platform in real-time when eSIM events occur. Configure webhook endpoints in the Webhooks page or use the callbackUrl field per-order.
+          OneSIM can notify your platform in real-time when eSIM events occur. Configure webhook endpoints in the Webhooks page or use the callbackUrl field per-order.
         </Text>
 
         <View style={styles.infoBox}>
@@ -1166,7 +1166,7 @@ with urllib.request.urlopen(req) as resp:
             <Text style={styles.stepNumber}>3</Text>
             <View style={{ flex: 1 }}>
               <Text style={{ fontSize: 8, color: '#4b5563' }}>
-                <Text style={{ fontWeight: 700 }}>Verify signatures</Text> — Every webhook includes an X-OneSim-Signature header. Use HMAC SHA256 with your secret to verify the payload came from OneSim.
+                <Text style={{ fontWeight: 700 }}>Verify signatures</Text> — Every webhook includes an X-OneSim-Signature header. Use HMAC SHA256 with your secret to verify the payload came from OneSIM.
               </Text>
             </View>
           </View>
@@ -1182,7 +1182,7 @@ with urllib.request.urlopen(req) as resp:
             <Text style={styles.stepNumber}>5</Text>
             <View style={{ flex: 1 }}>
               <Text style={{ fontSize: 8, color: '#4b5563' }}>
-                <Text style={{ fontWeight: 700 }}>Return 200 OK</Text> — Your endpoint must respond with HTTP 200 within 15 seconds. OneSim retries failed deliveries 5 times with exponential backoff (30s to 30 min).
+                <Text style={{ fontWeight: 700 }}>Return 200 OK</Text> — Your endpoint must respond with HTTP 200 within 15 seconds. OneSIM retries failed deliveries 5 times with exponential backoff (30s to 30 min).
               </Text>
             </View>
           </View>
@@ -1267,7 +1267,7 @@ app.post('/webhooks/onesim', (req, res) => {
 
         <View style={styles.infoBox}>
           <Text style={{ fontSize: 8, color: '#1e40af' }}>
-            <Text style={{ fontWeight: 700 }}>Respond with 200 OK</Text> within 15 seconds to acknowledge receipt. OneSim retries failed deliveries 5 times with exponential backoff.
+            <Text style={{ fontWeight: 700 }}>Respond with 200 OK</Text> within 15 seconds to acknowledge receipt. OneSIM retries failed deliveries 5 times with exponential backoff.
           </Text>
         </View>
         <View style={styles.warningBox}>
@@ -1277,7 +1277,7 @@ app.post('/webhooks/onesim', (req, res) => {
         </View>
 
         <View style={styles.footer}>
-          <Text>OneSim Africa Developer API Documentation v1.0</Text>
+          <Text>OneSIM Africa Developer API Documentation v1.0</Text>
         </View>
       </Page>
     </Document>

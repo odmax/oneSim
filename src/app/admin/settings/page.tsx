@@ -76,7 +76,7 @@ export default async function AdminSettingsPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-bold text-gray-900">Settings</h2>
-        <p className="mt-1 text-sm text-gray-500">Platform configuration for OneSim</p>
+        <p className="mt-1 text-sm text-gray-500">Platform configuration for OneSIM</p>
       </div>
 
       {/* Summary row */}
@@ -92,7 +92,7 @@ export default async function AdminSettingsPage() {
         {/* 1. Platform Profile */}
         <SectionCard title="Platform Profile" description="General platform identity and contact information">
           <div className="space-y-3">
-            <Field label="Platform Name" value="OneSim" />
+            <Field label="Platform Name" value="OneSIM" />
             <Field label="App URL" value={baseUrl} mono />
             <Field label="Support Email" value={getSetting('support_email') || 'Not configured'} />
             <Field label="Environment" value={appEnv === 'production' ? 'Production' : appEnv === 'development' ? 'Development' : appEnv} />

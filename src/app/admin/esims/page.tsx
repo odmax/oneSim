@@ -65,7 +65,7 @@ export default async function AdminESIMsPage({
     <div className="p-6">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-gray-900">All eSIMs</h2>
-        <p className="text-gray-600">Monitor all provisioned eSIMs - OneSim → Business Client → End Customer → eSIM</p>
+        <p className="text-gray-600">Monitor all provisioned eSIMs — OneSIM → Business Client → End Customer → eSIM</p>
       </div>
 
       {/* Filters */}

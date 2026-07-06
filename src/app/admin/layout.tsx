@@ -46,7 +46,7 @@ export default function AdminLayout({
     <div className="flex h-screen">
       <Sidebar items={sidebarItems} portalName="ONESIM ADMIN" />
       <div className="flex-1 flex flex-col overflow-hidden">
-        <Header title="OneSim Admin Portal" />
+        <Header title="OneSIM Admin Portal" />
         <main className="flex-1 overflow-y-auto bg-gray-50 p-8">
           {children}
         </main>

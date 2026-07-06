@@ -10,7 +10,7 @@ export default function ForgotPasswordPage({ searchParams }: { searchParams?: { 
           <div className="flex justify-center mb-6">
             <Image
               src="/brand/onesim-logo-white.svg"
-              alt="OneSim Logo"
+              alt="OneSIM Logo"
               width={160}
               height={54}
               className="object-contain"

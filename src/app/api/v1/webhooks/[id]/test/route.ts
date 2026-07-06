@@ -27,7 +27,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     if (!endpoint) return respond(request, makeError('NOT_FOUND', 'Webhook endpoint not found'), 404, startTime, businessId, { errorMessage: 'Not found', rateLimit })
 
     const eventId = `evt_test_${crypto.randomBytes(8).toString('hex')}`
-    const payload = { id: eventId, type: 'webhook.test', createdAt: new Date().toISOString(), data: { message: 'This is a test webhook from OneSim' } }
+    const payload = { id: eventId, type: 'webhook.test', createdAt: new Date().toISOString(), data: { message: 'This is a test webhook from OneSIM' } }
     const body = JSON.stringify(payload)
     const timestamp = Math.floor(Date.now() / 1000)
     const signature = crypto.createHmac('sha256', endpoint.secret).update(`${timestamp}.${body}`).digest('hex')

@@ -32,7 +32,7 @@ export default async function SuspendedPage() {
           Your business <span className="font-semibold">{business.name}</span> has been suspended.
         </p>
         <p className="mb-6 text-sm text-gray-500">
-          Please contact OneSim support for more information about your account status.
+          Please contact OneSIM support for more information about your account status.
         </p>
         <form action="/api/auth/signout" method="POST" className="mt-6">
           <button

@@ -15,7 +15,7 @@ const NOTIFICATION_EMAILS: Record<string, { subject: string; template: string }>
   topup_completed: { subject: 'Top-Up Completed Successfully', template: 'topup-completed' },
   refund_completed: { subject: 'Refund Processed', template: 'refund-completed' },
   wallet_low: { subject: 'Low Wallet Balance — Please Top Up', template: 'wallet-low' },
-  invoice_generated: { subject: 'New Invoice from OneSim Africa', template: 'invoice-generated' },
+  invoice_generated: { subject: 'New Invoice from OneSIM Africa', template: 'invoice-generated' },
 }
 
 function renderTemplate(templateName: string, data: Record<string, any>): string {
@@ -29,7 +29,7 @@ ${d.activationCode ? `<p>Or enter this activation code manually: <code style="ba
 <p style="color:#6b7280;font-size:12px">Open Settings → Cellular → Add eSIM to install.</p>
 <p style="color:#6b7280;font-size:12px">ICCID: ${d.iccid || ''}</p>
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
-<p style="color:#9ca3af;font-size:11px">OneSim Africa — ${d.businessName || ''}</p>
+<p style="color:#9ca3af;font-size:11px">OneSIM Africa — ${d.businessName || ''}</p>
 </div>`,
 
     'order-failed': (d) => `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:20px">
@@ -39,7 +39,7 @@ ${d.activationCode ? `<p>Or enter this activation code manually: <code style="ba
 <p>No amount has been deducted from your wallet.</p>
 <p>Please try again or <a href="${d.supportUrl || '#'}" style="color:#0891b2">contact support</a>.</p>
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
-<p style="color:#9ca3af;font-size:11px">OneSim Africa</p>
+<p style="color:#9ca3af;font-size:11px">OneSIM Africa</p>
 </div>`,
 
     'topup-completed': (d) => `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:20px">
@@ -48,7 +48,7 @@ ${d.activationCode ? `<p>Or enter this activation code manually: <code style="ba
 ${d.dataAddedMB ? `<p>Data added: <strong>${(d.dataAddedMB / 1024).toFixed(2)} GB</strong></p>` : ''}
 ${d.validityDaysAdded ? `<p>Validity extended by: <strong>${d.validityDaysAdded} days</strong></p>` : ''}
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
-<p style="color:#9ca3af;font-size:11px">OneSim Africa</p>
+<p style="color:#9ca3af;font-size:11px">OneSIM Africa</p>
 </div>`,
 
     'refund-completed': (d) => `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:20px">
@@ -57,7 +57,7 @@ ${d.validityDaysAdded ? `<p>Validity extended by: <strong>${d.validityDaysAdded}
 ${d.reason ? `<p style="color:#6b7280">Reason: ${d.reason}</p>` : ''}
 <p>Your updated wallet balance is <strong>$${d.balance || '0'}</strong>.</p>
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
-<p style="color:#9ca3af;font-size:11px">OneSim Africa</p>
+<p style="color:#9ca3af;font-size:11px">OneSIM Africa</p>
 </div>`,
 
     'wallet-low': (d) => `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:20px">
@@ -65,7 +65,7 @@ ${d.reason ? `<p style="color:#6b7280">Reason: ${d.reason}</p>` : ''}
 <p>Your wallet balance is <strong>$${d.balance || '0'}</strong>.</p>
 <p>This may be too low for your next purchase. Please <a href="${d.topUpUrl || '#'}" style="color:#0891b2">top up your wallet</a> to continue using the service without interruption.</p>
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
-<p style="color:#9ca3af;font-size:11px">OneSim Africa</p>
+<p style="color:#9ca3af;font-size:11px">OneSIM Africa</p>
 </div>`,
 
     'invoice-generated': (d) => `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:20px">
@@ -75,7 +75,7 @@ ${d.reason ? `<p style="color:#6b7280">Reason: ${d.reason}</p>` : ''}
 ${d.dueDate ? `<p>Due: ${new Date(d.dueDate).toLocaleDateString()}</p>` : ''}
 <p style="color:#6b7280;font-size:12px">This invoice will be marked as paid automatically from your wallet balance.</p>
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
-<p style="color:#9ca3af;font-size:11px">OneSim Africa</p>
+<p style="color:#9ca3af;font-size:11px">OneSIM Africa</p>
 </div>`,
   }
 

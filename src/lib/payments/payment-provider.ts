@@ -37,10 +37,10 @@ export class ManualPaymentProvider implements PaymentProvider {
       success: true,
       paymentReference: request.paymentReference,
       instructions: [
-        `Bank transfer to OneSim Africa`,
+        `Bank transfer to OneSIM Africa`,
         `Reference: ${request.paymentReference}`,
         `Amount: $${request.amount.toFixed(2)}`,
-        `Bank: OneSim Financial Services`,
+        `Bank: OneSIM Financial Services`,
         `Account: 1234567890`,
         `Sort Code: 11-22-33`,
         '',

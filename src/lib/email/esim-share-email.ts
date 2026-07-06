@@ -15,10 +15,10 @@ export function buildESIMInstallEmail(params: ESIMInstallEmailParams): { subject
   const appUrl = getAppUrl()
 
   return {
-    subject: `Your eSIM from OneSim Africa is ready to install — ${packageName}`,
+    subject: `Your eSIM from OneSIM Africa is ready to install — ${packageName}`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:32px">
-        <h2 style="color:#059669">OneSim Africa</h2>
+        <h2 style="color:#059669">OneSIM Africa</h2>
         <p>Hi ${recipientName},</p>
         <p>Your eSIM package <strong>${packageName}</strong> is ready to install on your device.</p>
 
@@ -45,7 +45,7 @@ export function buildESIMInstallEmail(params: ESIMInstallEmailParams): { subject
 
         <p style="font-size:13px;color:#374151">If you need help, visit: <a href="${installLink}" style="color:#059669">${installLink}</a></p>
 
-        <p style="font-size:12px;color:#6b7280;margin-top:24px">— OneSim Africa (${appUrl})</p>
+        <p style="font-size:12px;color:#6b7280;margin-top:24px">— OneSIM Africa (${appUrl})</p>
       </div>`,
   }
 }

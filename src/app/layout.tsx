@@ -2,8 +2,8 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'OneSim Africa | B2B eSIM Management',
-  description: 'Manage your business eSIMs with OneSim Africa',
+  title: 'OneSIM Africa | B2B eSIM Management',
+  description: 'Manage your business eSIMs with OneSIM Africa',
 }
 
 export default function RootLayout({

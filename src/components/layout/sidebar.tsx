@@ -32,7 +32,7 @@ export default function Sidebar({ items, portalName }: SidebarProps) {
       <div className="flex flex-col items-center border-b border-gray-800 px-6 py-8">
         <Image
           src="/brand/onesim-logo-white.svg"
-          alt="OneSim Logo"
+          alt="OneSIM Logo"
           width={130}
           height={28}
           className="object-contain"

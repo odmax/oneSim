@@ -204,7 +204,7 @@ export async function sendTestWebhook(endpointId: string) {
     event: 'webhook.test',
     timestamp: new Date().toISOString(),
     data: {
-      message: 'This is a test webhook from OneSim.',
+      message: 'This is a test webhook from OneSIM.',
       endpointId: endpoint.id,
       endpointName: endpoint.name,
     },

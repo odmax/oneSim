@@ -202,7 +202,7 @@ export default function DevelopersClient({ packages, apiKeys, isAdmin, baseUrl }
       <div className="rounded-lg border bg-white p-6">
         <Section title="Overview">
           <p className="mb-3 text-sm text-gray-600">
-            The OneSim API lets you order and manage eSIMs from your own systems.
+            The OneSIM API lets you order and manage eSIMs from your own systems.
             You send a simple HTTP request — we handle the rest.
           </p>
 
@@ -638,7 +638,7 @@ console.log(data);`} />
                 They are resolved in this priority: <code className="rounded bg-gray-100 px-1 font-mono">packageId</code> → <code className="rounded bg-gray-100 px-1 font-mono">sku</code> → <code className="rounded bg-gray-100 px-1 font-mono">packageCode</code>.
               </p>
               <div className="mt-3 space-y-2 text-sm text-gray-600">
-                <p><code className="rounded bg-gray-100 px-1 font-mono">packageId</code> — Internal OneSim package ID (e.g. <code className="rounded bg-gray-100 px-1">cmow...abc123</code>). Get it from <code className="rounded bg-gray-100 px-1">GET /api/v1/packages</code>.</p>
+                <p><code className="rounded bg-gray-100 px-1 font-mono">packageId</code> — Internal OneSIM package ID (e.g. <code className="rounded bg-gray-100 px-1">cmow...abc123</code>). Get it from <code className="rounded bg-gray-100 px-1">GET /api/v1/packages</code>.</p>
                 <p><code className="rounded bg-gray-100 px-1 font-mono">sku</code> — Human-readable stock keeping unit (e.g. <code className="rounded bg-gray-100 px-1">ONESIM-AFRICA-5GB-30D</code>). Easy to remember and share.</p>
                 <p><code className="rounded bg-gray-100 px-1 font-mono">packageCode</code> — Short auto-generated code (e.g. <code className="rounded bg-gray-100 px-1">PKG-5GB-30D-X1A2B3C</code>).</p>
               </div>
@@ -649,14 +649,14 @@ console.log(data);`} />
                 Pricing Fields
               </h4>
               <p className="mt-1 text-sm text-gray-600">
-                Every package and order response includes the OneSim client price. You may add your own markup on your platform.
+                Every package and order response includes the OneSIM client price. You may add your own markup on your platform.
               </p>
               <div className="mt-2 space-y-2 text-sm text-gray-600">
-                <p><code className="rounded bg-gray-100 px-1 font-mono">unitCost</code> / <code className="rounded bg-gray-100 px-1 font-mono">unitPrice</code> — The OneSim price per eSIM (maps from <code className="rounded bg-gray-100 px-1">priceUSD</code>). This is your cost.</p>
+                <p><code className="rounded bg-gray-100 px-1 font-mono">unitCost</code> / <code className="rounded bg-gray-100 px-1 font-mono">unitPrice</code> — The OneSIM price per eSIM (maps from <code className="rounded bg-gray-100 px-1">priceUSD</code>). This is your cost.</p>
                 <p><code className="rounded bg-gray-100 px-1 font-mono">totalCost</code> — <code className="rounded bg-gray-100 px-1">unitCost × quantity</code>. The total charged to your wallet.</p>
                 <p><code className="rounded bg-gray-100 px-1 font-mono">quantity</code> — Number of eSIMs purchased in this order.</p>
                 <p><code className="rounded bg-gray-100 px-1 font-mono">currency</code> — Always <code className="rounded bg-gray-100 px-1">USD</code>.</p>
-                <p className="mt-2 text-xs text-gray-400"><strong>Note:</strong> <code className="rounded bg-gray-100 px-1">unitCost</code> is the OneSim client price. You may set a higher <code className="rounded bg-gray-100 px-1">suggestedRetailPrice</code> on your platform.</p>
+                <p className="mt-2 text-xs text-gray-400"><strong>Note:</strong> <code className="rounded bg-gray-100 px-1">unitCost</code> is the OneSIM client price. You may set a higher <code className="rounded bg-gray-100 px-1">suggestedRetailPrice</code> on your platform.</p>
               </div>
             </div>
 
@@ -1244,7 +1244,7 @@ with urllib.request.urlopen(req) as resp:
           <div className="mb-6">
             <h4 className="mb-2 text-sm font-semibold text-gray-700">No-Code / Low-Code Tools</h4>
             <p className="mb-2 text-sm text-gray-600">
-              You do not need to write code to use the OneSim API. These tools let you send HTTP requests visually:
+              You do not need to write code to use the OneSIM API. These tools let you send HTTP requests visually:
             </p>
             <div className="space-y-2 text-sm text-gray-600">
               <div className="rounded-lg border p-3">
@@ -1299,7 +1299,7 @@ with urllib.request.urlopen(req) as resp:
       <div className="rounded-lg border bg-white p-6">
         <Section title="Test Console">
           <p className="mb-4 text-sm text-gray-600">
-            Test the OneSim API from your browser. Quick actions run against the live API using your session.
+            Test the OneSIM API from your browser. Quick actions run against the live API using your session.
           </p>
 
           {apiKeys.length === 0 && (

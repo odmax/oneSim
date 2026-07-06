@@ -3,10 +3,10 @@ import { NextResponse } from 'next/server'
 const spec = {
   openapi: '3.0.3',
   info: {
-    title: 'OneSim Africa API',
+    title: 'OneSIM Africa API',
     version: '1.0.0',
     description: 'RESTful API for ordering and managing eSIMs programmatically.\n\nAuthentication: All requests require an `x-api-key` header with your API key.\nBase URL: `https://staging.onetelecom.cloud/api/v1` or `https://m2m.onetelecom.cloud/api/v1`',
-    contact: { name: 'OneSim Support', email: 'support@onetelecom.cloud' },
+    contact: { name: 'OneSIM Support', email: 'support@onetelecom.cloud' },
   },
   servers: [
     { url: 'https://staging.onetelecom.cloud/api/v1', description: 'Staging' },

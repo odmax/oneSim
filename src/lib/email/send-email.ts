@@ -15,7 +15,7 @@ export async function sendEmail(params: SendEmailParams): Promise<{ success: boo
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: 'OneSim <noreply@onetelecom.cloud>', to: params.to, subject: params.subject, html: params.html }),
+        body: JSON.stringify({ from: 'OneSIM <noreply@onetelecom.cloud>', to: params.to, subject: params.subject, html: params.html }),
       })
       if (!res.ok) {
         const err = await res.text()
@@ -41,14 +41,14 @@ export async function sendEmail(params: SendEmailParams): Promise<{ success: boo
 export function buildResetPasswordEmail(link: string): { subject: string; html: string } {
   const appUrl = getAppUrl()
   return {
-    subject: 'Reset your OneSim password',
+    subject: 'Reset your OneSIM password',
     html: `
       <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px">
-        <h2 style="color:#059669">OneSim Africa</h2>
+        <h2 style="color:#059669">OneSIM Africa</h2>
         <p>Click the button below to reset your password.</p>
         <a href="${link}" style="display:inline-block;background:#059669;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0">Reset Password</a>
         <p style="font-size:12px;color:#6b7280">This link expires in 1 hour. If you did not request this, please ignore this email.</p>
-        <p style="font-size:12px;color:#6b7280">— OneSim Africa (${appUrl})</p>
+        <p style="font-size:12px;color:#6b7280">— OneSIM Africa (${appUrl})</p>
       </div>`,
   }
 }

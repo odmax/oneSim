@@ -153,7 +153,7 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   return NextResponse.json({
-    service: 'OneSim External API',
+    service: 'OneSIM External API',
     version: 'v1',
     endpoints: { order: 'POST /api/v1/esims/order' },
   })
