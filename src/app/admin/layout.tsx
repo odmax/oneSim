@@ -15,7 +15,7 @@ export default function AdminLayout({
     { title: 'Provider Catalog', href: '/admin/provider-catalog' },
     { title: 'Catalog Health', href: '/admin/provider-catalog/health' },
     { title: 'Catalog History', href: '/admin/provider-catalog/history' },
-    { title: 'Published Packages', href: '/admin/packages' },
+    { title: 'Product Catalog', href: '/admin/packages' },
     { title: 'OPERATIONS', href: '#', sectionHeader: true },
     { title: 'Orders', href: '/admin/orders' },
     { title: 'eSIMs', href: '/admin/esims' },

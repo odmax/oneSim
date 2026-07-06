@@ -308,7 +308,7 @@ export default async function EditPackagePage({
                       {isImported && pkg.source === 'CATALOG_PRODUCT' && (
                         <button type="submit" name="__action" value="move_to_provider"
                           className="rounded-lg border border-gray-200 px-5 py-2.5 text-sm font-medium text-gray-500 hover:bg-gray-50">
-                          Move Back to Provider Plans
+                          Move Back to Provider Catalog
                         </button>
                       )}
                     </div>

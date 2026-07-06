@@ -26,8 +26,14 @@ export async function publishToCatalog(packageIds: string[]): Promise<{ success:
 
   for (const pp of providerPackages) {
     const sellPrice = pp.sellingPrice ? parseFloat(pp.sellingPrice.toString()) : null
+    const costPrice = pp.costPrice ? parseFloat(pp.costPrice.toString()) : null
 
-    // Validation: must have selling price and be configured
+    // Validation: must have cost price, selling price, and be configured
+    if (!costPrice || costPrice <= 0) {
+      skipped++
+      continue
+    }
+
     if (!sellPrice || sellPrice <= 0) {
       skipped++
       continue
@@ -153,7 +159,7 @@ export async function getPublishSummary(packageIds: string[]) {
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return null
 
   const packages = await prisma.providerPackage.findMany({
-    where: { id: { in: packageIds }, sellingPrice: { not: undefined } },
+    where: { id: { in: packageIds }, sellingPrice: { gt: 0 }, costPrice: { gt: 0 } },
     include: { provider: { select: { id: true, name: true } } },
   })
 

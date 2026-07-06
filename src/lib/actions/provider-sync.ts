@@ -285,78 +285,59 @@ export async function importProviderPlan(providerId: string, formData: FormData)
   const resolvedRawData = normalized ? normalized.rawData : planData
 
   try {
-    const sku = generateSku(resolvedName, resolvedDataGB, resolvedValidityDays, provider.code)
-    let packageCode = generatePackageCode(resolvedDataGB, resolvedValidityDays)
-
-    let existingCode = await prisma.eSIMPackage.findUnique({ where: { packageCode } })
-    while (existingCode) {
-      packageCode = generatePackageCode(resolvedDataGB, resolvedValidityDays)
-      existingCode = await prisma.eSIMPackage.findUnique({ where: { packageCode } })
-    }
-
-    const existingPackage = await prisma.eSIMPackage.findFirst({
+    // Write to ProviderPackage (raw catalog), not ESIMPackage
+    const existing = await prisma.providerPackage.findFirst({
       where: { providerId, providerPlanId: resolvedPlanId },
     })
 
-    if (existingPackage) {
-      await prisma.eSIMPackage.update({
-        where: { id: existingPackage.id },
+    if (existing) {
+      await prisma.providerPackage.update({
+        where: { id: existing.id },
         data: {
-          source: 'PROVIDER_PLAN',
           name: resolvedName,
-          description: resolvedDescription || existingPackage.description,
           dataGB: resolvedDataGB,
           validityDays: resolvedValidityDays,
-          costPriceUSD: resolvedCostPriceUSD,
-          priceUSD: 0,
-          localPrice: 0,
+          costPrice: resolvedCostPriceUSD,
           providerRawData: resolvedRawData,
-          sku: existingPackage.sku || sku,
-          packageCode: existingPackage.packageCode || packageCode,
+          isAvailable: true,
         },
       })
 
       await advanceCertificationTo(providerId, 'PLANS_IMPORTED')
 
       await prisma.auditLog.create({
-        data: { userId: session.user.id, action: 'PROVIDER_PLAN_UPDATED', entity: 'ESIMPackage', entityId: existingPackage.id, details: `Updated package from ${provider.code} plan: ${resolvedName} (${resolvedPlanId})` },
+        data: { userId: session.user.id, action: 'PROVIDER_PLAN_UPDATED', entity: 'ProviderPackage', entityId: existing.id, details: `Updated package from ${provider.code} plan: ${resolvedName} (${resolvedPlanId})` },
       })
 
       revalidatePath(`/admin/providers/${providerId}`)
-      revalidatePath('/admin/packages')
-      redirect(`/admin/providers/${providerId}?synced=true&success=${encodeURIComponent(`Package "${resolvedName}" updated. Set selling price and activate manually.`)}`)
+      revalidatePath('/admin/provider-catalog')
+      redirect(`/admin/providers/${providerId}?synced=true&success=${encodeURIComponent(`Package "${resolvedName}" updated. Configure pricing in Provider Catalog.`)}`)
     }
 
-    await prisma.eSIMPackage.create({
+    await prisma.providerPackage.create({
       data: {
-        source: 'PROVIDER_PLAN',
+        providerId,
+        providerPlanId: resolvedPlanId,
         name: resolvedName,
-        description: resolvedDescription || `Imported from ${provider.name}: ${resolvedName}`,
         dataGB: resolvedDataGB,
         validityDays: resolvedValidityDays,
-        priceUSD: 0,
-        localPrice: 0,
+        costPrice: resolvedCostPriceUSD,
         currency: 'USD',
-        isActive: false,
-        sku,
-        packageCode,
-        providerId,
-        providerName: provider.code,
-        providerPlanId: resolvedPlanId,
+        isAvailable: true,
         providerRawData: resolvedRawData,
-        costPriceUSD: resolvedCostPriceUSD,
+        configurationStatus: 'UNCONFIGURED',
       },
     })
 
     await advanceCertificationTo(providerId, 'PLANS_IMPORTED')
 
     await prisma.auditLog.create({
-      data: { userId: session.user.id, action: 'PROVIDER_PLAN_IMPORTED', entity: 'ESIMPackage', entityId: resolvedPlanId, details: `Imported package from ${provider.code} plan: ${resolvedName} (${resolvedPlanId})` },
+      data: { userId: session.user.id, action: 'PROVIDER_PLAN_IMPORTED', entity: 'ProviderPackage', entityId: resolvedPlanId, details: `Imported package from ${provider.code} plan: ${resolvedName} (${resolvedPlanId})` },
     })
 
     revalidatePath(`/admin/providers/${providerId}`)
-    revalidatePath('/admin/packages')
-    redirect(`/admin/providers/${providerId}?synced=true&success=${encodeURIComponent(`Package "${resolvedName}" imported. Set selling price and activate manually.`)}`)
+    revalidatePath('/admin/provider-catalog')
+    redirect(`/admin/providers/${providerId}?synced=true&success=${encodeURIComponent(`Package "${resolvedName}" imported. Configure pricing in Provider Catalog.`)}`)
   } catch (error: any) {
     redirect(`/admin/providers/${providerId}?synced=true&error=${encodeURIComponent(`Failed to import: ${error.message || 'Unknown error'}`)}`)
   }

@@ -129,9 +129,9 @@ export default async function AdminSettingsPage() {
             <Field label="Annual Markup" value={<Badge color="bg-gray-100 text-gray-500">Manual per product</Badge>} />
           </div>
           <div className="mt-4 flex flex-wrap gap-3">
-            <Link href="/admin/packages" className="text-sm font-medium text-emerald-600 hover:text-emerald-700">eSIM Packages →</Link>
+            <Link href="/admin/packages" className="text-sm font-medium text-emerald-600 hover:text-emerald-700">Product Catalog →</Link>
             <Link href="/admin/provider-catalog" className="text-sm font-medium text-emerald-600 hover:text-emerald-700">Provider Catalog →</Link>
-            <Link href="/admin/packages?tab=catalog" className="text-sm font-medium text-emerald-600 hover:text-emerald-700">Catalog Products →</Link>
+            <Link href="/admin/packages?tab=manual" className="text-sm font-medium text-emerald-600 hover:text-emerald-700">Manual Products →</Link>
             <Link href="/admin/pricing-rules" className="text-sm font-medium text-emerald-600 hover:text-emerald-700">Pricing Rules →</Link>
           </div>
         </SectionCard>

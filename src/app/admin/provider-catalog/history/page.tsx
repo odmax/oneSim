@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { getChangeHistory, getChangeSetDetails, rollbackChangeSet } from '@/lib/actions/catalog-history'
+import { RollbackButton } from './RollbackButton'
 
 export default async function CatalogHistoryPage({ searchParams }: { searchParams?: { view?: string; page?: string } }) {
   const session = await getServerSession(authOptions)
@@ -33,12 +34,7 @@ export default async function CatalogHistoryPage({ searchParams }: { searchParam
             <div className="flex gap-2">
               <Link href="/admin/provider-catalog/history" className="rounded border border-gray-200 px-3 py-1 text-xs text-gray-600 hover:bg-gray-50">Close</Link>
               {details.actionType !== 'ROLLBACK' && (
-                <form action={async () => { 'use server'; await rollbackChangeSet(details.id) }}>
-                  <button type="submit" className="rounded bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700"
-                    onClick={e => { if (!confirm(`Rollback ${details.totalChanged} packages?`)) e.preventDefault() }}>
-                    Rollback
-                  </button>
-                </form>
+                <RollbackButton changeSetId={details.id} label={`Rollback ${details.totalChanged} packages?`} />
               )}
             </div>
           </div>
@@ -101,10 +97,7 @@ export default async function CatalogHistoryPage({ searchParams }: { searchParam
                   <div className="flex gap-2">
                     <Link href={`/admin/provider-catalog/history?view=${set.id}`} className="text-xs text-cyan-600 hover:text-cyan-700">View</Link>
                     {set.actionType !== 'ROLLBACK' && (
-                      <form action={async () => { 'use server'; await rollbackChangeSet(set.id) }}>
-                        <button type="submit" className="text-xs text-amber-600 hover:text-amber-700"
-                          onClick={e => { if (!confirm(`Rollback?`)) e.preventDefault() }}>Rollback</button>
-                      </form>
+                      <RollbackButton changeSetId={set.id} label="Rollback?" />
                     )}
                   </div>
                 </td>
@@ -116,8 +109,8 @@ export default async function CatalogHistoryPage({ searchParams }: { searchParam
           <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
             <span className="text-gray-500">{total} changes · Page {page}/{totalPages}</span>
             <div className="flex gap-2">
-              {page > 1 && <Link href={`/admin/provider-catalog/history?page=${page - 1}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Prev</Link>}
-              {page < totalPages && <Link href={`/admin/provider-catalog/history?page=${page + 1}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Next</Link>}
+              {page > 1 && <Link href={`/admin/provider-catalog/history?page=${page - 1}${searchParams?.view ? `&view=${searchParams.view}` : ''}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Prev</Link>}
+              {page < totalPages && <Link href={`/admin/provider-catalog/history?page=${page + 1}${searchParams?.view ? `&view=${searchParams.view}` : ''}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Next</Link>}
             </div>
           </div>
         )}

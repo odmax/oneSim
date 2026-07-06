@@ -34,7 +34,7 @@ export default async function ProviderPlansPage({
 
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Provider Plans</h2>
+          <h2 className="text-2xl font-bold text-gray-900">Provider Plans (Legacy)</h2>
           <p className="text-gray-600">Raw plans imported from providers — not yet sellable</p>
         </div>
         <Link

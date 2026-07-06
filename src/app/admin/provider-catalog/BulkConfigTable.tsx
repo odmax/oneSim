@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { bulkConfigurePackages } from '@/lib/actions/bulk-configure'
 import { publishToCatalog, bulkSetPublishStatus, getPublishSummary } from '@/lib/actions/publish-packages'
 import { applyRulesToPackages } from '@/lib/actions/package-rules'
@@ -51,6 +52,8 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
   page: number
   totalPages: number
 }) {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [showForm, setShowForm] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -95,7 +98,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     const res = await applyRulesToPackages(undefined)
     setResult({ success: res.success, created: res.matched, updated: 0, skipped: 0, error: res.error })
     if (res.success) {
-      setTimeout(() => window.location.reload(), 1500)
+      setTimeout(() => router.refresh(), 1500)
     }
     setRulesLoading(false)
   }
@@ -106,7 +109,17 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     // First show summary
     const summary = await getPublishSummary(Array.from(selected))
     if (!summary || summary.total === 0) {
-      setResult({ success: false, error: 'No publishable packages selected. Ensure selling price is set and status is configured.' })
+      const allPkgs = initialPackages.filter(p => selected.has(p.id))
+      const missingCost = allPkgs.filter(p => !p.costPrice || Number(p.costPrice) <= 0)
+      const missingSell = allPkgs.filter(p => !p.sellingPrice || Number(p.sellingPrice) <= 0)
+      const notConfigured = allPkgs.filter(p => p.configurationStatus !== 'CONFIGURED' && p.configurationStatus !== 'AUTO_CONFIGURED')
+      const missingCurrency = allPkgs.filter(p => !p.sellingCurrency)
+      const issues: string[] = []
+      if (missingCost.length > 0) issues.push(`${missingCost.length} missing cost price`)
+      if (missingSell.length > 0) issues.push(`${missingSell.length} missing selling price`)
+      if (notConfigured.length > 0) issues.push(`${notConfigured.length} not configured`)
+      if (missingCurrency.length > 0) issues.push(`${missingCurrency.length} missing currency`)
+      setResult({ success: false, error: `No publishable packages selected. ${issues.join(', ')}.` })
       return
     }
     setPublishSummary(summary)
@@ -121,7 +134,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     setResult({ success: res.success, created: res.created, updated: res.updated, skipped: res.skipped, error: res.error })
     if (res.success) {
       setSelected(new Set())
-      setTimeout(() => window.location.reload(), 2000)
+      setTimeout(() => router.refresh(), 2000)
     }
     setPublishLoading(false)
   }
@@ -131,21 +144,21 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     if (!confirm(`Reset ${selected.size} packages to factory defaults? This will clear all pricing, configuration, publish status, tags, notes, and auto-pick preferences.`)) return
     const res = await resetPricing(Array.from(selected))
     setResult(res as any)
-    if (res.success) { setSelected(new Set()); setTimeout(() => window.location.reload(), 1500) }
+    if (res.success) { setSelected(new Set()); setTimeout(() => router.refresh(), 1500) }
   }
 
   const handleRowReset = async (pkgId: string) => {
     if (!confirm('Reset this package to factory defaults? This will clear all pricing, configuration, publish status, tags, notes, and auto-pick preferences.')) return
     const res = await resetPricing([pkgId])
     setResult(res as any)
-    if (res.success) setTimeout(() => window.location.reload(), 1500)
+    if (res.success) setTimeout(() => router.refresh(), 1500)
   }
 
   const handleUndoRules = async () => {
     if (!confirm('Undo the last rules application? This will revert packages to their previous state.')) return
     const res = await undoLastRules()
     setResult(res as any)
-    if (res.success) setTimeout(() => window.location.reload(), 1500)
+    if (res.success) setTimeout(() => router.refresh(), 1500)
   }
 
   const openEdit = (pkg: Package) => {
@@ -182,7 +195,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     if (Object.keys(data).length === 0) { setSaving(false); closeEdit(); return }
     const res = await updateSinglePackage(editPkg.id, data)
     setSaving(false)
-    if (res.success) { closeEdit(); window.location.reload() }
+    if (res.success) { closeEdit(); router.refresh() }
     else { setResult(res); closeEdit() }
   }
 
@@ -190,7 +203,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     if (selected.size === 0) return
     const res = await bulkSetPublishStatus(Array.from(selected), 'HIDDEN')
     setResult(res)
-    if (res.success) { setSelected(new Set()); setTimeout(() => window.location.reload(), 1500) }
+    if (res.success) { setSelected(new Set()); setTimeout(() => router.refresh(), 1500) }
   }
 
   const handleBulkArchive = async () => {
@@ -198,7 +211,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     if (!confirm(`Archive ${selected.size} packages? They will be hidden from all views.`)) return
     const res = await bulkSetPublishStatus(Array.from(selected), 'ARCHIVED')
     setResult(res)
-    if (res.success) { setSelected(new Set()); setTimeout(() => window.location.reload(), 1500) }
+    if (res.success) { setSelected(new Set()); setTimeout(() => router.refresh(), 1500) }
   }
 
   const handleSubmit = async () => {
@@ -223,7 +236,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     if (res.success) {
       setSelected(new Set())
       setShowForm(false)
-      setTimeout(() => window.location.reload(), 1500)
+      setTimeout(() => router.refresh(), 1500)
     }
     setLoading(false)
   }
@@ -576,10 +589,10 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
           <span className="text-gray-500">{total} packages · Page {page} of {totalPages}</span>
           <div className="flex gap-2">
             {page > 1 && (
-              <Link href={`/admin/provider-catalog?page=${page - 1}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Previous</Link>
+              <Link href={`/admin/provider-catalog?${new URLSearchParams({ ...Object.fromEntries(searchParams.entries()), page: String(page - 1) })}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Previous</Link>
             )}
             {page < totalPages && (
-              <Link href={`/admin/provider-catalog?page=${page + 1}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Next</Link>
+              <Link href={`/admin/provider-catalog?${new URLSearchParams({ ...Object.fromEntries(searchParams.entries()), page: String(page + 1) })}`} className="rounded-lg border px-3 py-1 text-gray-600 hover:bg-gray-50">Next</Link>
             )}
           </div>
         </div>

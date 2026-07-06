@@ -12,29 +12,33 @@ export async function resetPricing(packageIds: string[]): Promise<{ success: boo
 
   if (!packageIds || packageIds.length === 0) return { success: false, error: 'No packages selected' }
 
-  await prisma.providerPackage.updateMany({
-    where: { id: { in: packageIds } },
-    data: {
-      sellingPrice: null,
-      sellingCurrency: 'USD',
-      markupPercent: null,
-      pricingMode: 'MARKUP_PERCENT',
-      publishStatus: 'DRAFT',
-      configurationStatus: 'UNCONFIGURED',
-      autoConfiguredByRuleId: null,
-      lastConfiguredAt: null,
-      tags: Prisma.JsonNull,
-      notes: null,
-      isPreferred: false,
-      preferredReason: null,
-      preferredAt: null,
-      excludedFromAutoPick: false,
-      autoPickReason: null,
-    },
-  })
+  try {
+    await prisma.providerPackage.updateMany({
+      where: { id: { in: packageIds } },
+      data: {
+        sellingPrice: null,
+        sellingCurrency: 'USD',
+        markupPercent: null,
+        pricingMode: 'MARKUP_PERCENT',
+        publishStatus: 'DRAFT',
+        configurationStatus: 'UNCONFIGURED',
+        autoConfiguredByRuleId: null,
+        lastConfiguredAt: null,
+        tags: Prisma.JsonNull,
+        notes: null,
+        isPreferred: false,
+        preferredReason: null,
+        preferredAt: null,
+        excludedFromAutoPick: false,
+        autoPickReason: null,
+      },
+    })
 
-  await prisma.auditLog.create({ data: { userId: session.user.id, action: 'RESET_TO_FACTORY', entity: 'ProviderPackage', details: `Reset ${packageIds.length} packages to factory defaults` } }).catch(() => {})
+    await prisma.auditLog.create({ data: { userId: session.user.id, action: 'RESET_TO_FACTORY', entity: 'ProviderPackage', details: `Reset ${packageIds.length} packages to factory defaults` } }).catch(() => {})
 
-  revalidatePath('/admin/provider-catalog')
-  return { success: true, updated: packageIds.length }
+    revalidatePath('/admin/provider-catalog')
+    return { success: true, updated: packageIds.length }
+  } catch (error: any) {
+    return { success: false, error: error.message || 'Reset pricing failed' }
+  }
 }

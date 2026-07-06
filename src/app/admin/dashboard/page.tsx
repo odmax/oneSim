@@ -54,8 +54,8 @@ export default async function AdminDashboard({
       color: 'bg-cyan-600',
     },
     {
-      title: 'eSIM Packages',
-      description: 'Create and manage eSIM packages',
+      title: 'Product Catalog',
+      description: 'Manage customer-facing eSIM products',
       href: '/admin/packages',
       icon: ShoppingCart,
       color: 'bg-green-600',

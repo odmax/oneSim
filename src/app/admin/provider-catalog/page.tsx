@@ -13,30 +13,29 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
   const limit = 50
   const skip = (page - 1) * limit
 
-  const where: any = {}
-  if (searchParams?.provider) where.providerId = searchParams.provider
-  if (searchParams?.publishStatus) where.publishStatus = searchParams.publishStatus
-  if (searchParams?.configStatus) where.configurationStatus = searchParams.configStatus
-  if (searchParams?.country) where.country = searchParams.country
+  const baseWhere: any = {}
+  const searchFilters: any[] = []
+
+  if (searchParams?.provider) baseWhere.providerId = searchParams.provider
+  if (searchParams?.publishStatus) baseWhere.publishStatus = searchParams.publishStatus
+  if (searchParams?.configStatus) baseWhere.configurationStatus = searchParams.configStatus
+  if (searchParams?.country) baseWhere.country = searchParams.country
+
   if (searchParams?.costFilter === 'missing') {
-    where.OR = [
-      { costPrice: { equals: 0 } },
-      { costPrice: null },
-    ]
+    searchFilters.push({ costPrice: { equals: 0 } })
   }
+
   if (searchParams?.search) {
-    where.AND = where.AND || []
-    where.AND.push({ OR: [
+    searchFilters.push(
       { name: { contains: searchParams.search, mode: 'insensitive' } },
       { providerPlanId: { contains: searchParams.search, mode: 'insensitive' } },
       { providerPlanCode: { contains: searchParams.search, mode: 'insensitive' } },
-    ]})
-    where.OR = [
-      { name: { contains: searchParams.search, mode: 'insensitive' } },
-      { providerPlanId: { contains: searchParams.search, mode: 'insensitive' } },
-      { providerPlanCode: { contains: searchParams.search, mode: 'insensitive' } },
-    ]
+    )
   }
+
+  const where = searchFilters.length > 0
+    ? { AND: [{ ...baseWhere }, { OR: searchFilters }] }
+    : baseWhere
 
   const [packages, total, providers, countries] = await Promise.all([
     prisma.providerPackage.findMany({
@@ -64,7 +63,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Provider Catalog</h2>
-          <p className="text-gray-600">Raw provider packages — configure pricing and publishing before making sellable</p>
+          <p className="text-gray-600">Configure raw provider packages here, then publish selected packages to Product Catalog</p>
         </div>
         <div className="flex gap-2">
           <a href="/api/admin/provider-catalog-export"
@@ -111,7 +110,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
           <li><strong>Set cost price</strong> — enter the provider cost (raw or admin-override). Edit a row or select multiple and click <strong>Configure</strong>.</li>
           <li><strong>Set selling price</strong> — enter a client-facing price, or use Markup % to auto-calculate from cost.</li>
           <li><strong>Mark as Configured</strong> — set Config Status to <strong>Configured</strong> (or let <strong>Apply Rules</strong> do this automatically).</li>
-          <li><strong>Publish</strong> — set Publish Status to <strong>Published</strong>. The package then appears in the Published Packages page for client activation.</li>
+          <li><strong>Publish</strong> — set Publish Status to <strong>Published</strong>. The package then appears in the <strong>Product Catalog</strong> for client activation.</li>
         </ol>
         <p className="mt-2 text-cyan-600">Use <strong>Apply Rules</strong> to auto-configure all unconfigured packages. Use <strong>Undo Last Rules</strong> to rollback. Click <strong>Edit</strong> per row for fine-grained control.</p>
       </div>

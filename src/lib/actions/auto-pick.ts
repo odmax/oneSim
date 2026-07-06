@@ -8,7 +8,7 @@ import { revalidatePath } from 'next/cache'
 export async function markPreferredPackage(packageId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return
-  await prisma.providerPackage.update({ where: { id: packageId }, data: { isPreferred: true, preferredReason: 'Manually selected', preferredAt: new Date() } })
+  await prisma.providerPackage.update({ where: { id: packageId }, data: { isPreferred: true, preferredReason: 'MANUAL', preferredAt: new Date() } })
   await prisma.auditLog.create({ data: { userId: session.user.id, action: 'PACKAGE_MARKED_PREFERRED', entity: 'ProviderPackage', entityId: packageId } }).catch(() => {})
   revalidatePath('/admin/provider-catalog/health')
   revalidatePath('/admin/provider-catalog')

@@ -23,7 +23,7 @@ interface ImportablePlan {
 interface PlanImportTableProps {
   plans: ImportablePlan[]
   importedPlanIds: Set<string>
-  importedPackages: Array<{ id: string; providerPlanId: string | null; isActive: boolean; name: string; sku: string | null; packageCode: string | null; dataGB: number; costPriceUSD: any; priceUSD: any }>
+  importedPackages: Array<{ id: string; providerPlanId: string | null; publishStatus: string | null; name: string; providerPlanCode: string | null; dataGB: number; costPrice: any; sellingPrice: any }>
   providerId: string
   providerName: string
 }
@@ -223,8 +223,8 @@ export function PlanImportTable({ plans, importedPlanIds, importedPackages, prov
       case 'already_imported': {
         const pid = plan.providerPlanId || plan.id
         const existing = importedPackages.find(p => p.providerPlanId === pid)
-        if (existing?.isActive) return { label: 'Active', cls: 'bg-green-100 text-green-800' }
-        return { label: 'Imported (Inactive)', cls: 'bg-yellow-100 text-yellow-800' }
+        if (existing?.publishStatus === 'PUBLISHED') return { label: 'Active', cls: 'bg-green-100 text-green-800' }
+        return { label: 'Imported (Unpublished)', cls: 'bg-yellow-100 text-yellow-800' }
       }
       case 'importing': return { label: 'Importing...', cls: 'bg-blue-100 text-blue-800' }
       case 'imported': return { label: 'Imported ✓', cls: 'bg-green-100 text-green-800' }

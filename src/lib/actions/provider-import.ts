@@ -58,66 +58,49 @@ export async function importProviderPlans(providerId: string, plans: any[], user
         continue
       }
 
-      const sku = generateSku(normalized.name, normalized.dataGB, normalized.validityDays, provider.code)
-      let packageCode = generatePackageCode(normalized.dataGB, normalized.validityDays)
-
-      let existingCode = await prisma.eSIMPackage.findUnique({ where: { packageCode } })
-      while (existingCode) {
-        packageCode = generatePackageCode(normalized.dataGB, normalized.validityDays)
-        existingCode = await prisma.eSIMPackage.findUnique({ where: { packageCode } })
-      }
-
-      const existingPackage = await prisma.eSIMPackage.findFirst({
+      // Create/update ProviderPackage records only — ESIMPackage is created on publish
+      const existingPackage = await prisma.providerPackage.findFirst({
         where: { providerId, providerPlanId: normalized.providerPlanId },
       })
 
       if (existingPackage) {
-        await prisma.eSIMPackage.update({
+        await prisma.providerPackage.update({
           where: { id: existingPackage.id },
           data: {
-            source: 'PROVIDER_PLAN',
             name: normalized.name,
-            description: normalized.description || existingPackage.description,
             dataGB: normalized.dataGB,
             validityDays: normalized.validityDays,
-            costPriceUSD: normalized.costPriceUSD,
-            priceUSD: 0,
-            localPrice: 0,
+            costPrice: normalized.costPriceUSD,
+            providerPlanCode: normalized.sku,
             providerRawData: normalized.rawData,
-            sku: existingPackage.sku || sku,
-            packageCode: existingPackage.packageCode || packageCode,
+            isAvailable: true,
           },
         })
 
         await prisma.auditLog.create({
-          data: { userId, action: 'PROVIDER_PLAN_UPDATED', entity: 'ESIMPackage', entityId: existingPackage.id, details: `Updated package from ${provider.code} plan: ${normalized.name} (${normalized.providerPlanId})` },
+          data: { userId, action: 'PROVIDER_PLAN_UPDATED', entity: 'ProviderPackage', entityId: existingPackage.id, details: `Updated package from ${provider.code} plan: ${normalized.name} (${normalized.providerPlanId})` },
         }).catch(() => {})
 
         results.push({ success: true, planId: normalized.providerPlanId, planName: normalized.name, packageId: existingPackage.id, reason: 'updated', _clientId })
       } else {
-        const created = await prisma.eSIMPackage.create({
+        const created = await prisma.providerPackage.create({
           data: {
-            source: 'PROVIDER_PLAN',
+            providerId,
+            providerPlanId: normalized.providerPlanId,
+            providerPlanCode: normalized.sku,
             name: normalized.name,
-            description: normalized.description || `Imported from ${provider.name}: ${normalized.name}`,
             dataGB: normalized.dataGB,
             validityDays: normalized.validityDays,
-            priceUSD: 0,
-            localPrice: 0,
+            costPrice: normalized.costPriceUSD,
             currency: 'USD',
-            isActive: false,
-            sku,
-            packageCode,
-            providerId,
-            providerName: provider.code,
-            providerPlanId: normalized.providerPlanId,
+            isAvailable: true,
             providerRawData: normalized.rawData,
-            costPriceUSD: normalized.costPriceUSD,
+            configurationStatus: 'UNCONFIGURED',
           },
         })
 
         await prisma.auditLog.create({
-          data: { userId, action: 'PROVIDER_PLAN_IMPORTED', entity: 'ESIMPackage', entityId: created.providerPlanId || created.id, details: `Imported package from ${provider.code} plan: ${normalized.name} (${normalized.providerPlanId})` },
+          data: { userId, action: 'PROVIDER_PLAN_IMPORTED', entity: 'ProviderPackage', entityId: created.id, details: `Imported package from ${provider.code} plan: ${normalized.name} (${normalized.providerPlanId})` },
         }).catch(() => {})
 
         results.push({ success: true, planId: normalized.providerPlanId, planName: normalized.name, packageId: created.id, reason: 'created', _clientId })
@@ -129,6 +112,7 @@ export async function importProviderPlans(providerId: string, plans: any[], user
 
   revalidatePath(`/admin/providers/${providerId}`)
   revalidatePath('/admin/packages')
+  revalidatePath('/admin/provider-catalog')
 
   return { results }
 }

@@ -30,7 +30,7 @@ export default async function CatalogProductsPage({
     <div className="p-6">
       <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700">
         This section now lives under{' '}
-        <Link href="/admin/packages?tab=catalog" className="font-semibold underline">eSIM Packages → Catalog Products</Link>.
+        <Link href="/admin/packages" className="font-semibold underline">Product Catalog</Link>.
       </div>
 
       <div className="mb-6 flex items-center justify-between">
@@ -46,10 +46,10 @@ export default async function CatalogProductsPage({
             Analytics
           </Link>
           <Link
-            href="/admin/packages?tab=provider"
-            className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50"
-          >
-            Provider Plans
+              href="/admin/provider-catalog"
+              className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50"
+            >
+            Provider Catalog
           </Link>
           <Link
             href="/admin/packages/new"
@@ -167,7 +167,7 @@ export default async function CatalogProductsPage({
               <tr>
                 <td colSpan={11} className="px-4 py-8 text-center text-gray-500">
                   No catalog products yet.{' '}
-                  <Link href="/admin/provider-plans" className="text-cyan-600 underline">Convert a provider plan</Link> or{' '}
+                  <Link href="/admin/provider-catalog" className="text-cyan-600 underline">Configure products in Provider Catalog</Link> or{' '}
                   <Link href="/admin/packages/new" className="text-blue-600 underline">create manually</Link>.
                 </td>
               </tr>

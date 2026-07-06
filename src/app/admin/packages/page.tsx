@@ -63,22 +63,23 @@ export default async function AdminPackagesPage({
   const tab: TabId = (TABS.some(t => t.id === searchParams?.tab) ? searchParams!.tab : 'catalog') as TabId
 
   const allPackages = await prisma.eSIMPackage.findMany({
-    where: sourceFilter(tab),
+    where: { ...sourceFilter(tab), costPriceUSD: { gt: 0 }, priceUSD: { gt: 0 } },
     include: { _count: { select: { purchases: true, topUpRecords: true } } },
     orderBy: { priceUSD: 'asc' },
   })
 
-  const totalPublished = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } } })
-  const totalLive = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, isActive: true } })
-  const totalDraft = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, isActive: false } })
+  const totalPublished = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, costPriceUSD: { gt: 0 }, priceUSD: { gt: 0 } } })
+  const totalLive = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, costPriceUSD: { gt: 0 }, priceUSD: { gt: 0 }, isActive: true } })
+  const totalDraft = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, costPriceUSD: { gt: 0 }, priceUSD: { gt: 0 }, isActive: false } })
   const totalNeedsPricing = await prisma.eSIMPackage.count({ where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, priceUSD: { lte: 0 } } })
 
   return (
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Published Packages</h2>
-          <p className="mt-1 text-sm text-gray-500">Client-facing published eSIM packages — manage catalog visibility and pricing</p>
+          <h2 className="text-2xl font-bold text-gray-900">Product Catalog</h2>
+          <p className="mt-1 text-sm text-gray-500">Customer-facing packages available for sale — manage catalog visibility and pricing</p>
+          <p className="mt-2 text-xs text-gray-400">Provider costs, provider IDs, and raw provider data are never shown to clients.</p>
         </div>
         <Link href="/admin/provider-catalog"
           className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">
@@ -88,7 +89,7 @@ export default async function AdminPackagesPage({
 
       {/* Summary cards */}
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <SummaryCard label="Published Packages" value={totalPublished} color="text-blue-600" />
+        <SummaryCard label="Product Catalog" value={totalPublished} color="text-blue-600" />
         <SummaryCard label="Live Products" value={totalLive} color="text-emerald-600" />
         <SummaryCard label="Draft / Inactive" value={totalDraft} color="text-amber-600" />
         <SummaryCard label="Needs Pricing" value={totalNeedsPricing} color="text-red-600" />
@@ -122,7 +123,7 @@ export default async function AdminPackagesPage({
         </nav>
           <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-gray-500">
-              {tab === 'catalog' && 'Catalog products published from Provider Catalog — activate to make visible to business clients'}
+              {tab === 'catalog' && 'Products published from Provider Catalog — activate to make visible to business clients'}
               {tab === 'manual' && 'Manually created packages'}
             </p>
             <div className="flex flex-wrap gap-2">

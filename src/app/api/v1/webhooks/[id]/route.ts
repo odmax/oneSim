@@ -26,7 +26,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     const webhook = await prisma.businessWebhookEndpoint.findFirst({ where: { id: params.id, businessId } })
     if (!webhook) return respond(request, makeError('NOT_FOUND', 'Webhook not found'), 404, startTime, businessId, { errorMessage: 'Not found', rateLimit })
 
-    return respond(request, { success: true, webhook: { id: webhook.id, name: webhook.name, url: webhook.url, status: webhook.status, events: webhook.events, secret: webhook.secret, lastSuccessAt: webhook.lastSuccessAt, lastFailureAt: webhook.lastFailureAt, failureCount: webhook.failureCount, createdAt: webhook.createdAt } }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
+    return respond(request, { success: true, webhook: { id: webhook.id, name: webhook.name, url: webhook.url, status: webhook.status, events: webhook.events, lastSuccessAt: webhook.lastSuccessAt, lastFailureAt: webhook.lastFailureAt, failureCount: webhook.failureCount, createdAt: webhook.createdAt } }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }
 

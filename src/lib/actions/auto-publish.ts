@@ -8,6 +8,7 @@ import { revalidatePath } from 'next/cache'
 export async function autoPickAndPublishWinners() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+  try {
 
   // Find all duplicate groups
   const all = await prisma.providerPackage.findMany({
@@ -60,7 +61,8 @@ export async function autoPickAndPublishWinners() {
       continue
     }
 
-    const canPublish = winner.sellingPrice && parseFloat(winner.sellingPrice.toString()) > 0
+    const canPublish = winner.costPrice && parseFloat(winner.costPrice.toString()) > 0
+      && winner.sellingPrice && parseFloat(winner.sellingPrice.toString()) > 0
       && winner.sellingCurrency
       && (winner.configurationStatus === 'CONFIGURED' || winner.configurationStatus === 'AUTO_CONFIGURED')
 
@@ -107,17 +109,23 @@ export async function autoPickAndPublishWinners() {
 
   // Return summary for UI
   return { success: true, published, skipped, skippedReasons: skippedReasons.slice(0, 10) }
+  } catch (error: any) {
+    console.error('autoPickAndPublishWinners error:', error)
+    return { success: false, published: 0, skipped: 0, error: error.message || 'Auto-pick + publish failed' }
+  }
 }
 
 export async function publishPreferredOnly() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+  try {
   const preferred = await prisma.providerPackage.findMany({ where: { isPreferred: true, publishStatus: { notIn: ['PUBLISHED', 'ARCHIVED', 'HIDDEN'] } } })
 
   let published = 0
   for (const pp of preferred) {
+    const costPrice = pp.costPrice ? parseFloat(pp.costPrice.toString()) : null
     const sellPrice = pp.sellingPrice ? parseFloat(pp.sellingPrice.toString()) : null
-    if (!sellPrice || sellPrice <= 0 || !pp.sellingCurrency) continue
+    if (!costPrice || costPrice <= 0 || !sellPrice || sellPrice <= 0 || !pp.sellingCurrency) continue
     if (pp.configurationStatus !== 'CONFIGURED' && pp.configurationStatus !== 'AUTO_CONFIGURED') continue
 
     const existing = await prisma.eSIMPackage.findFirst({ where: { providerPackageId: pp.id } })
@@ -142,4 +150,8 @@ export async function publishPreferredOnly() {
   revalidatePath('/admin/provider-catalog')
   revalidatePath('/admin/packages')
   return { success: true, published }
+  } catch (error: any) {
+    console.error('publishPreferredOnly error:', error)
+    return { success: false, published: 0, error: error.message || 'Publish preferred failed' }
+  }
 }

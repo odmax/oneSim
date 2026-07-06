@@ -49,10 +49,9 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   const authStatus = await getProviderAuthStatus(provider.id)
   const healthLogs: HealthEvent[] = await getRecentHealthLogs(provider.id, 10)
 
-  const packageCount = await prisma.eSIMPackage.count({ where: { providerId: provider.id } })
-  const importedPackages = await prisma.eSIMPackage.findMany({
+  const packageCount = await prisma.providerPackage.count({ where: { providerId: provider.id } })
+  const importedPackages = await prisma.providerPackage.findMany({
     where: { providerId: provider.id },
-    include: { _count: { select: { purchases: true, topUpRecords: true } } },
     orderBy: { createdAt: 'desc' },
   })
   // annual markup — deprecated
@@ -457,19 +456,17 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
                 {importedPackages.map(pkg => (
                   <tr key={pkg.id} className="hover:bg-gray-50">
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">{pkg.name}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm font-mono text-purple-700">{pkg.sku || <span className="text-gray-400">—</span>}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm font-mono text-indigo-700">{pkg.packageCode || <span className="text-gray-400">—</span>}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm font-mono text-purple-700">{pkg.providerPlanCode || <span className="text-gray-400">—</span>}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm font-mono text-indigo-700"><span className="text-gray-400">—</span></td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm font-mono text-gray-600">{pkg.providerPlanId || 'N/A'}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">{pkg.dataGB}GB</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">${pkg.costPriceUSD?.toString() || '0.00'}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">${pkg.priceUSD.toString()}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">${pkg.costPrice?.toString() || '0.00'}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">{pkg.sellingPrice ? `$${pkg.sellingPrice.toString()}` : <span className="text-amber-500">Not set</span>}</td>
                     <td className="whitespace-nowrap px-4 py-3">
-                      <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${pkg.isActive ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>{pkg.isActive ? 'Yes' : 'No'}</span>
+                      <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${pkg.publishStatus === 'PUBLISHED' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>{pkg.publishStatus === 'PUBLISHED' ? 'Yes' : '—'}</span>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm">
-                      <Link href={`/admin/packages/${pkg.id}/edit`} className="text-blue-600 hover:text-blue-800">Configure</Link>
-                      <span className="mx-2 text-gray-300">|</span>
-                      <DeletePackageButton packageId={pkg.id} hasPurchases={(pkg as any)._count?.purchases > 0 || (pkg as any)._count?.topUpRecords > 0} />
+                      <Link href={`/admin/provider-catalog`} className="text-blue-600 hover:text-blue-800">Catalog</Link>
                     </td>
                   </tr>
                 ))}
@@ -489,7 +486,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
               name: p.name,
               dataGB: p.dataGB,
               validityDays: p.validityDays,
-              priceUSD: p.priceUSD,
+              priceUSD: p.sellingPrice || 0,
               providerPlanId: p.providerPlanId,
             }))}
             endpointMappings={provider.endpointMappings as Record<string, string> | null}

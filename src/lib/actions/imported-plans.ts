@@ -222,41 +222,42 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
     })
   }
 
+  // Update ProviderPackage with pricing data
+  const ppPricingUpdate: any = {}
+  if (costPriceRaw !== '') ppPricingUpdate.costPrice = effectiveCostPrice ?? costPriceUSD ?? 0
+  if (sellingPriceRaw !== '') ppPricingUpdate.sellingPrice = sellingPrice
+  if (sellingCurrencyRaw !== '') ppPricingUpdate.sellingCurrency = sellingCurrency
+  if (markupRaw !== '') ppPricingUpdate.markupPercent = markupPercent
+
+  if (Object.keys(ppPricingUpdate).length > 0) {
+    await prisma.providerPackage.update({ where: { id: providerPackageId }, data: ppPricingUpdate })
+  }
+
+  // Only update existing ESIMPackage — never create new ESIMPackage from pricing save
   let esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId } })
 
-  const profit = calculatePackageProfit({ sellingPrice, effectiveCostPrice })
-
-  const updateData: any = {
-    name: pp.name,
-    dataGB: pp.dataGB,
-    validityDays: pp.validityDays,
-    providerName: pp.provider.code,
-    providerId: pp.providerId,
-    providerPlanId: pp.providerPlanId,
-    costPriceUSD: esimCostPriceUSD,
-    costCurrency,
-    priceUSD: sellingPrice || 0,
-    localPrice: 0,
-    currency: sellingCurrency,
-    markupPercent: profit.markupPercent,
-  }
-
   if (esim) {
+    const profit = calculatePackageProfit({ sellingPrice, effectiveCostPrice })
+    const updateData: any = {
+      name: pp.name,
+      dataGB: pp.dataGB,
+      validityDays: pp.validityDays,
+      providerName: pp.provider.code,
+      providerId: pp.providerId,
+      providerPlanId: pp.providerPlanId,
+      costPriceUSD: esimCostPriceUSD,
+      costCurrency,
+      priceUSD: sellingPrice || 0,
+      localPrice: 0,
+      currency: sellingCurrency,
+      markupPercent: profit.markupPercent,
+    }
     await prisma.eSIMPackage.update({ where: { id: esim.id }, data: updateData })
-  } else {
-    esim = await prisma.eSIMPackage.create({
-      data: {
-        ...updateData,
-        source: 'PROVIDER_PLAN',
-        providerPackageId,
-        sku: pp.providerPlanCode ? `${pp.provider.code}-${pp.providerPlanCode}` : undefined,
-      },
-    })
-  }
 
-  if (costPriceUSD && costPriceUSD > 0 && sellingPrice && sellingPrice > 0) {
-    const computed = Math.round(((sellingPrice - costPriceUSD) / costPriceUSD) * 100 * 100) / 100
-    await prisma.eSIMPackage.update({ where: { id: esim.id }, data: { markupPercent: computed } })
+    if (costPriceUSD && costPriceUSD > 0 && sellingPrice && sellingPrice > 0) {
+      const computed = Math.round(((sellingPrice - costPriceUSD) / costPriceUSD) * 100 * 100) / 100
+      await prisma.eSIMPackage.update({ where: { id: esim.id }, data: { markupPercent: computed } })
+    }
   }
 
   // Handle readyToPublish toggle
@@ -485,21 +486,16 @@ export async function applyPricingRules(formData: FormData): Promise<{
           where: { id: esim.id },
           data: { priceUSD: item.newSell },
         })
-      } else {
-        const pp = await prisma.providerPackage.findUnique({ where: { id: item.providerPackageId }, include: { provider: true } })
-        if (pp) {
-          esim = await prisma.eSIMPackage.create({
-            data: {
-              name: pp.name, dataGB: pp.dataGB, validityDays: pp.validityDays,
-              providerName: pp.provider.code, providerId: pp.providerId, providerPlanId: pp.providerPlanId,
-              providerPackageId: item.providerPackageId, source: 'PROVIDER_PLAN',
-              costPriceUSD: Number(pp.costPrice) || undefined, priceUSD: item.newSell, localPrice: 0, currency: 'USD',
-              sku: pp.providerPlanCode ? `${pp.provider.code}-${pp.providerPlanCode}` : undefined,
-            },
-          })
-        }
+        applied++
       }
-      applied++
+      // If no ESIMPackage exists, update ProviderPackage sellingPrice instead
+      else {
+        await prisma.providerPackage.update({
+          where: { id: item.providerPackageId },
+          data: { sellingPrice: item.newSell },
+        })
+        applied++
+      }
     } catch (e: any) {
       errors.push(`Error on ${item.name}: ${e.message}`)
     }
@@ -773,23 +769,34 @@ export async function applyImportedPlansCsvImport(formData: FormData): Promise<{
     if (esim && Object.keys(updateData).length > 0) {
       await prisma.eSIMPackage.update({ where: { id: esim.id }, data: updateData })
     } else if (!esim && Object.keys(updateData).length > 0) {
-      esim = await prisma.eSIMPackage.create({
-        data: {
-          name: g('name') || pp.name, dataGB: pp.dataGB, validityDays: pp.validityDays,
-          providerName: pp.provider?.code || '', providerId: pp.providerId, providerPlanId: pp.providerPlanId,
-          providerPackageId: pp.id, source: 'PROVIDER_PLAN',
-          ...updateData, priceUSD: updateData.priceUSD || 0, localPrice: 0, currency: updateData.currency || 'USD',
-        },
-      })
+      // Write pricing to ProviderPackage instead of creating ESIMPackage with PROVIDER_PLAN
+      const ppPriceData: any = {}
+      if (updateData.costPriceUSD != null) ppPriceData.effectiveCostPrice = updateData.costPriceUSD
+      if (updateData.priceUSD != null) ppPriceData.sellingPrice = updateData.priceUSD
+      if (updateData.currency != null) ppPriceData.sellingCurrency = updateData.currency
+      if (updateData.markupPercent != null) ppPriceData.markupPercent = updateData.markupPercent
+      if (Object.keys(ppPriceData).length > 0) {
+        await prisma.providerPackage.update({ where: { id: pp.id }, data: ppPriceData })
+      }
+      esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId: pp.id } })
     }
 
-    if (shouldPublish === true && esim) {
-      const hasC = esim.costPriceUSD != null && Number(esim.costPriceUSD) > 0
-      const hasP = esim.priceUSD != null && Number(esim.priceUSD) > 0
-      if (hasC && hasP) {
-        await prisma.eSIMPackage.update({ where: { id: esim.id }, data: { source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false, archivedAt: null } })
+    if (shouldPublish === true) {
+      if (esim) {
+        const hasC = esim.costPriceUSD != null && Number(esim.costPriceUSD) > 0
+        const hasP = esim.priceUSD != null && Number(esim.priceUSD) > 0
+        if (hasC && hasP) {
+          await prisma.eSIMPackage.update({ where: { id: esim.id }, data: { source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false, archivedAt: null } })
+        } else {
+          errors.push({ line: ln, message: `publishToCatalog=true but cost/selling price missing` })
+        }
       } else {
-        errors.push({ line: ln, message: `publishToCatalog=true but cost/selling price missing` })
+        // No ESIMPackage yet — use publishToCatalog to create one from ProviderPackage
+        const { publishToCatalog } = await import('@/lib/actions/publish-packages')
+        const pubRes = await publishToCatalog([pp.id])
+        if (!pubRes.success) {
+          errors.push({ line: ln, message: `publishToCatalog=true but publish failed: ${pubRes.error}` })
+        }
       }
     }
     applied++

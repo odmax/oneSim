@@ -4,9 +4,9 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { markPreferredPackage, unmarkPreferredPackage, hideDuplicatesInGroup, autoPickCheapestForGroup, autoPickAllGroups, excludePackageFromAutoPick, includePackageInAutoPick } from '@/lib/actions/auto-pick'
-import { autoPickAndPublishWinners, publishPreferredOnly } from '@/lib/actions/auto-publish'
+import { HealthActionButtons } from './HealthActionButtons'
 
-function isValidForHealth(pkg: { configurationStatus: string | null; sellingPrice: any; sellingCurrency: string | null; publishStatus: string | null }) {
+function isValidForHealth(pkg: { configurationStatus: string | null; sellingPrice: any; sellingCurrency: string | null; publishStatus: string | null; excludedFromAutoPick: boolean }) {
   const configured = pkg.configurationStatus === 'CONFIGURED' || pkg.configurationStatus === 'AUTO_CONFIGURED'
   const hasPrice = pkg.sellingPrice && parseFloat(pkg.sellingPrice.toString()) > 0
   const hasCurrency = !!pkg.sellingCurrency
@@ -101,16 +101,7 @@ export default async function CatalogHealthPage() {
                   Auto-Pick Cheapest
                 </button>
               </form>
-              <form action={async () => { 'use server'; await autoPickAndPublishWinners() }}>
-                <button type="submit" className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
-                  Auto-Pick + Publish
-                </button>
-              </form>
-              <form action={async () => { 'use server'; await publishPreferredOnly() }}>
-                <button type="submit" className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700">
-                  Publish Preferred Only
-                </button>
-              </form>
+              <HealthActionButtons hasDuplicates={duplicates.length > 0} />
             </div>
           )}
           <Link href="/admin/provider-catalog" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">

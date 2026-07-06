@@ -96,7 +96,7 @@ export default function PackageActions({ pkg, isImported = false }: PackageActio
 
           {isImported && pkg.source === 'CATALOG_PRODUCT' && !pkg.isActive && !isArchived && (
             <ConfirmForm action={movePackageToProviderPlan.bind(null, pkg.id)}
-              message="Move this package back to Provider Plans? It will no longer appear under Catalog Products. Provider mapping will be preserved.">
+              message="Move this package back to Provider Catalog? It will be unpublished from the Product Catalog. Provider mapping will be preserved.">
               <button type="submit" className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-500 hover:bg-gray-50">Revert</button>
             </ConfirmForm>
           )}
