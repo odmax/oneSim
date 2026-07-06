@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { BulkConfigTable } from './BulkConfigTable'
+import { PublishAllReadyButton } from './PublishAllReadyButton'
 
 export default async function ProviderCatalogPage({ searchParams }: { searchParams?: { provider?: string; publishStatus?: string; configStatus?: string; search?: string; country?: string; page?: string; costFilter?: string } }) {
   const session = await getServerSession(authOptions)
@@ -103,6 +104,17 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
         <Link href="/admin/provider-catalog?publishStatus=READY" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.publishStatus === 'READY' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>Ready</Link>
         <Link href="/admin/provider-catalog?costFilter=missing" className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.costFilter === 'missing' ? 'bg-red-900 text-white' : 'bg-red-50 text-red-600 hover:bg-red-100'}`}>Missing Cost</Link>
       </div>
+
+      {/* Ready tab — bulk publish banner */}
+      {searchParams?.publishStatus === 'READY' && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-emerald-800">Ready to Publish</p>
+            <p className="text-xs text-emerald-600 mt-0.5">These packages have valid pricing and configuration — publish them to make them available in the Product Catalog.</p>
+          </div>
+          <PublishAllReadyButton />
+        </div>
+      )}
 
       {/* Direction — how manual configuration works */}
       <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-sm text-cyan-800">

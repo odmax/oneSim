@@ -179,3 +179,106 @@ export async function getPublishSummary(packageIds: string[]) {
     maxPrice: Math.max(...prices),
   }
 }
+
+export async function getReadySummary() {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return null
+
+  const ready = await prisma.providerPackage.count({
+    where: {
+      publishStatus: { in: ['READY', 'DRAFT'] },
+      configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] },
+      sellingPrice: { gt: 0 },
+      costPrice: { gt: 0 },
+      sellingCurrency: { not: null },
+    },
+  })
+
+  const totalMatching = await prisma.providerPackage.count({
+    where: {
+      publishStatus: { in: ['READY', 'DRAFT'] },
+      configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] },
+    },
+  })
+
+  const missingCost = await prisma.providerPackage.count({
+    where: {
+      publishStatus: { in: ['READY', 'DRAFT'] },
+      configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] },
+      costPrice: { lte: 0 },
+    },
+  })
+
+  const missingSell = await prisma.providerPackage.count({
+    where: {
+      publishStatus: { in: ['READY', 'DRAFT'] },
+      configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] },
+      sellingPrice: { lte: 0 },
+    },
+  })
+
+  const missingCurrency = await prisma.providerPackage.count({
+    where: {
+      publishStatus: { in: ['READY', 'DRAFT'] },
+      configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] },
+      sellingPrice: { gt: 0 },
+      costPrice: { gt: 0 },
+      sellingCurrency: null,
+    },
+  })
+
+  const reasons: string[] = []
+  if (missingCost > 0) reasons.push(`${missingCost} missing cost price`)
+  if (missingSell > 0) reasons.push(`${missingSell} missing selling price`)
+  if (missingCurrency > 0) reasons.push(`${missingCurrency} missing currency`)
+
+  return {
+    totalReady: ready,
+    totalMatching,
+    publishable: ready,
+    skipped: totalMatching - ready,
+    skippedReasons: reasons,
+  }
+}
+
+export async function publishAllReady(): Promise<{
+  success: boolean
+  totalReady?: number
+  publishable?: number
+  skipped?: number
+  created?: number
+  updated?: number
+  skippedReasons?: string[]
+  error?: string
+}> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+
+  // Find all packages in Ready state with valid pricing
+  const readyPackages = await prisma.providerPackage.findMany({
+    where: {
+      publishStatus: { in: ['READY', 'DRAFT'] },
+      configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] },
+      sellingPrice: { gt: 0 },
+      costPrice: { gt: 0 },
+      sellingCurrency: { not: null },
+    },
+    select: { id: true, name: true },
+  })
+
+  if (readyPackages.length === 0) {
+    return { success: false, totalReady: 0, error: 'No ready packages found with valid pricing. Set cost price, selling price, and configuration status.' }
+  }
+
+  const ids = readyPackages.map(p => p.id)
+  const result = await publishToCatalog(ids)
+
+  return {
+    success: result.success,
+    totalReady: readyPackages.length,
+    publishable: readyPackages.length,
+    created: result.created,
+    updated: result.updated,
+    skipped: result.skipped,
+  }
+}
