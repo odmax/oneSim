@@ -5,6 +5,39 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 
+function shortCode(s: string | null | undefined, fallback: string): string {
+  if (!s) return fallback
+  return s.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase()
+}
+
+function shortId(id: string): string {
+  return id.slice(-6).toUpperCase()
+}
+
+async function generateOneSimSku(pp: {
+  id: string
+  provider?: { code?: string | null; name?: string | null } | null
+  country?: string | null
+  dataGB: number
+  validityDays: number
+}): Promise<string> {
+  const provCode = shortCode(pp.provider?.code || pp.provider?.name, 'XX')
+  const country = (pp.country || 'XX').toUpperCase()
+  const base = `OS-${provCode}-${country}-${pp.dataGB}GB-${pp.validityDays}D-${shortId(pp.id)}`
+
+  // Collision guard: if generated SKU exists, append sequential suffix
+  let sku = base
+  let attempt = 0
+  while (attempt < 100) {
+    const exists = await prisma.eSIMPackage.findUnique({ where: { sku }, select: { id: true } })
+    if (!exists) return sku
+    attempt++
+    sku = `${base}-${attempt}`
+  }
+  // Fallback with full ID — practically impossible to collide
+  return `${base}-${pp.id.slice(-8).toUpperCase()}`
+}
+
 export async function publishToCatalog(packageIds: string[]): Promise<{
   success: boolean
   created?: number
@@ -24,7 +57,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
 
   const providerPackages = await prisma.providerPackage.findMany({
     where: { id: { in: packageIds } },
-    include: { provider: { select: { name: true } } },
+    include: { provider: { select: { name: true, code: true } } },
   })
 
   console.log(`[publishToCatalog] Selected: ${packageIds.length} | Found in DB: ${providerPackages.length}`)
@@ -91,6 +124,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
         })
         updated++
       } else {
+        const sku = await generateOneSimSku(pp)
         await prisma.eSIMPackage.create({
           data: {
             name: pp.name,
@@ -103,8 +137,8 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
             providerName: pp.provider?.name || null,
             providerPlanId: pp.providerPlanId,
             providerId: pp.providerId,
-            sku: pp.providerPlanCode || undefined,
-            packageCode: pp.providerPlanCode || undefined,
+            sku,
+            packageCode: sku,
             costPriceUSD: pp.costPrice,
             costCurrency: pp.currency,
             markupPercent: pp.markupPercent ? parseFloat(pp.markupPercent.toString()) : null,
