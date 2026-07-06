@@ -97,9 +97,21 @@ export function PublishAllReadyButton() {
         <div className={`text-xs ${result.error ? 'text-red-600' : 'text-emerald-700'}`}>
           {result.error
             ? result.error
-            : result.totalReady != null
-              ? `Published: ${result.created ?? 0} new · ${result.updated ?? 0} updated · ${result.skipped ?? 0} skipped`
-              : `Done: ${result.created ?? 0} new, ${result.updated ?? 0} updated, ${result.skipped ?? 0} skipped`}
+            : (
+              <span>
+                Published: {result.created ?? 0} new · {result.updated ?? 0} updated · {result.skipped ?? 0} skipped
+                {result.skippedDetails?.length > 0 && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-amber-600 hover:text-amber-700">Skipped details ({result.skippedDetails.length})</summary>
+                    <ul className="mt-1 ml-3 list-disc text-gray-500">
+                      {result.skippedDetails.map((d: any, i: number) => (
+                        <li key={i}>{d.name}: {d.reason}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </span>
+            )}
         </div>
       )}
     </div>

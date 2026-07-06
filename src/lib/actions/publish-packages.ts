@@ -5,7 +5,14 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 
-export async function publishToCatalog(packageIds: string[]): Promise<{ success: boolean; created?: number; updated?: number; skipped?: number; error?: string }> {
+export async function publishToCatalog(packageIds: string[]): Promise<{
+  success: boolean
+  created?: number
+  updated?: number
+  skipped?: number
+  skippedDetails?: { packageId: string; name: string; reason: string }[]
+  error?: string
+}> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     return { success: false, error: 'Unauthorized' }
@@ -20,44 +27,48 @@ export async function publishToCatalog(packageIds: string[]): Promise<{ success:
     include: { provider: { select: { name: true } } },
   })
 
+  console.log(`[publishToCatalog] Selected: ${packageIds.length} | Found in DB: ${providerPackages.length}`)
+
   let created = 0
   let updated = 0
   let skipped = 0
+  const skippedDetails: { packageId: string; name: string; reason: string }[] = []
 
   for (const pp of providerPackages) {
     const sellPrice = pp.sellingPrice ? parseFloat(pp.sellingPrice.toString()) : null
     const costPrice = pp.costPrice ? parseFloat(pp.costPrice.toString()) : null
 
-    // Validation: must have cost price, selling price, and be configured
     if (!costPrice || costPrice <= 0) {
       skipped++
+      skippedDetails.push({ packageId: pp.id, name: pp.name, reason: 'missing costPrice' })
       continue
     }
 
     if (!sellPrice || sellPrice <= 0) {
       skipped++
+      skippedDetails.push({ packageId: pp.id, name: pp.name, reason: 'missing sellingPrice' })
       continue
     }
 
     const configStatus = pp.configurationStatus || 'UNCONFIGURED'
     if (!['CONFIGURED', 'AUTO_CONFIGURED'].includes(configStatus)) {
       skipped++
+      skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `not configured (status: ${configStatus})` })
       continue
     }
 
     if (!pp.sellingCurrency) {
       skipped++
+      skippedDetails.push({ packageId: pp.id, name: pp.name, reason: 'missing sellingCurrency' })
       continue
     }
 
     try {
-      // Check if already published
       const existing = await prisma.eSIMPackage.findFirst({
         where: { providerPackageId: pp.id },
       })
 
       if (existing) {
-        // Update existing
         await prisma.eSIMPackage.update({
           where: { id: existing.id },
           data: {
@@ -80,8 +91,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{ success:
         })
         updated++
       } else {
-        // Create new
-        const pkg = await prisma.eSIMPackage.create({
+        await prisma.eSIMPackage.create({
           data: {
             name: pp.name,
             displayName: pp.name,
@@ -106,15 +116,22 @@ export async function publishToCatalog(packageIds: string[]): Promise<{ success:
         created++
       }
 
-      // Update provider package status
       await prisma.providerPackage.update({
         where: { id: pp.id },
         data: { publishStatus: 'PUBLISHED' },
       })
     } catch (e: any) {
-      console.error(`Failed to publish package ${pp.id}:`, e.message)
       skipped++
+      let reason = e.message || 'unknown error'
+      if (e.code === 'P2002') reason = `duplicate SKU/packageCode (${pp.providerPlanCode || 'none'})`
+      skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `create/update failed: ${reason}` })
+      console.error(`[publishToCatalog] Failed: ${pp.name} (${pp.id}) — ${reason}`)
     }
+  }
+
+  console.log(`[publishToCatalog] Result: created=${created} updated=${updated} skipped=${skipped}`)
+  if (skippedDetails.length > 0) {
+    console.log(`[publishToCatalog] Skipped details:`, JSON.stringify(skippedDetails.slice(0, 10)))
   }
 
   await prisma.auditLog.create({
@@ -130,7 +147,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{ success:
   revalidatePath('/admin/packages')
   revalidatePath('/admin/catalog-products')
 
-  return { success: true, created, updated, skipped }
+  return { success: true, created, updated, skipped, skippedDetails }
 }
 
 export async function bulkSetPublishStatus(packageIds: string[], status: 'HIDDEN' | 'ARCHIVED'): Promise<{ success: boolean; updated?: number; error?: string }> {
@@ -249,12 +266,12 @@ export async function publishAllReady(): Promise<{
   created?: number
   updated?: number
   skippedReasons?: string[]
+  skippedDetails?: { packageId: string; name: string; reason: string }[]
   error?: string
 }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
 
-  // Find all packages in Ready state with valid pricing
   const readyPackages = await prisma.providerPackage.findMany({
     where: {
       publishStatus: { in: ['READY', 'DRAFT'] },
@@ -266,8 +283,10 @@ export async function publishAllReady(): Promise<{
     select: { id: true, name: true },
   })
 
+  console.log(`[publishAllReady] Found ${readyPackages.length} ready packages`)
+
   if (readyPackages.length === 0) {
-    return { success: false, totalReady: 0, error: 'No ready packages found with valid pricing. Set cost price, selling price, and configuration status.' }
+    return { success: false, totalReady: 0, error: 'No ready packages found with valid pricing.' }
   }
 
   const ids = readyPackages.map(p => p.id)
@@ -280,5 +299,6 @@ export async function publishAllReady(): Promise<{
     created: result.created,
     updated: result.updated,
     skipped: result.skipped,
+    skippedDetails: result.skippedDetails,
   }
 }
