@@ -101,12 +101,20 @@ export async function applyRulesToPackages(packageIds?: string[]): Promise<{ suc
 
   if (rules.length === 0) return { success: false, error: 'No active rules configured' }
 
-  // Get packages to process
-  const where: any = { configurationStatus: 'UNCONFIGURED' }
+  // Get packages to process — include UNCONFIGURED and AUTO_CONFIGURED
+  // where the auto-configured rule has been updated since last apply
+  const where: any = {
+    OR: [
+      { configurationStatus: 'UNCONFIGURED' },
+      { configurationStatus: 'AUTO_CONFIGURED' },
+    ],
+  }
   if (packageIds && packageIds.length > 0) where.id = { in: packageIds }
 
-  const packages = await prisma.packageConfigurationRule.findMany as any // dummy
-  const providerPackages = await prisma.providerPackage.findMany({ where })
+  const providerPackages = await prisma.providerPackage.findMany({
+    where,
+    include: { configuredByRule: { select: { id: true, updatedAt: true } } },
+  })
 
   let matched = 0
 
@@ -125,10 +133,18 @@ export async function applyRulesToPackages(packageIds?: string[]): Promise<{ suc
 
     if (!rule) continue
 
-    // Cost price: keep existing if > 0, else use rule.costPrice if set
+    // Determine if rule was updated since this package was last configured
+    const ruleUpdatedSince = pp.lastConfiguredAt && rule.updatedAt > pp.lastConfiguredAt
+    const needsReconfigure = pp.configurationStatus === 'UNCONFIGURED' || ruleUpdatedSince
+
+    if (!needsReconfigure && pp.configurationStatus !== 'UNCONFIGURED') continue
+
+    // Cost price: use rule.costPrice if set AND (package has no cost OR rule updated after config)
     let effectiveCost = parseFloat(pp.costPrice.toString())
-    if (effectiveCost <= 0 && rule.costPrice && parseFloat(rule.costPrice.toString()) > 0) {
-      effectiveCost = parseFloat(rule.costPrice.toString())
+    if (rule.costPrice && parseFloat(rule.costPrice.toString()) > 0) {
+      if (effectiveCost <= 0 || (ruleUpdatedSince && pp.autoConfiguredByRuleId === rule.id)) {
+        effectiveCost = parseFloat(rule.costPrice.toString())
+      }
     }
 
     // Selling price calculation

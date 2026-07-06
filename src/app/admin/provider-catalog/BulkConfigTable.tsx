@@ -498,7 +498,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
       <div className="flex items-center gap-2 px-4 py-2 border-b">
         <button onClick={handleApplyRules} disabled={rulesLoading}
           className="rounded-lg bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50">
-          {rulesLoading ? 'Applying...' : 'Apply Rules to Unconfigured'}
+          {rulesLoading ? 'Applying...' : 'Apply Rules'}
         </button>
         <button onClick={handleUndoRules}
           className="rounded-lg border border-amber-300 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50">
