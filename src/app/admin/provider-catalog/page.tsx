@@ -22,7 +22,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
   if (searchParams?.country) baseWhere.country = searchParams.country
 
   if (searchParams?.costFilter === 'missing') {
-    searchFilters.push({ costPrice: { equals: 0 } })
+    searchFilters.push({ costPrice: 0 })
   }
 
   if (searchParams?.search) {
@@ -33,9 +33,10 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
     )
   }
 
-  const where = searchFilters.length > 0
-    ? { AND: [{ ...baseWhere }, { OR: searchFilters }] }
-    : baseWhere
+  const where = {
+    ...baseWhere,
+    ...(searchFilters.length > 0 ? { OR: searchFilters } : {}),
+  }
 
   const [packages, total, providers, countries] = await Promise.all([
     prisma.providerPackage.findMany({
