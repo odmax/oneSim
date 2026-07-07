@@ -30,6 +30,8 @@ interface ProviderRecord {
   config?: any
   environment?: string | null
   endpointMappings?: any
+  requestMappings?: any
+  providerTemplate?: any
 }
 
 function resolvePath(path: string, token: string, baseUrl: string): string {
@@ -227,9 +229,10 @@ export class GenericProtocolAdapter implements ProviderAdapter {
     const headers: Record<string, string> = {}
     this.applyTokenHeaders(headers, token, tokenPlacement)
 
-    // Build request body from requestMappings.GET_PLANS if configured
+    // Build request body from requestMappings.GET_PLANS
+    // Check: provider.requestMappings, providerTemplate.requestMappings, config.requestMappings
     let body: string | undefined
-    const rm = (p.requestMappings || {}) as Record<string, any>
+    const rm = (p.requestMappings || (p.providerTemplate as any)?.requestMappings || (p.config as any)?.requestMappings || {}) as Record<string, any>
     const getPlansMapping = rm.GET_PLANS
     if (getPlansMapping) {
       body = JSON.stringify(this.resolveTemplateBody(getPlansMapping))
