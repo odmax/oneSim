@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { runProviderDiagnostics, type DiagnosticResult } from '@/lib/actions/provider-diagnostics'
+import { RawGetPlansTestPanel } from './RawGetPlansTestPanel'
 
 export default async function ProviderDiagnosticsPage({
   params,
@@ -92,6 +93,11 @@ export default async function ProviderDiagnosticsPage({
           <p className="text-gray-500">Click "Run Diagnostics" to test this provider's connectivity and capabilities.</p>
         </div>
       )}
+
+      {/* Raw GET_PLANS test panel */}
+      <div className="mt-6">
+        <RawGetPlansTestPanel providerId={provider.id} />
+      </div>
     </div>
   )
 }
