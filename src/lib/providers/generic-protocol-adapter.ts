@@ -227,15 +227,47 @@ export class GenericProtocolAdapter implements ProviderAdapter {
     const headers: Record<string, string> = {}
     this.applyTokenHeaders(headers, token, tokenPlacement)
 
-    const { data, error } = await this.rawFetch(url, { method, headers })
+    // Build request body from requestMappings.GET_PLANS if configured
+    let body: string | undefined
+    const rm = (p.requestMappings || {}) as Record<string, any>
+    const getPlansMapping = rm.GET_PLANS
+    if (getPlansMapping) {
+      body = JSON.stringify(this.resolveTemplateBody(getPlansMapping))
+      console.log(`[syncPlans] GET_PLANS body: ${body.substring(0, 200)}`)
+    }
+
+    const { data, error } = await this.rawFetch(url, { method, headers, body })
     if (error) return { success: false, error }
     if (!data) return { success: false, error: { code: 'EMPTY_RESPONSE', message: 'Empty response from provider' } }
 
-    const listKey = p.responseListKey || 'data'
-    const items = this.extractList(data, listKey)
+    // Check for provider-level isSuccess: false (AirHub pattern)
+    if (data.isSuccess === false) {
+      const providerMsg = data.message || data.errorMessage || 'Unknown provider error'
+      console.log(`[syncPlans] Provider returned isSuccess=false: ${providerMsg}`)
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: `Provider returned failure: ${providerMsg}` } }
+    }
 
-    if (!Array.isArray(items)) {
-      return { success: false, error: { code: 'INVALID_RESPONSE', message: `Response key "${listKey}" did not yield an array` } }
+    // Check for errorCode pattern
+    if (data.errorCode != null && data.errorCode !== 0) {
+      const errMsg = data.message || data.errorMessage || `Error code: ${data.errorCode}`
+      console.log(`[syncPlans] Provider returned errorCode=${data.errorCode}: ${errMsg}`)
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: `Provider returned failure: ${errMsg}` } }
+    }
+
+    const listKey = p.responseListKey || 'data'
+    console.log(`[syncPlans] responseListKey=${listKey} responseKeys=${Object.keys(data).join(',')}`)
+    const items = this.extractList(data, listKey)
+    console.log(`[syncPlans] extractedPlans=${items.length}`)
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return { success: false, error: { code: 'EMPTY_RESPONSE', message: `0 plans returned from "${listKey}". Response keys: ${Object.keys(data).join(',')}` } }
+    }
+
+    // Log first plan for diagnostics
+    if (items.length > 0) {
+      const first = { ...items[0] }
+      for (const [k, v] of Object.entries(first)) { if (typeof v === 'string' && v.length > 100) first[k] = v.substring(0, 100) + '...' }
+      console.log(`[syncPlans] firstPlan: ${JSON.stringify(first).substring(0, 500)}`)
     }
 
     const fieldMap = (p.fieldMappings || {}) as Record<string, string>
@@ -402,18 +434,72 @@ export class GenericProtocolAdapter implements ProviderAdapter {
     return []
   }
 
+  private resolveTemplateBody(template: any): any {
+    if (typeof template === 'number') return template
+    if (typeof template === 'boolean') return template
+    if (template === null) return null
+    if (Array.isArray(template)) return template.map(v => this.resolveTemplateBody(v))
+    if (typeof template === 'string') {
+      const match = template.match(/^\{\{(.+?)\}\}$/)
+      if (!match) return template
+      const inner = match[1]
+      const pipeIdx = inner.indexOf('|')
+      const expr = pipeIdx >= 0 ? inner.substring(0, pipeIdx) : inner
+      const defVal = pipeIdx >= 0 ? inner.substring(pipeIdx + 1) : ''
+      const dotIdx = expr.indexOf('.')
+      const namespace = dotIdx >= 0 ? expr.substring(0, dotIdx) : null
+      const varName = dotIdx >= 0 ? expr.substring(dotIdx + 1) : expr
+
+      let val: any = undefined
+      if (namespace === 'config') {
+        val = (this.provider.config as any)?.[varName]
+      } else if (namespace === 'auth') {
+        val = (this.provider.config as any)?.[varName] ?? null
+      } else {
+        val = (this.provider.config as any)?.[varName]
+          ?? (this.provider as any)[varName]
+          ?? process.env[varName]
+      }
+      if (val == null || val === '') val = defVal
+      // Array coercion: comma-separated string → array
+      if (typeof val === 'string' && val.includes(',')) {
+        return val.split(',').map((s: string) => s.trim()).filter(Boolean)
+      }
+      // Numeric coercion
+      const num = Number(val)
+      if (!isNaN(num) && String(val).trim() !== '') return num
+      return val ?? defVal
+    }
+    if (typeof template === 'object') {
+      const resolved: any = {}
+      for (const [key, value] of Object.entries(template)) {
+        resolved[key] = this.resolveTemplateBody(value)
+      }
+      return resolved
+    }
+    return template
+  }
+
   private mapFields(item: any, fieldMap: Record<string, string>): ProviderPlan {
     const get = (key: string) => {
       const field = fieldMap[key]
       return field ? extractByPath(item, field) ?? item[key] ?? item[field] : item[key] ?? item[field]
     }
 
-    const sku = get('sku') || item.bundle_code || item.bundleCode || item.sku || item.id || ''
-    const id = get('providerPlanId') || sku || item.id || item.bundle_template_id || ''
+    const sku = get('sku') || item.bundle_code || item.bundleCode || item.sku || item.planCode || item.id || ''
+    const id = get('providerPlanId') || sku || item.planCode || item.id || item.bundle_template_id || ''
     const name = get('name') || item.bundle_name || item.bundleName || item.name || item.planName || ''
-    const allowance = parseFloat(get('dataAllowance') ?? item.rate_group_allowance ?? item.dataGB ?? item.data_gb ?? 0)
-    const unit = (get('dataUnit') || item.rate_group_allow_qtyp || 'GB').toUpperCase()
-    const dataGB = unit === 'GB' ? allowance : unit === 'MB' ? Math.round(allowance / 1024) : allowance
+    // Data allowance: support AirHub capacity/capacityUnit fields in addition to standard names
+    const rawAllowance = parseFloat(
+      get('dataAllowance') ?? item.rate_group_allowance ?? item.capacity ?? item.dataGB ?? item.data_gb ?? 0
+    )
+    const unitField = get('dataUnit') || item.rate_group_allow_qtyp || item.capacityUnit || 'GB'
+    const unit = String(unitField).toUpperCase()
+    const allowance = rawAllowance || 0
+    const dataGB = unit === 'GB' ? allowance
+      : unit === 'MB' ? Math.round((allowance / 1024) * 100) / 100
+      : unit === 'KB' ? Math.round((allowance / 1024 / 1024) * 100) / 100
+      : allowance
     const days = parseInt(get('validityDays') ?? item.rate_group_allow_days ?? item.validity_days ?? item.validityDays ?? 30)
     const version = get('templateVersion') || item.template_version || item.templateVersion || ''
     const price = parseFloat(get('price_usd') ?? item.price_usd ?? item.priceUSD ?? item.price ?? 0)
