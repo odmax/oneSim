@@ -12,7 +12,9 @@ export default async function BusinessLayout({
 }) {
   const session = await getServerSession(authOptions)
   
-  if (session?.user?.role === 'BUSINESS_USER' && session.user.businessId) {
+  if (!session || session.user.role !== 'BUSINESS_USER') redirect('/login')
+  
+  if (session.user.businessId) {
     const business = await prisma.business.findUnique({
       where: { id: session.user.businessId },
       select: { status: true }
