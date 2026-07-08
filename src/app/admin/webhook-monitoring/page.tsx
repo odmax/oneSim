@@ -1,5 +1,6 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import AdminWebhookMonitor from './AdminWebhookMonitor'
@@ -7,6 +8,8 @@ import AdminWebhookMonitor from './AdminWebhookMonitor'
 export default async function WebhookMonitoringPage() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_PROVIDERS)
+  if (!perm.allowed) redirect('/admin/unauthorized')
 
   const today = new Date()
   today.setHours(0, 0, 0, 0)

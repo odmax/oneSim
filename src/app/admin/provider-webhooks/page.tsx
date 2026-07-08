@@ -1,5 +1,6 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { processProviderWebhookEvent } from '@/lib/services/webhooks/provider-webhook-processor'
@@ -8,6 +9,8 @@ import Link from 'next/link'
 export default async function AdminProviderWebhooksPage({ searchParams }: { searchParams: { page?: string; status?: string; providerType?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_PROVIDERS)
+  if (!perm.allowed) redirect('/admin/unauthorized')
 
   const page = parseInt(searchParams.page || '1')
   const limit = 50

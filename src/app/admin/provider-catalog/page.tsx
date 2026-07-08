@@ -1,5 +1,6 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -9,6 +10,8 @@ import { PublishAllReadyButton } from './PublishAllReadyButton'
 export default async function ProviderCatalogPage({ searchParams }: { searchParams?: { provider?: string; publishStatus?: string; configStatus?: string; search?: string; country?: string; page?: string; costFilter?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_PRODUCTS)
+  if (!perm.allowed) redirect('/admin/unauthorized')
 
   const page = parseInt(searchParams?.page || '1')
   const limit = 50

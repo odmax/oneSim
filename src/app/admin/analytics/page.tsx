@@ -1,5 +1,6 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { Suspense } from 'react'
@@ -59,6 +60,8 @@ export default async function AdminAnalyticsPage({
 }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.VIEW_ANALYTICS)
+  if (!perm.allowed) redirect('/admin/unauthorized')
 
   const filters = parseFilters(searchParams as any)
 

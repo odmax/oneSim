@@ -1,5 +1,6 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -8,6 +9,8 @@ import { getBillingStats, getRevenueByProvider, getRevenueByBusiness, getRevenue
 export default async function FinanceDashboardPage({ searchParams }: { searchParams?: { period?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.VIEW_FINANCE)
+  if (!perm.allowed) redirect('/admin/unauthorized')
 
   const days = searchParams?.period === '90d' ? 90 : searchParams?.period === '30d' ? 30 : 7
   const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)

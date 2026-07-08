@@ -1,5 +1,6 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -38,6 +39,8 @@ export default async function AdminBusinessesPage({
 }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_BUSINESSES)
+  if (!perm.allowed) redirect('/admin/unauthorized')
 
   const q = searchParams?.q?.trim()
   const statusFilter = searchParams?.status

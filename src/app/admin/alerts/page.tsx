@@ -1,5 +1,6 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -22,6 +23,8 @@ const SEVERITY_DOTS: Record<string, string> = {
 export default async function AdminAlertsPage() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.VIEW_ANALYTICS)
+  if (!perm.allowed) redirect('/admin/unauthorized')
 
   const notifications = await getRecentNotifications(100)
   const counts = await getAlertCounts()

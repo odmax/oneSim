@@ -52,7 +52,7 @@ export async function requirePermission(requiredRoles: InternalAdminRole[]) {
   }
   const role = session.user.internalAdminRole
   if (!hasAnyPermission(role, requiredRoles)) {
-    redirect('/admin?error=unauthorized')
+    redirect('/admin/unauthorized')
   }
   return session
 }
@@ -76,4 +76,10 @@ export const Permissions = {
   VIEW_LOGS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SUPPORT_MANAGER],
   MANAGE_SETTINGS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO],
   MANAGE_JOBS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.OPERATIONS_MANAGER],
+  VIEW_ORDERS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SUPPORT_MANAGER, InternalAdminRole.SUPPORT_AGENT, InternalAdminRole.SALES_TEAM, InternalAdminRole.FINANCE_MANAGER, InternalAdminRole.ANALYTICS_MANAGER],
+  VIEW_ESIMS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SUPPORT_MANAGER, InternalAdminRole.SUPPORT_AGENT, InternalAdminRole.SALES_TEAM, InternalAdminRole.FINANCE_MANAGER, InternalAdminRole.ANALYTICS_MANAGER],
+  MANAGE_FINANCE: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.FINANCE_MANAGER],
+  VIEW_FINANCE: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.FINANCE_MANAGER, InternalAdminRole.OPERATIONS_MANAGER, InternalAdminRole.SALES_TEAM],
+  MANAGE_USERS: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO],
+  VIEW_SUPPORT: [InternalAdminRole.SUPER_ADMIN, InternalAdminRole.ADMIN, InternalAdminRole.CEO, InternalAdminRole.SUPPORT_MANAGER, InternalAdminRole.SUPPORT_AGENT, InternalAdminRole.OPERATIONS_MANAGER],
 }

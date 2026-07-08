@@ -1,5 +1,6 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { getChangeHistory, getChangeSetDetails, rollbackChangeSet } from '@/lib/actions/catalog-history'
@@ -8,6 +9,8 @@ import { RollbackButton } from './RollbackButton'
 export default async function CatalogHistoryPage({ searchParams }: { searchParams?: { view?: string; page?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_PRODUCTS)
+  if (!perm.allowed) redirect('/admin/unauthorized')
 
   const page = parseInt(searchParams?.page || '1')
   const { sets, total, totalPages, limit } = await getChangeHistory(page)
