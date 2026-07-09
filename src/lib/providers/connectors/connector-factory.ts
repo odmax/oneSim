@@ -35,6 +35,8 @@ export function createConnector(providerId: string, name: string | undefined, co
   responseListKey?: string | null
   fieldMappings?: any
   endpointMappings?: any
+  requestMappings?: Record<string, any>
+  config?: any
   tokenPlacement?: string | null
   authType?: string | null
 }): IProviderConnector {
@@ -107,6 +109,8 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
     responseListKey: provider.responseListKey,
     fieldMappings: mergedFieldMappings,
     endpointMappings: provider.endpointMappings,
+    requestMappings: provider.requestMappings as Record<string, any> | undefined,
+    config: provider.config as any,
     tokenPlacement: provider.tokenPlacement,
     authType: provider.authType,
   })

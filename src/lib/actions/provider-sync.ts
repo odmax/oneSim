@@ -92,6 +92,22 @@ export async function syncProviderPlans(providerId: string) {
     const planListPath = provider.planListPath || '/plans'
     diagnostics.endpoint = `${provider.apiBaseUrl || '(baseUrl)'}${planListPath.replace(/\{token\}/g, '{token}')}`
 
+    // Log sync body for AirHub debugging
+    if (provider.code === 'AIRHUB') {
+      const config = (provider.config || {}) as any
+      const rm = (provider.requestMappings || {}) as any
+      console.log(`[AIRHUB_SYNC_BODY] provider.config:`, JSON.stringify({
+        partnerCode: config.partnerCode,
+        flag: config.flag,
+        countryCode: config.countryCode,
+        multiplecountrycode: config.multiplecountrycode,
+      }))
+      console.log(`[AIRHUB_SYNC_BODY] requestMappings.GET_PLANS:`, JSON.stringify(rm.GET_PLANS))
+      diagnostics.syncBodyConfig = { partnerCode: config.partnerCode, flag: config.flag, countryCode: config.countryCode, multiplecountrycode: config.multiplecountrycode }
+      diagnostics.syncBodyMapping = rm.GET_PLANS
+      diagnostics.responseListKey = resolvedResponseListKey
+    }
+
     const result = await adapter.syncPlans()
 
     if (!result.success) {

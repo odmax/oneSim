@@ -17,6 +17,8 @@ interface StandardConnectorConfig {
   responseListKey?: string
   fieldMappings?: Record<string, string>
   endpointMappings?: Record<string, { method?: string; path?: string; body?: any }>
+  requestMappings?: Record<string, any>
+  config?: any
   tokenPlacement?: string
   authType?: string
 }
@@ -103,6 +105,42 @@ export class StandardProviderConnector implements IProviderConnector {
     const topKey = Object.keys(data || {}).find(k => Array.isArray(data[k]))
     if (topKey) return data[topKey]
     return []
+  }
+
+  private resolveTemplate(template: any): any {
+    if (typeof template === 'number' || typeof template === 'boolean' || template === null) return template
+    if (Array.isArray(template)) return template.map(v => this.resolveTemplate(v))
+    if (typeof template === 'string') {
+      const match = template.match(/^\{\{(.+?)\}\}$/)
+      if (!match) return template
+      const inner = match[1]
+      const pipeIdx = inner.indexOf('|')
+      const expr = pipeIdx >= 0 ? inner.substring(0, pipeIdx) : inner
+      const defVal = pipeIdx >= 0 ? inner.substring(pipeIdx + 1) : ''
+      const dotIdx = expr.indexOf('.')
+      const namespace = dotIdx >= 0 ? expr.substring(0, dotIdx) : null
+      const varName = dotIdx >= 0 ? expr.substring(dotIdx + 1) : expr
+
+      let val: any = undefined
+      if (namespace === 'config') {
+        val = (this.config.config as any)?.[varName]
+      }
+      if (val == null || val === '') val = defVal
+      if (typeof val === 'string' && val.includes(',')) {
+        return val.split(',').map((s: string) => s.trim()).filter(Boolean)
+      }
+      const num = Number(val)
+      if (!isNaN(num) && String(val).trim() !== '') return num
+      return val ?? defVal
+    }
+    if (typeof template === 'object') {
+      const resolved: any = {}
+      for (const [key, value] of Object.entries(template)) {
+        resolved[key] = this.resolveTemplate(value)
+      }
+      return resolved
+    }
+    return template
   }
 
   private mapPlan(item: any): ConnectorPlan {
@@ -297,7 +335,23 @@ export class StandardProviderConnector implements IProviderConnector {
   async syncPlans(): Promise<ConnectorResult<ConnectorPlan[]>> {
     const path = this.config.planListPath
     if (!path) return { success: false, error: { code: 'NO_PATH', message: 'Plan list path not configured' } }
-    const { data, error } = await apiFetch(this.resolvePath(path), { headers: this.headers })
+
+    // Resolve method and body from endpointMappings + requestMappings
+    const ep = (this.config.endpointMappings || {}) as Record<string, any>
+    const planEp = ep.GET_PLANS || ''
+    const method = typeof planEp === 'string' && planEp.startsWith('POST') ? 'POST'
+      : typeof planEp === 'object' && planEp.method ? planEp.method
+      : 'GET'
+
+    let body: string | undefined
+    const rm = (this.config.requestMappings || {}) as Record<string, any>
+    if (rm.GET_PLANS) {
+      const resolved = this.resolveTemplate(rm.GET_PLANS)
+      body = JSON.stringify(resolved)
+      console.log(`[StandardConnector.syncPlans] POST body: ${body.substring(0, 300)}`)
+    }
+
+    const { data, error } = await apiFetch(this.resolvePath(path), { method, headers: this.headers, body })
     if (error) return { success: false, error }
     const items = this.extractList(data, this.config.responseListKey)
     if (!Array.isArray(items)) return { success: false, error: { code: 'INVALID_RESPONSE', message: 'Plan list response did not contain an array' } }
