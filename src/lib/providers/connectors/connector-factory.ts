@@ -61,6 +61,8 @@ export function createConnector(providerId: string, name: string | undefined, co
         responseListKey: config.responseListKey || undefined,
         fieldMappings: config.fieldMappings || undefined,
         endpointMappings: config.endpointMappings || undefined,
+        requestMappings: config.requestMappings,
+        config: config.config,
         tokenPlacement: config.tokenPlacement || undefined,
         authType: config.authType || undefined,
       })
@@ -95,7 +97,7 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
     console.log(`[buildConnector] activationPayloadType=${mergedFieldMappings.activationPayloadType} userId=${mergedFieldMappings.userId || '(not set)'}`)
   }
 
-  return createConnector(provider.id, provider.name, connectorType, {
+  const result = createConnector(provider.id, provider.name, connectorType, {
     apiBaseUrl: provider.apiBaseUrl,
     apiToken: decryptToken(provider.apiToken),
     authUrl: provider.authUrl,
@@ -114,4 +116,7 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
     tokenPlacement: provider.tokenPlacement,
     authType: provider.authType,
   })
+
+  console.log(`[CONNECTOR_CONFIG] code=${provider.code} hasConfig=${!!provider.config} configKeys=${Object.keys(provider.config || {}).join(',')} partnerCode=${(provider.config as any)?.partnerCode}`)
+  return result
 }

@@ -348,6 +348,7 @@ export class StandardProviderConnector implements IProviderConnector {
     if (rm.GET_PLANS) {
       const resolved = this.resolveTemplate(rm.GET_PLANS)
       body = JSON.stringify(resolved)
+      console.log(`[StandardConnector.syncPlans] configKeys=${Object.keys(this.config.config || {}).join(',')} partnerCode=${(this.config.config as any)?.partnerCode}`)
       console.log(`[StandardConnector.syncPlans] POST body: ${body.substring(0, 300)}`)
     }
 
