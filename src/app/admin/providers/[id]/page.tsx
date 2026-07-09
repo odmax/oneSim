@@ -17,6 +17,7 @@ import { SaveAsTemplateButton } from '@/components/admin/providers/SaveAsTemplat
 import { getProviderAuthStatus } from '@/lib/actions/provider-auth'
 import { getRecentHealthLogs, type HealthEvent } from '@/lib/services/providers/health-monitor'
 import { inferProviderCapabilities } from '@/lib/providers/capabilities'
+import { getProviderCapabilities, CAPABILITY_LABELS, CAPABILITY_COLORS } from '@/lib/providers/capabilities/index'
 import { ProviderActionButton, ActionForm } from '@/components/admin/providers/ActionButtons'
 import { MappingValidator } from '@/components/admin/providers/MappingValidator'
 import { TestPurchasePanel } from '@/components/admin/providers/TestPurchasePanel'
@@ -223,6 +224,24 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
                   </p>
                 )}
               </>
+            )
+          })()}
+
+          {/* Capability Framework Badges */}
+          {(() => {
+            const declaredCaps = getProviderCapabilities(provider)
+            if (declaredCaps.length === 0) return null
+            return (
+              <div className="mt-4 border-t pt-3">
+                <p className="text-xs font-medium text-gray-500 mb-2">Declared Capabilities</p>
+                <div className="flex flex-wrap gap-1">
+                  {declaredCaps.map(cap => (
+                    <span key={cap} className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${CAPABILITY_COLORS[cap] || 'bg-gray-100 text-gray-600'}`}>
+                      {CAPABILITY_LABELS[cap] || cap}
+                    </span>
+                  ))}
+                </div>
+              </div>
             )
           })()}
 

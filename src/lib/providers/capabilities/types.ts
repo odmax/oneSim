@@ -1,0 +1,55 @@
+export const ProviderCapability = {
+  AUTH: 'AUTH',
+  CATALOG_SYNC: 'CATALOG_SYNC',
+  PURCHASE: 'PURCHASE',
+  TOP_UP: 'TOP_UP',
+  USAGE: 'USAGE',
+  STATUS: 'STATUS',
+  SUSPEND: 'SUSPEND',
+  RESUME: 'RESUME',
+  CANCEL: 'CANCEL',
+  WEBHOOKS: 'WEBHOOKS',
+  SMS_MT: 'SMS_MT',
+  SMS_MO: 'SMS_MO',
+  WALLET: 'WALLET',
+  INVENTORY: 'INVENTORY',
+  PCR_PROFILE: 'PCR_PROFILE',
+} as const
+
+export type ProviderCapability = (typeof ProviderCapability)[keyof typeof ProviderCapability]
+
+export const CAPABILITY_LABELS: Record<ProviderCapability, string> = {
+  AUTH: 'Authentication',
+  CATALOG_SYNC: 'Catalog Sync',
+  PURCHASE: 'Purchase',
+  TOP_UP: 'Top-Up',
+  USAGE: 'Usage',
+  STATUS: 'Status',
+  SUSPEND: 'Suspend',
+  RESUME: 'Resume',
+  CANCEL: 'Cancel',
+  WEBHOOKS: 'Webhooks',
+  SMS_MT: 'SMS (Outbound)',
+  SMS_MO: 'SMS (Inbound)',
+  WALLET: 'Wallet',
+  INVENTORY: 'Inventory',
+  PCR_PROFILE: 'PCR Profile',
+}
+
+export const CAPABILITY_COLORS: Record<ProviderCapability, string> = {
+  AUTH: 'bg-blue-100 text-blue-700',
+  CATALOG_SYNC: 'bg-emerald-100 text-emerald-700',
+  PURCHASE: 'bg-cyan-100 text-cyan-700',
+  TOP_UP: 'bg-purple-100 text-purple-700',
+  USAGE: 'bg-amber-100 text-amber-700',
+  STATUS: 'bg-teal-100 text-teal-700',
+  SUSPEND: 'bg-orange-100 text-orange-700',
+  RESUME: 'bg-lime-100 text-lime-700',
+  CANCEL: 'bg-red-100 text-red-700',
+  WEBHOOKS: 'bg-indigo-100 text-indigo-700',
+  SMS_MT: 'bg-pink-100 text-pink-700',
+  SMS_MO: 'bg-rose-100 text-rose-700',
+  WALLET: 'bg-green-100 text-green-700',
+  INVENTORY: 'bg-gray-100 text-gray-700',
+  PCR_PROFILE: 'bg-violet-100 text-violet-700',
+}
