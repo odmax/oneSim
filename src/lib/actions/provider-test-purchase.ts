@@ -27,6 +27,8 @@ export async function testProviderPurchase(providerId: string, packageId: string
   // Find provider
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) return { success: false, error: 'Provider not found' }
+  const { providerSupports } = await import('@/lib/providers/capabilities/registry')
+  if (!providerSupports(provider, 'PURCHASE')) return { success: false, error: 'This provider does not support Purchase.' }
   if (!isProviderOperational(provider.status)) return { success: false, error: `Provider is ${provider.status}` }
 
   // Find test business (first active business)

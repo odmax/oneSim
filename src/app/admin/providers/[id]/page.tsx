@@ -17,7 +17,7 @@ import { SaveAsTemplateButton } from '@/components/admin/providers/SaveAsTemplat
 import { getProviderAuthStatus } from '@/lib/actions/provider-auth'
 import { getRecentHealthLogs, type HealthEvent } from '@/lib/services/providers/health-monitor'
 import { inferProviderCapabilities } from '@/lib/providers/capabilities'
-import { getProviderCapabilities, CAPABILITY_LABELS, CAPABILITY_COLORS } from '@/lib/providers/capabilities/index'
+import { getProviderCapabilities, CAPABILITY_LABELS, CAPABILITY_COLORS, providerSupports } from '@/lib/providers/capabilities/index'
 import { ProviderActionButton, ActionForm } from '@/components/admin/providers/ActionButtons'
 import { MappingValidator } from '@/components/admin/providers/MappingValidator'
 import { TestPurchasePanel } from '@/components/admin/providers/TestPurchasePanel'
@@ -357,6 +357,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       {/* Annual markup warning — removed; pricing is manual per product */}
 
       {/* Sync Plans Section */}
+      {providerSupports(provider, 'CATALOG_SYNC') ? (
       <div className="mb-6 rounded-lg border bg-white p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
           <div>
@@ -448,6 +449,11 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
           <p className="text-sm text-red-600">{syncError}</p>
         )}
       </div>
+      ) : (
+        <div className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-6 text-center">
+          <p className="text-sm text-gray-500">Catalog Sync is not supported by this provider.</p>
+        </div>
+      )}
 
       {/* Imported Packages */}
       <div className="rounded-lg border bg-white p-6 shadow-sm">
@@ -496,7 +502,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       </div>
 
       {/* Test Purchase Panel */}
-      {importedPackages.length > 0 && (
+      {importedPackages.length > 0 && providerSupports(provider, 'PURCHASE') && (
         <div className="mt-6">
           <TestPurchasePanel
             providerId={provider.id}

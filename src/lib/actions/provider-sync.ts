@@ -31,6 +31,12 @@ export async function syncProviderPlans(providerId: string) {
   const provider = await prisma.provider.findUnique({ where: { id: providerId }, include: { providerTemplate: true } })
   if (!provider) return { error: 'Provider not found' }
 
+  // Capability guard
+  const { providerSupports } = await import('@/lib/providers/capabilities/registry')
+  if (!providerSupports(provider, 'CATALOG_SYNC')) {
+    return { error: 'This provider does not support Catalog Sync.' }
+  }
+
   // Resolve plan list path from endpointMappings or template for template-driven providers
   const resolvedPlanListPath = (() => {
     if (provider.planListPath) return provider.planListPath

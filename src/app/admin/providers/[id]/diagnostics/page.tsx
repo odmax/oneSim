@@ -5,6 +5,8 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { runProviderDiagnostics, type DiagnosticResult } from '@/lib/actions/provider-diagnostics'
 import { RawGetPlansTestPanel } from './RawGetPlansTestPanel'
+import { getProviderCapabilities, CAPABILITY_LABELS, providerSupports, getMissingCapabilities } from '@/lib/providers/capabilities/index'
+import type { ProviderCapability } from '@/lib/providers/capabilities/types'
 
 export default async function ProviderDiagnosticsPage({
   params,
@@ -95,6 +97,46 @@ export default async function ProviderDiagnosticsPage({
       )}
 
       {/* Raw GET_PLANS test panel */}
+
+      {/* Capability Diagnostics */}
+      {(() => {
+        const caps = getProviderCapabilities(provider)
+        const workflows: { label: string; needs: ProviderCapability[] }[] = [
+          { label: 'Catalog Import', needs: ['AUTH' as ProviderCapability, 'CATALOG_SYNC' as ProviderCapability] },
+          { label: 'Purchase', needs: ['AUTH' as ProviderCapability, 'PURCHASE' as ProviderCapability] },
+          { label: 'Full Lifecycle', needs: ['AUTH' as ProviderCapability, 'PURCHASE' as ProviderCapability, 'STATUS' as ProviderCapability] },
+          { label: 'Webhooks', needs: ['WEBHOOKS' as ProviderCapability] },
+        ]
+        return (
+          <div className="mt-6 rounded-xl border bg-white p-5 shadow-sm space-y-3">
+            <h3 className="text-base font-semibold text-gray-900">Capability Diagnostics</h3>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {workflows.map(w => {
+                const missing = getMissingCapabilities(provider, w.needs)
+                return (
+                  <div key={w.label} className={`rounded-lg border p-3 ${missing.length === 0 ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
+                    <p className="text-sm font-medium text-gray-900">{w.label}</p>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {w.needs.map(c => (
+                        <span key={c} className={`inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium ${caps.includes(c) ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
+                          {CAPABILITY_LABELS[c] || c}
+                        </span>
+                      ))}
+                    </div>
+                    {missing.length > 0 && (
+                      <p className="text-[10px] text-amber-600 mt-1">Missing: {missing.map(c => CAPABILITY_LABELS[c] || c).join(', ')}</p>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            {caps.length > 0 && (
+              <p className="text-xs text-gray-500">Declared: {caps.map(c => CAPABILITY_LABELS[c] || c).join(', ')}</p>
+            )}
+          </div>
+        )
+      })()}
+
       <div className="mt-6">
         <RawGetPlansTestPanel providerId={provider.id} />
       </div>
