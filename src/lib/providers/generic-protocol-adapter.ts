@@ -235,8 +235,20 @@ export class GenericProtocolAdapter implements ProviderAdapter {
     const rm = (p.requestMappings || (p.providerTemplate as any)?.requestMappings || (p.config as any)?.requestMappings || {}) as Record<string, any>
     const getPlansMapping = rm.GET_PLANS
     if (getPlansMapping) {
-      body = JSON.stringify(this.resolveTemplateBody(getPlansMapping))
-      console.log(`[syncPlans] GET_PLANS body: ${body.substring(0, 200)}`)
+      const resolved = this.resolveTemplateBody(getPlansMapping)
+      // Validate required AirHub fields before sending
+      if (resolved.partnerCode == null) {
+        return { success: false, error: { code: 'MISSING_PARTNER_CODE', message: 'partnerCode is required in provider config' } }
+      }
+      if (resolved.flag == null) {
+        return { success: false, error: { code: 'MISSING_FLAG', message: 'flag is required in GET_PLANS body' } }
+      }
+      body = JSON.stringify(resolved)
+      // Mask token for logging
+      const safeToken = token ? `${token.substring(0, 4)}...${token.slice(-4)}` : '(none)'
+      console.log(`[syncPlans] Provider: ${p.code || p.name} Endpoint: ${url}`)
+      console.log(`[syncPlans] Headers: Authorization=Bearer ${safeToken}`)
+      console.log(`[syncPlans] Request Body: ${body.substring(0, 300)}`)
     }
 
     const { data, error } = await this.rawFetch(url, { method, headers, body })
