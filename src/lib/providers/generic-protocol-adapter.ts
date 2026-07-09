@@ -243,6 +243,12 @@ export class GenericProtocolAdapter implements ProviderAdapter {
       if (resolved.flag == null) {
         return { success: false, error: { code: 'MISSING_FLAG', message: 'flag is required in GET_PLANS body' } }
       }
+      if (resolved.countryCode === undefined) {
+        return { success: false, error: { code: 'MISSING_COUNTRY_CODE', message: 'countryCode is required in GET_PLANS body' } }
+      }
+      if (!resolved.multiplecountrycode || !Array.isArray(resolved.multiplecountrycode)) {
+        return { success: false, error: { code: 'MISSING_MULTIPLE_COUNTRY_CODE', message: 'multiplecountrycode must be an array in GET_PLANS body' } }
+      }
       body = JSON.stringify(resolved)
       // Mask token for logging
       const safeToken = token ? `${token.substring(0, 4)}...${token.slice(-4)}` : '(none)'

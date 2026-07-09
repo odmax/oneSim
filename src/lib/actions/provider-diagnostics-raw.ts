@@ -9,6 +9,7 @@ export async function rawGetPlansTest(providerId: string, bodyJson: string): Pro
   success: boolean
   status?: number
   requestBody?: string
+  responseHeaders?: Record<string, string>
   responseBody?: any
   responseKeys?: string[]
   error?: string
@@ -88,10 +89,14 @@ export async function rawGetPlansTest(providerId: string, bodyJson: string): Pro
 
     console.log(`[rawGetPlansTest] Status: ${response.status} Keys: ${responseKeys.join(',')}`)
 
+    const responseHeaders: Record<string, string> = {}
+    response.headers.forEach((value, key) => { responseHeaders[key] = value })
+
     return {
       success: true,
       status: response.status,
       requestBody: bodyJson,
+      responseHeaders,
       responseBody: responseData,
       responseKeys,
     }

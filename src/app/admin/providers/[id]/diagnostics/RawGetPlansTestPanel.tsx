@@ -86,9 +86,15 @@ export function RawGetPlansTestPanel({ providerId }: { providerId: string }) {
                 )}
               </div>
               <details className="rounded-lg border p-3">
-                <summary className="text-xs font-medium text-gray-500 cursor-pointer">Request Body</summary>
+                <summary className="text-xs font-medium text-gray-500 cursor-pointer">Request Body (Raw JSON)</summary>
                 <pre className="mt-2 text-[11px] font-mono text-gray-600 whitespace-pre-wrap">{result.requestBody}</pre>
               </details>
+              {result.responseHeaders && (
+                <details className="rounded-lg border p-3">
+                  <summary className="text-xs font-medium text-gray-500 cursor-pointer">Response Headers</summary>
+                  <pre className="mt-2 text-[11px] font-mono text-gray-600 whitespace-pre-wrap">{JSON.stringify(result.responseHeaders, null, 2)}</pre>
+                </details>
+              )}
               <details className="rounded-lg border p-3" open>
                 <summary className="text-xs font-medium text-gray-500 cursor-pointer">Response</summary>
                 <pre className="mt-2 text-[11px] font-mono text-gray-600 overflow-x-auto max-h-96">{JSON.stringify(result.responseBody, null, 2)}</pre>
