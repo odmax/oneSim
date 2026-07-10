@@ -319,6 +319,15 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
     const body = this.buildRequestBody(capability)
     console.log(`[CALL_WITH_BODY] capability=${capability} partnerCode=${body.partnerCode} flag=${body.flag} countryCode=${body.countryCode} multiplecountrycode=${JSON.stringify(body.multiplecountrycode)}`)
+
+    // Validate required fields for GET_PLANS
+    if (capability === 'GET_PLANS') {
+      if (body.partnerCode == null) return { error: { code: 'MISSING_PARTNER_CODE', message: 'partnerCode is required in provider.config' } }
+      if (body.flag == null) return { error: { code: 'MISSING_FLAG', message: 'flag is required in provider.config' } }
+      if (body.countryCode === undefined) return { error: { code: 'MISSING_COUNTRY_CODE', message: 'countryCode is required in provider.config' } }
+      if (!body.multiplecountrycode || !Array.isArray(body.multiplecountrycode) || body.multiplecountrycode.length === 0) return { error: { code: 'MISSING_MULTIPLE_COUNTRY_CODE', message: 'multiplecountrycode must be a non-empty array in provider.config' } }
+    }
+
     console.log('[TemplateProviderAdapter] CALL_WITH_BODY', {
       capability,
       url,
