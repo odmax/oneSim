@@ -13,6 +13,7 @@ import { SetupWizard } from '@/components/admin/providers/SetupWizard'
 import { ProviderLifecycleActions } from '@/components/admin/providers/ProviderLifecycleActions'
 import ProviderCertificationWizard from '@/components/admin/providers/ProviderCertificationWizard'
 import { ProviderHealthCards, ProviderCapabilityMatrix } from '@/components/admin/providers/ProviderHealthCards'
+import { detectUrlMismatch } from '@/lib/providers/url-resolver'
 import { SaveAsTemplateButton } from '@/components/admin/providers/SaveAsTemplateButton'
 import { getProviderAuthStatus } from '@/lib/actions/provider-auth'
 import { getRecentHealthLogs, type HealthEvent } from '@/lib/services/providers/health-monitor'
@@ -116,6 +117,11 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
           <p className="text-xs text-gray-400 mt-1">
             Template-driven · Config keys: {Object.keys((provider.config as any) || {}).filter(k => !k.startsWith('_')).join(', ') || 'none'}
           </p>
+        )}
+        {detectUrlMismatch(provider.environment, provider.apiBaseUrl, provider.authUrl).hasMismatch && (
+          <div className="mt-3 rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm text-orange-800">
+            {detectUrlMismatch(provider.environment, provider.apiBaseUrl, provider.authUrl).message}
+          </div>
         )}
       </div>
 

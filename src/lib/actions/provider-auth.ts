@@ -21,12 +21,46 @@ export async function authenticateProvider(providerId: string, formData: FormDat
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) return { success: false, error: 'Provider not found' }
 
-  const credentials: Record<string, string> = {}
+  console.log(`[PROVIDER_AUTH_START] id=${provider.id} code=${provider.code} type=${provider.type} strategy=${provider.adapterStrategy} authType=${provider.authType}`)
+
+  // Extract fd from formData
+  const fd: Record<string, string> = {}
   for (const [key, value] of formData.entries()) {
-    credentials[key] = value as string
+    fd[key] = value as string
   }
 
-  const authResult = await authenticateProviderViaAdapter(provider.type, credentials, {
+  // Log credential field names (never values)
+  console.log(`[PROVIDER_AUTH_FIELDS] fields=${Object.keys(fd).filter(k => !['password','apiToken','token'].includes(k)).join(',')}`)
+
+  // For bearer_token: save token directly, validate via testConnection
+  if (provider.authType === 'bearer_token') {
+    const apiToken = fd.apiToken || fd.api_token || fd.token
+    if (!apiToken) return { success: false, error: 'API token is required for bearer_token authentication', field: 'apiToken' }
+
+    await prisma.provider.update({
+      where: { id: providerId },
+      data: {
+        apiToken: encryptToken(apiToken),
+        environment: fd.environment || provider.environment || 'staging',
+      },
+    })
+
+    await recordHealthEvent(providerId, {
+      eventType: 'CONNECTION_TEST',
+      success: true,
+      message: 'Bearer token saved',
+    })
+
+    await prisma.auditLog.create({
+      data: { userId: session.user.id, action: 'PROVIDER_TOKEN_SAVED', entity: 'Provider', entityId: provider.code, details: `"${provider.name}" bearer token saved` },
+    })
+
+    revalidatePath(`/admin/providers/${providerId}`)
+    return { success: true, message: 'API token saved. Use Test Connection to verify.' }
+  }
+
+  // For fd/auth types, run full adapter authentication
+  const authResult = await authenticateProviderViaAdapter(provider.type, fd, {
     apiBaseUrl: provider.apiBaseUrl,
     apiToken: provider.apiToken,
     providerId: provider.id,
@@ -41,12 +75,12 @@ export async function authenticateProvider(providerId: string, formData: FormDat
     await prisma.auditLog.create({
       data: { userId: session.user.id, action: 'PROVIDER_AUTH_FAILED', entity: 'Provider', entityId: provider.code, details: `"${provider.name}" auth failed: ${authResult.error}` },
     })
-    return { success: false, error: authResult.error, field: 'credentials', code: authResult.code }
+    return { success: false, error: authResult.error, field: 'fd', code: authResult.code }
   }
 
   const accounts = authResult.accountInfo?.accounts || []
   const account = accounts.length > 0 ? accounts[0] : null
-  const env = credentials.environment || provider.environment || 'staging'
+  const env = fd.environment || provider.environment || 'staging'
   const hasMultipleAccounts = accounts.length > 1
 
   // Save accounts to config always
@@ -56,11 +90,11 @@ export async function authenticateProvider(providerId: string, formData: FormDat
     authMethod: provider.type.toLowerCase(),
     authAccounts: accounts,
     authEnvironmentAtAuth: env,
-    // Preserve credentials for subsequent testConnection calls
-    ...(credentials.username ? { username: credentials.username } : {}),
-    ...(credentials.password ? { password: credentials.password } : {}),
-    ...(credentials.apiKey ? { apiKey: credentials.apiKey } : {}),
-    ...(credentials.clientId ? { clientId: credentials.clientId } : {}),
+    // Preserve fd for subsequent testConnection calls
+    ...(fd.username ? { username: fd.username } : {}),
+    ...(fd.password ? { password: fd.password } : {}),
+    ...(fd.apiKey ? { apiKey: fd.apiKey } : {}),
+    ...(fd.clientId ? { clientId: fd.clientId } : {}),
   }
 
   const updateData: any = {
@@ -68,8 +102,8 @@ export async function authenticateProvider(providerId: string, formData: FormDat
     config: configUpdate,
   }
 
-  if (!provider.apiBaseUrl && credentials.apiBaseUrl) {
-    updateData.apiBaseUrl = credentials.apiBaseUrl
+  if (!provider.apiBaseUrl && fd.apiBaseUrl) {
+    updateData.apiBaseUrl = fd.apiBaseUrl
   }
 
   if (hasMultipleAccounts) {
@@ -373,9 +407,9 @@ export async function testProviderConnection(providerId: string) {
       const errorMessages: Record<string, string> = {
         NETWORK_ERROR: 'Request failed — provider not reachable (network error)',
         HTTP_404: 'Wrong URL / Endpoint not found',
-        HTTP_400: 'Provider rejected request (check token, credentials, or request format)',
+        HTTP_400: 'Provider rejected request (check token, fd, or request format)',
         NON_JSON_RESPONSE: 'Provider returned HTML or unexpected format (wrong endpoint?)',
-        AUTH_ERROR: 'Authentication failed — check credentials',
+        AUTH_ERROR: 'Authentication failed — check fd',
         TOKEN_MISSING: 'No API token configured',
         TOKEN_NOT_REPLACED: 'Token placeholder {{token}} not replaced in URL',
       }

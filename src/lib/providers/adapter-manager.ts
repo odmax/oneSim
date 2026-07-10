@@ -236,6 +236,7 @@ export async function authenticateProviderViaAdapter(
     } else {
       adapter = await getAdapterForType(type, { ...config, providerId: config?.providerId || 'auth' })
     }
+    console.log(`[PROVIDER_AUTH_CONNECTOR] adapter=${adapter.constructor.name} baseUrl=${(adapter as any).baseUrl || (adapter as any).provider?.apiBaseUrl || 'N/A'}`)
     const result = await adapter.authenticate(credentials)
 
     if (!result.success) {
