@@ -30,6 +30,7 @@ export async function syncProviderPlans(providerId: string) {
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId }, include: { providerTemplate: true } })
   if (!provider) return { error: 'Provider not found' }
+  console.log(`[DB_PROVIDER_CONFIG] code=${provider.code} configKeys=${Object.keys((provider.config as any) || {}).join(',')} partnerCode=${(provider.config as any)?.partnerCode} providerMode=${(provider.config as any)?.providerMode}`)
 
   // Capability guard
   const { providerSupports } = await import('@/lib/providers/capabilities/registry')

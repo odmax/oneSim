@@ -167,6 +167,7 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     this.name = provider.name || provider.code || 'Template Provider'
     this.provider = provider
     this.config = (provider.config || {}) as Record<string, any>
+    console.log(`[TEMPLATE_ADAPTER_CONFIG] code=${provider.code} configKeys=${Object.keys(this.config).join(',')} partnerCode=${this.config.partnerCode} flag=${this.config.flag}`)
   }
 
   private get endpointMappings(): Record<string, string> | null {
@@ -317,6 +318,7 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     const headers: Record<string, string> = {}
     applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
     const body = this.buildRequestBody(capability)
+    console.log(`[CALL_WITH_BODY] capability=${capability} partnerCode=${body.partnerCode} flag=${body.flag} countryCode=${body.countryCode} multiplecountrycode=${JSON.stringify(body.multiplecountrycode)}`)
     console.log('[TemplateProviderAdapter] CALL_WITH_BODY', {
       capability,
       url,
