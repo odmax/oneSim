@@ -112,6 +112,11 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
         <Link href="/admin/providers" className="text-sm text-cyan-600 hover:underline">← Back to Providers</Link>
         <h2 className="mt-2 text-2xl font-bold text-gray-900">{provider.name}</h2>
         <p className="text-gray-600">Code: <span className="font-mono">{provider.code}</span></p>
+        {(provider.config as any)?.providerMode === 'TEMPLATE' && (
+          <p className="text-xs text-gray-400 mt-1">
+            Template-driven · Config keys: {Object.keys((provider.config as any) || {}).filter(k => !k.startsWith('_')).join(', ') || 'none'}
+          </p>
+        )}
       </div>
 
       {/* Tab Navigation */}

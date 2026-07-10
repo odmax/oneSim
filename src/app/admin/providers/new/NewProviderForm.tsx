@@ -206,15 +206,18 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
   const hasSavedTemplates = templates.length > 0
   const [configFields, setConfigFields] = useState<SavedTemplate['requiredConfigFields']>([])
 
-  // Auto-apply template when provider code matches a template name
+  // Auto-apply template when provider code exactly matches a template code or the template's code field
   const handleCodeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const code = e.target.value.toUpperCase()
-    const match = templates.find(t => t.name.toUpperCase().includes(code) || code.includes(t.name.toUpperCase()))
+    // Match by template.code if available, otherwise skip auto-apply (prevents partial name match template leak)
+    const match = templates.find(t => {
+      const tCode = (t as any).code
+      return tCode && tCode.toUpperCase() === code
+    })
     if (match) {
       const templateJson = JSON.stringify(match)
       const selector = document.querySelector<HTMLSelectElement>('[name="template"]')
       if (selector) {
-        // Find or create an option with the value "saved:{json}"
         let option = Array.from(selector.options).find(o => o.value === `saved:${templateJson}`)
         if (!option) {
           option = new Option(match.name, `saved:${templateJson}`, true, true)
