@@ -68,9 +68,16 @@ export class UrlTokenConnector extends RestCatalogConnector {
     const username = credentials.username
     const password = credentials.password
 
+    console.log(`[CHOICE_AUTH_START] providerId=${this.providerId} usernamePresent=${!!username} passwordPresent=${!!password}`)
+
     if (!authUrl || !username || !password) {
+      console.log(`[CHOICE_AUTH_START] Missing: authUrl=${!!authUrl} username=${!!username} password=${!!password} — falling back`)
       return super.authenticate(credentials)
     }
+
+    console.log(`[CHOICE_AUTH_URL] resolvedUrl=${authUrl}`)
+    console.log(`[CHOICE_AUTH_REQUEST] method=POST bodyFields=request.un,request.pw,request.command`)
+    console.log(`[CHOICE_AUTH_REQUEST] target=${authUrl}`)
 
     // Try JSON auth first (Choice/VirtuoLink style)
     const jsonResult = await this.jsonAuthenticate(authUrl, username, password, credentials.environment)
@@ -144,6 +151,9 @@ export class UrlTokenConnector extends RestCatalogConnector {
         accountNames: accounts.map((a: AuthAccount) => a.accountName),
         maskedTokens: accounts.map((a: AuthAccount) => maskToken(a.token)),
       }
+
+      console.log(`[CHOICE_AUTH_RESPONSE] httpStatus=${status} choiceStatus=${resp.status} accountCount=${accounts.length} responseKeys=${Object.keys(json).join(',')}`)
+      console.log(`[CHOICE_AUTH_RESULT] success=true selectedAccountId=${accounts[0].account} selectedAccountName=${accounts[0].accountName}`)
 
       return {
         success: true,
