@@ -46,9 +46,11 @@ function buildUrl(baseUrl: string, path: string): string {
 
 function applyAuthHeaders(headers: Record<string, string>, token: string | null, tokenPlacement: string, authType: string): void {
   if (!token) return
+  // Normalize: strip "Bearer " prefix if token already contains it
+  const cleanToken = token.startsWith('Bearer ') ? token.slice(7) : token
   switch (tokenPlacement) {
     case 'BEARER_HEADER':
-      headers['Authorization'] = `Bearer ${token}`; break
+      headers['Authorization'] = `Bearer ${cleanToken}`; break
     case 'API_KEY_HEADER':
       headers['X-API-Key'] = token; break
     case 'BASIC_AUTH':
@@ -167,7 +169,14 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     this.name = provider.name || provider.code || 'Template Provider'
     this.provider = provider
     this.config = (provider.config || {}) as Record<string, any>
-    console.log(`[TEMPLATE_ADAPTER_CONFIG] code=${provider.code} configKeys=${Object.keys(this.config).join(',')} partnerCode=${this.config.partnerCode} flag=${this.config.flag}`)
+    // Decrypt persisted token so authenticated requests include Authorization header
+    if (provider.apiToken) {
+      try {
+        const { decryptToken } = require('@/lib/encryption')
+        this.token = decryptToken(provider.apiToken) || null
+      } catch { this.token = null }
+    }
+    console.log(`[TEMPLATE_ADAPTER_CONFIG] code=${provider.code} configKeys=${Object.keys(this.config).join(',')} partnerCode=${this.config.partnerCode} flag=${this.config.flag} tokenPresent=${!!this.token} tokenPlacement=${this.tokenPlacement}`)
   }
 
   private get endpointMappings(): Record<string, string> | null {
@@ -319,6 +328,7 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     applyAuthHeaders(headers, this.token, this.tokenPlacement, this.provider.authType || 'bearer_token')
     const body = this.buildRequestBody(capability)
     console.log(`[CALL_WITH_BODY] capability=${capability} partnerCode=${body.partnerCode} flag=${body.flag} countryCode=${body.countryCode} multiplecountrycode=${JSON.stringify(body.multiplecountrycode)}`)
+    console.log(`[AIRHUB_AUTH_HEADER] capability=${capability} tokenAvailable=${!!this.token} authHeaderPresent=${!!this.token} scheme=Bearer placement=${this.tokenPlacement}`)
 
     // Validate required fields for GET_PLANS
     if (capability === 'GET_PLANS') {

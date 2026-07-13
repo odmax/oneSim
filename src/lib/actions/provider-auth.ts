@@ -117,6 +117,11 @@ export async function authenticateProvider(providerId: string, formData: FormDat
 
   await prisma.provider.update({ where: { id: providerId }, data: updateData })
 
+  // Safe diagnostics: log token storage without values
+  const tokenStored = !!authResult.token && !hasMultipleAccounts
+  const tokenSource = provider.responseMappings?.tokenPath || provider.config?.tokenPath || 'auto-detect'
+  console.log(`[PROVIDER_AUTH_RESULT] success=true code=${provider.code} tokenExtracted=${!!authResult.token} tokenPersisted=${tokenStored} tokenSource=${tokenSource} multiAccount=${hasMultipleAccounts}`)
+
   await recordHealthEvent(providerId, {
     eventType: 'CONNECTION_TEST',
     success: true,
