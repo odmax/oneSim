@@ -12,6 +12,12 @@ import { encryptToken } from '@/lib/encryption'
 import { registry } from '@/services/providerRegistry'
 import { advanceCertificationTo, markCertificationFailed } from '@/lib/providers/certification-machine'
 
+function getJsonString(value: unknown, key: string): string | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const result = (value as Record<string, unknown>)[key]
+  return typeof result === 'string' ? result : undefined
+}
+
 export async function authenticateProvider(providerId: string, formData: FormData) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
@@ -119,7 +125,7 @@ export async function authenticateProvider(providerId: string, formData: FormDat
 
   // Safe diagnostics: log token storage without values
   const tokenStored = !!authResult.token && !hasMultipleAccounts
-  const tokenSource = provider.responseMappings?.tokenPath || provider.config?.tokenPath || 'auto-detect'
+  const tokenSource = getJsonString(provider.responseMappings, 'tokenPath') ?? getJsonString(provider.config, 'tokenPath') ?? 'auto-detect'
   console.log(`[PROVIDER_AUTH_RESULT] success=true code=${provider.code} tokenExtracted=${!!authResult.token} tokenPersisted=${tokenStored} tokenSource=${tokenSource} multiAccount=${hasMultipleAccounts}`)
 
   await recordHealthEvent(providerId, {
