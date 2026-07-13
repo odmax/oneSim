@@ -5,7 +5,7 @@ async function main() {
   const p = new PrismaClient()
   const airhub = await p.provider.findFirst({
     where: { code: 'AIRHUB' },
-    select: { id: true, name: true, code: true, tokenPlacement: true, apiBaseUrl: true, authUrl: true, apiToken: true, config: true, requestMappings: true },
+    select: { id: true, name: true, code: true, adapterStrategy: true, tokenPlacement: true, apiBaseUrl: true, authUrl: true, apiToken: true, config: true, requestMappings: true },
   })
 
   if (!airhub) { console.log('ERROR: AirHub not found'); process.exit(1) }
@@ -13,6 +13,11 @@ async function main() {
 
   const changes = []
   const update = {}
+
+  if (airhub.adapterStrategy !== 'AIRHUB') {
+    changes.push(`adapterStrategy: ${airhub.adapterStrategy} → AIRHUB`)
+    update.adapterStrategy = 'AIRHUB'
+  }
 
   if (airhub.tokenPlacement !== 'BEARER_HEADER') {
     changes.push(`tokenPlacement: ${airhub.tokenPlacement} → BEARER_HEADER`)
@@ -49,9 +54,19 @@ async function main() {
     update.config = { ...config, countryCode: '' }
   }
 
+  // Remove stale template metadata
+  if (config.providerMode || config.templateDriven) {
+    const cleaned = { ...config }
+    delete cleaned.providerMode
+    delete cleaned.templateDriven
+    update.config = cleaned
+    changes.push('Removed stale providerMode/templateDriven')
+  }
+
   const hasToken = !!airhub.apiToken
   console.log(DRY_RUN ? 'DRY RUN' : 'APPLY MODE')
   console.log(`Provider: ${airhub.name} (${airhub.id})`)
+  console.log(`  adapterStrategy: ${airhub.adapterStrategy}`)
   console.log(`  tokenPlacement: ${airhub.tokenPlacement}`)
   console.log(`  apiBaseUrl: ${airhub.apiBaseUrl}`)
   console.log(`  authUrl: ${airhub.authUrl}`)

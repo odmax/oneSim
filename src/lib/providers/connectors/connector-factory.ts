@@ -1,16 +1,18 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import type { IProviderConnector } from './connector-interface'
+import { AirHubConnector } from './airhub-connector'
 import { MockConnector } from './mock-connector'
 import { RestCatalogConnector } from './rest-catalog-connector'
 import { UrlTokenConnector } from './url-token-connector'
 import { HeaderTokenRestConnector } from './header-token-rest-connector'
 import { StandardProviderConnector } from './standard-connector'
 
-export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD'
+export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB'
 
 export function resolveConnectorType(adapterStrategy: string | null | undefined, providerType: string): ConnectorType {
   if (providerType === 'MOCK') return 'MOCK'
+  if (adapterStrategy === 'AIRHUB') return 'AIRHUB'
   switch (adapterStrategy) {
     case 'STANDARD': return 'STANDARD'
     case 'CHOICE': return 'URL_TOKEN'
@@ -48,6 +50,8 @@ export function createConnector(providerId: string, name: string | undefined, co
   switch (connectorType) {
     case 'MOCK':
       return new MockConnector(providerId, name)
+    case 'AIRHUB':
+      return new AirHubConnector(providerId) as unknown as IProviderConnector
     case 'STANDARD':
       return new StandardProviderConnector({
         providerId, name,

@@ -130,6 +130,7 @@ export function isTemplateDrivenProvider(provider: {
   providerTemplateId?: string | null
 }): boolean {
   // adapterStrategy is the primary signal — explicit non-template strategies must be respected
+  if (provider.adapterStrategy === 'AIRHUB') return false // AirHub uses dedicated connector
   if (provider.adapterStrategy === 'TEMPLATE') return true
   if (provider.adapterStrategy && !['TEMPLATE', 'MOCK'].includes(provider.adapterStrategy)) return false
   if (provider.providerTemplateId) return true
