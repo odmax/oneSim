@@ -353,6 +353,7 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     if (['POST', 'PUT', 'PATCH'].includes(ep.method.toUpperCase())) {
       fetchOpts.body = JSON.stringify(body)
     }
+    console.log(`[AIRHUB_FINAL_HEADERS] capability=${capability} headerNames=${Object.keys(headers).join(',')} hasAuthorization=${!!headers['Authorization']} scheme=${headers['Authorization'] ? headers['Authorization'].split(' ')[0] : 'none'}`)
     const result = await rawFetch(url, fetchOpts)
     const responsePreview = result.data ? JSON.stringify(result.data).substring(0, 300) : ''
     if (result.error) {
