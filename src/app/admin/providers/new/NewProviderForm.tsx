@@ -157,7 +157,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
     setField('suspendPath', t.defaultSuspendPath || '')
     setField('resumePath', t.defaultResumePath || '')
     setField('responseListKey', t.defaultResponseListKey || '')
-    setField('tokenPlacement', t.tokenPlacement || 'URL_PATH')
+    setField('tokenPlacement', t.tokenPlacement || 'BEARER_HEADER')
 
     // Field mappings get stored as JSON — the edit form handles it
     if (t.defaultFieldMappings && typeof t.defaultFieldMappings === 'object') {

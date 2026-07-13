@@ -176,7 +176,7 @@ export class TemplateProviderAdapter implements ProviderAdapter {
         this.token = decryptToken(provider.apiToken) || null
       } catch { this.token = null }
     }
-    console.log(`[TEMPLATE_ADAPTER_CONFIG] code=${provider.code} configKeys=${Object.keys(this.config).join(',')} partnerCode=${this.config.partnerCode} flag=${this.config.flag} tokenPresent=${!!this.token} tokenPlacement=${this.tokenPlacement}`)
+    console.log(`[TEMPLATE_ADAPTER_CONFIG] code=${provider.code} configKeys=${Object.keys(this.config).join(',')} partnerCode=${this.config.partnerCode} flag=${this.config.flag} tokenPresent=${!!this.token} tokenPlacement=${provider.tokenPlacement}`)
   }
 
   private get endpointMappings(): Record<string, string> | null {
