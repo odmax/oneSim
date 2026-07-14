@@ -19,9 +19,11 @@ export function detectUrlMismatch(
   apiBaseUrl: string | null | undefined,
   authUrl: string | null | undefined,
 ): { hasMismatch: boolean; message: string } {
-  const urls = [apiBaseUrl, authUrl].filter(Boolean)
-  const stagingUrls = urls.filter(u => u?.includes('staging') || u?.includes('stg-'))
-  const prodMismatch = environment === 'production' && stagingUrls.length > 0
+  // Compare upstream environment (config.upstreamEnvironment) vs actual URLs
+  // Only warn when production upstream uses a staging host
+  const urls = [apiBaseUrl, authUrl].filter(Boolean) as string[]
+  const stagingUrls = urls.filter(u => u.includes('staging') || u.includes('stg-'))
+  const prodMismatch = stagingUrls.length > 0
 
   if (prodMismatch) {
     const stagingFields = [
@@ -30,7 +32,7 @@ export function detectUrlMismatch(
     ].filter(Boolean).join(', ')
     return {
       hasMismatch: true,
-      message: `Production environment detected but ${stagingFields} points to staging. This provider is not production-ready.`,
+      message: `${stagingFields} points to a staging host. This may not be production-ready.`,
     }
   }
 

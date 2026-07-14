@@ -5,7 +5,7 @@ async function main() {
   const p = new PrismaClient()
   const airhub = await p.provider.findFirst({
     where: { code: 'AIRHUB' },
-    select: { id: true, name: true, code: true, adapterStrategy: true, tokenPlacement: true, apiBaseUrl: true, authUrl: true, apiToken: true, config: true, requestMappings: true },
+    select: { id: true, name: true, code: true, adapterStrategy: true, tokenPlacement: true, apiBaseUrl: true, authUrl: true, apiToken: true, environment: true, config: true, requestMappings: true },
   })
 
   if (!airhub) { console.log('ERROR: AirHub not found'); process.exit(1) }
@@ -34,45 +34,51 @@ async function main() {
     update.authUrl = '/api/Authentication/UserLogin'
   }
 
-  // Ensure GET_PLANS countryCode is ""
+  // Fix GET_PLANS mappings
   const currentRM = airhub.requestMappings || {}
-  const plansMapping = (currentRM.GET_PLANS || {})
+  const plansMapping = currentRM.GET_PLANS || {}
   if (plansMapping.countryCode !== '{{config.countryCode|}}') {
-    changes.push('GET_PLANS countryCode → "" empty string default')
+    changes.push('GET_PLANS countryCode → "" default')
     update.requestMappings = {
       ...currentRM,
-      GET_PLANS: {
-        ...plansMapping,
-        countryCode: '{{config.countryCode|}}',
-      },
+      GET_PLANS: { ...plansMapping, countryCode: '{{config.countryCode|}}' },
     }
   }
 
+  // Fix config: upstreamEnvironment, countryCode, remove stale keys
   const config = airhub.config || {}
-  if (config.countryCode !== '') {
-    changes.push(`config.countryCode: "${config.countryCode}" → ""`)
-    update.config = { ...config, countryCode: '' }
-  }
+  const cleaned = { ...config }
+  delete cleaned.providerMode
+  delete cleaned.templateDriven
+  delete cleaned._productionUrlPending
+  delete cleaned._setupVia
+  delete cleaned._note
 
-  // Remove stale template metadata
-  if (config.providerMode || config.templateDriven) {
-    const cleaned = { ...config }
-    delete cleaned.providerMode
-    delete cleaned.templateDriven
-    update.config = cleaned
-    changes.push('Removed stale providerMode/templateDriven')
+  if (!cleaned.upstreamEnvironment) {
+    cleaned.upstreamEnvironment = 'production'
+    changes.push('config.upstreamEnvironment → production')
   }
+  if (cleaned.authEnvironmentAtAuth !== cleaned.upstreamEnvironment) {
+    cleaned.authEnvironmentAtAuth = cleaned.upstreamEnvironment
+  }
+  if (cleaned.countryCode !== '') {
+    cleaned.countryCode = ''
+    changes.push('config.countryCode → ""')
+  }
+  update.config = cleaned
 
   const hasToken = !!airhub.apiToken
   console.log(DRY_RUN ? 'DRY RUN' : 'APPLY MODE')
   console.log(`Provider: ${airhub.name} (${airhub.id})`)
+  console.log(`  environment: ${airhub.environment}`)
   console.log(`  adapterStrategy: ${airhub.adapterStrategy}`)
   console.log(`  tokenPlacement: ${airhub.tokenPlacement}`)
   console.log(`  apiBaseUrl: ${airhub.apiBaseUrl}`)
   console.log(`  authUrl: ${airhub.authUrl}`)
   console.log(`  tokenStored: ${hasToken}`)
-  console.log(`  config.countryCode: "${config.countryCode}"`)
-  console.log(`  GET_PLANS.countryCode template: ${plansMapping.countryCode}`)
+  console.log(`  upstreamEnvironment: ${cleaned.upstreamEnvironment}`)
+  console.log(`  countryCode: "${cleaned.countryCode}"`)
+  console.log(`  providerMode removed: ${!!config.providerMode}`)
   console.log(`  Changes: ${changes.length > 0 ? changes.join('; ') : 'none needed'}`)
 
   if (DRY_RUN) {

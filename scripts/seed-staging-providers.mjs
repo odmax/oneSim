@@ -36,7 +36,7 @@ const templates = [
       connectorType: 'STANDARD',
       authType: 'credentials',
       tokenPlacement: 'BEARER_HEADER',
-      defaultBaseUrl: 'https://staging-api.airhub.com/v1',   // example — confirm with provider
+      defaultBaseUrl: 'https://api.airhubapp.com',
       defaultAuthUrl: '/api/Authentication/UserLogin',
       defaultPlanListPath: '/api/ESIM/GetPlanInformation',
       defaultActivationPath: '/api/ESIM/PurchaseEsim',
@@ -61,7 +61,7 @@ const templates = [
       },
       requestMappings: {
         AUTH_LOGIN: { userName: '{{username}}', password: '{{password}}' },
-        GET_PLANS: { partnerCode: '{{auth.partnerCode}}', flag: '{{config.flag|5}}', countryCode: '{{config.countryCode|US}}', multiplecountrycode: '{{config.multiplecountrycode}}' },
+        GET_PLANS: { partnerCode: '{{config.partnerCode}}', flag: '{{config.flag|6}}', countryCode: '{{config.countryCode|}}', multiplecountrycode: '{{config.multiplecountrycode|UK}}' },
         PURCHASE_ESIM: { partnerCode: '{{auth.partnerCode}}', planCode: '{{planCode}}', quantity: '1', email: '{{email}}' },
       },
       requiredConfigFields: [

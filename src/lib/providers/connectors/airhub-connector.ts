@@ -137,7 +137,13 @@ export class AirHubConnector {
       this.token = cleanToken
       return { success: true, token: cleanToken, tokenExpiry: tokenExpiry || undefined, partnerCode }
     } catch (e: any) {
-      const msg = e.name === 'AbortError' ? 'Auth timed out after 25s' : e.message
+      const causeCode = e?.cause?.code || ''
+      let msg: string
+      if (e.name === 'AbortError') msg = 'AirHub auth timed out after 25 seconds'
+      else if (causeCode === 'ENOTFOUND') msg = 'AirHub host not found (DNS failure)'
+      else if (causeCode === 'ECONNREFUSED') msg = 'AirHub refused the connection'
+      else if (causeCode?.includes('TLS') || causeCode?.includes('CERT')) msg = 'TLS connection to AirHub failed'
+      else msg = `AirHub auth failed: ${e.message?.substring(0, 100)}`
       console.log(`[AIRHUB_AUTH_ERROR] ${msg}`)
       await prisma.provider.update({
         where: { id: this.providerId },
