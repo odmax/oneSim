@@ -42,7 +42,8 @@ export class AirHubConnector implements IProviderConnector {
       }
 
       const respKeys = Object.keys(data)
-      console.log(`[AIRHUB_AUTH_RESPONSE] httpStatus=${response.status} isSuccess=${data.isSuccess} responseKeys=${respKeys.join(',')} tokenFound=${!!(data.token || data.data?.token)}`)
+      const dataKeys = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
+      console.log(`[AIRHUB_AUTH_RESPONSE] httpStatus=${response.status} isSuccess=${data.isSuccess} topKeys=${respKeys.join(',')} dataKeys=${dataKeys.join(',')} tokenSource=${data.token?'token':data.accessToken?'accessToken':data.data?.token?'data.token':'unknown'}`)
 
       if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `AirHub auth failed: HTTP ${response.status}` } }
       if (data.isSuccess === false) return { success: false, error: { code: 'AUTH_REJECTED', message: `AirHub rejected: ${data.message || 'unknown'}` } }
@@ -58,7 +59,7 @@ export class AirHubConnector implements IProviderConnector {
         where: { id: this.providerId },
         data: {
           apiToken: encryptToken(cleanToken),
-          tokenPlacement: 'HEADER',
+          tokenPlacement: provider.tokenPlacement || 'BEARER_HEADER',
           lastSuccessfulConnection: new Date(),
           lastError: null,
           errorCount: 0,
@@ -191,7 +192,11 @@ export class AirHubConnector implements IProviderConnector {
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
     const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/GetPlanInformation`
     const body = { partnerCode, flag, countryCode, multiplecountrycode }
+    const hasToken = !!this.token
+    const tokenLooksValid = !!this.token && this.token.length > 20
+    const hasBearerPrefix = !!(this.token && this.token.startsWith('Bearer '))
     console.log(`[AIRHUB_GET_PLANS_REQUEST] url=${url} partnerCode=${partnerCode} flag=${flag}`)
+    console.log(`[AIRHUB_GET_PLANS_AUTH] tokenAvailable=${hasToken} tokenLength=${this.token?.length||0} tokenLooksValid=${tokenLooksValid} hasBearerPrefix=${hasBearerPrefix} hasAuthorization=true scheme=Bearer`)
 
     try {
       const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 25000)
