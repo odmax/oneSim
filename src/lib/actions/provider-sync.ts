@@ -6,7 +6,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
 import { generateSku, generatePackageCode } from '@/lib/packages/resolve-package'
-import { buildAdapter } from '@/lib/providers/adapter-manager'
+import { buildAdapter, isTemplateDrivenProvider } from '@/lib/providers/adapter-manager'
 import { normalizePlan } from '@/lib/providers/plan-utils'
 import type { ProviderPlan } from '@/lib/providers/adapter-types'
 import { buildComparableKey, computeEffectiveCost } from '@/lib/packages/cheapest-utils'
@@ -86,8 +86,8 @@ export async function syncProviderPlans(providerId: string) {
 
     console.log(`[TRACE_SYNC] step=syncProviderPlans code=${provider.code} strategy=${provider.adapterStrategy} adapterClass=${adapter.constructor.name} connectorClass=${(adapter as any).connector?.constructor?.name || 'none'}`)
 
-    // Log sync context for debugging
-    const isTemplateDriven = !!(provider.providerTemplateId || provider.adapterStrategy === 'TEMPLATE')
+    // Log sync context — use actual routing, not legacy assumptions
+    const isTemplateDriven = isTemplateDrivenProvider(provider)
     const ep = (provider.endpointMappings || {}) as Record<string, string>
     const rm = (provider.requestMappings || {}) as Record<string, any>
     console.log(`[syncProviderPlans] provider=${provider.code} strategy=${provider.adapterStrategy} isTemplate=${isTemplateDriven} GET_PLANS_EP=${ep.GET_PLANS || '(not set)'} hasRM_GET_PLANS=${!!rm.GET_PLANS}`)
