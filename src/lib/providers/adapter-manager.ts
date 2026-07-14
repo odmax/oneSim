@@ -168,6 +168,7 @@ export async function buildAdapter(provider: {
 }): Promise<ProviderAdapter | null> {
   // Template-driven providers use TemplateProviderAdapter
   if (isTemplateDrivenProvider(provider)) {
+    console.log(`[TRACE_SYNC] step=buildAdapter code=${provider.code} path=TemplateProviderAdapter isTemplateDriven=true`)
     console.log(`[buildAdapter] Using TemplateProviderAdapter for ${provider.name} (${provider.id}, strategy=${provider.adapterStrategy})`)
     return new TemplateProviderAdapter(provider)
   }

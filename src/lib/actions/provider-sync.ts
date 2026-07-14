@@ -84,6 +84,8 @@ export async function syncProviderPlans(providerId: string) {
     const adapter = await buildAdapter(provider)
     if (!adapter) return { error: `No adapter available for provider type "${provider.type}" / strategy "${strategy}"`, diagnostics }
 
+    console.log(`[TRACE_SYNC] step=syncProviderPlans code=${provider.code} strategy=${provider.adapterStrategy} adapterClass=${adapter.constructor.name} connectorClass=${(adapter as any).connector?.constructor?.name || 'none'}`)
+
     // Log sync context for debugging
     const isTemplateDriven = !!(provider.providerTemplateId || provider.adapterStrategy === 'TEMPLATE')
     const ep = (provider.endpointMappings || {}) as Record<string, string>

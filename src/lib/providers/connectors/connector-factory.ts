@@ -85,6 +85,7 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
   if (!provider) return null
 
   const connectorType = resolveConnectorType(provider.adapterStrategy, provider.type)
+  console.log(`[TRACE_SYNC] step=buildConnectorFromProvider code=${provider.code} strategy=${provider.adapterStrategy} type=${provider.type} resolvedConnector=${connectorType}`)
   console.log(`[buildConnector] provider=${provider.name}(${provider.id}) type=${provider.type} strategy=${provider.adapterStrategy} connectorType=${connectorType}`)
 
   // Merge fieldMappings from provider.fieldMappings and provider.config?.fieldMappings
