@@ -51,7 +51,7 @@ export function createConnector(providerId: string, name: string | undefined, co
     case 'MOCK':
       return new MockConnector(providerId, name)
     case 'AIRHUB':
-      return new AirHubConnector(providerId) as unknown as IProviderConnector
+      return new AirHubConnector(providerId)
     case 'STANDARD':
       return new StandardProviderConnector({
         providerId, name,
