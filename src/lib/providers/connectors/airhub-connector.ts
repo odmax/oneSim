@@ -203,11 +203,26 @@ export class AirHubConnector implements IProviderConnector {
       })
       clearTimeout(timeout)
       const text = await response.text()
-      let data: any; try { data = JSON.parse(text) } catch { return { success: false, error: { code: 'NON_JSON', message: 'Non-JSON response' } } }
+      const contentType = response.headers.get('content-type') || ''
+
+      console.log(`[AIRHUB_GET_PLANS_HTTP] status=${response.status} statusText=${response.statusText} contentType=${contentType} bodyLength=${text.length}`)
+      if (text.length < 500) console.log(`[AIRHUB_GET_PLANS_HTTP] body=${text.substring(0, 500)}`)
+
+      let data: any
+      try {
+        data = JSON.parse(text)
+      } catch (parseErr: any) {
+        console.log(`[AIRHUB_GET_PLANS_ERROR] JSON parse failed: ${parseErr.message}`)
+        const preview = text.substring(0, 300)
+        if (preview.trim().startsWith('<')) {
+          return { success: false, error: { code: 'HTML_RESPONSE', message: `AirHub returned HTML instead of JSON. Preview: ${preview}` } }
+        }
+        return { success: false, error: { code: 'NON_JSON', message: `AirHub returned non-JSON response. Status=${response.status} Preview: ${preview}` } }
+      }
 
       console.log(`[AIRHUB_GET_PLANS_RESPONSE] status=${response.status} isSuccess=${data.isSuccess}`)
-      if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `AirHub returned ${response.status}` } }
-      if (data.isSuccess === false) return { success: false, error: { code: 'PROVIDER_REJECTED', message: `AirHub rejected: ${data.message || ''}` } }
+      if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `AirHub GET_PLANS returned ${response.status}: ${text.substring(0, 200)}` } }
+      if (data.isSuccess === false) return { success: false, error: { code: 'PROVIDER_REJECTED', message: `AirHub rejected GET_PLANS: ${data.message || 'isSuccess=false'}` } }
 
       const plans = data.getInformation || []
       console.log(`[AIRHUB_SYNC_RESULT] fetched=${plans.length}`)
@@ -257,6 +272,7 @@ export class AirHubConnector implements IProviderConnector {
         })),
       }
     } catch (e: any) {
+      console.log(`[AIRHUB_GET_PLANS_ERROR] name=${e.name} message=${e.message?.substring(0,200)} causeCode=${e.cause?.code||''} causeMessage=${e.cause?.message?.substring(0,200)||''}`)
       return { success: false, error: { code: 'NETWORK_ERROR', message: e.message?.substring(0, 200) } }
     }
   }
