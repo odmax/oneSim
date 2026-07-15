@@ -184,10 +184,18 @@ export class AirHubConnector implements IProviderConnector {
 
     const config = (provider.config as any) || {}
     const partnerCode = config.partnerCode || 200652387
-    const flag = config.flag || 6
+    const flag = config.flag ?? 6
     const countryCode = config.countryCode ?? ''
-    const multiplecountrycode = config.multiplecountrycode || ['UK']
-    if (!multiplecountrycode?.length) return { success: false, error: { code: 'MISSING_CONFIG', message: 'multiplecountrycode empty' } }
+    const multiplecountrycode = Array.isArray(config.multiplecountrycode) ? config.multiplecountrycode : ['UK']
+
+    // Flag-aware validation
+    if ([0, 1, 2, 4].includes(flag)) {
+      // Allow empty countryCode and empty multiplecountrycode
+    } else if (flag === 5) {
+      if (!countryCode) return { success: false, error: { code: 'MISSING_CONFIG', message: 'countryCode required for flag=5' } }
+    } else if (flag === 6) {
+      if (!multiplecountrycode.length) return { success: false, error: { code: 'MISSING_CONFIG', message: 'multiplecountrycode required for flag=6' } }
+    }
 
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
     const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/GetPlanInformation`
