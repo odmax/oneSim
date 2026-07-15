@@ -203,6 +203,7 @@ export class AirHubConnector implements IProviderConnector {
     const hasToken = !!this.token
     const tokenLooksValid = !!this.token && this.token.length > 20
     const hasBearerPrefix = !!(this.token && this.token.startsWith('Bearer '))
+    console.log(`[AIRHUB_GET_PLANS_BODY] partnerCode=${partnerCode} flag=${flag} countryCode="${countryCode}" multiplecountrycode=${JSON.stringify(multiplecountrycode)}`)
     console.log(`[AIRHUB_GET_PLANS_REQUEST] url=${url} partnerCode=${partnerCode} flag=${flag}`)
     console.log(`[AIRHUB_GET_PLANS_AUTH] tokenAvailable=${hasToken} tokenLength=${this.token?.length||0} tokenLooksValid=${tokenLooksValid} hasBearerPrefix=${hasBearerPrefix} hasAuthorization=true scheme=Bearer`)
 

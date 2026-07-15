@@ -34,15 +34,13 @@ async function main() {
     update.authUrl = '/api/Authentication/UserLogin'
   }
 
-  // Fix GET_PLANS mappings
+  // Fix GET_PLANS mappings — AirHubConnector reads from config, not requestMappings
   const currentRM = airhub.requestMappings || {}
-  const plansMapping = currentRM.GET_PLANS || {}
-  if (plansMapping.countryCode !== '{{config.countryCode|}}') {
-    changes.push('GET_PLANS countryCode → "" default')
-    update.requestMappings = {
-      ...currentRM,
-      GET_PLANS: { ...plansMapping, countryCode: '{{config.countryCode|}}' },
-    }
+  if (currentRM.GET_PLANS) {
+    const cleaned = { ...currentRM }
+    delete cleaned.GET_PLANS
+    update.requestMappings = cleaned
+    changes.push('Removed stale requestMappings.GET_PLANS')
   }
 
   // Fix config: upstreamEnvironment, countryCode, remove stale keys
