@@ -65,6 +65,14 @@ async function main() {
     cleaned.countryCode = ''
     changes.push('config.countryCode → ""')
   }
+  if (cleaned.flag !== 0) {
+    cleaned.flag = 0
+    changes.push('config.flag → 0')
+  }
+  if (!Array.isArray(cleaned.multiplecountrycode) || cleaned.multiplecountrycode.length > 0) {
+    cleaned.multiplecountrycode = []
+    changes.push('config.multiplecountrycode → []')
+  }
   update.config = cleaned
 
   const hasToken = !!airhub.apiToken
