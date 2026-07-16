@@ -3,6 +3,21 @@ import { prisma } from '@/lib/prisma'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult } from './connector-interface'
 
+function isTokenExpired(expiry: unknown, bufferMs = 5 * 60 * 1000): boolean {
+  if (!expiry) return false
+  let expiryMs: number
+  if (typeof expiry === 'number') {
+    expiryMs = expiry * 1000
+  } else if (typeof expiry === 'string') {
+    const parsed = Date.parse(expiry)
+    if (isNaN(parsed)) return false
+    expiryMs = parsed
+  } else {
+    return false
+  }
+  return Date.now() >= expiryMs - bufferMs
+}
+
 export class AirHubConnector implements IProviderConnector {
   readonly providerId: string
   readonly name: string = 'AirHub'
@@ -11,6 +26,21 @@ export class AirHubConnector implements IProviderConnector {
   constructor(providerId: string, token?: string | null) {
     this.providerId = providerId
     this.token = token || null
+  }
+
+  private async refreshTokenFromConfig(): Promise<boolean> {
+    try {
+      const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { config: true } })
+      if (!provider) return false
+      const cfg = (provider.config as any) || {}
+      const username = cfg.username
+      const password = cfg.password
+      if (!username || !password) return false
+      const result = await this.authenticate({ username, password })
+      return result.success
+    } catch {
+      return false
+    }
   }
 
   async authenticate(credentials: Record<string, string>): Promise<ConnectorResult<{ token: string; accountInfo?: any }>> {
@@ -67,6 +97,7 @@ export class AirHubConnector implements IProviderConnector {
             ...((provider.config as any) || {}),
             lastAuthenticatedAt: new Date().toISOString(),
             authEnvironmentAtAuth: ((provider.config as any)?.upstreamEnvironment) || provider.environment || 'production',
+            tokenExpiry: tokenExpiry || null,
           },
         },
       })
@@ -174,13 +205,11 @@ export class AirHubConnector implements IProviderConnector {
   }
 
   async syncPlans(): Promise<ConnectorResult<ConnectorPlan[]>> {
-    // Load token + provider
     const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiBaseUrl: true, apiToken: true, config: true } })
     if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }
     if (!this.token && provider.apiToken) {
       try { this.token = decryptToken(provider.apiToken) || null } catch {}
     }
-    if (!this.token) return { success: false, error: { code: 'NO_TOKEN', message: 'No token. Authenticate first.' } }
 
     const config = (provider.config as any) || {}
     const partnerCode = config.partnerCode || 200652387
@@ -190,11 +219,22 @@ export class AirHubConnector implements IProviderConnector {
 
     // Flag-aware validation
     if ([0, 1, 2, 4].includes(flag)) {
-      // Allow empty countryCode and empty multiplecountrycode
+      // Allow empty
     } else if (flag === 5) {
       if (!countryCode) return { success: false, error: { code: 'MISSING_CONFIG', message: 'countryCode required for flag=5' } }
     } else if (flag === 6) {
       if (!multiplecountrycode.length) return { success: false, error: { code: 'MISSING_CONFIG', message: 'multiplecountrycode required for flag=6' } }
+    }
+
+    // Token refresh if missing or expired
+    const tokenExpiry = config.tokenExpiry
+    if (!this.token || (tokenExpiry && isTokenExpired(tokenExpiry))) {
+      const reason = !this.token ? 'missing' : 'expired'
+      const refreshed = await this.refreshTokenFromConfig()
+      console.log(`[AIRHUB_TOKEN_REFRESH] reason=${reason} success=${refreshed}`)
+      if (!refreshed && !this.token) {
+        return { success: false, error: { code: 'NO_TOKEN', message: 'No token. Authenticate first.' } }
+      }
     }
 
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
@@ -207,88 +247,102 @@ export class AirHubConnector implements IProviderConnector {
     console.log(`[AIRHUB_GET_PLANS_REQUEST] url=${url} partnerCode=${partnerCode} flag=${flag}`)
     console.log(`[AIRHUB_GET_PLANS_AUTH] tokenAvailable=${hasToken} tokenLength=${this.token?.length||0} tokenLooksValid=${tokenLooksValid} hasBearerPrefix=${hasBearerPrefix} hasAuthorization=true scheme=Bearer`)
 
-    try {
-      const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 25000)
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      })
-      clearTimeout(timeout)
-      const text = await response.text()
-      const contentType = response.headers.get('content-type') || ''
-
-      console.log(`[AIRHUB_GET_PLANS_HTTP] status=${response.status} statusText=${response.statusText} contentType=${contentType} bodyLength=${text.length}`)
-      if (text.length < 500) console.log(`[AIRHUB_GET_PLANS_HTTP] body=${text.substring(0, 500)}`)
-
-      let data: any
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        data = JSON.parse(text)
-      } catch (parseErr: any) {
-        console.log(`[AIRHUB_GET_PLANS_ERROR] JSON parse failed: ${parseErr.message}`)
-        const preview = text.substring(0, 300)
-        if (preview.trim().startsWith('<')) {
-          return { success: false, error: { code: 'HTML_RESPONSE', message: `AirHub returned HTML instead of JSON. Preview: ${preview}` } }
-        }
-        return { success: false, error: { code: 'NON_JSON', message: `AirHub returned non-JSON response. Status=${response.status} Preview: ${preview}` } }
-      }
+        const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 25000)
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+        clearTimeout(timeout)
+        const text = await response.text()
+        const contentType = response.headers.get('content-type') || ''
 
-      console.log(`[AIRHUB_GET_PLANS_RESPONSE] status=${response.status} isSuccess=${data.isSuccess}`)
-      if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `AirHub GET_PLANS returned ${response.status}: ${text.substring(0, 200)}` } }
-      if (data.isSuccess === false) return { success: false, error: { code: 'PROVIDER_REJECTED', message: `AirHub rejected GET_PLANS: ${data.message || 'isSuccess=false'}` } }
+        console.log(`[AIRHUB_GET_PLANS_HTTP] status=${response.status} statusText=${response.statusText} contentType=${contentType} bodyLength=${text.length}`)
+        if (text.length < 500) console.log(`[AIRHUB_GET_PLANS_HTTP] body=${text.substring(0, 500)}`)
 
-      const plans = data.getInformation || []
-      console.log(`[AIRHUB_SYNC_RESULT] fetched=${plans.length}`)
-
-      let created = 0, updated = 0, failed = 0
-      for (const plan of plans) {
-        const planCode = plan.planCode
-        if (!planCode) { failed++; continue }
-        try {
-          const cap = parseFloat(plan.capacity || '0')
-          const unit = (plan.capacityUnit || 'GB').toUpperCase()
-          const dataGB = unit === 'MB' ? Math.round((cap / 1024) * 100) / 100 : unit === 'KB' ? Math.round((cap / 1024 / 1024) * 100) / 100 : cap
-          const pkg = {
-            name: plan.planName || '',
-            dataGB: Math.max(0.01, dataGB || 0.01),
-            validityDays: parseInt(plan.validity || '30') || 30,
-            costPrice: plan.price || 0,
-            currency: plan.currency || 'USD',
-            country: plan.countryName || null,
-            region: plan.countryName || null,
-            planType: plan.planType || null,
-            providerPlanCode: planCode,
-            providerRawData: plan,
-            isAvailable: true,
+        // 401 on first attempt -> reauthenticate and retry once
+        if (response.status === 401 && attempt === 1) {
+          const refreshed = await this.refreshTokenFromConfig()
+          console.log(`[AIRHUB_TOKEN_REFRESH] reason=401 success=${refreshed}`)
+          if (refreshed) {
+            console.log(`[AIRHUB_GET_PLANS_RETRY] attempt=${attempt + 1} status=${response.status}`)
+            continue
           }
-          const existing = await prisma.providerPackage.findFirst({ where: { providerId: this.providerId, providerPlanId: planCode } })
-          if (existing) { await prisma.providerPackage.update({ where: { id: existing.id }, data: pkg }); updated++ }
-          else { await prisma.providerPackage.create({ data: { providerId: this.providerId, providerPlanId: planCode, ...pkg } }); created++ }
-        } catch { failed++ }
-      }
+          return { success: false, error: { code: 'HTTP_401', message: 'AirHub GET_PLANS returned 401 and reauthentication failed' } }
+        }
 
-      await prisma.provider.update({
-        where: { id: this.providerId },
-        data: { lastSyncAt: new Date(), lastSyncCount: plans.length, lastSyncResult: `${plans.length} fetched: ${created}c ${updated}u ${failed}f` },
-      }).catch(() => {})
+        let data: any
+        try {
+          data = JSON.parse(text)
+        } catch (parseErr: any) {
+          console.log(`[AIRHUB_GET_PLANS_ERROR] JSON parse failed: ${parseErr.message}`)
+          const preview = text.substring(0, 300)
+          if (preview.trim().startsWith('<')) {
+            return { success: false, error: { code: 'HTML_RESPONSE', message: `AirHub returned HTML instead of JSON. Preview: ${preview}` } }
+          }
+          return { success: false, error: { code: 'NON_JSON', message: `AirHub returned non-JSON response. Status=${response.status} Preview: ${preview}` } }
+        }
 
-      const resultPlans = await prisma.providerPackage.findMany({
-        where: { providerId: this.providerId },
-        select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, providerPlanCode: true, providerRawData: true },
-        take: 500,
-      })
-      return {
-        success: true,
-        data: resultPlans.map(p => ({
-          id: p.providerPlanCode || p.id, name: p.name, data_gb: p.dataGB, validity_days: p.validityDays,
-          price_usd: Number(p.costPrice), currency: p.currency, sku: p.providerPlanCode || '', raw_data: p.providerRawData || undefined,
-        })),
+        console.log(`[AIRHUB_GET_PLANS_RESPONSE] status=${response.status} isSuccess=${data.isSuccess}`)
+        if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `AirHub GET_PLANS returned ${response.status}: ${text.substring(0, 200)}` } }
+        if (data.isSuccess === false) return { success: false, error: { code: 'PROVIDER_REJECTED', message: `AirHub rejected GET_PLANS: ${data.message || 'isSuccess=false'}` } }
+
+        const plans = data.getInformation || []
+        console.log(`[AIRHUB_SYNC_RESULT] fetched=${plans.length}`)
+
+        let created = 0, updated = 0, failed = 0
+        for (const plan of plans) {
+          const planCode = plan.planCode
+          if (!planCode) { failed++; continue }
+          try {
+            const cap = parseFloat(plan.capacity || '0')
+            const unit = (plan.capacityUnit || 'GB').toUpperCase()
+            const dataGB = unit === 'MB' ? Math.round((cap / 1024) * 100) / 100 : unit === 'KB' ? Math.round((cap / 1024 / 1024) * 100) / 100 : cap
+            const pkg = {
+              name: plan.planName || '',
+              dataGB: Math.max(0.01, dataGB || 0.01),
+              validityDays: parseInt(plan.validity || '30') || 30,
+              costPrice: plan.price || 0,
+              currency: plan.currency || 'USD',
+              country: plan.countryName || null,
+              region: plan.countryName || null,
+              planType: plan.planType || null,
+              providerPlanCode: planCode,
+              providerRawData: plan,
+              isAvailable: true,
+            }
+            const existing = await prisma.providerPackage.findFirst({ where: { providerId: this.providerId, providerPlanId: planCode } })
+            if (existing) { await prisma.providerPackage.update({ where: { id: existing.id }, data: pkg }); updated++ }
+            else { await prisma.providerPackage.create({ data: { providerId: this.providerId, providerPlanId: planCode, ...pkg } }); created++ }
+          } catch { failed++ }
+        }
+
+        await prisma.provider.update({
+          where: { id: this.providerId },
+          data: { lastSyncAt: new Date(), lastSyncCount: plans.length, lastSyncResult: `${plans.length} fetched: ${created}c ${updated}u ${failed}f` },
+        }).catch(() => {})
+
+        const resultPlans = await prisma.providerPackage.findMany({
+          where: { providerId: this.providerId },
+          select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, providerPlanCode: true, providerRawData: true },
+          take: 500,
+        })
+        return {
+          success: true,
+          data: resultPlans.map(p => ({
+            id: p.providerPlanCode || p.id, name: p.name, data_gb: p.dataGB, validity_days: p.validityDays,
+            price_usd: Number(p.costPrice), currency: p.currency, sku: p.providerPlanCode || '', raw_data: p.providerRawData || undefined,
+          })),
+        }
+      } catch (e: any) {
+        console.log(`[AIRHUB_GET_PLANS_ERROR] name=${e.name} message=${e.message?.substring(0,200)} causeCode=${e.cause?.code||''} causeMessage=${e.cause?.message?.substring(0,200)||''}`)
+        return { success: false, error: { code: 'NETWORK_ERROR', message: e.message?.substring(0, 200) } }
       }
-    } catch (e: any) {
-      console.log(`[AIRHUB_GET_PLANS_ERROR] name=${e.name} message=${e.message?.substring(0,200)} causeCode=${e.cause?.code||''} causeMessage=${e.cause?.message?.substring(0,200)||''}`)
-      return { success: false, error: { code: 'NETWORK_ERROR', message: e.message?.substring(0, 200) } }
     }
+    return { success: false, error: { code: 'UNKNOWN', message: 'syncPlans exhausted retries' } }
   }
 
   // Stub methods — not yet implemented for AirHub
