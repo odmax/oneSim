@@ -9,6 +9,18 @@ export class MockConnector implements IProviderConnector {
     this.name = name || 'Mock Provider'
   }
 
+  async getTokenState(): Promise<import('./connector-interface').TokenState> {
+    return { tokenPresent: true, expiryPresent: false, expired: false, expiresSoon: false, tokenExpiry: null }
+  }
+
+  async ensureAuthenticated(): Promise<ConnectorResult<void>> {
+    return { success: true }
+  }
+
+  async refreshAuthentication(): Promise<boolean> {
+    return true
+  }
+
   async authenticate(_credentials: Record<string, string>): Promise<ConnectorResult<{ token: string; accountInfo?: any }>> {
     return { success: true, data: { token: 'mock-token', accountInfo: { env: 'mock' } } }
   }

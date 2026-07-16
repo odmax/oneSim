@@ -14,7 +14,8 @@
     "seed:dev": "node prisma/seed-dev.js",
     "deploy:safe": "bash scripts/deploy-safe.sh",
     "check:prod": "bash scripts/check-production.sh",
-    "seed:rakuten-template": "node scripts/seed-rakuten-template.mjs"
+    "seed:rakuten-template": "node scripts/seed-rakuten-template.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@next-auth/prisma-adapter": "^1.0.7",
@@ -47,6 +48,7 @@
     "tailwindcss": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.10"
   }
 }

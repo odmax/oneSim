@@ -6,6 +6,7 @@ import { registry } from '@/services/providerRegistry'
 import { buildConnectorFromProvider } from './connectors/connector-factory'
 import { decryptToken } from '@/lib/encryption'
 import type { IProviderConnector } from './connectors/connector-interface'
+import { getTokenState, ensureAuthenticated, refreshAuthentication } from './token-lifecycle'
 
 export function isProviderOperational(status: string): boolean {
   return status === 'ACTIVE' || status === 'DEGRADED' || status === 'TESTING'
@@ -19,6 +20,17 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
       const r = await connector.authenticate(credentials)
       if (!r.success) return { success: false, error: { code: r.error?.code || 'AUTH_FAILED', message: r.error?.message || 'Authentication failed' } }
       return { success: true, data: { token: r.data?.token || '', accountInfo: r.data?.accountInfo } }
+    },
+    getTokenState: async () => {
+      return await getTokenState(connector.providerId)
+    },
+    ensureAuthenticated: async () => {
+      const r = await ensureAuthenticated(connector.providerId)
+      if (!r.success) return { success: false, error: { code: 'AUTH_FAILED', message: r.error || 'Authentication failed' } }
+      return { success: true }
+    },
+    refreshAuthentication: async () => {
+      return await refreshAuthentication(connector.providerId)
     },
     getCredentialFields: () => [],
     getCapabilities: () => [],

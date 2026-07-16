@@ -125,3 +125,16 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
   console.log(`[CONNECTOR_CONFIG] code=${provider.code} hasConfig=${!!provider.config} configKeys=${Object.keys(provider.config || {}).join(',')} partnerCode=${(provider.config as any)?.partnerCode}`)
   return result
 }
+
+export async function getStoredCredentials(providerId: string): Promise<{ username: string; password: string } | null> {
+  const provider = await prisma.provider.findUnique({
+    where: { id: providerId },
+    select: { config: true },
+  })
+  if (!provider) return null
+  const cfg = (provider.config as any) || {}
+  const username = cfg.username
+  const password = cfg.password
+  if (!username || !password) return null
+  return { username, password }
+}

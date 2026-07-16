@@ -1,7 +1,7 @@
 import { encryptToken, decryptToken } from '@/lib/encryption'
 import { prisma } from '@/lib/prisma'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState } from './connector-interface'
 
 function isTokenExpired(expiry: unknown, bufferMs = 5 * 60 * 1000): boolean {
   if (!expiry) return false
@@ -41,6 +41,42 @@ export class AirHubConnector implements IProviderConnector {
     } catch {
       return false
     }
+  }
+
+  async getTokenState(): Promise<TokenState> {
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiToken: true, config: true } })
+    if (!provider) return { tokenPresent: false, expiryPresent: false, expired: false, expiresSoon: false, tokenExpiry: null }
+    const cfg = (provider.config as any) || {}
+    const tokenExpiry = cfg.tokenExpiry || null
+    const tokenPresent = !!this.token || !!provider.apiToken
+    let expired = false
+    let expiresSoon = false
+    if (tokenExpiry) {
+      if (typeof tokenExpiry === 'number') {
+        expired = Date.now() >= tokenExpiry * 1000
+        expiresSoon = !expired && Date.now() >= (tokenExpiry * 1000) - 5 * 60 * 1000
+      } else if (typeof tokenExpiry === 'string') {
+        const parsed = Date.parse(tokenExpiry)
+        if (!isNaN(parsed)) {
+          expired = Date.now() >= parsed
+          expiresSoon = !expired && Date.now() >= parsed - 5 * 60 * 1000
+        }
+      }
+    }
+    return { tokenPresent, expiryPresent: !!tokenExpiry, expired, expiresSoon, tokenExpiry }
+  }
+
+  async ensureAuthenticated(): Promise<ConnectorResult<void>> {
+    const state = await this.getTokenState()
+    if (state.tokenPresent && !state.expired && !state.expiresSoon) return { success: true }
+    const refreshed = await this.refreshTokenFromConfig()
+    if (refreshed) return { success: true }
+    if (this.token) return { success: true }
+    return { success: false, error: { code: 'NO_TOKEN', message: 'No token. Authenticate first.' } }
+  }
+
+  async refreshAuthentication(): Promise<boolean> {
+    return this.refreshTokenFromConfig()
   }
 
   async authenticate(credentials: Record<string, string>): Promise<ConnectorResult<{ token: string; accountInfo?: any }>> {

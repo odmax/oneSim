@@ -140,11 +140,22 @@ export function sanitizeBodyPreview(body: string | null | undefined, maxLen = 30
   return escaped.substring(0, maxLen)
 }
 
+export interface TokenState {
+  tokenPresent: boolean
+  expiryPresent: boolean
+  expired: boolean
+  expiresSoon: boolean
+  tokenExpiry: unknown
+}
+
 export interface IProviderConnector {
   readonly providerId: string
   readonly name: string
 
   authenticate(credentials: Record<string, string>): Promise<ConnectorResult<{ token: string; accountInfo?: any }>>
+  getTokenState(): Promise<TokenState>
+  ensureAuthenticated(): Promise<ConnectorResult<void>>
+  refreshAuthentication(): Promise<boolean>
   testConnection(): Promise<ConnectorResult<{ message: string; latencyMs?: number }>>
   diagnoseConnection(): Promise<ConnectorResult<DiagnosticInfo>>
   syncPlans(): Promise<ConnectorResult<ConnectorPlan[]>>

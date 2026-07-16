@@ -111,6 +111,9 @@ export interface ProviderAdapter {
   readonly name: string
 
   authenticate(credentials: Record<string, string>): Promise<ProviderResult<AuthResult>>
+  getTokenState(): Promise<{ tokenPresent: boolean; expiryPresent: boolean; expired: boolean; expiresSoon: boolean }>
+  ensureAuthenticated(): Promise<ProviderResult<void>>
+  refreshAuthentication(): Promise<boolean>
 
   getCredentialFields(): CredentialField[]
 

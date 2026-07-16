@@ -1,4 +1,5 @@
 import { decryptToken } from '@/lib/encryption'
+import { prisma } from '@/lib/prisma'
 import type {
   ProviderAdapter, ProviderResult, ProviderPlan,
   ActivateESIMParams, ActivateESIMResult, UsageResult, RateResult,
@@ -64,6 +65,40 @@ export class GenericProtocolAdapter implements ProviderAdapter {
 
   setApiKey(token: string): void {
     this.token = token
+  }
+
+  async getTokenState(): Promise<{ tokenPresent: boolean; expiryPresent: boolean; expired: boolean; expiresSoon: boolean }> {
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiToken: true, config: true } })
+    if (!provider) return { tokenPresent: false, expiryPresent: false, expired: false, expiresSoon: false }
+    const cfg = (provider.config as any) || {}
+    const tokenExpiry = cfg.tokenExpiry || null
+    const tokenPresent = !!provider.apiToken
+    let expired = false
+    let expiresSoon = false
+    if (tokenExpiry) {
+      if (typeof tokenExpiry === 'number') {
+        expired = Date.now() >= tokenExpiry * 1000
+        expiresSoon = !expired && Date.now() >= (tokenExpiry * 1000) - 5 * 60 * 1000
+      } else if (typeof tokenExpiry === 'string') {
+        const parsed = Date.parse(tokenExpiry)
+        if (!isNaN(parsed)) {
+          expired = Date.now() >= parsed
+          expiresSoon = !expired && Date.now() >= parsed - 5 * 60 * 1000
+        }
+      }
+    }
+    return { tokenPresent, expiryPresent: !!tokenExpiry, expired, expiresSoon }
+  }
+
+  async ensureAuthenticated(): Promise<ProviderResult<void>> {
+    const state = await this.getTokenState()
+    if (state.tokenPresent && !state.expired && !state.expiresSoon) return { success: true }
+    if (this.token) return { success: true }
+    return { success: false, error: { code: 'NO_TOKEN', message: 'No token. Authenticate first.' } }
+  }
+
+  async refreshAuthentication(): Promise<boolean> {
+    return false
   }
 
   getCredentialFields(): CredentialField[] {

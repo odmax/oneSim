@@ -1204,3 +1204,13 @@ model ProviderAuditNote {
   @@index([auditId])
   @@map("provider_audit_notes")
 }
+
+model MaintenanceJob {
+  jobKey    String    @id
+  status    String
+  startedAt DateTime  @default(now())
+  finishedAt DateTime?
+  error     String?
+
+  @@map("maintenance_jobs")
+}

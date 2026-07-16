@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState } from './connector-interface'
 import { classifyError } from './connector-interface'
 
 interface RestCatalogConfig {
@@ -122,6 +122,19 @@ export class RestCatalogConnector implements IProviderConnector {
     this.providerId = providerId
     this.name = name || 'REST Catalog'
     this.config = config
+  }
+
+  async getTokenState(): Promise<TokenState> {
+    return { tokenPresent: !!this.config.apiToken, expiryPresent: false, expired: false, expiresSoon: false, tokenExpiry: null }
+  }
+
+  async ensureAuthenticated(): Promise<ConnectorResult<void>> {
+    if (this.config.apiToken) return { success: true }
+    return { success: false, error: { code: 'NO_TOKEN', message: 'No token. Authenticate first.' } }
+  }
+
+  async refreshAuthentication(): Promise<boolean> {
+    return false
   }
 
   protected get headers(): Record<string, string> {

@@ -179,6 +179,47 @@ export class TemplateProviderAdapter implements ProviderAdapter {
     console.log(`[TEMPLATE_ADAPTER_CONFIG] code=${provider.code} configKeys=${Object.keys(this.config).join(',')} partnerCode=${this.config.partnerCode} flag=${this.config.flag} tokenPresent=${!!this.token} tokenPlacement=${provider.tokenPlacement}`)
   }
 
+  async getTokenState(): Promise<{ tokenPresent: boolean; expiryPresent: boolean; expired: boolean; expiresSoon: boolean }> {
+    const tokenExpiry = this.config?.tokenExpiry || null
+    const tokenPresent = !!this.token
+    let expired = false
+    let expiresSoon = false
+    if (tokenExpiry) {
+      if (typeof tokenExpiry === 'number') {
+        expired = Date.now() >= tokenExpiry * 1000
+        expiresSoon = !expired && Date.now() >= (tokenExpiry * 1000) - 5 * 60 * 1000
+      } else if (typeof tokenExpiry === 'string') {
+        const parsed = Date.parse(tokenExpiry)
+        if (!isNaN(parsed)) {
+          expired = Date.now() >= parsed
+          expiresSoon = !expired && Date.now() >= parsed - 5 * 60 * 1000
+        }
+      }
+    }
+    return { tokenPresent, expiryPresent: !!tokenExpiry, expired, expiresSoon }
+  }
+
+  async ensureAuthenticated(): Promise<ProviderResult<void>> {
+    const state = await this.getTokenState()
+    if (state.tokenPresent && !state.expired && !state.expiresSoon) return { success: true }
+    const username = this.config?.username
+    const password = this.config?.password
+    if (username && password) {
+      const result = await this.authenticate({ username, password })
+      if (result.success) return { success: true }
+    }
+    if (this.token) return { success: true }
+    return { success: false, error: { code: 'NO_TOKEN', message: 'No token. Authenticate first.' } }
+  }
+
+  async refreshAuthentication(): Promise<boolean> {
+    const username = this.config?.username
+    const password = this.config?.password
+    if (!username || !password) return false
+    const result = await this.authenticate({ username, password })
+    return result.success
+  }
+
   private get endpointMappings(): Record<string, string> | null {
     return this.provider.endpointMappings || this.config?.endpointMappings || null
   }
