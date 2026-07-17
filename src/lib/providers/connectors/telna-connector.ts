@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
-import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate } from './telna-endpoints'
+import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption } from './telna-endpoints'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState } from './connector-interface'
 
 interface TelnaRequestOptions {
@@ -412,5 +412,57 @@ export class TelnaConnector implements IProviderConnector {
       return { success: false, error: { code: result.error?.code || 'PCR_FAILED', message: result.error?.message || 'PCR profile update failed' } }
     }
     return { success: true, data: { profile } }
+  }
+
+  // ── Usage Analytics (Telna Phase 5) ────────────────────────────────────
+
+  async getSimUsage(iccid: string): Promise<ConnectorResult<{ usage: TelnaUsage }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'simUsage', pathParams: { iccid } })
+    const duration = Date.now() - start
+    const usage = result.success && result.data ? (result.data as { data: TelnaUsage }).data : null
+    console.log(`[TELNA_USAGE] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    if (!result.success || !usage) {
+      return { success: false, error: { code: result.error?.code || 'USAGE_FAILED', message: result.error?.message || 'Usage data not found' } }
+    }
+    return { success: true, data: { usage } }
+  }
+
+  async listSimSessions(iccid: string, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaSession[]; total: number }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'simSessions', pathParams: { iccid }, query: { count, offset } })
+    const duration = Date.now() - start
+    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaSession>).data : []) || []
+    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaSession>).total : 0) || 0
+    console.log(`[TELNA_SESSION] iccid=${iccid} status=${result.status} requestId=${result.requestId} itemCount=${items.length} durationMs=${duration}`)
+    if (!result.success) {
+      return { success: false, error: { code: result.error?.code || 'SESSION_FAILED', message: result.error?.message || 'Failed to list sessions' } }
+    }
+    return { success: true, data: { items, total } }
+  }
+
+  async getSimBalances(iccid: string): Promise<ConnectorResult<{ balance: TelnaBalance }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'simBalances', pathParams: { iccid } })
+    const duration = Date.now() - start
+    const balance = result.success && result.data ? (result.data as { data: TelnaBalance }).data : null
+    console.log(`[TELNA_BALANCE] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    if (!result.success || !balance) {
+      return { success: false, error: { code: result.error?.code || 'BALANCE_FAILED', message: result.error?.message || 'Balance data not found' } }
+    }
+    return { success: true, data: { balance } }
+  }
+
+  async listWallets(count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaWallet[]; total: number }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'wallets', query: { count, offset } })
+    const duration = Date.now() - start
+    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaWallet>).data : []) || []
+    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaWallet>).total : 0) || 0
+    console.log(`[TELNA_WALLETS] status=${result.status} requestId=${result.requestId} itemCount=${items.length} durationMs=${duration}`)
+    if (!result.success) {
+      return { success: false, error: { code: result.error?.code || 'WALLET_FAILED', message: result.error?.message || 'Failed to list wallets' } }
+    }
+    return { success: true, data: { items, total } }
   }
 }

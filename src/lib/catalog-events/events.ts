@@ -20,6 +20,10 @@ export const CATALOG_EVENT_TYPES: CatalogEventType[] = [
   'SIM_PACKAGE_ASSIGNED',
   'SIM_PACKAGE_CHANGED',
   'SIM_PROFILE_UPDATED',
+  'SIM_USAGE_UPDATED',
+  'SIM_BALANCE_UPDATED',
+  'SIM_SESSION_RECORDED',
+  'SIM_ALERT_CREATED',
 ]
 
 export function shouldTriggerRecalculation(eventType: CatalogEventType): boolean {
@@ -44,6 +48,10 @@ export function shouldTriggerRecalculation(eventType: CatalogEventType): boolean
     case 'SIM_PACKAGE_ASSIGNED':
     case 'SIM_PACKAGE_CHANGED':
     case 'SIM_PROFILE_UPDATED':
+    case 'SIM_USAGE_UPDATED':
+    case 'SIM_BALANCE_UPDATED':
+    case 'SIM_SESSION_RECORDED':
+    case 'SIM_ALERT_CREATED':
       return false
   }
 }

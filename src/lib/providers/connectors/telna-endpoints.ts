@@ -16,6 +16,10 @@ export const TELNA_ENDPOINTS = {
   wallet: '/pcr/wallets/{wallet_id}',
   wallets: '/pcr/wallets',
   trafficPolicies: '/pcr/traffic-policies',
+  simUsage: '/usage/{iccid}',
+  simSessions: '/usage/sessions/{iccid}',
+  simBalances: '/usage/balances/{iccid}',
+  consumption: '/usage/consumption',
 } as const
 
 export type TelnaEndpoint = keyof typeof TELNA_ENDPOINTS
@@ -375,4 +379,115 @@ export interface TelnaPCRProfileUpdate {
     enabled?: boolean
     renewal_package_id?: number | string
   }
+}
+
+// ── Usage DTOs (Telna Phase 5) ──────────────────────────────────────────
+
+export interface TelnaUsage {
+  iccid: string
+  package_name?: string
+  bytes_used?: number
+  bytes_remaining?: number
+  total_allowance?: number
+  percentage_used?: number
+  data_used_mb?: number
+  data_remaining_mb?: number
+  data_total_mb?: number
+  timestamp?: string
+  [key: string]: unknown
+}
+
+export interface MappedTelnaUsage {
+  iccid: string
+  packageName: string | null
+  bytesUsed: number | null
+  bytesRemaining: number | null
+  totalAllowance: number | null
+  percentageUsed: number | null
+  dataUsedMB: number | null
+  dataRemainingMB: number | null
+  dataTotalMB: number | null
+  timestamp: string | null
+  rawData: Record<string, unknown>
+}
+
+export interface TelnaSession {
+  iccid?: string
+  session_id?: string | number
+  start_time?: string
+  end_time?: string
+  duration_sec?: number
+  data_used_mb?: number
+  country?: string
+  operator?: string
+  network?: string
+  cost?: number
+  currency?: string
+  [key: string]: unknown
+}
+
+export interface MappedTelnaSession {
+  sessionId: string | null
+  startTime: string | null
+  endTime: string | null
+  durationSec: number | null
+  durationLabel: string | null
+  dataUsedMB: number | null
+  country: string | null
+  operator: string | null
+  network: string | null
+  cost: number | null
+  currency: string | null
+  rawData: Record<string, unknown>
+}
+
+export interface TelnaBalance {
+  iccid?: string
+  balance?: number
+  currency?: string
+  data_remaining_mb?: number
+  data_remaining_bytes?: number
+  voice_remaining?: string
+  sms_remaining?: string
+  monetary_balance?: number
+  timestamp?: string
+  [key: string]: unknown
+}
+
+export interface MappedTelnaBalance {
+  iccid: string | null
+  balance: number | null
+  currency: string | null
+  dataRemainingMB: number | null
+  monetaryBalance: number | null
+  timestamp: string | null
+  rawData: Record<string, unknown>
+}
+
+export interface TelnaConsumption {
+  iccid?: string
+  period?: string
+  total_bytes?: number
+  total_mb?: number
+  sessions_count?: number
+  unique_countries?: number
+  cost?: number
+  currency?: string
+  from_date?: string
+  to_date?: string
+  [key: string]: unknown
+}
+
+export interface MappedTelnaConsumption {
+  iccid: string | null
+  period: string | null
+  totalBytes: number | null
+  totalMB: number | null
+  sessionsCount: number | null
+  uniqueCountries: number | null
+  cost: number | null
+  currency: string | null
+  fromDate: string | null
+  toDate: string | null
+  rawData: Record<string, unknown>
 }

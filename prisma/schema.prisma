@@ -539,8 +539,10 @@ model ESIM {
 
   purchase     ESIMPurchase     @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
   customer     Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  usageRecords UsageRecord[]
-  topUps       ESIMTopUp[]      @relation("ESIMTopUps")
+  usageRecords  UsageRecord[]
+  usageSessions UsageSession[]
+  usageAlerts   UsageAlert[]
+  topUps        ESIMTopUp[]      @relation("ESIMTopUps")
   shareTokens  ESIMShareToken[]
   billingRecords BillingRecord[] @relation("BillingRecordESIM")
 
@@ -579,11 +581,53 @@ model UsageRecord {
   dataUsedMB      Int
   dataTotalMB     Int?
   dataRemainingMB Int?
+  dataPercentage  Float?
   timestamp       DateTime @default(now())
+  rawData         Json?
 
   esim ESIM @relation(fields: [esimId], references: [id], onDelete: Cascade)
 
+  @@index([esimId, timestamp])
   @@map("usage_records")
+}
+
+model UsageSession {
+  id            String   @id @default(cuid())
+  esimId        String
+  sessionId     String?
+  startTime     DateTime
+  endTime       DateTime?
+  durationSec   Int?
+  dataUsedMB    Int?
+  country       String?
+  operator      String?
+  network       String?
+  cost          Decimal?
+  currency      String?
+  rawData       Json?
+  createdAt     DateTime @default(now())
+
+  esim ESIM @relation(fields: [esimId], references: [id], onDelete: Cascade)
+
+  @@index([esimId, startTime])
+  @@map("usage_sessions")
+}
+
+model UsageAlert {
+  id          String   @id @default(cuid())
+  esimId      String
+  alertType   String   /// USAGE_80 | USAGE_90 | USAGE_100 | NO_ACTIVITY | LOW_WALLET | USAGE_SPIKE
+  severity    String   /// INFO | WARNING | CRITICAL
+  message     String
+  details     Json?
+  acknowledgedAt DateTime?
+  acknowledgedBy String?
+  createdAt   DateTime @default(now())
+
+  esim ESIM @relation(fields: [esimId], references: [id], onDelete: Cascade)
+
+  @@index([esimId, createdAt])
+  @@map("usage_alerts")
 }
 
 model ESIMShareToken {

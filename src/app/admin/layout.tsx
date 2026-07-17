@@ -40,6 +40,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     { title: 'Credit Allocations', href: '/admin/wallet-topups', permission: Permissions.MANAGE_FINANCE },
     { title: 'MONITORING', href: '#', sectionHeader: true },
     { title: 'Analytics', href: '/admin/analytics', permission: Permissions.VIEW_ANALYTICS },
+    { title: 'SIM Usage', href: '/admin/analytics/sim-usage', permission: Permissions.VIEW_ANALYTICS },
     { title: 'API Analytics', href: '/admin/api-analytics', permission: Permissions.VIEW_ANALYTICS },
     { title: 'Alerts & Events', href: '/admin/alerts', permission: Permissions.VIEW_ANALYTICS },
     { title: 'System Monitoring', href: '/admin/monitoring', permission: Permissions.VIEW_ANALYTICS },
