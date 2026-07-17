@@ -1287,3 +1287,231 @@ describe('TelnaConnector Phase 2B — package path param substitution', () => {
     expect(url).not.toContain('{package_id}')
   })
 })
+
+// ── Phase 3: SIM Registry ──────────────────────────────────────────────
+
+describe('TelnaConnector Phase 3 — listSimRegistries', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  const mockSims = [
+    {
+      id: 1, iccid: '89012345678901234567', imsi: '310150123456789',
+      msisdn: '+12025551234', status: 'AVAILABLE',
+      inventory_id: 10, group_id: 20,
+      activation_date: '2025-01-15T00:00:00Z',
+    },
+    {
+      id: 2, iccid: '89098765432109876543', imsi: '310150987654321',
+      msisdn: '+12025559876', status: 'ACTIVE',
+      inventory_id: 11, group_id: 21,
+      activation_date: '2025-03-10T00:00:00Z',
+    },
+  ]
+
+  it('returns paginated SIM registries on success', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: mockSims, total: 2, offset: 0, count: 50 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listSimRegistries(10, 20, 'AVAILABLE', undefined, undefined, 50, 0)
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(2)
+    expect(result.data?.total).toBe(2)
+    expect(result.data?.items[0].iccid).toBe('89012345678901234567')
+    expect(result.data?.items[1].iccid).toBe('89098765432109876543')
+  })
+
+  it('passes query params for filters', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 100 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.listSimRegistries(42, 55, 'ACTIVE', '89012345678901234567', '310150123456789', 100, 0)
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('inventory_id=42'),
+      expect.any(Object)
+    )
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('group_id=55'),
+      expect.any(Object)
+    )
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('status=ACTIVE'),
+      expect.any(Object)
+    )
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('iccid=89012345678901234567'),
+      expect.any(Object)
+    )
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('imsi=310150123456789'),
+      expect.any(Object)
+    )
+  })
+
+  it('handles empty result', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 50 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listSimRegistries()
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(0)
+    expect(result.data?.total).toBe(0)
+  })
+
+  it('handles 401', async () => {
+    const fakeResponse = {
+      ok: false, status: 401,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Unauthorized'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listSimRegistries()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_401')
+  })
+
+  it('handles 403', async () => {
+    const fakeResponse = {
+      ok: false, status: 403,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Forbidden'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listSimRegistries()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_403')
+  })
+
+  it('handles 404', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listSimRegistries()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+  })
+
+  it('handles 429', async () => {
+    const fakeResponse = {
+      ok: false, status: 429,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Rate Limited'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listSimRegistries()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_429')
+  })
+
+  it('handles timeout', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listSimRegistries()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('TIMEOUT')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.listSimRegistries()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Phase 3 — getSimRegistry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('returns SIM detail by ICCID on success', async () => {
+    const simData = {
+      id: 1, iccid: '89012345678901234567', imsi: '310150123456789',
+      msisdn: '+12025551234', status: 'ACTIVE',
+      inventory_id: 10, group_id: 20,
+      current_package_id: 5001,
+      activation_date: '2025-01-15T00:00:00Z',
+    }
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: simData })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimRegistry('89012345678901234567')
+    expect(result.success).toBe(true)
+    expect(result.data?.sim.iccid).toBe('89012345678901234567')
+    expect(result.data?.sim.imsi).toBe('310150123456789')
+    expect(result.data?.sim.status).toBe('ACTIVE')
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/inventory/sim-registries/89012345678901234567'),
+      expect.any(Object)
+    )
+  })
+
+  it('handles 404 when SIM not found', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimRegistry('nonexistent')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.getSimRegistry('89012345678901234567')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Phase 3 — SIM registry path param substitution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('substitutes iccid in sim registry endpoint path', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, iccid: '89012345678901234567', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.getSimRegistry('89012345678901234567')
+    const url = (globalThis.fetch as any).mock.calls[0][0] as string
+    expect(url).toMatch(/\/inventory\/sim-registries\/89012345678901234567[?]?/)
+    expect(url).not.toContain('{iccid}')
+  })
+})

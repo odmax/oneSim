@@ -10,11 +10,14 @@ import {
   telnaListPackageTemplates,
   telnaGetPackageTemplate,
   telnaMapPackageTemplate,
+  telnaListSimRegistries,
+  telnaMapSimRegistry,
 } from '@/lib/actions/telna-discovery'
 import { telnaSyncPackages } from '@/lib/actions/telna-sync'
-import type { TelnaCountry, TelnaCompany, TelnaInventory, TelnaGroup, TelnaWallet, TelnaPackageTemplate, MappedTelnaPackageTemplate } from '@/lib/providers/connectors/telna-endpoints'
+import { telnaSyncSims } from '@/lib/actions/telna-sim-sync'
+import type { TelnaCountry, TelnaCompany, TelnaInventory, TelnaGroup, TelnaWallet, TelnaPackageTemplate, MappedTelnaPackageTemplate, TelnaSimRegistry, MappedTelnaSimRegistry } from '@/lib/providers/connectors/telna-endpoints'
 
-type DiscoveryTab = 'countries' | 'inventories' | 'groups' | 'wallet' | 'packageTemplates' | 'sync'
+type DiscoveryTab = 'countries' | 'inventories' | 'groups' | 'wallet' | 'packageTemplates' | 'sync' | 'simRegistry'
 
 const TABS: { key: DiscoveryTab; label: string }[] = [
   { key: 'countries', label: 'Countries' },
@@ -23,6 +26,7 @@ const TABS: { key: DiscoveryTab; label: string }[] = [
   { key: 'wallet', label: 'Wallet' },
   { key: 'packageTemplates', label: 'Package Templates' },
   { key: 'sync', label: 'Sync Packages' },
+  { key: 'simRegistry', label: 'SIM Registry' },
 ]
 
 function StatusBadge({ status }: { status: string }) {
@@ -73,6 +77,22 @@ export function TelnaDiscoveryPanel({ providerId }: { providerId: string }) {
   const [syncResult, setSyncResult] = useState<{ fetched: number; created: number; updated: number; archived: number; skipped: number; durationMs: number } | null>(null)
   const [syncError, setSyncError] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
+
+  const [sims, setSims] = useState<TelnaSimRegistry[] | null>(null)
+  const [simTotal, setSimTotal] = useState(0)
+  const [simOffset, setSimOffset] = useState(0)
+  const [simInvFilter, setSimInvFilter] = useState('')
+  const [simGroupFilter, setSimGroupFilter] = useState('')
+  const [simStatusFilter, setSimStatusFilter] = useState('')
+  const [simIccidFilter, setSimIccidFilter] = useState('')
+  const [simImsiFilter, setSimImsiFilter] = useState('')
+  const [selectedSim, setSelectedSim] = useState<MappedTelnaSimRegistry | null>(null)
+  const [selectedSimRaw, setSelectedSimRaw] = useState<Record<string, unknown> | null>(null)
+  const [simDetailIccid, setSimDetailIccid] = useState('')
+  const [simDetailLoading, setSimDetailLoading] = useState(false)
+  const [simSyncResult, setSimSyncResult] = useState<{ fetched: number; created: number; updated: number; archived: number; skipped: number; durationMs: number } | null>(null)
+  const [simSyncError, setSimSyncError] = useState<string | null>(null)
+  const [simSyncing, setSimSyncing] = useState(false)
 
   const loadCountries = useCallback(async () => {
     setLoading(true); setError(null)
@@ -193,6 +213,60 @@ export function TelnaDiscoveryPanel({ providerId }: { providerId: string }) {
       setError(e instanceof Error ? e.message : 'Unknown error')
     } finally { setTemplateDetailLoading(false) }
   }, [providerId, templateDetailId])
+
+  const loadSims = useCallback(async (offset = 0) => {
+    setLoading(true); setError(null); setSimOffset(offset)
+    try {
+      const res = await telnaListSimRegistries(
+        providerId,
+        simInvFilter ? Number(simInvFilter) : undefined,
+        simGroupFilter ? Number(simGroupFilter) : undefined,
+        simStatusFilter || undefined,
+        simIccidFilter || undefined,
+        simImsiFilter || undefined,
+        50,
+        offset,
+      )
+      if (res.success && res.data) {
+        setSims(res.data.items)
+        setSimTotal(res.data.total)
+      } else {
+        setError(res.error?.message || 'Failed to load SIM registries')
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+    } finally { setLoading(false) }
+  }, [providerId, simInvFilter, simGroupFilter, simStatusFilter, simIccidFilter, simImsiFilter])
+
+  const loadSimDetail = useCallback(async () => {
+    if (!simDetailIccid) return
+    setSimDetailLoading(true); setError(null)
+    try {
+      const res = await telnaMapSimRegistry(providerId, simDetailIccid)
+      if (res.success && res.data) {
+        setSelectedSim(res.data)
+        setSelectedSimRaw(res.data.rawData)
+      } else {
+        setError(res.error?.message || 'SIM not found')
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+    } finally { setSimDetailLoading(false) }
+  }, [providerId, simDetailIccid])
+
+  const handleSimSync = useCallback(async () => {
+    setSimSyncing(true); setSimSyncError(null); setSimSyncResult(null)
+    try {
+      const res = await telnaSyncSims(providerId, simInvFilter ? Number(simInvFilter) : undefined)
+      if ('error' in res) {
+        setSimSyncError(res.error || 'SIM Sync failed')
+      } else if (res.success) {
+        setSimSyncResult(res.result)
+      }
+    } catch (e) {
+      setSimSyncError(e instanceof Error ? e.message : 'Unknown error')
+    } finally { setSimSyncing(false) }
+  }, [providerId, simInvFilter])
 
   const handleKeyDown = (fn: () => void) => (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') fn()
@@ -662,6 +736,240 @@ export function TelnaDiscoveryPanel({ providerId }: { providerId: string }) {
           {!syncResult && !syncError && (
             <p className="py-8 text-center text-sm text-gray-500">Click &ldquo;Sync Packages&rdquo; to fetch and synchronize Telna packages into the catalog.</p>
           )}
+        </div>
+      )}
+
+      {/* SIM Registry Tab */}
+      {tab === 'simRegistry' && (
+        <div className="space-y-4">
+          {/* Filters */}
+          <div className="grid grid-cols-5 gap-3">
+            <div>
+              <label className="text-xs font-medium text-gray-500">Inventory ID</label>
+              <input
+                type="text"
+                value={simInvFilter}
+                onChange={e => setSimInvFilter(e.target.value)}
+                onKeyDown={handleKeyDown(() => loadSims(0))}
+                placeholder="Inventory ID"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500">Group ID</label>
+              <input
+                type="text"
+                value={simGroupFilter}
+                onChange={e => setSimGroupFilter(e.target.value)}
+                onKeyDown={handleKeyDown(() => loadSims(0))}
+                placeholder="Group ID"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500">Status</label>
+              <select
+                value={simStatusFilter}
+                onChange={e => setSimStatusFilter(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
+              >
+                <option value="">All</option>
+                <option value="AVAILABLE">Available</option>
+                <option value="ALLOCATED">Allocated</option>
+                <option value="ACTIVE">Active</option>
+                <option value="SUSPENDED">Suspended</option>
+                <option value="INACTIVE">Inactive</option>
+                <option value="RETIRED">Retired</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500">ICCID</label>
+              <input
+                type="text"
+                value={simIccidFilter}
+                onChange={e => setSimIccidFilter(e.target.value)}
+                onKeyDown={handleKeyDown(() => loadSims(0))}
+                placeholder="ICCID"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500">IMSI</label>
+              <input
+                type="text"
+                value={simImsiFilter}
+                onChange={e => setSimImsiFilter(e.target.value)}
+                onKeyDown={handleKeyDown(() => loadSims(0))}
+                placeholder="IMSI"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-gray-500">{simTotal} total SIM registries</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => loadSims(0)}
+                disabled={loading}
+                className="rounded-lg bg-cyan-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-cyan-700 disabled:opacity-50"
+              >
+                {loading ? 'Loading...' : 'Refresh'}
+              </button>
+              <button
+                onClick={handleSimSync}
+                disabled={simSyncing}
+                className="rounded-lg bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+              >
+                {simSyncing ? 'Syncing...' : 'Sync SIMs'}
+              </button>
+            </div>
+          </div>
+
+          {/* SIM Sync Result */}
+          {simSyncError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{simSyncError}</div>
+          )}
+          {simSyncResult && (
+            <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+              <div className="grid grid-cols-6 gap-3 text-center text-xs">
+                <div className="rounded bg-white p-2">
+                  <p className="text-gray-500">Fetched</p>
+                  <p className="text-lg font-bold text-gray-900">{simSyncResult.fetched}</p>
+                </div>
+                <div className="rounded bg-white p-2">
+                  <p className="text-gray-500">Created</p>
+                  <p className="text-lg font-bold text-emerald-600">{simSyncResult.created}</p>
+                </div>
+                <div className="rounded bg-white p-2">
+                  <p className="text-gray-500">Updated</p>
+                  <p className="text-lg font-bold text-amber-600">{simSyncResult.updated}</p>
+                </div>
+                <div className="rounded bg-white p-2">
+                  <p className="text-gray-500">Archived</p>
+                  <p className="text-lg font-bold text-red-600">{simSyncResult.archived}</p>
+                </div>
+                <div className="rounded bg-white p-2">
+                  <p className="text-gray-500">Skipped</p>
+                  <p className="text-lg font-bold text-gray-600">{simSyncResult.skipped}</p>
+                </div>
+                <div className="rounded bg-white p-2">
+                  <p className="text-gray-500">Duration</p>
+                  <p className="text-lg font-bold text-purple-600">{simSyncResult.durationMs}ms</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Pagination */}
+          {simTotal > 50 && (
+            <div className="flex items-center gap-2 text-sm">
+              <button
+                onClick={() => loadSims(Math.max(0, simOffset - 50))}
+                disabled={simOffset === 0 || loading}
+                className="rounded border px-2 py-1 text-xs disabled:opacity-30"
+              >
+                Prev
+              </button>
+              <span className="text-gray-500">Page {Math.floor(simOffset / 50) + 1} / {Math.ceil(simTotal / 50)}</span>
+              <button
+                onClick={() => loadSims(simOffset + 50)}
+                disabled={simOffset + 50 >= simTotal || loading}
+                className="rounded border px-2 py-1 text-xs disabled:opacity-30"
+              >
+                Next
+              </button>
+            </div>
+          )}
+
+          {/* SIM Table */}
+          {sims && sims.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">ICCID</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">IMSI</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">MSISDN</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Status</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Inventory</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Group</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Package</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Activated</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {sims.map(sim => (
+                    <tr key={sim.iccid} className="hover:bg-gray-50">
+                      <td className="max-w-[160px] truncate px-4 py-2 font-mono text-xs text-gray-900" title={sim.iccid}>{sim.iccid}</td>
+                      <td className="max-w-[120px] truncate px-4 py-2 font-mono text-xs text-gray-500" title={sim.imsi || ''}>{sim.imsi || '-'}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-gray-500">{sim.msisdn || '-'}</td>
+                      <td className="px-4 py-2"><StatusBadge status={sim.status} /></td>
+                      <td className="px-4 py-2 font-mono text-xs text-gray-500">{sim.inventory_id ?? '-'}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-gray-500">{sim.group_id ?? '-'}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-gray-500">{sim.current_package_id ?? '-'}</td>
+                      <td className="px-4 py-2 text-xs text-gray-500">{sim.activation_date ? new Date(sim.activation_date).toLocaleDateString() : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : sims && sims.length === 0 ? (
+            <p className="py-8 text-center text-sm text-gray-500">No SIM registries found.</p>
+          ) : (
+            <p className="py-8 text-center text-sm text-gray-500">Set filters and click Refresh to load SIM registries.</p>
+          )}
+
+          {/* SIM Detail Lookup */}
+          <div className="mt-6 border-t pt-4">
+            <h4 className="mb-3 text-sm font-semibold text-gray-700">SIM Detail / Mapping</h4>
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                <input
+                  type="text"
+                  value={simDetailIccid}
+                  onChange={e => setSimDetailIccid(e.target.value)}
+                  onKeyDown={handleKeyDown(loadSimDetail)}
+                  placeholder="Enter ICCID"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
+                />
+              </div>
+              <button onClick={loadSimDetail} disabled={simDetailLoading || !simDetailIccid} className="self-start rounded-lg bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50">
+                {simDetailLoading ? 'Loading...' : 'Map SIM'}
+              </button>
+            </div>
+            {selectedSim && (
+              <div className="mt-4 space-y-3">
+                {/* Mapped Fields */}
+                <div className="rounded-lg border bg-gray-50 p-4">
+                  <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                    <div className="col-span-2"><dt className="text-xs font-medium text-gray-500">ICCID</dt><dd className="font-mono text-gray-900">{selectedSim.iccid}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">IMSI</dt><dd className="font-mono text-gray-900">{selectedSim.imsi || '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">MSISDN</dt><dd className="text-gray-900">{selectedSim.msisdn || '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Provider Status</dt><dd><StatusBadge status={selectedSim.providerStatus} /></dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Normalized Status</dt><dd><StatusBadge status={selectedSim.normalizedStatus} /></dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Inventory ID</dt><dd className="font-mono text-gray-900">{selectedSim.inventoryId ?? '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Group ID</dt><dd className="font-mono text-gray-900">{selectedSim.groupId ?? '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Wallet ID</dt><dd className="font-mono text-gray-900">{selectedSim.walletId ?? '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Current Package</dt><dd className="font-mono text-xs text-gray-900">{selectedSim.currentPackageId || '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Package Template</dt><dd className="font-mono text-xs text-gray-900">{selectedSim.packageTemplateId || '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Traffic Policy</dt><dd className="font-mono text-xs text-gray-900">{selectedSim.trafficPolicyId ?? '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Profile ID</dt><dd className="font-mono text-xs text-gray-900">{selectedSim.profileId ?? '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Activation Date</dt><dd className="text-gray-900">{selectedSim.activationDate || '-'}</dd></div>
+                    <div className="col-span-2"><dt className="text-xs font-medium text-gray-500">Last Session</dt><dd className="text-gray-900">{selectedSim.lastSession || '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Created</dt><dd className="text-xs text-gray-500">{selectedSim.createdAt || '-'}</dd></div>
+                    <div><dt className="text-xs font-medium text-gray-500">Updated</dt><dd className="text-xs text-gray-500">{selectedSim.updatedAt || '-'}</dd></div>
+                  </dl>
+                </div>
+
+                {/* Raw Response Preview */}
+                <details className="rounded-lg border border-gray-200">
+                  <summary className="cursor-pointer px-4 py-2 text-sm font-medium text-gray-700">Raw Response Preview</summary>
+                  <pre className="max-h-96 overflow-auto p-4 text-xs text-gray-600">{JSON.stringify(selectedSimRaw, null, 2)}</pre>
+                </details>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

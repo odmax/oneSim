@@ -105,3 +105,45 @@ export async function telnaMapPackageTemplate(providerId: string, packageTemplat
 
   return { success: true, data: mapped }
 }
+
+export async function telnaListSimRegistries(providerId: string, inventoryId?: number, groupId?: number, status?: string, iccid?: string, imsi?: string, count?: number, offset?: number) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+
+  const connector = await buildConnectorFromProvider(providerId)
+  if (!connector) throw new Error('Provider not found')
+  if (!isTelnaConnector(connector)) throw new Error('Provider does not support Telna discovery')
+
+  return connector.listSimRegistries(inventoryId, groupId, status, iccid, imsi, count, offset)
+}
+
+export async function telnaGetSimRegistry(providerId: string, iccid: string) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+
+  const connector = await buildConnectorFromProvider(providerId)
+  if (!connector) throw new Error('Provider not found')
+  if (!isTelnaConnector(connector)) throw new Error('Provider does not support Telna discovery')
+
+  return connector.getSimRegistry(iccid)
+}
+
+export async function telnaMapSimRegistry(providerId: string, iccid: string) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+
+  const connector = await buildConnectorFromProvider(providerId)
+  if (!connector) throw new Error('Provider not found')
+  if (!isTelnaConnector(connector)) throw new Error('Provider does not support Telna discovery')
+
+  const detail = await connector.getSimRegistry(iccid)
+  if (!detail.success || !detail.data) {
+    return { success: false, error: detail.error }
+  }
+
+  const { mapTelnaSimRegistry } = await import('@/lib/providers/mappers/telna-sim-mapper')
+  const mapped = mapTelnaSimRegistry(detail.data.sim)
+  console.log(`[TELNA_SIM_MAPPING] iccid=${iccid} mapped=true providerStatus=${mapped.providerStatus} normalizedStatus=${mapped.normalizedStatus}`)
+
+  return { success: true, data: mapped }
+}

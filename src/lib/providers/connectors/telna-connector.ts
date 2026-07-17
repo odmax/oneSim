@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
-import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage } from './telna-endpoints'
+import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry } from './telna-endpoints'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState } from './connector-interface'
 
 interface TelnaRequestOptions {
@@ -356,5 +356,35 @@ export class TelnaConnector implements IProviderConnector {
       return { success: false, error: { code: result.error?.code || 'SYNC_FAILED', message: result.error?.message || 'Package not found' } }
     }
     return { success: true, data: { pkg } }
+  }
+
+  // ── SIM Registry (Telna Phase 3) ──────────────────────────────────────
+
+  async listSimRegistries(inventoryId?: number, groupId?: number, status?: string, iccid?: string, imsi?: string, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaSimRegistry[]; total: number }>> {
+    const start = Date.now()
+    const result = await this.request({
+      method: 'GET', endpoint: 'simRegistries',
+      query: { inventory_id: inventoryId, group_id: groupId, status, iccid, imsi, count, offset },
+    })
+    const duration = Date.now() - start
+    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaSimRegistry>).data : []) || []
+    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaSimRegistry>).total : 0) || 0
+    console.log(`[TELNA_SIM_REGISTRIES] status=${result.status} requestId=${result.requestId} itemCount=${items.length} total=${total} durationMs=${duration} inventoryId=${inventoryId} groupId=${groupId}`)
+    if (!result.success) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Failed to list SIM registries' } }
+    }
+    return { success: true, data: { items, total } }
+  }
+
+  async getSimRegistry(iccid: string): Promise<ConnectorResult<{ sim: TelnaSimRegistry }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'simRegistry', pathParams: { iccid } })
+    const duration = Date.now() - start
+    const sim = result.success && result.data ? (result.data as { data: TelnaSimRegistry }).data : null
+    console.log(`[TELNA_SIM_REGISTRY_DETAIL] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    if (!result.success || !sim) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'SIM registry entry not found' } }
+    }
+    return { success: true, data: { sim } }
   }
 }

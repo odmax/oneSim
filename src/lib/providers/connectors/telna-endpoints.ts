@@ -9,6 +9,7 @@ export const TELNA_ENDPOINTS = {
   packages: '/pcr/packages',
   package: '/pcr/packages/{package_id}',
   simRegistries: '/inventory/sim-registries',
+  simRegistry: '/inventory/sim-registries/{iccid}',
   simProfiles: '/pcr/sim-pcr-profiles',
   wallet: '/pcr/wallets/{wallet_id}',
   wallets: '/pcr/wallets',
@@ -249,5 +250,57 @@ export interface MappedTelnaPackage {
   planType: string | null
   isAvailable: boolean
   warnings: string[]
+  rawData: Record<string, unknown>
+}
+
+// ── SIM Registry DTOs (Telna Phase 3) ────────────────────────────────────
+
+export interface TelnaSimRegistry {
+  id: number
+  iccid: string
+  imsi?: string
+  msisdn?: string
+  status: string
+  activation_status?: string
+  inventory_id?: number
+  group_id?: number
+  wallet_id?: number
+  current_package_id?: string | number
+  package_template_id?: string | number
+  traffic_policy_id?: number
+  pcr_profile_id?: number
+  activation_date?: string
+  last_session?: string
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+export type TelnaSimStatus =
+  | 'AVAILABLE'
+  | 'ALLOCATED'
+  | 'ACTIVE'
+  | 'SUSPENDED'
+  | 'INACTIVE'
+  | 'RETIRED'
+
+export interface MappedTelnaSimRegistry {
+  iccid: string
+  imsi: string | null
+  msisdn: string | null
+  inventoryId: number | null
+  groupId: number | null
+  walletId: number | null
+  currentPackageId: string | null
+  packageTemplateId: string | null
+  trafficPolicyId: number | null
+  profileId: number | null
+  activationDate: string | null
+  lastSession: string | null
+  providerStatus: string
+  status: string
+  normalizedStatus: string
+  createdAt: string | null
+  updatedAt: string | null
   rawData: Record<string, unknown>
 }

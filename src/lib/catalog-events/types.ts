@@ -29,6 +29,10 @@ export type CatalogEventType =
   | 'PROVIDER_DISABLED'
   | 'PROVIDER_ENABLED'
   | 'CATALOG_PUBLISHED'
+  | 'SIM_CREATED'
+  | 'SIM_UPDATED'
+  | 'SIM_ARCHIVED'
+  | 'SIM_STATUS_CHANGED'
 
 export type EventTrigger = 'MANUAL' | 'SCHEDULED' | 'SYSTEM' | 'WEBHOOK' | 'USER_ACTION'
 
