@@ -8,6 +8,33 @@ import { refreshEsimStatusAction, refreshEsimUsageAction } from '@/lib/actions/e
 import { getPackageDisplayName, getPackageDataGB, getPackageValidityDays } from '@/lib/packages/snapshot-utils'
 import { UsageBar, UsageSummary } from '@/components/admin/esims/UsageBar'
 
+async function loadPCRProfile(iccid: string, providerId: string) {
+  try {
+    const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
+    const connector = await buildConnectorFromProvider(providerId)
+    if (!connector || typeof (connector as any).getSimPCRProfile !== 'function') return null
+    const result = await (connector as any).getSimPCRProfile(iccid)
+    if (!result.success || !result.data) return null
+    const { mapTelnaPCRProfile } = await import('@/lib/providers/mappers/telna-pcr-profile-mapper')
+    return mapTelnaPCRProfile(result.data.profile)
+  } catch {
+    return null
+  }
+}
+
+async function loadTelnaPackages(providerId: string) {
+  try {
+    const packages = await prisma.providerPackage.findMany({
+      where: { providerId, isAvailable: true, providerStatus: { not: 'ARCHIVED' } },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, providerPlanId: true, providerPlanCode: true },
+    })
+    return packages
+  } catch {
+    return []
+  }
+}
+
 export default async function AdminEsimDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
@@ -27,6 +54,14 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
   const provider = esim.purchase.package.providerId
     ? await prisma.provider.findUnique({ where: { id: esim.purchase.package.providerId } })
     : null
+
+  const isTelnaProvider = provider?.adapterStrategy === 'TELNA' || provider?.code === 'TELNA'
+  const pcrProfile = isTelnaProvider && esim.iccid && provider
+    ? await loadPCRProfile(esim.iccid, provider.id)
+    : null
+  const telnaPackages = isTelnaProvider && provider
+    ? await loadTelnaPackages(provider.id)
+    : []
 
   return (
     <div className="p-6">
@@ -53,6 +88,7 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             <div className="flex justify-between"><dt className="text-gray-500">Package</dt><dd className="font-medium text-gray-900">{getPackageDisplayName(esim)}</dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">Data</dt><dd className="font-medium text-gray-900">{getPackageDataGB(esim)} GB</dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">Validity</dt><dd className="font-medium text-gray-900">{getPackageValidityDays(esim)} days</dd></div>
+            {esim.packageSnapshot && <div className="flex justify-between"><dt className="text-gray-500">Assigned Package</dt><dd className="font-medium text-gray-900">{(esim.packageSnapshot as any)?.assignedPackage?.name || '-'}</dd></div>}
             <div className="flex justify-between"><dt className="text-gray-500">Business</dt><dd className="font-medium text-gray-900">{esim.purchase.business.name}</dd></div>
             {esim.customer && <div className="flex justify-between"><dt className="text-gray-500">Customer</dt><dd className="font-medium text-gray-900">{esim.customer.name} ({esim.customer.email})</dd></div>}
             {esim.activatedAt && <div className="flex justify-between"><dt className="text-gray-500">Activated</dt><dd className="text-gray-600">{esim.activatedAt.toLocaleString()}</dd></div>}
@@ -128,6 +164,81 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             )}
           </div>
           {provider && <p className="mt-3 text-xs text-gray-400">Powered by: {provider.name}</p>}
+        </div>
+      )}
+
+      {/* Package Assignment (Telna only) */}
+      {isTelnaProvider && esim.iccid && (
+        <div className="mb-6 rounded-lg border bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Package Assignment</h3>
+            <form action={async () => { 'use server'; const { refreshSimPCRProfile } = await import('@/lib/actions/telna-package-assignment'); const r = await refreshSimPCRProfile(esim.id); if (r.success) redirect(`/admin/esims/${esim.id}?success=PCR+profile+refreshed`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Refresh failed')}`) }}>
+              <button type="submit" className="rounded-lg border border-cyan-300 px-3 py-1.5 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Refresh PCR Profile</button>
+            </form>
+          </div>
+
+          {/* Current PCR Profile */}
+          {pcrProfile && (
+            <div className="mb-4 rounded-lg bg-gray-50 p-4">
+              <h4 className="mb-2 text-sm font-semibold text-gray-700">Current PCR Profile</h4>
+              <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                <div><dt className="text-xs text-gray-500">Status</dt><dd className="font-medium text-gray-900">{pcrProfile.status}</dd></div>
+                <div><dt className="text-xs text-gray-500">Current Package</dt><dd className="font-medium text-gray-900">{pcrProfile.currentPackage.name || pcrProfile.currentPackage.id || 'None'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Pending Package</dt><dd className="text-gray-700">{pcrProfile.pendingPackage.name || pcrProfile.pendingPackage.id || 'None'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Traffic Policy</dt><dd className="font-mono text-xs text-gray-900">{pcrProfile.trafficPolicyId ?? '-'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Wallet ID</dt><dd className="font-mono text-xs text-gray-900">{pcrProfile.walletId ?? '-'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Activation State</dt><dd className="text-gray-900">{pcrProfile.activationState || '-'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Renewal</dt><dd className="text-gray-900">{pcrProfile.renewal.enabled ? `Enabled (${pcrProfile.renewal.renewalDate || 'no date'})` : 'Disabled'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Expiration</dt><dd className="text-gray-900">{pcrProfile.expiration.expired ? `Expired: ${pcrProfile.expiration.expirationDate}` : pcrProfile.expiration.expirationDate || 'N/A'}</dd></div>
+              </dl>
+            </div>
+          )}
+
+          {!pcrProfile && (
+            <p className="mb-4 text-sm text-gray-500">PCR profile not available. Click Refresh PCR Profile to load.</p>
+          )}
+
+          {/* Available Telna Packages */}
+          {telnaPackages.length > 0 && (
+            <div className="mb-4">
+              <h4 className="mb-2 text-sm font-semibold text-gray-700">Available Telna Packages</h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase text-gray-500">Package</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase text-gray-500">Data</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase text-gray-500">Validity</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase text-gray-500">Price</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase text-gray-500">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {telnaPackages.map(pkg => (
+                      <tr key={pkg.id} className="hover:bg-gray-50">
+                        <td className="px-3 py-2 font-medium text-gray-900">{pkg.name}</td>
+                        <td className="px-3 py-2 text-gray-700">{pkg.dataGB} GB</td>
+                        <td className="px-3 py-2 text-gray-700">{pkg.validityDays} days</td>
+                        <td className="px-3 py-2 text-gray-700">{pkg.currency} {Number(pkg.costPrice).toFixed(2)}</td>
+                        <td className="px-3 py-2">
+                          <form action={async () => { 'use server'; const { assignPackageToSim } = await import('@/lib/actions/telna-package-assignment'); const r = await assignPackageToSim(esim.id, pkg.id); if (r.success) redirect(`/admin/esims/${esim.id}?success=Package+assigned`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Assignment failed')}`) }}>
+                            <input type="hidden" name="packageId" value={pkg.id} />
+                            <button type="submit" className="rounded bg-cyan-600 px-2 py-1 text-xs font-medium text-white hover:bg-cyan-700">
+                              Assign
+                            </button>
+                          </form>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {telnaPackages.length === 0 && (
+            <p className="text-sm text-gray-500">No available Telna packages found. Sync packages first via the Telna Discovery panel.</p>
+          )}
         </div>
       )}
 

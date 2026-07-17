@@ -33,6 +33,9 @@ export type CatalogEventType =
   | 'SIM_UPDATED'
   | 'SIM_ARCHIVED'
   | 'SIM_STATUS_CHANGED'
+  | 'SIM_PACKAGE_ASSIGNED'
+  | 'SIM_PACKAGE_CHANGED'
+  | 'SIM_PROFILE_UPDATED'
 
 export type EventTrigger = 'MANUAL' | 'SCHEDULED' | 'SYSTEM' | 'WEBHOOK' | 'USER_ACTION'
 

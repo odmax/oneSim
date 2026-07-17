@@ -10,6 +10,8 @@ export const TELNA_ENDPOINTS = {
   package: '/pcr/packages/{package_id}',
   simRegistries: '/inventory/sim-registries',
   simRegistry: '/inventory/sim-registries/{iccid}',
+  simPCRProfiles: '/pcr/sim-pcr-profiles',
+  simPCRProfile: '/pcr/sim-pcr-profiles/{iccid}',
   simProfiles: '/pcr/sim-pcr-profiles',
   wallet: '/pcr/wallets/{wallet_id}',
   wallets: '/pcr/wallets',
@@ -303,4 +305,74 @@ export interface MappedTelnaSimRegistry {
   createdAt: string | null
   updatedAt: string | null
   rawData: Record<string, unknown>
+}
+
+// ── PCR Profile DTOs (Telna Phase 4) ────────────────────────────────────
+
+export interface TelnaPCRPackage {
+  id?: number | string
+  package_template_id?: number | string
+  name?: string
+}
+
+export interface TelnaPCRProfile {
+  id: number
+  iccid: string
+  status: string
+  current_package?: TelnaPCRPackage
+  pending_package?: TelnaPCRPackage
+  traffic_policy_id?: number
+  wallet_id?: number
+  activation_state?: string
+  renewal?: {
+    enabled?: boolean
+    renewal_date?: string
+    renewal_package_id?: number | string
+  }
+  expiration?: {
+    expired?: boolean
+    expiration_date?: string
+  }
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+export interface MappedTelnaPCRProfile {
+  iccid: string
+  status: string
+  currentPackage: {
+    id: string | null
+    packageTemplateId: string | null
+    name: string | null
+  }
+  pendingPackage: {
+    id: string | null
+    packageTemplateId: string | null
+    name: string | null
+  }
+  trafficPolicyId: number | null
+  walletId: number | null
+  activationState: string | null
+  renewal: {
+    enabled: boolean
+    renewalDate: string | null
+    renewalPackageId: string | null
+  }
+  expiration: {
+    expired: boolean
+    expirationDate: string | null
+  }
+  createdAt: string | null
+  updatedAt: string | null
+  rawData: Record<string, unknown>
+}
+
+export interface TelnaPCRProfileUpdate {
+  package_template_id?: number | string
+  traffic_policy_id?: number
+  renewal?: {
+    enabled?: boolean
+    renewal_package_id?: number | string
+  }
 }

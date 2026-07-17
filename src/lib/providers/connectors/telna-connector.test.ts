@@ -1515,3 +1515,252 @@ describe('TelnaConnector Phase 3 — SIM registry path param substitution', () =
     expect(url).not.toContain('{iccid}')
   })
 })
+
+// ── Phase 4: PCR Profile ──────────────────────────────────────────────
+
+describe('TelnaConnector Phase 4 — getSimPCRProfile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  const mockPCRProfile = {
+    id: 1,
+    iccid: '89012345678901234567',
+    status: 'ACTIVE',
+    current_package: { id: 5001, package_template_id: 1001, name: '5GB Monthly Data' },
+    pending_package: null,
+    traffic_policy_id: 50,
+    wallet_id: 200,
+    activation_state: 'ACTIVATED',
+    renewal: { enabled: true, renewal_date: '2026-01-15', renewal_package_id: 5001 },
+    expiration: { expired: false, expiration_date: '2025-08-15' },
+    created_at: '2025-01-01T00:00:00Z',
+    updated_at: '2025-07-01T00:00:00Z',
+  }
+
+  it('returns PCR profile by ICCID on success', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: mockPCRProfile })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimPCRProfile('89012345678901234567')
+    expect(result.success).toBe(true)
+    expect(result.data?.profile.iccid).toBe('89012345678901234567')
+    expect(result.data?.profile.current_package?.name).toBe('5GB Monthly Data')
+    expect(result.data?.profile.renewal?.enabled).toBe(true)
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/pcr/sim-pcr-profiles/89012345678901234567'),
+      expect.any(Object)
+    )
+  })
+
+  it('handles 404', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimPCRProfile('nonexistent')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+  })
+
+  it('handles timeout', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimPCRProfile('89012345678901234567')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('TIMEOUT')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.getSimPCRProfile('89012345678901234567')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Phase 4 — updateSimPCRProfile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('updates PCR profile with package_template_id on success', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({
+        data: {
+          id: 1, iccid: '89012345678901234567', status: 'ACTIVE',
+          current_package: { id: 6002, package_template_id: 2002, name: '10GB Global Data' },
+          pending_package: null,
+        },
+      })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 2002 })
+    expect(result.success).toBe(true)
+    expect(result.data?.profile.current_package?.id).toBe(6002)
+    expect(result.data?.profile.current_package?.package_template_id).toBe(2002)
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/pcr/sim-pcr-profiles/89012345678901234567'),
+      expect.any(Object)
+    )
+  })
+
+  it('sends PUT request with body', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, iccid: '89012345678901234567', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 'PKG-2002' })
+    const callArgs = (globalThis.fetch as any).mock.calls[0]
+    const url = callArgs[0] as string
+    const options = callArgs[1] as any
+    expect(url).toContain('/pcr/sim-pcr-profiles/89012345678901234567')
+    expect(options.method).toBe('PUT')
+    expect(JSON.parse(options.body)).toEqual({ package_template_id: 'PKG-2002' })
+  })
+
+  it('handles 409 conflict', async () => {
+    const fakeResponse = {
+      ok: false, status: 409,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Conflict'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 999 })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_409')
+  })
+
+  it('handles 422 unprocessable', async () => {
+    const fakeResponse = {
+      ok: false, status: 422,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Unprocessable'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 'invalid' })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_422')
+  })
+
+  it('handles 401', async () => {
+    const fakeResponse = {
+      ok: false, status: 401,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Unauthorized'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 1001 })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_401')
+  })
+
+  it('handles 403', async () => {
+    const fakeResponse = {
+      ok: false, status: 403,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Forbidden'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 1001 })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_403')
+  })
+
+  it('handles 429', async () => {
+    const fakeResponse = {
+      ok: false, status: 429,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Rate Limited'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 1001 })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_429')
+  })
+
+  it('handles 5xx', async () => {
+    const fakeResponse = {
+      ok: false, status: 500,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Server Error'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 1001 })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_500')
+  })
+
+  it('handles timeout', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 1001 })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('TIMEOUT')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 1001 })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Phase 4 — PCR profile path param substitution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('substitutes iccid in PCR profile endpoint for GET', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, iccid: '89012345678901234567', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.getSimPCRProfile('89012345678901234567')
+    const url = (globalThis.fetch as any).mock.calls[0][0] as string
+    expect(url).toMatch(/\/pcr\/sim-pcr-profiles\/89012345678901234567[?]?/)
+    expect(url).not.toContain('{iccid}')
+  })
+
+  it('substitutes iccid in PCR profile endpoint for PUT', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, iccid: '89012345678901234567', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 1001 })
+    const url = (globalThis.fetch as any).mock.calls[0][0] as string
+    expect(url).toMatch(/\/pcr\/sim-pcr-profiles\/89012345678901234567[?]?/)
+    expect(url).not.toContain('{iccid}')
+  })
+})

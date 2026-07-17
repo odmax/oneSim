@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
-import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry } from './telna-endpoints'
+import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate } from './telna-endpoints'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState } from './connector-interface'
 
 interface TelnaRequestOptions {
@@ -386,5 +386,31 @@ export class TelnaConnector implements IProviderConnector {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'SIM registry entry not found' } }
     }
     return { success: true, data: { sim } }
+  }
+
+  // ── PCR Profile (Telna Phase 4) ────────────────────────────────────────
+
+  async getSimPCRProfile(iccid: string): Promise<ConnectorResult<{ profile: TelnaPCRProfile }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'simPCRProfile', pathParams: { iccid } })
+    const duration = Date.now() - start
+    const profile = result.success && result.data ? (result.data as { data: TelnaPCRProfile }).data : null
+    console.log(`[TELNA_PCR_PROFILE] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    if (!result.success || !profile) {
+      return { success: false, error: { code: result.error?.code || 'PCR_FAILED', message: result.error?.message || 'PCR profile not found' } }
+    }
+    return { success: true, data: { profile } }
+  }
+
+  async updateSimPCRProfile(iccid: string, update: TelnaPCRProfileUpdate): Promise<ConnectorResult<{ profile: TelnaPCRProfile }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'PUT', endpoint: 'simPCRProfile', pathParams: { iccid }, body: update })
+    const duration = Date.now() - start
+    const profile = result.success && result.data ? (result.data as { data: TelnaPCRProfile }).data : null
+    console.log(`[TELNA_PACKAGE_ASSIGN] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    if (!result.success || !profile) {
+      return { success: false, error: { code: result.error?.code || 'PCR_FAILED', message: result.error?.message || 'PCR profile update failed' } }
+    }
+    return { success: true, data: { profile } }
   }
 }
