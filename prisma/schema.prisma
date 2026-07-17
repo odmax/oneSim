@@ -264,7 +264,9 @@ model ProviderPackage {
   id              String   @id @default(cuid())
   providerId      String
   providerPlanId  String
-  providerPlanCode String?
+  providerPlanCode   String?
+  providerTemplateId String?
+  providerStatus     String?
   name            String
   dataGB          Int
   validityDays    Int

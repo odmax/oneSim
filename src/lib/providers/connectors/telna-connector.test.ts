@@ -389,6 +389,589 @@ describe('TelnaConnector testConnection', () => {
   })
 })
 
+describe('TelnaConnector Discovery — listCountries', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('returns paginated countries on success', async () => {
+    const countryData = [
+      { id: 1, name: 'United States', iso: 'US', code: '1', region: 'Americas' },
+      { id: 2, name: 'United Kingdom', iso: 'GB', code: '44', region: 'Europe' },
+    ]
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: countryData, total: 2, offset: 0, count: 2 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listCountries(10, 0)
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(2)
+    expect(result.data?.total).toBe(2)
+    expect(result.data?.items[0].name).toBe('United States')
+  })
+
+  it('returns empty list on API failure', async () => {
+    const fakeResponse = {
+      ok: false, status: 500,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Server Error'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listCountries(10, 0)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_500')
+  })
+
+  it('handles network failure', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ENETUNREACH'))
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listCountries(10, 0)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NETWORK_ERROR')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.listCountries(10, 0)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+
+  it('handles empty response gracefully', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 0 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listCountries(10, 0)
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(0)
+    expect(result.data?.total).toBe(0)
+  })
+})
+
+describe('TelnaConnector Discovery — getCompany', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('returns company by ID on success', async () => {
+    const companyData = { id: 42, name: 'Acme Corp', code: 'ACME', status: 'ACTIVE', countryId: 1 }
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: companyData })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getCompany(42)
+
+    expect(result.success).toBe(true)
+    expect(result.data?.company.id).toBe(42)
+    expect(result.data?.company.name).toBe('Acme Corp')
+    expect(result.data?.company.code).toBe('ACME')
+
+    // Verify path params substitution
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/core/companies/42'),
+      expect.any(Object)
+    )
+  })
+
+  it('returns error when company not found', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getCompany(999)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.getCompany(1)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Discovery — listInventories', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('returns inventories for a company', async () => {
+    const inventoryData = [
+      { id: 10, name: 'Main Inventory', type: 'PHYSICAL', status: 'ACTIVE', companyId: 42, totalSims: 1000, availableSims: 500, allocatedSims: 450, defectiveSims: 30, testSims: 20 },
+    ]
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: inventoryData, total: 1, offset: 0, count: 10 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listInventories(42, 10, 0)
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(1)
+    expect(result.data?.total).toBe(1)
+    expect(result.data?.items[0].name).toBe('Main Inventory')
+    expect(result.data?.items[0].availableSims).toBe(500)
+  })
+
+  it('filters by company_id query parameter', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 10 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.listInventories(99, 10, 0)
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('company_id=99'),
+      expect.any(Object)
+    )
+  })
+
+  it('handles failure', async () => {
+    const fakeResponse = {
+      ok: false, status: 403,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Forbidden'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listInventories()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_403')
+  })
+
+  it('handles empty response gracefully', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listInventories()
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(0)
+    expect(result.data?.total).toBe(0)
+  })
+})
+
+describe('TelnaConnector Discovery — listGroups', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('returns groups with filters', async () => {
+    const groupData = [
+      { id: 100, name: 'Group A', inventoryId: 10, status: 'ACTIVE', profileId: 5, totalSims: 200, availableSims: 100, allocatedSims: 100 },
+    ]
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: groupData, total: 1, offset: 0, count: 10 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listGroups(10, 42, 50, 0)
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(1)
+    expect(result.data?.items[0].name).toBe('Group A')
+    expect(result.data?.items[0].inventoryId).toBe(10)
+  })
+
+  it('passes inventory_id and company_id query params', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.listGroups(10, 42)
+    const url = (globalThis.fetch as any).mock.calls[0][0] as string
+    expect(url).toContain('inventory_id=10')
+    expect(url).toContain('company_id=42')
+  })
+
+  it('handles failure', async () => {
+    const fakeResponse = {
+      ok: false, status: 429,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Rate Limited'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listGroups()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_429')
+  })
+})
+
+describe('TelnaConnector Discovery — getWallet', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('returns wallet by ID on success', async () => {
+    const walletData = { id: 500, name: 'USD Wallet', currency: 'USD', balance: 10000.50, status: 'ACTIVE', companyId: 42 }
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: walletData })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getWallet(500)
+    expect(result.success).toBe(true)
+    expect(result.data?.wallet.id).toBe(500)
+    expect(result.data?.wallet.balance).toBe(10000.50)
+    expect(result.data?.wallet.currency).toBe('USD')
+    // Verify path param substitution
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/pcr/wallets/500'),
+      expect.any(Object)
+    )
+  })
+
+  it('returns error when wallet not found', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getWallet(999)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.getWallet(1)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Phase 2A — listPackageTemplates', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  const mockTemplates = [
+    {
+      id: 101, name: '1GB Daily Plan', package_type: 'DATA', status: 'ACTIVE',
+      inventory_id: 10, currency: 'USD', price: 5.00,
+      data_allowance: { value: 1, unit: 'GB' },
+      time_allowance: { value: 1, unit: 'DAY' },
+      countries: [{ name: 'United States', iso: 'US' }],
+    },
+    {
+      id: 102, name: '5GB Weekly Plan', package_type: 'DATA', status: 'ACTIVE',
+      inventory_id: 10, currency: 'USD', price: 15.00,
+      data_allowance: { value: 5, unit: 'GB' },
+      time_allowance: { value: 1, unit: 'WEEK' },
+      zones: [{ name: 'Europe', type: 'REGIONAL', countryCodes: ['DE', 'FR', 'ES'] }],
+    },
+  ]
+
+  it('returns paginated package templates on success', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: mockTemplates, total: 2, offset: 0, count: 50 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackageTemplates(10, 50, 0)
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(2)
+    expect(result.data?.total).toBe(2)
+    expect(result.data?.items[0].name).toBe('1GB Daily Plan')
+    expect(result.data?.items[1].name).toBe('5GB Weekly Plan')
+  })
+
+  it('passes inventory_id query parameter', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 50 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.listPackageTemplates(42, 50, 0)
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('inventory_id=42'),
+      expect.any(Object)
+    )
+  })
+
+  it('handles empty result', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 50 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackageTemplates()
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(0)
+    expect(result.data?.total).toBe(0)
+  })
+
+  it('handles 401', async () => {
+    const fakeResponse = {
+      ok: false, status: 401,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Unauthorized'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackageTemplates()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_401')
+  })
+
+  it('handles 403', async () => {
+    const fakeResponse = {
+      ok: false, status: 403,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Forbidden'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackageTemplates()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_403')
+  })
+
+  it('handles 404', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackageTemplates()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+  })
+
+  it('handles 429', async () => {
+    const fakeResponse = {
+      ok: false, status: 429,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Rate Limited'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackageTemplates()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_429')
+  })
+
+  it('handles timeout', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackageTemplates()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('TIMEOUT')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.listPackageTemplates()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Phase 2A — getPackageTemplate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('returns template detail by ID on success', async () => {
+    const templateData = {
+      id: 201, name: '10GB Monthly Plan', package_type: 'DATA', status: 'ACTIVE',
+      inventory_id: 10, currency: 'USD', price: 30.00,
+      data_allowance: { value: 10, unit: 'GB' },
+      time_allowance: { value: 1, unit: 'MONTH' },
+      countries: [{ name: 'Germany', iso: 'DE' }, { name: 'France', iso: 'FR' }],
+      created_at: '2025-01-01T00:00:00Z',
+      updated_at: '2025-06-01T00:00:00Z',
+    }
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: templateData })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getPackageTemplate(201)
+    expect(result.success).toBe(true)
+    expect(result.data?.template.id).toBe(201)
+    expect(result.data?.template.name).toBe('10GB Monthly Plan')
+    expect(result.data?.template.price).toBe(30.00)
+    // Verify path param substitution
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/pcr/package-templates/201'),
+      expect.any(Object)
+    )
+  })
+
+  it('handles 404 when template not found', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getPackageTemplate(999)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.getPackageTemplate(1)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Phase 2A — package template path param substitution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('substitutes package_template_id in packageTemplate endpoint path', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 301, name: 'Test', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.getPackageTemplate(301)
+    const url = (globalThis.fetch as any).mock.calls[0][0] as string
+    expect(url).toMatch(/\/pcr\/package-templates\/301[?]?/)
+    expect(url).not.toContain('{package_template_id}')
+  })
+})
+
+describe('TelnaConnector Phase 2A — existing discovery regression', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('listCountries still works after Phase 2A changes', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [{ id: 1, name: 'Test', iso: 'TT' }], total: 1, offset: 0, count: 1 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listCountries(1, 0)
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(1)
+  })
+
+  it('getCompany still works after Phase 2A changes', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, name: 'Co', code: 'CO', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getCompany(1)
+    expect(result.success).toBe(true)
+  })
+
+  it('getWallet still works after Phase 2A changes', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, name: 'W', currency: 'USD', balance: 100, status: 'ACTIVE', companyId: 1 } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getWallet(1)
+    expect(result.success).toBe(true)
+  })
+})
+
+describe('TelnaConnector Discovery — path param substitution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('substitutes company_id in company endpoint path', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, name: 'Test', code: 'TST', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.getCompany(123)
+    const url = (globalThis.fetch as any).mock.calls[0][0] as string
+    expect(url).toMatch(/\/core\/companies\/123[?]?/)
+    expect(url).not.toContain('{company_id}')
+  })
+
+  it('substitutes wallet_id in wallet endpoint path', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 456, name: 'Test Wallet', currency: 'EUR', balance: 500, status: 'ACTIVE', companyId: 1 } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.getWallet(456)
+    const url = (globalThis.fetch as any).mock.calls[0][0] as string
+    expect(url).toMatch(/\/pcr\/wallets\/456[?]?/)
+    expect(url).not.toContain('{wallet_id}')
+  })
+})
+
 describe('Existing Behavior Unchanged', () => {
   it('Choice URL_TOKEN resolves correctly', () => {
     const ct = resolveConnectorType('CHOICE', 'CUSTOM')
@@ -480,5 +1063,227 @@ describe('Provider Search by Code', () => {
       )
     )
     expect(results).toHaveLength(0)
+  })
+})
+
+describe('TelnaConnector Phase 2B — listPackages', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  const mockPackages = [
+    {
+      id: 1001, package_template_id: 201, inventory_id: 10,
+      name: '5GB Monthly Data', status: 'ACTIVE',
+      data_allowance: { value: 5, unit: 'GB' },
+      time_allowance: { value: 1, unit: 'MONTH' },
+      price: 25.00, currency: 'USD',
+      countries: [{ name: 'United States', iso: 'US' }],
+      coverage_type: 'LOCAL', activation_mode: 'AUTO',
+    },
+    {
+      id: 1002, package_template_id: 202, inventory_id: 11,
+      name: '10GB Global Roaming', status: 'ACTIVE',
+      data_allowance: { value: 10, unit: 'GB' },
+      time_allowance: { value: 7, unit: 'DAY' },
+      price: 45.00, currency: 'USD',
+      zones: [{ name: 'Global', type: 'GLOBAL', countryCodes: ['*'] }],
+      coverage_type: 'GLOBAL', activation_mode: 'MANUAL',
+    },
+  ]
+
+  it('returns paginated packages on success', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: mockPackages, total: 2, offset: 0, count: 50 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackages(10, 201, 50, 0)
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(2)
+    expect(result.data?.total).toBe(2)
+    expect(result.data?.items[0].name).toBe('5GB Monthly Data')
+    expect(result.data?.items[1].name).toBe('10GB Global Roaming')
+  })
+
+  it('passes inventory_id and package_template_id query params', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 100 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.listPackages(42, 55, 100, 0)
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('inventory_id=42'),
+      expect.any(Object)
+    )
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('package_template_id=55'),
+      expect.any(Object)
+    )
+  })
+
+  it('handles empty result', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 50 })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackages()
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(0)
+    expect(result.data?.total).toBe(0)
+  })
+
+  it('handles 401', async () => {
+    const fakeResponse = {
+      ok: false, status: 401,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Unauthorized'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackages()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_401')
+  })
+
+  it('handles 403', async () => {
+    const fakeResponse = {
+      ok: false, status: 403,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Forbidden'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackages()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_403')
+  })
+
+  it('handles 404', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackages()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+  })
+
+  it('handles 429', async () => {
+    const fakeResponse = {
+      ok: false, status: 429,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Rate Limited'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackages()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_429')
+  })
+
+  it('handles timeout', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackages()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('TIMEOUT')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.listPackages()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Phase 2B — getPackage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('returns package detail by ID on success', async () => {
+    const pkgData = {
+      id: 1001, package_template_id: 201, inventory_id: 10,
+      name: '5GB Monthly Data', status: 'ACTIVE',
+      data_allowance: { value: 5, unit: 'GB' },
+      time_allowance: { value: 1, unit: 'MONTH' },
+      price: 25.00, currency: 'USD',
+      countries: [{ name: 'United States', iso: 'US' }],
+      coverage_type: 'LOCAL', activation_mode: 'AUTO',
+    }
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: pkgData })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getPackage(1001)
+    expect(result.success).toBe(true)
+    expect(result.data?.pkg.id).toBe(1001)
+    expect(result.data?.pkg.name).toBe('5GB Monthly Data')
+    expect(result.data?.pkg.price).toBe(25.00)
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/pcr/packages/1001'),
+      expect.any(Object)
+    )
+  })
+
+  it('handles 404 when package not found', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getPackage(999)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+  })
+
+  it('handles provider not configured', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(null)
+    const connector = new TelnaConnector('non-existent', 'Telna')
+    const result = await connector.getPackage(1)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+  })
+})
+
+describe('TelnaConnector Phase 2B — package path param substitution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('substitutes package_id in package endpoint path', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 301, name: 'Test', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.getPackage(301)
+    const url = (globalThis.fetch as any).mock.calls[0][0] as string
+    expect(url).toMatch(/\/pcr\/packages\/301[?]?/)
+    expect(url).not.toContain('{package_id}')
   })
 })

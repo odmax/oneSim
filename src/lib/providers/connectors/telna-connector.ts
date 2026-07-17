@@ -1,11 +1,12 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
-import { TELNA_ENDPOINTS, type TelnaEndpoint } from './telna-endpoints'
+import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage } from './telna-endpoints'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState } from './connector-interface'
 
 interface TelnaRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
   endpoint: TelnaEndpoint
+  pathParams?: Record<string, string | number>
   query?: Record<string, string | number | undefined>
   body?: unknown
   timeoutMs?: number
@@ -69,7 +70,12 @@ export class TelnaConnector implements IProviderConnector {
 
     const { apiBaseUrl, keyId, authorizationMode } = providerConfig
     const method = opts.method || 'GET'
-    const path = TELNA_ENDPOINTS[opts.endpoint]
+    let path: string = TELNA_ENDPOINTS[opts.endpoint]
+    if (opts.pathParams) {
+      for (const [key, value] of Object.entries(opts.pathParams)) {
+        path = path.replace(`{${key}}`, String(value))
+      }
+    }
     const timeoutMs = opts.timeoutMs || 15000
 
     let url = `${apiBaseUrl}${path}`
@@ -228,5 +234,127 @@ export class TelnaConnector implements IProviderConnector {
 
   async topUpESIM(_params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Top-up not implemented for Telna connector' } }
+  }
+
+  // ── Discovery Layer (Telna Phase 1B) ──────────────────────────────────
+
+  async listCountries(count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaCountry[]; total: number }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'countries', query: { count, offset } })
+    const duration = Date.now() - start
+    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaCountry>).data : []) || []
+    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaCountry>).total : 0) || 0
+    console.log(`[TELNA_DISCOVERY] method=listCountries success=${result.success} status=${result.status} itemCount=${items.length} total=${total} durationMs=${duration} requestId=${result.requestId}`)
+    if (!result.success) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Failed to list countries' } }
+    }
+    return { success: true, data: { items, total } }
+  }
+
+  async getCompany(companyId: number): Promise<ConnectorResult<{ company: TelnaCompany }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'company', pathParams: { company_id: companyId } })
+    const duration = Date.now() - start
+    const company = result.success && result.data ? (result.data as { data: TelnaCompany }).data : null
+    console.log(`[TELNA_DISCOVERY] method=getCompany companyId=${companyId} success=${result.success} status=${result.status} durationMs=${duration} requestId=${result.requestId}`)
+    if (!result.success || !company) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Company not found' } }
+    }
+    return { success: true, data: { company } }
+  }
+
+  async listInventories(company?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaInventory[]; total: number }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'inventories', query: { company_id: company, count, offset } })
+    const duration = Date.now() - start
+    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaInventory>).data : []) || []
+    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaInventory>).total : 0) || 0
+    console.log(`[TELNA_DISCOVERY] method=listInventories company=${company} success=${result.success} status=${result.status} itemCount=${items.length} total=${total} durationMs=${duration} requestId=${result.requestId}`)
+    if (!result.success) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Failed to list inventories' } }
+    }
+    return { success: true, data: { items, total } }
+  }
+
+  async listGroups(inventoryId?: number, company?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaGroup[]; total: number }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'groups', query: { inventory_id: inventoryId, company_id: company, count, offset } })
+    const duration = Date.now() - start
+    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaGroup>).data : []) || []
+    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaGroup>).total : 0) || 0
+    console.log(`[TELNA_DISCOVERY] method=listGroups inventoryId=${inventoryId} company=${company} success=${result.success} status=${result.status} itemCount=${items.length} total=${total} durationMs=${duration} requestId=${result.requestId}`)
+    if (!result.success) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Failed to list groups' } }
+    }
+    return { success: true, data: { items, total } }
+  }
+
+  async getWallet(walletId: number): Promise<ConnectorResult<{ wallet: TelnaWallet }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'wallet', pathParams: { wallet_id: walletId } })
+    const duration = Date.now() - start
+    const wallet = result.success && result.data ? (result.data as { data: TelnaWallet }).data : null
+    console.log(`[TELNA_DISCOVERY] method=getWallet walletId=${walletId} success=${result.success} status=${result.status} durationMs=${duration} requestId=${result.requestId}`)
+    if (!result.success || !wallet) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Wallet not found' } }
+    }
+    return { success: true, data: { wallet } }
+  }
+
+  // ── Package Template Discovery (Telna Phase 2A) ───────────────────────
+
+  async listPackageTemplates(inventoryId?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaPackageTemplate[]; total: number }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'packageTemplates', query: { inventory_id: inventoryId, count, offset } })
+    const duration = Date.now() - start
+    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaPackageTemplate>).data : []) || []
+    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaPackageTemplate>).total : 0) || 0
+    console.log(`[TELNA_PACKAGE_TEMPLATES] status=${result.status} requestId=${result.requestId} itemCount=${items.length} durationMs=${duration} inventoryId=${inventoryId}`)
+    if (!result.success) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Failed to list package templates' } }
+    }
+    return { success: true, data: { items, total } }
+  }
+
+  async getPackageTemplate(packageTemplateId: number): Promise<ConnectorResult<{ template: TelnaPackageTemplateDetail }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'packageTemplate', pathParams: { package_template_id: packageTemplateId } })
+    const duration = Date.now() - start
+    const template = result.success && result.data ? (result.data as { data: TelnaPackageTemplateDetail }).data : null
+    console.log(`[TELNA_PACKAGE_TEMPLATE_DETAIL] templateId=${packageTemplateId} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    if (!result.success || !template) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Package template not found' } }
+    }
+    return { success: true, data: { template } }
+  }
+
+  // ── Package Sync (Telna Phase 2B) ────────────────────────────────────
+
+  async listPackages(inventoryId?: number, packageTemplateId?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaPackage[]; total: number }>> {
+    const start = Date.now()
+    const result = await this.request({
+      method: 'GET', endpoint: 'packages',
+      query: { inventory_id: inventoryId, package_template_id: packageTemplateId, count, offset },
+    })
+    const duration = Date.now() - start
+    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaPackage>).data : []) || []
+    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaPackage>).total : 0) || 0
+    console.log(`[TELNA_PACKAGES] status=${result.status} requestId=${result.requestId} itemCount=${items.length} total=${total} durationMs=${duration} inventoryId=${inventoryId}`)
+    if (!result.success) {
+      return { success: false, error: { code: result.error?.code || 'SYNC_FAILED', message: result.error?.message || 'Failed to list packages' } }
+    }
+    return { success: true, data: { items, total } }
+  }
+
+  async getPackage(packageId: number): Promise<ConnectorResult<{ pkg: TelnaPackage }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'package', pathParams: { package_id: packageId } })
+    const duration = Date.now() - start
+    const pkg = result.success && result.data ? (result.data as { data: TelnaPackage }).data : null
+    console.log(`[TELNA_PACKAGE_DETAIL] packageId=${packageId} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    if (!result.success || !pkg) {
+      return { success: false, error: { code: result.error?.code || 'SYNC_FAILED', message: result.error?.message || 'Package not found' } }
+    }
+    return { success: true, data: { pkg } }
   }
 }

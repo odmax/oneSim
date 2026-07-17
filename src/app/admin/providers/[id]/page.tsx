@@ -22,6 +22,7 @@ import { getProviderCapabilities, CAPABILITY_LABELS, CAPABILITY_COLORS, provider
 import { ProviderActionButton, ActionForm } from '@/components/admin/providers/ActionButtons'
 import { MappingValidator } from '@/components/admin/providers/MappingValidator'
 import { TestPurchasePanel } from '@/components/admin/providers/TestPurchasePanel'
+import { TelnaDiscoveryPanel } from '@/components/admin/providers/telna/TelnaDiscoveryPanel'
 
 function maskApiToken(token: string | null): string {
   if (!token) return ''
@@ -127,10 +128,45 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
 
       {/* Tab Navigation */}
       <div className="mb-6 flex gap-1 border-b border-gray-200">
-        <span className="px-4 py-2 text-sm font-medium border-b-2 border-cyan-600 text-cyan-700">
+        <Link
+          href={`/admin/providers/${provider.id}?tab=overview`}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            (searchParams?.tab || 'overview') === 'overview'
+              ? 'border-b-2 border-cyan-600 text-cyan-700'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
           Overview
-        </span>
+        </Link>
+        {provider.adapterStrategy === 'TELNA' && (
+          <Link
+            href={`/admin/providers/${provider.id}?tab=discovery`}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              searchParams?.tab === 'discovery'
+                ? 'border-b-2 border-cyan-600 text-cyan-700'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Telna Discovery
+          </Link>
+        )}
       </div>
+
+      {/* Discovery Tab Content */}
+      {(searchParams?.tab === 'discovery') ? (
+        <>
+          {provider.adapterStrategy === 'TELNA' ? (
+            <TelnaDiscoveryPanel providerId={provider.id} />
+          ) : (
+            <div className="rounded-lg border bg-orange-50 p-6 text-center text-sm text-orange-700">
+              Discovery is not available for this provider type.
+            </div>
+          )}
+        </>
+      ) : null}
+
+      {/* Overview Tab Content */}
+      {(!searchParams?.tab || searchParams?.tab === 'overview') ? (<>
 
       {searchParams?.success && (
         <div className="mb-6 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800">{decodeURIComponent(searchParams.success)}</div>
@@ -531,6 +567,8 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
           />
         </div>
       )}
+      </>)
+        : null}
     </div>
   )
 }
