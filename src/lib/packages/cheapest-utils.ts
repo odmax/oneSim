@@ -91,6 +91,7 @@ export async function recalculateCheapestPlans(): Promise<{
   alternatives: number
   excluded: number
   missingCost: number
+  soloWinners: number
 }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
@@ -134,6 +135,15 @@ export async function recalculateCheapestPlans(): Promise<{
         cheapestReason: costSource === 'MISSING' ? 'Missing effective cost' : null,
       },
     })
+
+    // Sync in-memory object so subsequent loops use computed values
+    ;(pp as any).comparableKey = comparableKey
+    ;(pp as any).normalizedCountry = nc
+    ;(pp as any).normalizedDataLabel = dl
+    ;(pp as any).normalizedValidityDays = nd
+    ;(pp as any).normalizedCoverageType = coverage
+    ;(pp as any).effectiveCostPrice = effectiveCostPrice
+    ;(pp as any).costSource = costSource
   }
 
   // Step 2: Group by comparableKey and rank
@@ -149,11 +159,9 @@ export async function recalculateCheapestPlans(): Promise<{
   let alternatives = 0
   let excluded = 0
   let missingCost = 0
+  let soloWinners = 0
 
   for (const [key, group] of byKey) {
-    if (group.length < 2) continue // Skip unique plans (no comparison needed)
-    groupsProcessed++
-
     // Separate eligible vs excluded
     const eligible: { pp: typeof allPps[0]; effectiveCost: number }[] = []
     const ineligible: typeof allPps[0][] = []
@@ -191,21 +199,31 @@ export async function recalculateCheapestPlans(): Promise<{
       if (!pp.excludedFromCheapest) excluded++
     }
 
-    // Sort eligible by: effectiveCost ASC, provider priority DESC, then createdAt ASC
+    // Skip groups with no eligible packages
+    if (eligible.length === 0) continue
+
+    groupsProcessed++
+
+    // Sort eligible by: effectiveCost ASC, provider priority DESC, package ID ASC (deterministic)
     eligible.sort((a, b) => {
       if (a.effectiveCost !== b.effectiveCost) return a.effectiveCost - b.effectiveCost
       const aPrio = a.pp.provider.priority || 0
       const bPrio = b.pp.provider.priority || 0
       if (aPrio !== bPrio) return bPrio - aPrio
-      return new Date(a.pp.createdAt).getTime() - new Date(b.pp.createdAt).getTime()
+      return a.pp.id.localeCompare(b.pp.id)
     })
+
+    // Track if this is a solo-winner group (only one eligible package)
+    const isSolo = eligible.length === 1
 
     // Rank
     for (let i = 0; i < eligible.length; i++) {
       const rank = i + 1
       const { pp } = eligible[i]
       const isWinner = rank === 1
-      const reason = isWinner ? 'Cheapest eligible plan' : `Alternative #${rank}`
+      const reason = isWinner
+        ? isSolo ? 'Solo eligible plan' : 'Cheapest eligible plan'
+        : `Alternative #${rank}`
 
       await prisma.providerPackage.update({
         where: { id: pp.id },
@@ -215,8 +233,20 @@ export async function recalculateCheapestPlans(): Promise<{
           cheapestReason: reason,
         },
       })
-      if (isWinner) winners++
-      else alternatives++
+
+      if (isWinner) {
+        winners++
+        if (isSolo) soloWinners++
+
+        console.log('[CHEAPEST_PLAN_SELECTION]', JSON.stringify({
+          groupKey: key,
+          candidateCount: eligible.length,
+          selectedPlanId: pp.id,
+          selectedCost: pp.effectiveCostPrice ? Number(pp.effectiveCostPrice) : eligible[i].effectiveCost,
+        }))
+      } else {
+        alternatives++
+      }
     }
   }
 
@@ -225,12 +255,12 @@ export async function recalculateCheapestPlans(): Promise<{
       userId: session.user.id,
       action: 'CHEAPEST_RECALCULATED',
       entity: 'ProviderPackage',
-      details: `Cheapest plans recalculated: ${groupsProcessed} groups, ${winners} cheapest, ${alternatives} alternatives, ${excluded} excluded, ${missingCost} missing cost`,
+      details: `Cheapest plans recalculated: ${groupsProcessed} groups, ${winners} cheapest, ${soloWinners} solo, ${alternatives} alternatives, ${excluded} excluded, ${missingCost} missing cost`,
     },
   })
 
   revalidatePath('/admin/imported-plans')
-  return { groupsProcessed, winners, alternatives, excluded, missingCost }
+  return { groupsProcessed, winners, alternatives, excluded, missingCost, soloWinners }
 }
 
 export async function markCheapestReady(): Promise<{ updated: number }> {
@@ -279,7 +309,13 @@ export async function publishCheapestOnly(): Promise<{ published: number; skippe
 
     if (!hasCost || !hasPrice) { skipped++; continue }
 
-    if (!esim) {
+    if (esim) {
+      // Update existing — idempotent: no duplicate creation
+      await prisma.eSIMPackage.update({
+        where: { id: esim.id },
+        data: { source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false, archivedAt: null },
+      })
+    } else {
       await prisma.eSIMPackage.create({
         data: {
           name: pp.name, dataGB: pp.dataGB, validityDays: pp.validityDays,
@@ -289,11 +325,6 @@ export async function publishCheapestOnly(): Promise<{ published: number; skippe
           costPriceUSD: pp.effectiveCostPrice ? Number(pp.effectiveCostPrice) : undefined,
           priceUSD: 0, localPrice: 0, currency: 'USD',
         },
-      })
-    } else {
-      await prisma.eSIMPackage.update({
-        where: { id: esim.id },
-        data: { source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false, archivedAt: null },
       })
     }
     published++

@@ -6,13 +6,43 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { markPreferredPackage, unmarkPreferredPackage, hideDuplicatesInGroup, autoPickCheapestForGroup, autoPickAllGroups, excludePackageFromAutoPick, includePackageInAutoPick } from '@/lib/actions/auto-pick'
 import { HealthActionButtons } from './HealthActionButtons'
+import { checkPackageEligibility } from '@/lib/packages/package-eligibility'
 
-function isValidForHealth(pkg: { configurationStatus: string | null; sellingPrice: any; sellingCurrency: string | null; publishStatus: string | null; excludedFromAutoPick: boolean }) {
-  const configured = pkg.configurationStatus === 'CONFIGURED' || pkg.configurationStatus === 'AUTO_CONFIGURED'
-  const hasPrice = pkg.sellingPrice && parseFloat(pkg.sellingPrice.toString()) > 0
-  const hasCurrency = !!pkg.sellingCurrency
-  const notHidden = pkg.publishStatus !== 'HIDDEN' && pkg.publishStatus !== 'ARCHIVED'
-  return configured && hasPrice && hasCurrency && notHidden
+function formatPrice(v: any): string {
+  if (v == null) return '—'
+  const n = typeof v === 'object' && 'toString' in v ? parseFloat(v.toString()) : Number(v)
+  return isNaN(n) ? '—' : `$${n.toFixed(2)}`
+}
+
+function fmt(v: any): string {
+  if (v == null || v === '') return '—'
+  return String(v)
+}
+
+interface PackageWithProvider {
+  id: string
+  name: string
+  providerId: string
+  dataGB: number
+  validityDays: number
+  country: string | null
+  region: string | null
+  costPrice: any
+  sellingPrice: any
+  sellingCurrency: string | null
+  configurationStatus: string | null
+  publishStatus: string | null
+  isAvailable: boolean
+  excludedFromCheapest: boolean
+  excludedFromAutoPick: boolean
+  isPreferred: boolean
+  autoPickReason: string | null
+  cheapestRank: number | null
+  isCheapestCandidate: boolean
+  cheapestReason: string | null
+  effectiveCostPrice: number | null
+  provider: { id: string; name: string; status?: string | null } | null
+  publishedAs?: { archivedAt?: Date | string | null } | null
 }
 
 export default async function CatalogHealthPage() {
@@ -24,87 +54,191 @@ export default async function CatalogHealthPage() {
   const all = await prisma.providerPackage.findMany({
     include: { provider: { select: { id: true, name: true } } },
     orderBy: { name: 'asc' },
+  }) as PackageWithProvider[]
+
+  // Compute eligibility for every package using the shared function
+  const withEligibility = all.map(pkg => {
+    const elig = checkPackageEligibility(pkg)
+    return { ...pkg, elig }
   })
 
-  // Only show configured/valid packages in health
-  const validPackages = all.filter(isValidForHealth)
+  const eligiblePlans = withEligibility.filter(p => p.elig.catalogHealthEligible)
+  const ineligiblePlans = withEligibility.filter(p => !p.elig.catalogHealthEligible)
 
-  // Stats (total still from all, health from valid)
-  const stats = {
-    total: all.length,
-    validForHealth: validPackages.length,
-    unconfigured: all.filter(p => p.configurationStatus === 'UNCONFIGURED').length,
-    missingPrice: all.filter(p => !p.sellingPrice || parseFloat(p.sellingPrice.toString()) <= 0).length,
-    published: all.filter(p => p.publishStatus === 'PUBLISHED').length,
-    hidden: all.filter(p => p.publishStatus === 'HIDDEN').length,
-    archived: all.filter(p => p.publishStatus === 'ARCHIVED').length,
-    configured: all.filter(p => p.configurationStatus === 'CONFIGURED' || p.configurationStatus === 'AUTO_CONFIGURED').length,
-  }
-
-  // Duplicate detection: group by country + dataGB + validityDays (only valid packages)
-  const groups = new Map<string, typeof validPackages>()
-  for (const pkg of validPackages) {
+  // Group eligible plans by country|dataGB|validityDays
+  const groups = new Map<string, typeof eligiblePlans>()
+  for (const pkg of eligiblePlans) {
     const key = `${pkg.country || 'XX'}|${pkg.dataGB}|${pkg.validityDays}`
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key)!.push(pkg)
   }
 
-  const duplicates = Array.from(groups.entries())
+  const duplicateGroups = Array.from(groups.entries())
     .filter(([, pkgs]) => pkgs.length > 1)
     .sort((a, b) => b[1].length - a[1].length)
 
-  // Conflicting prices: same group but different selling prices
-  const conflicts = duplicates.map(([key, pkgs]) => {
+  const soloPlans = Array.from(groups.entries())
+    .filter(([, pkgs]) => pkgs.length === 1)
+    .map(([, pkgs]) => pkgs[0])
+
+  const stats = {
+    total: all.length,
+    eligible: eligiblePlans.length,
+    ineligible: ineligiblePlans.length,
+    unconfigured: all.filter(p => p.configurationStatus === 'UNCONFIGURED').length,
+    missingPrice: all.filter(p => !p.sellingPrice || parseFloat(p.sellingPrice.toString()) <= 0).length,
+    duplicateGroups: duplicateGroups.length,
+    soloPlans: soloPlans.length,
+    published: all.filter(p => p.publishStatus === 'PUBLISHED').length,
+    hidden: all.filter(p => p.publishStatus === 'HIDDEN').length,
+    archived: all.filter(p => p.publishStatus === 'ARCHIVED').length,
+  }
+
+  function InlineBadge({ label, color }: { label: string; color: string }) {
+    return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${color}`}>{label}</span>
+  }
+
+  function IneligibleRow({ pkg }: { pkg: typeof withEligibility[0] }) {
+    return (
+      <tr className="border-t border-gray-100">
+        <td className="py-2 pr-3 text-xs text-gray-600">{pkg.provider?.name || '—'}</td>
+        <td className="py-2 pr-3 text-xs text-gray-900 truncate max-w-[200px]">{pkg.name}</td>
+        <td className="py-2 pr-3 text-xs text-gray-500">{fmt(pkg.configurationStatus)}</td>
+        <td className="py-2 pr-3 text-xs text-gray-500">{fmt(pkg.publishStatus)}</td>
+        <td className="py-2 pr-3 text-xs font-mono text-gray-500">{formatPrice(pkg.sellingPrice)}</td>
+        <td className="py-2 pr-3 text-xs text-gray-500">{fmt(pkg.sellingCurrency)}</td>
+        <td className="py-2 text-xs">
+          <div className="flex flex-wrap gap-1 max-w-[300px]">
+            {pkg.elig.reasons.map((r, i) => (
+              <span key={i} className="inline-flex items-center rounded-full bg-red-50 px-1.5 py-0.5 text-[9px] font-medium text-red-600 border border-red-100">
+                {r}
+              </span>
+            ))}
+            {pkg.elig.reasons.length === 0 && <span className="text-gray-400 text-[9px]">Unknown</span>}
+          </div>
+        </td>
+      </tr>
+    )
+  }
+
+  function EligibleRow({ pkg, rank }: { pkg: typeof withEligibility[0]; rank?: number }) {
+    return (
+      <tr className={`border-t ${rank === 1 ? 'bg-emerald-50' : ''}`}>
+        <td className="py-2 pr-3 text-xs text-gray-600">
+          {pkg.provider?.name || '—'}
+          {pkg.isPreferred && <InlineBadge label="Preferred" color="bg-cyan-100 text-cyan-700 ml-1" />}
+          {pkg.excludedFromAutoPick && <InlineBadge label="Excluded" color="bg-gray-100 text-gray-500 ml-1" />}
+          {rank === 1 && <InlineBadge label="Cheapest" color="bg-emerald-100 text-emerald-700 ml-1" />}
+        </td>
+        <td className="py-2 pr-3 text-xs text-gray-900 truncate max-w-[180px]">{pkg.name}</td>
+        <td className="py-2 pr-3 text-xs font-mono text-gray-600">{formatPrice(pkg.costPrice)}</td>
+        <td className="py-2 pr-3 text-xs font-mono text-gray-600">{formatPrice(pkg.sellingPrice)}</td>
+        <td className="py-2 pr-3 text-xs text-gray-500">{fmt(pkg.sellingCurrency)}</td>
+        <td className="py-2 pr-3 text-xs text-gray-500">{fmt(pkg.configurationStatus)}</td>
+        <td className="py-2 pr-3 text-xs text-gray-500">{fmt(pkg.publishStatus)}</td>
+        <td className="py-2 text-xs">
+          <div className="flex gap-1">
+            {pkg.isPreferred ? (
+              <form action={unmarkPreferredPackage.bind(null, pkg.id)}>
+                <button type="submit" className="rounded border border-amber-200 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 hover:bg-amber-50">Unmark</button>
+              </form>
+            ) : (
+              <form action={markPreferredPackage.bind(null, pkg.id)}>
+                <button type="submit" className="rounded border border-cyan-200 px-1.5 py-0.5 text-[9px] font-medium text-cyan-700 hover:bg-cyan-50">Mark Preferred</button>
+              </form>
+            )}
+            {pkg.excludedFromAutoPick ? (
+              <form action={includePackageInAutoPick.bind(null, pkg.id)}>
+                <button type="submit" className="rounded border border-emerald-200 px-1.5 py-0.5 text-[9px] font-medium text-emerald-700 hover:bg-emerald-50">Include</button>
+              </form>
+            ) : (
+              <form action={excludePackageFromAutoPick.bind(null, pkg.id)}>
+                <button type="submit" className="rounded border border-gray-200 px-1.5 py-0.5 text-[9px] font-medium text-gray-500 hover:bg-gray-50">Exclude</button>
+              </form>
+            )}
+          </div>
+        </td>
+      </tr>
+    )
+  }
+
+  function DuplicateGroup({ groupKey, pkgs }: { groupKey: string; pkgs: typeof eligiblePlans }) {
     const prices = new Set(pkgs.map(p => p.sellingPrice?.toString()).filter(Boolean))
     const providerNames = [...new Set(pkgs.map(p => p.provider?.name).filter(Boolean))]
     const published = pkgs.filter(p => p.publishStatus === 'PUBLISHED')
-    const cheapestIdx = pkgs.reduce((best, p, i) => {
-      const cp = parseFloat(p.costPrice.toString())
-      return cp < parseFloat(pkgs[best].costPrice.toString()) ? i : best
-    }, 0)
+    const sorted = [...pkgs].sort((a, b) => {
+      const aC = parseFloat(a.costPrice.toString())
+      const bC = parseFloat(b.costPrice.toString())
+      if (aC !== bC) return aC - bC
+      return a.id.localeCompare(b.id)
+    })
 
-    return {
-      key,
-      count: pkgs.length,
-      countries: [...new Set(pkgs.map(p => p.country).filter(Boolean))],
-      dataGB: pkgs[0].dataGB,
-      validityDays: pkgs[0].validityDays,
-      providers: providerNames,
-      hasConflict: prices.size > 1,
-      prices: [...prices],
-      published,
-      packages: pkgs.map(p => ({
-        id: p.id,
-        name: p.name,
-        provider: p.provider?.name || '—',
-        costPrice: p.costPrice.toString(),
-        sellingPrice: p.sellingPrice?.toString(),
-        publishStatus: p.publishStatus,
-        configurationStatus: p.configurationStatus,
-        isCheapest: p === pkgs[cheapestIdx],
-        isPreferred: p.isPreferred,
-        excludedFromAutoPick: p.excludedFromAutoPick,
-        autoPickReason: p.autoPickReason,
-      })),
-    }
-  })
+    return (
+      <div key={groupKey} className="p-4">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-700">
+            {pkgs.length} packages
+          </span>
+          <span className="text-sm text-gray-600">
+            {[...new Set(pkgs.map(p => p.country).filter(Boolean))].join(', ')} · {pkgs[0].dataGB} GB · {pkgs[0].validityDays}d
+          </span>
+          <span className="text-xs text-gray-400">Providers: {providerNames.join(', ')}</span>
+          {prices.size > 1 && (
+            <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600">Price Conflict</span>
+          )}
+          {published.length > 0 && (
+            <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">{published.length} published</span>
+          )}
+          <div className="ml-auto flex gap-1">
+            <form action={autoPickCheapestForGroup.bind(null, groupKey)}>
+              <button type="submit" className="rounded border border-cyan-200 px-2 py-0.5 text-[10px] font-medium text-cyan-700 hover:bg-cyan-50">Auto-Pick</button>
+            </form>
+            <form action={hideDuplicatesInGroup.bind(null, groupKey)}>
+              <button type="submit" className="rounded border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50">Hide Duplicates</button>
+            </form>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-gray-500">
+                <th className="pb-1">Provider</th>
+                <th className="pb-1">Name</th>
+                <th className="pb-1 text-right">Cost</th>
+                <th className="pb-1 text-right">Selling</th>
+                <th className="pb-1">Currency</th>
+                <th className="pb-1">Config</th>
+                <th className="pb-1">Publish</th>
+                <th className="pb-1 w-20">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((pkg, i) => (
+                <EligibleRow key={pkg.id} pkg={pkg} rank={i + 1} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Catalog Health</h2>
-          <p className="text-gray-600">Detect duplicates and conflicts among configured, priced packages only</p>
+          <p className="text-gray-600">Comprehensive package eligibility view — configured, priced packages only are publishable</p>
         </div>
         <div className="flex gap-2">
-          {duplicates.length > 0 && (
+          {duplicateGroups.length > 0 && (
             <div className="flex gap-2">
               <form action={autoPickAllGroups}>
                 <button type="submit" className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700">
                   Auto-Pick Cheapest
                 </button>
               </form>
-              <HealthActionButtons hasDuplicates={duplicates.length > 0} />
+              <HealthActionButtons hasDuplicates={duplicateGroups.length > 0} />
             </div>
           )}
           <Link href="/admin/provider-catalog" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
@@ -116,132 +250,106 @@ export default async function CatalogHealthPage() {
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-4">
         <div className="rounded-xl border bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">In Health Scope</p>
-          <p className="text-2xl font-bold text-gray-900">{stats.validForHealth}</p>
+          <p className="text-xs text-gray-500 uppercase">Total Packages</p>
+          <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
+        </div>
+        <div className="rounded-xl border bg-white p-4 shadow-sm">
+          <p className="text-xs text-gray-500 uppercase">Eligible (in scope)</p>
+          <p className="text-2xl font-bold text-emerald-600">{stats.eligible}</p>
           <p className="text-[10px] text-gray-400">Configured + priced + not hidden/archived</p>
         </div>
         <div className="rounded-xl border bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Unconfigured (excluded)</p>
-          <p className="text-2xl font-bold text-amber-600">{stats.unconfigured}</p>
+          <p className="text-xs text-gray-500 uppercase">Ineligible</p>
+          <p className="text-2xl font-bold text-red-600">{stats.ineligible}</p>
+          <p className="text-[10px] text-gray-400">Missing config, price, or hidden/archived</p>
         </div>
-        <div className="rounded-xl border bg-white p-4 shadow-sm">
-          <p className="text-xs text-gray-500 uppercase">Missing Price (excluded)</p>
-          <p className="text-2xl font-bold text-red-600">{stats.missingPrice}</p>
-        </div>
-        <div className={`rounded-xl border bg-white p-4 shadow-sm ${duplicates.length > 0 ? 'border-amber-300' : ''}`}>
+        <div className={`rounded-xl border bg-white p-4 shadow-sm ${duplicateGroups.length > 0 ? 'border-amber-300' : ''}`}>
           <p className="text-xs text-gray-500 uppercase">Duplicate Groups</p>
-          <p className={`text-2xl font-bold ${duplicates.length > 0 ? 'text-amber-600' : 'text-gray-900'}`}>{duplicates.length}</p>
+          <p className={`text-2xl font-bold ${duplicateGroups.length > 0 ? 'text-amber-600' : 'text-gray-900'}`}>{duplicateGroups.length}</p>
+          <p className="text-[10px] text-gray-400">{stats.soloPlans} solo, {stats.duplicateGroups} overlapping</p>
         </div>
       </div>
 
-      {/* Duplicate Groups */}
-      {duplicates.length > 0 && (
+      {/* Ineligible Plans */}
+      {ineligiblePlans.length > 0 && (
+        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b bg-red-50">
+            <h3 className="text-base font-semibold text-red-800">Ineligible Plans ({ineligiblePlans.length})</h3>
+            <p className="text-xs text-red-600 mt-1">These plans are not visible in Catalog Health — fix the listed issues to make them eligible</p>
+          </div>
+          <div className="overflow-x-auto p-4">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b">
+                  <th className="pb-2 pr-3">Provider</th>
+                  <th className="pb-2 pr-3">Name</th>
+                  <th className="pb-2 pr-3">Config Status</th>
+                  <th className="pb-2 pr-3">Publish Status</th>
+                  <th className="pb-2 pr-3 text-right">Selling Price</th>
+                  <th className="pb-2 pr-3">Currency</th>
+                  <th className="pb-2">Reasons</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ineligiblePlans.map(pkg => (
+                  <IneligibleRow key={pkg.id} pkg={pkg} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Eligible Solo Plans */}
+      {soloPlans.length > 0 && (
         <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b">
-            <h3 className="text-base font-semibold text-gray-900">Similar Packages ({duplicates.length} groups)</h3>
-            <p className="text-xs text-gray-500 mt-1">Groups of packages with same country, data, and validity — potential duplicates</p>
+            <h3 className="text-base font-semibold text-gray-900">Solo Eligible Plans ({soloPlans.length})</h3>
+            <p className="text-xs text-gray-500 mt-1">Unique packages — no duplicates in their country+data+validity group</p>
+          </div>
+          <div className="overflow-x-auto p-4">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b">
+                  <th className="pb-2 pr-3">Provider</th>
+                  <th className="pb-2 pr-3">Name</th>
+                  <th className="pb-2 pr-3 text-right">Cost</th>
+                  <th className="pb-2 pr-3 text-right">Selling</th>
+                  <th className="pb-2 pr-3">Currency</th>
+                  <th className="pb-2 pr-3">Config</th>
+                  <th className="pb-2 pr-3">Publish</th>
+                  <th className="pb-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {soloPlans.map(pkg => (
+                  <EligibleRow key={pkg.id} pkg={pkg} rank={1} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Groups */}
+      {duplicateGroups.length > 0 && (
+        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b">
+            <h3 className="text-base font-semibold text-gray-900">Duplicate / Overlapping Groups ({duplicateGroups.length})</h3>
+            <p className="text-xs text-gray-500 mt-1">Multiple packages with same country, data, and validity — potential duplicates</p>
           </div>
           <div className="divide-y">
-            {conflicts.map((group) => (
-              <div key={group.key} className="p-4">
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-700">
-                    {group.count} packages
-                  </span>
-                  <span className="text-sm text-gray-600">
-                    {group.countries.join(', ')} · {group.dataGB} GB · {group.validityDays}d
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    Providers: {group.providers.join(', ')}
-                  </span>
-                  {group.hasConflict && (
-                    <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600">
-                      Price Conflict
-                    </span>
-                  )}
-                  {group.published.length > 0 && (
-                    <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                      {group.published.length} published
-                    </span>
-                  )}
-                  <div className="ml-auto flex gap-1">
-                    <form action={autoPickCheapestForGroup.bind(null, group.key)}>
-                      <button type="submit" className="rounded border border-cyan-200 px-2 py-0.5 text-[10px] font-medium text-cyan-700 hover:bg-cyan-50">Auto-Pick</button>
-                    </form>
-                    <form action={hideDuplicatesInGroup.bind(null, group.key)}>
-                      <button type="submit" className="rounded border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50">Hide Duplicates</button>
-                    </form>
-                  </div>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-left text-gray-500">
-                        <th className="pb-1">Provider</th>
-                        <th className="pb-1">Name</th>
-                        <th className="pb-1 text-right">Cost</th>
-                        <th className="pb-1 text-right">Selling</th>
-                        <th className="pb-1">Config</th>
-                        <th className="pb-1">Publish</th>
-                      <th className="pb-1 w-16">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {group.packages.map(pkg => (
-                        <tr key={pkg.id} className={`border-t ${pkg.isCheapest ? 'bg-emerald-50' : ''}`}>
-                          <td className="py-1 pr-3 text-gray-600">
-                            {pkg.provider}
-                            {pkg.isPreferred && <span className="ml-1 inline-flex rounded-full bg-cyan-100 px-1.5 py-0.5 text-[9px] font-medium text-cyan-700">Preferred</span>}
-                            {pkg.excludedFromAutoPick && <span className="ml-1 inline-flex rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-medium text-gray-500">Excluded</span>}
-                          </td>
-                          <td className="py-1 pr-3 text-gray-900 truncate max-w-[200px]">{pkg.name}</td>
-                          <td className={`py-1 pr-3 text-right font-mono ${pkg.isCheapest ? 'text-emerald-700 font-medium' : 'text-gray-600'}`}>
-                            ${parseFloat(pkg.costPrice).toFixed(2)} {pkg.isCheapest ? '←' : ''}
-                          </td>
-                          <td className="py-1 pr-3 text-right font-mono text-gray-600">
-                            {pkg.sellingPrice ? `$${parseFloat(pkg.sellingPrice).toFixed(2)}` : '—'}
-                          </td>
-                          <td className={`py-1 pr-3 ${pkg.configurationStatus === 'UNCONFIGURED' ? 'text-amber-600' : 'text-gray-500'}`}>
-                            {pkg.configurationStatus || '—'}
-                          </td>
-                          <td className="py-1">{pkg.publishStatus || '—'}</td>
-                          <td className="py-1">
-                            <div className="flex gap-1">
-                              {pkg.isPreferred ? (
-                                <form action={unmarkPreferredPackage.bind(null, pkg.id)}>
-                                  <button type="submit" className="rounded border border-amber-200 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50">Unmark Preferred</button>
-                                </form>
-                              ) : (
-                                <form action={markPreferredPackage.bind(null, pkg.id)}>
-                                  <button type="submit" className="rounded border border-cyan-200 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700 hover:bg-cyan-50">Mark Preferred</button>
-                                </form>
-                              )}
-                              {pkg.excludedFromAutoPick ? (
-                                <form action={includePackageInAutoPick.bind(null, pkg.id)}>
-                                  <button type="submit" className="rounded border border-emerald-200 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 hover:bg-emerald-50">Include in Auto-Pick</button>
-                                </form>
-                              ) : (
-                                <form action={excludePackageFromAutoPick.bind(null, pkg.id)}>
-                                  <button type="submit" className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50">Exclude</button>
-                                </form>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+            {duplicateGroups.map(([key, pkgs]) => (
+              <DuplicateGroup key={key} groupKey={key} pkgs={pkgs} />
             ))}
           </div>
         </div>
       )}
 
-      {duplicates.length === 0 && (
+      {eligiblePlans.length === 0 && (
         <div className="rounded-xl border-2 border-dashed border-gray-200 bg-white p-16 text-center">
-          <p className="text-gray-500">No duplicate or overlapping packages detected.</p>
-          <p className="text-xs text-gray-400 mt-1">All configured/priced packages have unique country + data + validity combinations.</p>
+          <p className="text-gray-500">No eligible packages found.</p>
+          <p className="text-xs text-gray-400 mt-1">Configure plans with prices, currency, and set publishStatus to READY to appear here.</p>
         </div>
       )}
     </div>

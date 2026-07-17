@@ -30,6 +30,45 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
     return { success: false, error: 'No packages selected' }
   }
 
+  // When publishStatus is READY, validate and auto-default configurationStatus
+  if (configUpdates.publishStatus === 'READY') {
+    const missing: string[] = []
+
+    // Auto-default configurationStatus to CONFIGURED if not explicitly set
+    if (!configUpdates.configurationStatus) {
+      configUpdates.configurationStatus = 'CONFIGURED'
+    }
+
+    const finalConfigStatus = configUpdates.configurationStatus
+    if (finalConfigStatus !== 'CONFIGURED' && finalConfigStatus !== 'AUTO_CONFIGURED') {
+      missing.push('configurationStatus must be CONFIGURED or AUTO_CONFIGURED when publishStatus is READY')
+    }
+
+    if (configUpdates.sellingPrice == null || configUpdates.sellingPrice <= 0) {
+      missing.push('sellingPrice must be > 0 when publishStatus is READY')
+    }
+
+    if (!configUpdates.sellingCurrency) {
+      missing.push('sellingCurrency is required when publishStatus is READY')
+    }
+
+    if (configUpdates.costPrice == null || configUpdates.costPrice <= 0) {
+      missing.push('costPrice must be > 0 when publishStatus is READY')
+    }
+
+    if (missing.length > 0) {
+      return { success: false, error: `Cannot set publishStatus to READY: ${missing.join('; ')}.` }
+    }
+
+    console.log('[BULK_CONFIGURE_READY]', JSON.stringify({
+      packageCount: packageIds.length,
+      configurationStatus: configUpdates.configurationStatus,
+      sellingPrice: configUpdates.sellingPrice,
+      sellingCurrency: configUpdates.sellingCurrency,
+      costPrice: configUpdates.costPrice,
+    }))
+  }
+
   const updateData: any = {}
 
   if (configUpdates.costPrice != null) {
