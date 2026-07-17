@@ -4,10 +4,13 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
+import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 
 export async function autoPickAndPublishWinners() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+  const pipelineRunId = await startPipelineRun({ trigger: 'MANUAL' }).catch(() => '')
+  const startTime = Date.now()
   try {
 
   // Find all duplicate groups
@@ -103,6 +106,13 @@ export async function autoPickAndPublishWinners() {
       details: `Published ${published}, skipped ${skipped} out of ${duplicates.length} groups` },
   }).catch(() => {})
 
+  await recordStageFromCounts({
+    pipelineRunId, stage: 'PUBLISH', startTime,
+    total: duplicates.length, passed: published, failed: 0, skipped,
+    metadata: { published, skipped, skippedReasons: skippedReasons.slice(0, 10) },
+  })
+  await completePipelineRun(pipelineRunId, skipped > 0 && published === 0 ? 'FAILED' : skipped > 0 ? 'PARTIAL' : 'SUCCESS', published)
+
   revalidatePath('/admin/provider-catalog/health')
   revalidatePath('/admin/provider-catalog')
   revalidatePath('/admin/packages')
@@ -110,6 +120,7 @@ export async function autoPickAndPublishWinners() {
   // Return summary for UI
   return { success: true, published, skipped, skippedReasons: skippedReasons.slice(0, 10) }
   } catch (error: any) {
+    if (pipelineRunId) await failPipelineRun(pipelineRunId, error.message || 'Auto-pick + publish failed').catch(() => {})
     console.error('autoPickAndPublishWinners error:', error)
     return { success: false, published: 0, skipped: 0, error: error.message || 'Auto-pick + publish failed' }
   }

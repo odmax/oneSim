@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { toggleProviderStatus } from '@/lib/actions/providers'
 import { restoreProvider } from '@/lib/actions/provider-lifecycle'
 import { inferProviderCapabilities } from '@/lib/providers/capabilities'
+import { ProviderSearchBar } from '@/components/admin/providers/ProviderSearchBar'
 
 function maskApiToken(token: string | null): string {
   if (!token || token.length <= 4) return token ? '••••' + token.slice(-4) : ''
@@ -33,13 +34,21 @@ function getAuthStatus(provider: { apiToken: string | null; lastSuccessfulConnec
   return { label: 'Configured', color: 'text-yellow-700 bg-yellow-50', dot: '🟡' }
 }
 
-export default async function AdminProvidersPage({ searchParams }: { searchParams?: { error?: string; success?: string } }) {
+export default async function AdminProvidersPage({ searchParams }: { searchParams?: { error?: string; success?: string; search?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
   const perm = await checkPermission(Permissions.MANAGE_PROVIDERS)
   if (!perm.allowed) redirect('/admin/unauthorized')
 
-  const providers = await prisma.provider.findMany({ orderBy: { priority: 'asc' } })
+  const search = searchParams?.search?.trim().toLowerCase()
+  const where = search ? {
+    OR: [
+      { name: { contains: search, mode: 'insensitive' as const } },
+      { code: { contains: search, mode: 'insensitive' as const } },
+      { adapterStrategy: { contains: search, mode: 'insensitive' as const } },
+    ],
+  } : {}
+  const providers = await prisma.provider.findMany({ where, orderBy: { priority: 'asc' } })
 
   return (
     <div className="p-6">
@@ -48,12 +57,15 @@ export default async function AdminProvidersPage({ searchParams }: { searchParam
           <h2 className="text-2xl font-bold text-gray-900">Providers</h2>
           <p className="text-gray-600">Manage eSIM provider integrations</p>
         </div>
-        <Link
-          href="/admin/providers/new"
-          className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700"
-        >
-          Add Provider
-        </Link>
+        <div className="flex items-center gap-4">
+          <ProviderSearchBar />
+          <Link
+            href="/admin/providers/new"
+            className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700"
+          >
+            Add Provider
+          </Link>
+        </div>
       </div>
 
       {searchParams?.error && (
@@ -82,7 +94,7 @@ export default async function AdminProvidersPage({ searchParams }: { searchParam
           <tbody className="divide-y divide-gray-200">
             {providers.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-6 py-8 text-center text-sm text-gray-500">No providers configured yet.</td>
+                <td colSpan={10} className="px-6 py-8 text-center text-sm text-gray-500">{search ? 'No providers match your search.' : 'No providers configured yet.'}</td>
               </tr>
             ) : providers.map((p) => {
               const auth = getAuthStatus(p)

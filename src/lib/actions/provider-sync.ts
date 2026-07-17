@@ -9,9 +9,10 @@ import { generateSku, generatePackageCode } from '@/lib/packages/resolve-package
 import { buildAdapter, isTemplateDrivenProvider } from '@/lib/providers/adapter-manager'
 import { normalizePlan } from '@/lib/providers/plan-utils'
 import type { ProviderPlan } from '@/lib/providers/adapter-types'
-import { buildComparableKey, computeEffectiveCost } from '@/lib/packages/cheapest-utils'
+import { buildComparableKey, computeEffectiveCost, recalculateCheapestPlans } from '@/lib/packages/cheapest-utils'
 import { inferProviderCapabilities, getPersistableCapabilities } from '@/lib/providers/capabilities'
 import { advanceCertificationTo } from '@/lib/providers/certification-machine'
+import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 
 export type { ProviderPlan }
 
@@ -30,6 +31,13 @@ export async function syncProviderPlans(providerId: string) {
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId }, include: { providerTemplate: true } })
   if (!provider) return { error: 'Provider not found' }
+
+  const pipelineRunId = await startPipelineRun({
+    providerId: provider.id,
+    providerCode: provider.code || undefined,
+    trigger: 'MANUAL',
+  })
+  const syncStartTime = Date.now()
   console.log(`[DB_PROVIDER_CONFIG] code=${provider.code} configKeys=${Object.keys((provider.config as any) || {}).join(',')} partnerCode=${(provider.config as any)?.partnerCode} providerMode=${(provider.config as any)?.providerMode}`)
 
   // Capability guard
@@ -78,11 +86,17 @@ export async function syncProviderPlans(providerId: string) {
   try {
     const strategy = provider.adapterStrategy
     if (!strategy) {
+      await recordStageFromCounts({ pipelineRunId, stage: 'PROVIDER_SYNC', startTime: syncStartTime, total: 0, passed: 0, failed: 0, skipped: 0, statusOverride: 'FAILED', metadata: { error: 'No adapter strategy configured' } })
+      await failPipelineRun(pipelineRunId, 'No adapter strategy configured')
       return { error: `Cannot sync: adapterStrategy is not configured for provider "${provider.name}". Go to Edit Provider to set a protocol strategy.`, diagnostics }
     }
 
     const adapter = await buildAdapter(provider)
-    if (!adapter) return { error: `No adapter available for provider type "${provider.type}" / strategy "${strategy}"`, diagnostics }
+    if (!adapter) {
+      await recordStageFromCounts({ pipelineRunId, stage: 'PROVIDER_SYNC', startTime: syncStartTime, total: 0, passed: 0, failed: 0, skipped: 0, statusOverride: 'FAILED', metadata: { error: 'No adapter available' } })
+      await failPipelineRun(pipelineRunId, 'No adapter available')
+      return { error: `No adapter available for provider type "${provider.type}" / strategy "${strategy}"`, diagnostics }
+    }
 
     console.log(`[TRACE_SYNC] step=syncProviderPlans code=${provider.code} strategy=${provider.adapterStrategy} adapterClass=${adapter.constructor.name} connectorClass=${(adapter as any).connector?.constructor?.name || 'none'}`)
 
@@ -120,7 +134,10 @@ export async function syncProviderPlans(providerId: string) {
         where: { id: providerId },
         data: { lastSyncAt: new Date(), lastSyncResult: `Sync failed: ${result.error?.message || 'Unknown error'}`, lastSyncCount: 0 },
       }).catch(() => {})
-      return { error: `Sync failed: ${result.error?.message || 'Unknown'}`, diagnostics }
+      const errMsg = result.error?.message || 'Unknown error'
+      await recordStageFromCounts({ pipelineRunId, stage: 'PROVIDER_SYNC', startTime: syncStartTime, total: 0, passed: 0, failed: 0, skipped: 0, statusOverride: 'FAILED', metadata: { error: errMsg } })
+      await failPipelineRun(pipelineRunId, errMsg)
+      return { error: `Sync failed: ${errMsg}`, diagnostics }
     }
 
     const plans = result.data || []
@@ -262,6 +279,28 @@ export async function syncProviderPlans(providerId: string) {
     })
 
     revalidatePath(`/admin/providers/${providerId}`)
+
+    await recordStageFromCounts({
+      pipelineRunId, stage: 'PROVIDER_SYNC', startTime: syncStartTime,
+      total: plans.length, passed: imported + updated, failed: skipped, skipped: duplicatesSkipped,
+      statusOverride: skipped > 0 ? 'PARTIAL' : 'SUCCESS',
+      metadata: { imported, updated, duplicatesSkipped, skipped },
+    })
+    await completePipelineRun(pipelineRunId, skipped > 0 ? 'PARTIAL' : 'SUCCESS', imported + updated)
+
+    const { emitEvent } = await import('@/lib/catalog-events')
+    emitEvent({
+      eventType: 'PROVIDER_SYNC_COMPLETED',
+      providerId: provider.id,
+      providerCode: provider.code,
+      packageId: null,
+      comparableKey: null,
+      changedFields: [],
+      trigger: 'USER_ACTION',
+      userId: session.user.id,
+      metadata: { imported, updated, duplicatesSkipped, total: plans.length },
+    })
+
     return { success: `Fetched ${plans.length} plans from ${provider.name}.`, plans, diagnostics, inferredCapabilities: Object.keys(capabilitiesUpdate) }
   } catch (error: any) {
     await prisma.provider.update({
@@ -272,6 +311,10 @@ export async function syncProviderPlans(providerId: string) {
         lastSyncCount: 0,
       },
     }).catch(() => {})
+
+    await recordStageFromCounts({ pipelineRunId, stage: 'PROVIDER_SYNC', startTime: syncStartTime, total: 0, passed: 0, failed: 0, skipped: 0, statusOverride: 'FAILED', metadata: { error: error.message || 'Unknown' } })
+    await failPipelineRun(pipelineRunId, error.message || 'Unknown error')
+
     return { error: `Sync failed: ${error.message || 'Unknown error'}`, diagnostics }
   }
 }

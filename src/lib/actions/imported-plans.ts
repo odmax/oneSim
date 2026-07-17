@@ -275,10 +275,20 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
     },
   })
 
-  // Recalculate cheapest rankings if cost changed
+  // Emit event for group-level recalculation if cost changed
   if (ppUpdateData.adminCostPrice !== undefined || ppUpdateData.effectiveCostPrice !== undefined) {
-    const { recalculateCheapestPlans } = await import('@/lib/packages/cheapest-utils')
-    await recalculateCheapestPlans().catch(() => {})
+    const { emitEvent } = await import('@/lib/catalog-events')
+    emitEvent({
+      eventType: 'PACKAGE_PRICING_CHANGED',
+      providerId: pp.providerId,
+      providerCode: pp.provider.code,
+      packageId: providerPackageId,
+      comparableKey: pp.comparableKey,
+      changedFields: ['adminCostPrice', 'effectiveCostPrice', 'costSource', 'sellingPrice', 'sellingCurrency', 'markupPercent'],
+      trigger: 'USER_ACTION',
+      userId: session.user.id,
+      metadata: { packageName: pp.name },
+    })
   }
 
   revalidatePath('/admin/imported-plans')

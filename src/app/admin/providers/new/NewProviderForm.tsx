@@ -36,6 +36,8 @@ type BuiltInTemplate = {
     authUrl: string
     apiToken: string
     environment: string
+    apiVersion: string
+    authorizationMode: string
   }>
 }
 
@@ -89,6 +91,18 @@ const BUILTIN_TEMPLATES: Record<string, BuiltInTemplate> = {
       environment: 'staging',
     },
   },
+  telna: {
+    label: 'Telna',
+    description: 'Telna eSIM platform — header-based token auth',
+    presets: {
+      adapterStrategy: 'TELNA',
+      authType: 'bearer_token',
+      apiBaseUrl: 'https://developer-api.telna.com',
+      environment: 'staging',
+      apiVersion: '2.1',
+      authorizationMode: 'BEARER',
+    },
+  },
 }
 
 function setField(name: string, value: string) {
@@ -125,6 +139,8 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
     setField('authUrl', template.presets.authUrl || '')
     setField('apiToken', template.presets.apiToken || '')
     setField('environment', template.presets.environment || 'staging')
+    if (template.presets.apiVersion) setField('apiVersion', template.presets.apiVersion)
+    if (template.presets.authorizationMode) setField('authorizationMode', template.presets.authorizationMode)
   }, [])
 
   const applySavedTemplate = useCallback((templateJson: string) => {
@@ -238,6 +254,8 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
       <input type="hidden" name="requestMappings" value={hiddenRequestMappings} />
       <input type="hidden" name="responseMappings" value={hiddenResponseMappings} />
       <input type="hidden" name="requiredConfigFields" value={hiddenRequiredConfigFields} />
+      <input type="hidden" name="apiVersion" />
+      <input type="hidden" name="authorizationMode" />
 
       <div>
         <label htmlFor="template" className="block text-sm font-medium text-gray-700">Provider Template</label>
@@ -285,6 +303,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
           <option value="REST_CATALOG">REST API Provider — Standard REST API with plans catalog</option>
           <option value="URL_TOKEN">URL Token Provider — Token in URL path, SOAP auth, template bundles</option>
           <option value="HEADER_TOKEN">Header Token Provider — Token in Authorization header</option>
+          <option value="TELNA">Telna — Header-based KeyID authentication</option>
           <option value="TEMPLATE">Template-Driven — Capability/endpoint mapped provider (e.g., Airhub)</option>
         </select>
       </div>

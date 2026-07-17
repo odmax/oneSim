@@ -7,12 +7,14 @@ import { RestCatalogConnector } from './rest-catalog-connector'
 import { UrlTokenConnector } from './url-token-connector'
 import { HeaderTokenRestConnector } from './header-token-rest-connector'
 import { StandardProviderConnector } from './standard-connector'
+import { TelnaConnector } from './telna-connector'
 
-export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB'
+export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB' | 'TELNA'
 
 export function resolveConnectorType(adapterStrategy: string | null | undefined, providerType: string): ConnectorType {
   if (providerType === 'MOCK') return 'MOCK'
   if (adapterStrategy === 'AIRHUB') return 'AIRHUB'
+  if (adapterStrategy === 'TELNA') return 'TELNA'
   switch (adapterStrategy) {
     case 'STANDARD': return 'STANDARD'
     case 'CHOICE': return 'URL_TOKEN'
@@ -74,6 +76,8 @@ export function createConnector(providerId: string, name: string | undefined, co
       return new UrlTokenConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env, fieldMappings: config.fieldMappings })
     case 'HEADER_TOKEN':
       return new HeaderTokenRestConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env })
+    case 'TELNA':
+      return new TelnaConnector(providerId, name)
     case 'REST_CATALOG':
     default:
       return new RestCatalogConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env })

@@ -1211,6 +1211,86 @@ model MaintenanceJob {
   startedAt DateTime  @default(now())
   finishedAt DateTime?
   error     String?
+  metadata  Json?
 
   @@map("maintenance_jobs")
 }
+
+model CatalogPipelineRun {
+  id           String   @id @default(cuid())
+  providerId   String?
+  providerCode String?
+  trigger      String   /// MANUAL | SCHEDULED | WEBHOOK | SYSTEM
+  status       String   @default("RUNNING") /// RUNNING | SUCCESS | PARTIAL | FAILED
+  startedAt    DateTime @default(now())
+  finishedAt   DateTime?
+  durationMs   Int?
+  totalInput   Int      @default(0)
+  totalOutput  Int      @default(0)
+  errorMessage String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  stages CatalogPipelineStage[]
+
+  @@index([providerId])
+  @@index([providerCode])
+  @@index([status])
+  @@index([startedAt])
+  @@map("catalog_pipeline_runs")
+}
+
+model CatalogPipelineStage {
+  id              String   @id @default(cuid())
+  pipelineRunId   String
+  stage           String   /// PROVIDER_SYNC | CONFIGURATION | CATALOG_HEALTH | CHEAPEST_SELECTION | READY_FOR_PUBLISH | PUBLISH | MARKETPLACE | ORDERABLE
+  status          String   @default("RUNNING") /// RUNNING | SUCCESS | PARTIAL | FAILED
+  total           Int      @default(0)
+  passed          Int      @default(0)
+  failed          Int      @default(0)
+  skipped         Int      @default(0)
+  durationMs      Int      @default(0)
+  reasonCounts    Json?
+  metadata        Json?
+  createdAt       DateTime @default(now())
+
+  pipelineRun CatalogPipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+
+  @@index([pipelineRunId])
+  @@index([stage])
+  @@map("catalog_pipeline_stages")
+}
+
+model CatalogEvent {
+  id             String   @id @default(cuid())
+  eventType      String   /// PACKAGE_CREATED | PACKAGE_UPDATED | ...
+  status         String   @default("PENDING") /// PENDING | PROCESSING | COMPLETED | FAILED
+  providerId     String?
+  providerCode   String?
+  packageId      String?
+  comparableKey  String?
+  payload        Json
+  attempts       Int      @default(0)
+  lastError      String?
+  createdAt      DateTime @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+
+  @@index([status])
+  @@index([comparableKey])
+  @@index([createdAt])
+  @@map("catalog_events")
+}
+
+model CatalogDeadLetter {
+  id        String   @id @default(cuid())
+  eventId   String?
+  eventType String
+  reason    String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@map("catalog_dead_letters")
+}
+

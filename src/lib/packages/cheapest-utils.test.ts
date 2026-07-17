@@ -13,6 +13,18 @@ vi.mock('@/lib/prisma', () => ({
       update: vi.fn(),
     },
     auditLog: { create: vi.fn() },
+    catalogPipelineRun: {
+      create: vi.fn(),
+      findUnique: vi.fn(),
+      update: vi.fn(),
+      findMany: vi.fn(),
+      count: vi.fn(),
+      deleteMany: vi.fn(),
+    },
+    catalogPipelineStage: {
+      create: vi.fn(),
+      deleteMany: vi.fn(),
+    },
   },
 }))
 
@@ -116,6 +128,10 @@ describe('recalculateCheapestPlans', () => {
     vi.mocked(getServerSession).mockResolvedValue({
       user: { id: 'admin-1', role: 'INTERNAL_ADMIN', email: 'admin@test.com' },
     } as any)
+    vi.mocked(prisma.catalogPipelineRun.create).mockResolvedValue({ id: 'pipeline-run-1' } as any)
+    vi.mocked(prisma.catalogPipelineRun.findUnique).mockResolvedValue({ id: 'pipeline-run-1', startedAt: new Date() } as any)
+    vi.mocked(prisma.catalogPipelineRun.update).mockResolvedValue({} as any)
+    vi.mocked(prisma.catalogPipelineStage.create).mockResolvedValue({} as any)
   })
 
   it('marks solo eligible plan as cheapestCandidate rank 1', async () => {

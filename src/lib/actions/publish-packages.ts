@@ -4,6 +4,8 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
+import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
+import { emitEvent } from '@/lib/catalog-events'
 
 function shortCode(s: string | null | undefined, fallback: string): string {
   if (!s) return fallback
@@ -61,6 +63,9 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
   })
 
   console.log(`[publishToCatalog] Selected: ${packageIds.length} | Found in DB: ${providerPackages.length}`)
+
+  const pipelineRunId = await startPipelineRun({ trigger: 'MANUAL', totalInput: packageIds.length })
+  const publishStart = Date.now()
 
   let created = 0
   let updated = 0
@@ -176,6 +181,25 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
       details: `Published ${created} new, ${updated} updated, ${skipped} skipped out of ${packageIds.length} selected`,
     },
   }).catch(() => {})
+
+  await recordStageFromCounts({
+    pipelineRunId, stage: 'PUBLISH', startTime: publishStart,
+    total: providerPackages.length, passed: created + updated, failed: 0, skipped,
+    metadata: { created, updated, skippedDetails: skippedDetails.slice(0, 10) },
+  })
+  await completePipelineRun(pipelineRunId, skipped > 0 && created + updated === 0 ? 'FAILED' : skipped > 0 ? 'PARTIAL' : 'SUCCESS', created + updated)
+
+  emitEvent({
+    eventType: 'CATALOG_PUBLISHED',
+    providerId: null,
+    providerCode: null,
+    packageId: null,
+    comparableKey: null,
+    changedFields: [],
+    trigger: 'USER_ACTION',
+    userId: session.user.id,
+    metadata: { created, updated, skipped, total: providerPackages.length },
+  })
 
   revalidatePath('/admin/provider-catalog')
   revalidatePath('/admin/packages')

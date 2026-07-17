@@ -28,6 +28,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     { title: 'Package Rules', href: '/admin/package-rules', permission: Permissions.MANAGE_PRODUCTS },
     { title: 'Provider Catalog', href: '/admin/provider-catalog', permission: Permissions.MANAGE_PRODUCTS },
     { title: 'Catalog Health', href: '/admin/provider-catalog/health', permission: Permissions.MANAGE_PRODUCTS },
+    { title: 'Pipeline', href: '/admin/provider-catalog/pipeline', permission: Permissions.MANAGE_PRODUCTS },
     { title: 'Catalog History', href: '/admin/provider-catalog/history', permission: Permissions.MANAGE_PRODUCTS },
     { title: 'Product Catalog', href: '/admin/packages', permission: Permissions.MANAGE_PRODUCTS },
     { title: 'OPERATIONS', href: '#', sectionHeader: true },

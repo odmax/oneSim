@@ -4,6 +4,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
+import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 
 export interface BulkConfigureParams {
   packageIds: string[]
@@ -29,6 +30,9 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
   if (!packageIds || packageIds.length === 0) {
     return { success: false, error: 'No packages selected' }
   }
+
+  const pipelineRunId = await startPipelineRun({ trigger: 'MANUAL', totalInput: packageIds.length })
+  const configStartTime = Date.now()
 
   // When publishStatus is READY, validate and auto-default configurationStatus
   if (configUpdates.publishStatus === 'READY') {
@@ -101,6 +105,8 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
   }
 
   if (Object.keys(updateData).length === 0) {
+    await recordStageFromCounts({ pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime, total: 0, passed: 0, failed: 0, skipped: 0, statusOverride: 'FAILED', metadata: { error: 'No options provided' } })
+    await failPipelineRun(pipelineRunId, 'No configuration options provided')
     return { success: false, error: 'No configuration options provided' }
   }
 
@@ -119,9 +125,26 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
       },
     }).catch(() => {})
 
+    const isPublishReady = updateData.publishStatus === 'READY'
+    await recordStageFromCounts({
+      pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime,
+      total: packageIds.length, passed: result.count, failed: 0, skipped: packageIds.length - result.count,
+      metadata: { publishStatus: updateData.publishStatus, configurationStatus: updateData.configurationStatus },
+    })
+    if (isPublishReady) {
+      const readyStartTime = Date.now()
+      await recordStageFromCounts({
+        pipelineRunId, stage: 'READY_FOR_PUBLISH', startTime: readyStartTime,
+        total: result.count, passed: result.count, failed: 0, skipped: 0,
+      })
+    }
+    await completePipelineRun(pipelineRunId, 'SUCCESS', result.count)
+
     revalidatePath('/admin/provider-catalog')
     return { success: true, updated: result.count }
   } catch (e: any) {
+    await recordStageFromCounts({ pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime, total: packageIds.length, passed: 0, failed: packageIds.length, skipped: 0, statusOverride: 'FAILED', metadata: { error: e.message } })
+    await failPipelineRun(pipelineRunId, e.message || 'Bulk configuration failed')
     return { success: false, error: e.message || 'Bulk configuration failed' }
   }
 }

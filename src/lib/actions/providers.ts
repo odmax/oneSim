@@ -86,6 +86,17 @@ export async function createProvider(formData: FormData) {
     redirect(`/admin/providers/new?error=Provider+code+%22${code}%22+already+exists`)
   }
 
+  // Telna-specific validation
+  if (resolvedStrategy === 'TELNA') {
+    const authorizationMode = formData.get('authorizationMode') as string
+    if (apiBaseUrl && !apiBaseUrl.startsWith('https://')) {
+      redirect('/admin/providers/new?error=Telna+API+Base+URL+must+use+HTTPS')
+    }
+    if (authorizationMode && !['BEARER', 'RAW'].includes(authorizationMode)) {
+      redirect('/admin/providers/new?error=Authorization+mode+must+be+BEARER+or+RAW')
+    }
+  }
+
   let regions: any = null
   if (regionsRaw) {
     try { regions = JSON.parse(regionsRaw) } catch { redirect('/admin/providers/new?error=Invalid+JSON+in+regions') }
@@ -298,6 +309,20 @@ export async function toggleProviderStatus(providerId: string) {
 
   await prisma.auditLog.create({
     data: { userId: session.user.id, action: 'PROVIDER_STATUS_CHANGED', entity: 'Provider', entityId: provider.code, details: `Provider "${provider.name}" status changed from ${provider.status} to ${newStatus}` },
+  })
+
+  const { emitEvent } = await import('@/lib/catalog-events')
+  const eventType = newStatus === 'INACTIVE' ? 'PROVIDER_DISABLED' : newStatus === 'ACTIVE' ? 'PROVIDER_ENABLED' : 'PROVIDER_DISABLED'
+  emitEvent({
+    eventType: eventType as any,
+    providerId: provider.id,
+    providerCode: provider.code,
+    packageId: null,
+    comparableKey: null,
+    changedFields: ['status'],
+    trigger: 'USER_ACTION',
+    userId: session.user.id,
+    metadata: { oldStatus: provider.status, newStatus },
   })
 
   revalidatePath('/admin/providers')

@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { revalidatePath } from 'next/cache'
+import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 
 export type CoverageType = 'local' | 'regional' | 'global'
 
@@ -85,6 +86,178 @@ export function calculatePackageProfit(params: {
   }
 }
 
+async function computeAndSyncEffectiveCosts(pps: any[]): Promise<void> {
+  for (const pp of pps) {
+    const rawCost = Number(pp.costPrice)
+    const adminCost = pp.adminCostPrice ? Number(pp.adminCostPrice) : null
+    const { effectiveCostPrice, costSource } = computeEffectiveCost(rawCost, adminCost)
+    await prisma.providerPackage.update({
+      where: { id: pp.id },
+      data: { effectiveCostPrice, costSource },
+    })
+    pp.effectiveCostPrice = effectiveCostPrice
+    pp.costSource = costSource
+  }
+}
+
+export async function recalculateComparableGroup(
+  comparableKey: string,
+  pipelineRunIdInput?: string,
+): Promise<{
+  groupsProcessed: number
+  winners: number
+  alternatives: number
+  excluded: number
+  missingCost: number
+  soloWinners: number
+}> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') {
+    throw new Error('Unauthorized')
+  }
+
+  const pipelineRunId = pipelineRunIdInput || await startPipelineRun({ trigger: 'EVENT' as any })
+  const startTime = Date.now()
+
+  try {
+    const group = await prisma.providerPackage.findMany({
+      where: { comparableKey, isAvailable: true },
+      include: {
+        provider: { select: { id: true, status: true, priority: true, code: true } },
+        publishedAs: { select: { id: true, archivedAt: true, hiddenFromCatalog: true } },
+      },
+    })
+
+    await computeAndSyncEffectiveCosts(group)
+
+    const result = await rankGroup(group as any, comparableKey)
+
+    await recordStageFromCounts({
+      pipelineRunId, stage: 'GROUP_RECALCULATION', startTime,
+      total: group.length,
+      passed: result.winners + result.alternatives,
+      failed: result.excluded + result.missingCost,
+      skipped: group.length - result.winners - result.alternatives - result.excluded - result.missingCost,
+      metadata: { comparableKey, ...result },
+    })
+
+    if (!pipelineRunIdInput) {
+      await completePipelineRun(pipelineRunId, result.excluded > 0 ? 'PARTIAL' : 'SUCCESS', result.winners)
+    }
+
+    return result
+  } catch (error: any) {
+    if (!pipelineRunIdInput) {
+      await failPipelineRun(pipelineRunId, error.message || 'Group recalculation failed')
+    }
+    throw error
+  }
+}
+
+async function rankGroup(
+  group: any[],
+  comparableKey: string,
+): Promise<{
+  groupsProcessed: number
+  winners: number
+  alternatives: number
+  excluded: number
+  missingCost: number
+  soloWinners: number
+}> {
+  const eligible: { pp: any; effectiveCost: number }[] = []
+  const ineligible: any[] = []
+  let excluded = 0
+  let missingCost = 0
+
+  for (const pp of group) {
+    const cost = pp.effectiveCostPrice ? Number(pp.effectiveCostPrice) : null
+    const isExcluded = pp.excludedFromCheapest || pp.provider.status === 'INACTIVE' || pp.provider.status === 'ARCHIVED'
+    const esim = pp.publishedAs
+    const isArchived = esim?.archivedAt
+
+    if (isExcluded || isArchived) {
+      ineligible.push(pp)
+      continue
+    }
+
+    if (cost == null || cost <= 0) {
+      missingCost++
+      ineligible.push(pp)
+      continue
+    }
+
+    eligible.push({ pp, effectiveCost: cost })
+  }
+
+  for (const pp of ineligible) {
+    const isMissingCost = pp.excludedFromCheapest === false
+      && !['INACTIVE', 'ARCHIVED'].includes(pp.provider.status)
+      && !pp.publishedAs?.archivedAt
+      && (pp.effectiveCostPrice == null || Number(pp.effectiveCostPrice) <= 0)
+    const reason = isMissingCost ? 'Missing effective cost'
+      : pp.excludedFromCheapest ? 'Excluded by admin'
+      : pp.provider.status === 'INACTIVE' || pp.provider.status === 'ARCHIVED' ? 'Provider inactive'
+      : 'Archived'
+    await prisma.providerPackage.update({
+      where: { id: pp.id },
+      data: { cheapestReason: reason, cheapestRank: null, isCheapestCandidate: false },
+    })
+    if (!pp.excludedFromCheapest && !isMissingCost) excluded++
+  }
+
+  if (eligible.length === 0) {
+    return { groupsProcessed: 0, winners: 0, alternatives: 0, excluded, missingCost, soloWinners: 0 }
+  }
+
+  eligible.sort((a, b) => {
+    if (a.effectiveCost !== b.effectiveCost) return a.effectiveCost - b.effectiveCost
+    const aPrio = a.pp.provider.priority || 0
+    const bPrio = b.pp.provider.priority || 0
+    if (aPrio !== bPrio) return bPrio - aPrio
+    return a.pp.id.localeCompare(b.pp.id)
+  })
+
+  const isSolo = eligible.length === 1
+  let winners = 0
+  let alternatives = 0
+  let soloWinners = 0
+
+  for (let i = 0; i < eligible.length; i++) {
+    const rank = i + 1
+    const { pp } = eligible[i]
+    const isWinner = rank === 1
+    const reason = isWinner
+      ? isSolo ? 'Solo eligible plan' : 'Cheapest eligible plan'
+      : `Alternative #${rank}`
+
+    await prisma.providerPackage.update({
+      where: { id: pp.id },
+      data: {
+        cheapestRank: rank,
+        isCheapestCandidate: isWinner,
+        cheapestReason: reason,
+      },
+    })
+
+    if (isWinner) {
+      winners++
+      if (isSolo) soloWinners++
+
+      console.log('[CHEAPEST_PLAN_SELECTION]', JSON.stringify({
+        groupKey: comparableKey,
+        candidateCount: eligible.length,
+        selectedPlanId: pp.id,
+        selectedCost: pp.effectiveCostPrice ? Number(pp.effectiveCostPrice) : eligible[i].effectiveCost,
+      }))
+    } else {
+      alternatives++
+    }
+  }
+
+  return { groupsProcessed: 1, winners, alternatives, excluded, missingCost, soloWinners }
+}
+
 export async function recalculateCheapestPlans(): Promise<{
   groupsProcessed: number
   winners: number
@@ -98,7 +271,10 @@ export async function recalculateCheapestPlans(): Promise<{
     throw new Error('Unauthorized')
   }
 
-  // Step 1: Compute comparable keys and effective costs for all active ProviderPackages
+  const pipelineRunId = await startPipelineRun({ trigger: 'MANUAL' })
+  const cheapestStartTime = Date.now()
+
+  try {
   const allPps = await prisma.providerPackage.findMany({
     where: { isAvailable: true },
     include: {
@@ -107,7 +283,6 @@ export async function recalculateCheapestPlans(): Promise<{
     },
   })
 
-  // Update each record with normalized fields
   for (const pp of allPps) {
     const coverage = detectCoverageType(pp.country, pp.region, pp.planType)
     const nc = normalizeCountry(pp.country, pp.region, coverage)
@@ -129,15 +304,13 @@ export async function recalculateCheapestPlans(): Promise<{
         normalizedCoverageType: coverage,
         effectiveCostPrice,
         costSource,
-        // Reset cheapest fields
         cheapestRank: null,
         isCheapestCandidate: false,
         cheapestReason: costSource === 'MISSING' ? 'Missing effective cost' : null,
       },
     })
 
-    // Sync in-memory object so subsequent loops use computed values
-    ;(pp as any).comparableKey = comparableKey
+    pp.comparableKey = comparableKey as any
     ;(pp as any).normalizedCountry = nc
     ;(pp as any).normalizedDataLabel = dl
     ;(pp as any).normalizedValidityDays = nd
@@ -146,108 +319,29 @@ export async function recalculateCheapestPlans(): Promise<{
     ;(pp as any).costSource = costSource
   }
 
-  // Step 2: Group by comparableKey and rank
   const byKey = new Map<string, typeof allPps>()
   for (const pp of allPps) {
-    const key = pp.comparableKey || `${detectCoverageType(pp.country, pp.region, pp.planType)}:${normalizeCountry(pp.country, pp.region, detectCoverageType(pp.country, pp.region, pp.planType))}:${normalizeDataLabel(pp.dataGB)}:${normalizeValidityDays(pp.validityDays)}`
+    const key = pp.comparableKey || ''
+    if (!key) continue
     if (!byKey.has(key)) byKey.set(key, [])
     byKey.get(key)!.push(pp)
   }
 
-  let groupsProcessed = 0
-  let winners = 0
-  let alternatives = 0
-  let excluded = 0
-  let missingCost = 0
-  let soloWinners = 0
+  let totalGroups = 0
+  let totalWinners = 0
+  let totalAlternatives = 0
+  let totalExcluded = 0
+  let totalMissingCost = 0
+  let totalSoloWinners = 0
 
   for (const [key, group] of byKey) {
-    // Separate eligible vs excluded
-    const eligible: { pp: typeof allPps[0]; effectiveCost: number }[] = []
-    const ineligible: typeof allPps[0][] = []
-
-    for (const pp of group) {
-      const cost = pp.effectiveCostPrice ? Number(pp.effectiveCostPrice) : null
-      const isExcluded = pp.excludedFromCheapest || pp.provider.status === 'INACTIVE' || pp.provider.status === 'ARCHIVED'
-      const esim = pp.publishedAs
-      const isArchived = esim?.archivedAt
-
-      if (isExcluded || isArchived) {
-        ineligible.push(pp)
-        continue
-      }
-
-      if (cost == null || cost <= 0) {
-        missingCost++
-        ineligible.push(pp)
-        continue
-      }
-
-      eligible.push({ pp, effectiveCost: cost })
-    }
-
-    // Mark excluded
-    for (const pp of ineligible) {
-      const reason = pp.excludedFromCheapest ? 'Excluded by admin'
-        : pp.provider.status === 'INACTIVE' || pp.provider.status === 'ARCHIVED' ? 'Provider inactive'
-        : pp.publishedAs?.archivedAt ? 'Archived'
-        : 'Missing effective cost'
-      await prisma.providerPackage.update({
-        where: { id: pp.id },
-        data: { cheapestReason: reason, cheapestRank: null, isCheapestCandidate: false },
-      })
-      if (!pp.excludedFromCheapest) excluded++
-    }
-
-    // Skip groups with no eligible packages
-    if (eligible.length === 0) continue
-
-    groupsProcessed++
-
-    // Sort eligible by: effectiveCost ASC, provider priority DESC, package ID ASC (deterministic)
-    eligible.sort((a, b) => {
-      if (a.effectiveCost !== b.effectiveCost) return a.effectiveCost - b.effectiveCost
-      const aPrio = a.pp.provider.priority || 0
-      const bPrio = b.pp.provider.priority || 0
-      if (aPrio !== bPrio) return bPrio - aPrio
-      return a.pp.id.localeCompare(b.pp.id)
-    })
-
-    // Track if this is a solo-winner group (only one eligible package)
-    const isSolo = eligible.length === 1
-
-    // Rank
-    for (let i = 0; i < eligible.length; i++) {
-      const rank = i + 1
-      const { pp } = eligible[i]
-      const isWinner = rank === 1
-      const reason = isWinner
-        ? isSolo ? 'Solo eligible plan' : 'Cheapest eligible plan'
-        : `Alternative #${rank}`
-
-      await prisma.providerPackage.update({
-        where: { id: pp.id },
-        data: {
-          cheapestRank: rank,
-          isCheapestCandidate: isWinner,
-          cheapestReason: reason,
-        },
-      })
-
-      if (isWinner) {
-        winners++
-        if (isSolo) soloWinners++
-
-        console.log('[CHEAPEST_PLAN_SELECTION]', JSON.stringify({
-          groupKey: key,
-          candidateCount: eligible.length,
-          selectedPlanId: pp.id,
-          selectedCost: pp.effectiveCostPrice ? Number(pp.effectiveCostPrice) : eligible[i].effectiveCost,
-        }))
-      } else {
-        alternatives++
-      }
-    }
+    const result = await rankGroup(group, key)
+    totalGroups += result.groupsProcessed
+    totalWinners += result.winners
+    totalAlternatives += result.alternatives
+    totalExcluded += result.excluded
+    totalMissingCost += result.missingCost
+    totalSoloWinners += result.soloWinners
   }
 
   await prisma.auditLog.create({
@@ -255,18 +349,83 @@ export async function recalculateCheapestPlans(): Promise<{
       userId: session.user.id,
       action: 'CHEAPEST_RECALCULATED',
       entity: 'ProviderPackage',
-      details: `Cheapest plans recalculated: ${groupsProcessed} groups, ${winners} cheapest, ${soloWinners} solo, ${alternatives} alternatives, ${excluded} excluded, ${missingCost} missing cost`,
+      details: `Cheapest plans recalculated: ${totalGroups} groups, ${totalWinners} cheapest, ${totalSoloWinners} solo, ${totalAlternatives} alternatives, ${totalExcluded} excluded, ${totalMissingCost} missing cost`,
     },
   })
 
   revalidatePath('/admin/imported-plans')
-  return { groupsProcessed, winners, alternatives, excluded, missingCost, soloWinners }
+
+  const stagePassed = totalWinners + totalAlternatives
+  const stageFailed = totalExcluded + totalMissingCost
+  await recordStageFromCounts({
+    pipelineRunId, stage: 'CHEAPEST_SELECTION', startTime: cheapestStartTime,
+    total: allPps.length,
+    passed: stagePassed,
+    failed: stageFailed,
+    skipped: allPps.length - stagePassed - stageFailed,
+    metadata: { groupsProcessed: totalGroups, winners: totalWinners, soloWinners: totalSoloWinners, alternatives: totalAlternatives, excluded: totalExcluded, missingCost: totalMissingCost },
+  })
+  await completePipelineRun(pipelineRunId, totalExcluded > 0 ? 'PARTIAL' : 'SUCCESS', totalWinners)
+
+  return { groupsProcessed: totalGroups, winners: totalWinners, alternatives: totalAlternatives, excluded: totalExcluded, missingCost: totalMissingCost, soloWinners: totalSoloWinners }
+  } catch (error: any) {
+    await failPipelineRun(pipelineRunId, error.message || 'Cheapest recalculation failed')
+    throw error
+  }
+}
+
+export async function reconcileComparableGroup(comparableKey: string): Promise<{
+  groupsProcessed: number
+  winners: number
+  alternatives: number
+  excluded: number
+  missingCost: number
+  soloWinners: number
+}> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') {
+    throw new Error('Unauthorized')
+  }
+
+  const pipelineRunId = await startPipelineRun({ trigger: 'EVENT' as any })
+  const startTime = Date.now()
+
+  try {
+    const group = await prisma.providerPackage.findMany({
+      where: { comparableKey, isAvailable: true },
+      include: {
+        provider: { select: { id: true, status: true, priority: true, code: true } },
+        publishedAs: { select: { id: true, archivedAt: true, hiddenFromCatalog: true } },
+      },
+    })
+
+    const result = await rankGroup(group as any, comparableKey)
+
+    await recordStageFromCounts({
+      pipelineRunId, stage: 'GROUP_RECALCULATION', startTime,
+      total: group.length,
+      passed: result.winners + result.alternatives,
+      failed: result.excluded + result.missingCost,
+      skipped: group.length - result.winners - result.alternatives - result.excluded - result.missingCost,
+      metadata: { comparableKey, ...result, reconciled: true },
+    })
+    await completePipelineRun(pipelineRunId, result.excluded > 0 ? 'PARTIAL' : 'SUCCESS', result.winners)
+
+    return result
+  } catch (error: any) {
+    await failPipelineRun(pipelineRunId, error.message || 'Reconciliation failed')
+    throw error
+  }
 }
 
 export async function markCheapestReady(): Promise<{ updated: number }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
 
+  const pipelineRunId = await startPipelineRun({ trigger: 'MANUAL' })
+  const startTime = Date.now()
+
+  try {
   const candidates = await prisma.providerPackage.findMany({
     where: { isCheapestCandidate: true, readyToPublish: false },
   })
@@ -286,14 +445,28 @@ export async function markCheapestReady(): Promise<{ updated: number }> {
     },
   })
 
+  await recordStageFromCounts({
+    pipelineRunId, stage: 'READY_FOR_PUBLISH', startTime,
+    total: candidates.length, passed: candidates.length, failed: 0, skipped: 0,
+  })
+  await completePipelineRun(pipelineRunId, 'SUCCESS', candidates.length)
+
   revalidatePath('/admin/imported-plans')
   return { updated: candidates.length }
+  } catch (error: any) {
+    await failPipelineRun(pipelineRunId, error.message || 'Mark ready failed')
+    throw error
+  }
 }
 
 export async function publishCheapestOnly(): Promise<{ published: number; skipped: number }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
 
+  const pipelineRunId = await startPipelineRun({ trigger: 'MANUAL' })
+  const startTime = Date.now()
+
+  try {
   const candidates = await prisma.providerPackage.findMany({
     where: { isCheapestCandidate: true, readyToPublish: true },
     include: { publishedAs: true, provider: true },
@@ -310,7 +483,6 @@ export async function publishCheapestOnly(): Promise<{ published: number; skippe
     if (!hasCost || !hasPrice) { skipped++; continue }
 
     if (esim) {
-      // Update existing — idempotent: no duplicate creation
       await prisma.eSIMPackage.update({
         where: { id: esim.id },
         data: { source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false, archivedAt: null },
@@ -338,14 +510,30 @@ export async function publishCheapestOnly(): Promise<{ published: number; skippe
     },
   })
 
+  await recordStageFromCounts({
+    pipelineRunId, stage: 'PUBLISH', startTime,
+    total: candidates.length, passed: published, failed: 0, skipped,
+    metadata: { published, skipped },
+  })
+  await completePipelineRun(pipelineRunId, skipped > 0 && published === 0 ? 'FAILED' : skipped > 0 ? 'PARTIAL' : 'SUCCESS', published)
+
   revalidatePath('/admin/imported-plans')
   revalidatePath('/admin/packages')
   return { published, skipped }
+  } catch (error: any) {
+    await failPipelineRun(pipelineRunId, error.message || 'Publish cheapest failed')
+    throw error
+  }
 }
 
 export async function excludeFromCheapest(providerPackageId: string, reason: string): Promise<void> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+
+  const pp = await prisma.providerPackage.findUnique({
+    where: { id: providerPackageId },
+    include: { provider: { select: { code: true } } },
+  })
 
   await prisma.providerPackage.update({
     where: { id: providerPackageId },
@@ -360,12 +548,29 @@ export async function excludeFromCheapest(providerPackageId: string, reason: str
     },
   })
 
+  const { emitEvent } = await import('@/lib/catalog-events')
+  emitEvent({
+    eventType: 'PACKAGE_UPDATED',
+    providerId: pp?.providerId ?? null,
+    providerCode: pp?.provider?.code ?? null,
+    packageId: providerPackageId,
+    comparableKey: pp?.comparableKey ?? null,
+    changedFields: ['excludedFromCheapest'],
+    trigger: 'USER_ACTION',
+    userId: session.user.id,
+  })
+
   revalidatePath('/admin/imported-plans')
 }
 
 export async function includeInCheapest(providerPackageId: string): Promise<void> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+
+  const pp = await prisma.providerPackage.findUnique({
+    where: { id: providerPackageId },
+    include: { provider: { select: { code: true } } },
+  })
 
   await prisma.providerPackage.update({
     where: { id: providerPackageId },
@@ -378,6 +583,18 @@ export async function includeInCheapest(providerPackageId: string): Promise<void
       entity: 'ProviderPackage', entityId: providerPackageId,
       details: `Included in cheapest comparison`,
     },
+  })
+
+  const { emitEvent } = await import('@/lib/catalog-events')
+  emitEvent({
+    eventType: 'PACKAGE_UPDATED',
+    providerId: pp?.providerId ?? null,
+    providerCode: pp?.provider?.code ?? null,
+    packageId: providerPackageId,
+    comparableKey: pp?.comparableKey ?? null,
+    changedFields: ['excludedFromCheapest'],
+    trigger: 'USER_ACTION',
+    userId: session.user.id,
   })
 
   revalidatePath('/admin/imported-plans')
