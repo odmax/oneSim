@@ -270,36 +270,6 @@ export default async function CatalogHealthPage() {
         </div>
       </div>
 
-      {/* Ineligible Plans */}
-      {ineligiblePlans.length > 0 && (
-        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b bg-red-50">
-            <h3 className="text-base font-semibold text-red-800">Ineligible Plans ({ineligiblePlans.length})</h3>
-            <p className="text-xs text-red-600 mt-1">These plans are not visible in Catalog Health — fix the listed issues to make them eligible</p>
-          </div>
-          <div className="overflow-x-auto p-4">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-gray-500 border-b">
-                  <th className="pb-2 pr-3">Provider</th>
-                  <th className="pb-2 pr-3">Name</th>
-                  <th className="pb-2 pr-3">Config Status</th>
-                  <th className="pb-2 pr-3">Publish Status</th>
-                  <th className="pb-2 pr-3 text-right">Selling Price</th>
-                  <th className="pb-2 pr-3">Currency</th>
-                  <th className="pb-2">Reasons</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ineligiblePlans.map(pkg => (
-                  <IneligibleRow key={pkg.id} pkg={pkg} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       {/* Eligible Solo Plans */}
       {soloPlans.length > 0 && (
         <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
@@ -342,6 +312,36 @@ export default async function CatalogHealthPage() {
             {duplicateGroups.map(([key, pkgs]) => (
               <DuplicateGroup key={key} groupKey={key} pkgs={pkgs} />
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Ineligible Plans */}
+      {ineligiblePlans.length > 0 && (
+        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b bg-red-50">
+            <h3 className="text-base font-semibold text-red-800">Ineligible Plans ({ineligiblePlans.length})</h3>
+            <p className="text-xs text-red-600 mt-1">These plans are not visible in Catalog Health — fix the listed issues to make them eligible</p>
+          </div>
+          <div className="overflow-x-auto p-4">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b">
+                  <th className="pb-2 pr-3">Provider</th>
+                  <th className="pb-2 pr-3">Name</th>
+                  <th className="pb-2 pr-3">Config Status</th>
+                  <th className="pb-2 pr-3">Publish Status</th>
+                  <th className="pb-2 pr-3 text-right">Selling Price</th>
+                  <th className="pb-2 pr-3">Currency</th>
+                  <th className="pb-2">Reasons</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ineligiblePlans.map(pkg => (
+                  <IneligibleRow key={pkg.id} pkg={pkg} />
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
