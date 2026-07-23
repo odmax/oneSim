@@ -5,6 +5,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
+import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes, recordCatalogPriceSyncAudit } from '@/lib/services/catalog-price-sync'
 
 export interface BulkConfigureParams {
   packageIds: string[]
@@ -38,7 +39,6 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
   if (configUpdates.publishStatus === 'READY') {
     const missing: string[] = []
 
-    // Auto-default configurationStatus to CONFIGURED if not explicitly set
     if (!configUpdates.configurationStatus) {
       configUpdates.configurationStatus = 'CONFIGURED'
     }
@@ -111,9 +111,26 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
   }
 
   try {
-    const result = await prisma.providerPackage.updateMany({
+    const beforePackages = await prisma.providerPackage.findMany({
       where: { id: { in: packageIds } },
-      data: updateData,
+      select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, sellingPrice: true, sellingCurrency: true, markupPercent: true, providerPlanId: true, providerId: true, publishStatus: true },
+    })
+
+    await prisma.$transaction(async (tx) => {
+      const result = await tx.providerPackage.updateMany({
+        where: { id: { in: packageIds } },
+        data: updateData,
+      })
+
+      if (result.count === 0) throw new Error('No packages updated')
+
+      for (const bp of beforePackages) {
+        const merged = {
+          ...bp,
+          ...updateData,
+        }
+        await syncProviderPackageToPublishedProducts(tx, merged as any)
+      }
     })
 
     await prisma.auditLog.create({
@@ -121,27 +138,27 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
         userId: session.user.id,
         action: 'BULK_CONFIGURE_PACKAGES',
         entity: 'ProviderPackage',
-        details: `Bulk configured ${result.count} packages: ${Object.keys(updateData).join(', ')}`,
+        details: `Bulk configured ${packageIds.length} packages: ${Object.keys(updateData).join(', ')}`,
       },
     }).catch(() => {})
 
     const isPublishReady = updateData.publishStatus === 'READY'
     await recordStageFromCounts({
       pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime,
-      total: packageIds.length, passed: result.count, failed: 0, skipped: packageIds.length - result.count,
+      total: packageIds.length, passed: packageIds.length, failed: 0, skipped: 0,
       metadata: { publishStatus: updateData.publishStatus, configurationStatus: updateData.configurationStatus },
     })
     if (isPublishReady) {
       const readyStartTime = Date.now()
       await recordStageFromCounts({
         pipelineRunId, stage: 'READY_FOR_PUBLISH', startTime: readyStartTime,
-        total: result.count, passed: result.count, failed: 0, skipped: 0,
+        total: packageIds.length, passed: packageIds.length, failed: 0, skipped: 0,
       })
     }
-    await completePipelineRun(pipelineRunId, 'SUCCESS', result.count)
+    await completePipelineRun(pipelineRunId, 'SUCCESS', packageIds.length)
 
-    revalidatePath('/admin/provider-catalog')
-    return { success: true, updated: result.count }
+    await revalidateCatalogRoutes()
+    return { success: true, updated: packageIds.length }
   } catch (e: any) {
     await recordStageFromCounts({ pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime, total: packageIds.length, passed: 0, failed: packageIds.length, skipped: 0, statusOverride: 'FAILED', metadata: { error: e.message } })
     await failPipelineRun(pipelineRunId, e.message || 'Bulk configuration failed')

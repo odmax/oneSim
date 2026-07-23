@@ -4,10 +4,10 @@ import { useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { bulkConfigurePackages } from '@/lib/actions/bulk-configure'
 import { publishToCatalog, bulkSetPublishStatus, getPublishSummary } from '@/lib/actions/publish-packages'
-import { applyRulesToPackages } from '@/lib/actions/package-rules'
 import { resetPricing } from '@/lib/actions/reset-pricing'
 import { updateSinglePackage, undoLastRules } from '@/lib/actions/package-edit'
 import Link from 'next/link'
+import ApplyRulePanel from './ApplyRulePanel'
 
 const PUBLISH_COLORS: Record<string, string> = {
   DRAFT: 'bg-gray-100 text-gray-600',
@@ -22,6 +22,13 @@ const CONFIG_COLORS: Record<string, string> = {
   PARTIAL: 'bg-amber-100 text-amber-700',
   CONFIGURED: 'bg-blue-100 text-blue-700',
   AUTO_CONFIGURED: 'bg-emerald-100 text-emerald-700',
+}
+
+interface RuleItem {
+  id: string
+  name: string
+  priority: number
+  isActive: boolean
 }
 
 interface Package {
@@ -46,11 +53,12 @@ interface Package {
   provider: { id: string; name: string; code: string } | null
 }
 
-export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
+export function BulkConfigTable({ initialPackages, total, page, totalPages, rules }: {
   initialPackages: Package[]
   total: number
   page: number
   totalPages: number
+  rules: RuleItem[]
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -58,13 +66,13 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
   const [showForm, setShowForm] = useState(false)
   const [loading, setLoading] = useState(false)
   const [publishLoading, setPublishLoading] = useState(false)
-  const [rulesLoading, setRulesLoading] = useState(false)
   const [publishSummary, setPublishSummary] = useState<any>(null)
   const [showConfirm, setShowConfirm] = useState(false)
   const [editPkg, setEditPkg] = useState<Package | null>(null)
   const [editForm, setEditForm] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<{ success?: boolean; updated?: number; created?: number; skipped?: number; error?: string } | null>(null)
+  const [showApplyPanel, setShowApplyPanel] = useState(false)
 
   // Form state
   const [costPrice, setCostPrice] = useState('')
@@ -92,15 +100,8 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     setSelected(next)
   }
 
-  const handleApplyRules = async () => {
-    setRulesLoading(true)
-    setResult(null)
-    const res = await applyRulesToPackages(undefined)
-    setResult({ success: res.success, created: res.matched, updated: 0, skipped: 0, error: res.error })
-    if (res.success) {
-      setTimeout(() => router.refresh(), 1500)
-    }
-    setRulesLoading(false)
+  const handleOpenApplyPanel = () => {
+    setShowApplyPanel(true)
   }
 
   const handlePublish = async () => {
@@ -214,6 +215,23 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
     if (res.success) { setSelected(new Set()); setTimeout(() => router.refresh(), 1500) }
   }
 
+  const handleExport = () => {
+    const selectedPkgs = initialPackages.filter(p => selected.has(p.id))
+    if (selectedPkgs.length === 0) return
+    const headers = ['Provider','Plan ID','Name','Country','Region','Data (GB)','Validity (Days)','Cost Price','Selling Price','Currency','Markup %','Config Status','Publish Status']
+    const rows = selectedPkgs.map(p => [
+      p.provider?.name || '', p.providerPlanId, p.name, p.country || '', p.region || '', p.dataGB.toString(), p.validityDays.toString(),
+      p.costPrice.toString(), p.sellingPrice?.toString() || '', p.sellingCurrency || '', p.markupPercent?.toString() || '',
+      p.configurationStatus || '', p.publishStatus || '',
+    ])
+    const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `provider-catalog-export-${new Date().toISOString().slice(0,10)}.csv`
+    a.click(); URL.revokeObjectURL(url)
+  }
+
   const handleSubmit = async () => {
     if (selected.size === 0) return
     setLoading(true)
@@ -266,9 +284,9 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
                 className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
                 {publishLoading ? 'Publishing...' : 'Publish'}
               </button>
-              <button onClick={handleApplyRules} disabled={rulesLoading}
-                className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50">
-                {rulesLoading ? 'Applying...' : 'Apply Rules'}
+              <button onClick={handleOpenApplyPanel}
+                className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700">
+                Apply Rules
               </button>
               <button onClick={handleBulkHide}
                 className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700">
@@ -281,6 +299,10 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
               <button onClick={handleResetPricing}
                 className="rounded-lg bg-gray-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700">
                 Reset to Factory
+              </button>
+              <button onClick={handleExport}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
+                Export CSV
               </button>
             </div>
             <button onClick={() => setSelected(new Set())}
@@ -495,17 +517,26 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
       )}
 
       {/* Table */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b">
-        <button onClick={handleApplyRules} disabled={rulesLoading}
-          className="rounded-lg bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50">
-          {rulesLoading ? 'Applying...' : 'Apply Rules'}
+      <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-2 border-b">
+        <button onClick={handleOpenApplyPanel}
+          className="rounded-lg bg-purple-600 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700">
+          Apply Rules
         </button>
         <button onClick={handleUndoRules}
           className="rounded-lg border border-amber-300 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50">
           Undo Last Rules
         </button>
-        <span className="text-xs text-gray-400">Auto-configure all unconfigured packages using active rules</span>
+        <span className="text-xs text-gray-400">Select a rule and choose where to apply it</span>
       </div>
+      {showApplyPanel && (
+        <ApplyRulePanel
+          rules={rules}
+          selectedIds={Array.from(selected)}
+          onClose={() => setShowApplyPanel(false)}
+          onApplied={() => { setSelected(new Set()); router.refresh() }}
+        />
+      )}
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="bg-gray-50">
@@ -597,6 +628,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages }: {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }

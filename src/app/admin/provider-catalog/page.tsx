@@ -42,6 +42,11 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
     ...(searchFilters.length > 0 ? { OR: searchFilters } : {}),
   }
 
+  const rules = await prisma.packageConfigurationRule.findMany({
+    orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+    select: { id: true, name: true, priority: true, isActive: true },
+  })
+
   const [packages, total, providers, countries] = await Promise.all([
     prisma.providerPackage.findMany({
       where,
@@ -204,6 +209,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
       {/* Table */}
       <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
         <BulkConfigTable
+          rules={rules}
           initialPackages={packages.map(p => ({
             id: p.id,
             providerId: p.providerId,

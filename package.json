@@ -11,6 +11,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
+    "catalog:sync-pricing": "npx ts-node scripts/sync-catalog-pricing.ts",
     "seed:dev": "node prisma/seed-dev.js",
     "deploy:safe": "bash scripts/deploy-safe.sh",
     "check:prod": "bash scripts/check-production.sh",

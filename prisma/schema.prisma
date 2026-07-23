@@ -94,6 +94,7 @@ model User {
   auditNotes            ProviderAuditNote[]
   orderTimelineEvents   OrderTimelineEvent[]
   catalogChangeSets     CatalogChangeSet[]  @relation("UserChangeSets")
+  ruleExecutions        RuleExecution[]     @relation("UserRuleExecutions")
 
   @@map("users")
 }
@@ -355,11 +356,39 @@ model PackageConfigurationRule {
 
   provider Provider? @relation("ProviderConfigurationRules", fields: [providerId], references: [id], onDelete: SetNull)
   configuredPackages ProviderPackage[] @relation("PackageAutoConfiguration")
+  executions         RuleExecution[] @relation("RuleToExecution")
 
   @@index([providerId])
   @@index([priority])
   @@index([isActive])
   @@map("package_configuration_rules")
+}
+
+model RuleExecution {
+  id          String   @id @default(cuid())
+  ruleId      String
+  ruleName    String
+  executedById String?
+  executedAt  DateTime @default(now())
+  startedAt   DateTime
+  finishedAt  DateTime?
+  durationMs  Int?
+  scope       String
+  filtersUsed Json?
+  totalMatched Int     @default(0)
+  updatedCount Int     @default(0)
+  skippedCount Int     @default(0)
+  failedCount  Int     @default(0)
+  skipDetails  Json?
+  status      String   @default("PENDING") /// PENDING | RUNNING | COMPLETED | FAILED | CANCELLED
+
+  rule PackageConfigurationRule @relation("RuleToExecution", fields: [ruleId], references: [id], onDelete: Cascade)
+  executedBy User? @relation("UserRuleExecutions", fields: [executedById], references: [id], onDelete: SetNull)
+
+  @@index([ruleId])
+  @@index([executedAt])
+  @@index([status])
+  @@map("rule_executions")
 }
 
 model CatalogChangeSet {

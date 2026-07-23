@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 import { emitEvent } from '@/lib/catalog-events'
+import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
 
 function shortCode(s: string | null | undefined, fallback: string): string {
   if (!s) return fallback
@@ -16,7 +17,7 @@ function shortId(id: string): string {
   return id.slice(-6).toUpperCase()
 }
 
-async function generateOneSimSku(pp: {
+async function generateOneSimSku(tx: any, pp: {
   id: string
   provider?: { code?: string | null; name?: string | null } | null
   country?: string | null
@@ -27,16 +28,14 @@ async function generateOneSimSku(pp: {
   const country = (pp.country || 'XX').toUpperCase()
   const base = `OS-${provCode}-${country}-${pp.dataGB}GB-${pp.validityDays}D-${shortId(pp.id)}`
 
-  // Collision guard: if generated SKU exists, append sequential suffix
   let sku = base
   let attempt = 0
   while (attempt < 100) {
-    const exists = await prisma.eSIMPackage.findUnique({ where: { sku }, select: { id: true } })
+    const exists = await tx.eSIMPackage.findUnique({ where: { sku }, select: { id: true } })
     if (!exists) return sku
     attempt++
     sku = `${base}-${attempt}`
   }
-  // Fallback with full ID — practically impossible to collide
   return `${base}-${pp.id.slice(-8).toUpperCase()}`
 }
 
@@ -72,6 +71,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
   let skipped = 0
   const skippedDetails: { packageId: string; name: string; reason: string }[] = []
 
+  const qualified: typeof providerPackages = []
   for (const pp of providerPackages) {
     const sellPrice = pp.sellingPrice ? parseFloat(pp.sellingPrice.toString()) : null
     const costPrice = pp.costPrice ? parseFloat(pp.costPrice.toString()) : null
@@ -101,70 +101,59 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
       continue
     }
 
-    try {
-      const existing = await prisma.eSIMPackage.findFirst({
-        where: { providerPackageId: pp.id },
-      })
+    qualified.push(pp)
+  }
 
-      if (existing) {
-        await prisma.eSIMPackage.update({
-          where: { id: existing.id },
-          data: {
-            name: pp.name,
-            displayName: pp.name,
-            dataGB: pp.dataGB,
-            validityDays: pp.validityDays,
-            priceUSD: sellPrice,
-            localPrice: sellPrice,
-            currency: pp.sellingCurrency,
-            providerName: pp.provider?.name || null,
-            providerPlanId: pp.providerPlanId,
-            providerId: pp.providerId,
-            costPriceUSD: pp.costPrice,
-            costCurrency: pp.currency,
-            markupPercent: pp.markupPercent ? parseFloat(pp.markupPercent.toString()) : null,
-            source: 'CATALOG_PRODUCT',
-            isActive: true,
-          },
+  if (qualified.length > 0) {
+    for (const pp of qualified) {
+      try {
+        await prisma.$transaction(async (tx) => {
+          const existing = await tx.eSIMPackage.findFirst({
+            where: { providerPackageId: pp.id },
+          })
+
+          if (existing) {
+            await syncProviderPackageToPublishedProducts(tx, pp)
+            updated++
+          } else {
+            const sku = await generateOneSimSku(tx, pp)
+            await tx.eSIMPackage.create({
+              data: {
+                name: pp.name,
+                displayName: pp.name,
+                dataGB: pp.dataGB,
+                validityDays: pp.validityDays,
+                priceUSD: pp.sellingPrice!,
+                localPrice: pp.sellingPrice!,
+                currency: pp.sellingCurrency!,
+                providerName: pp.provider?.name || null,
+                providerPlanId: pp.providerPlanId,
+                providerId: pp.providerId,
+                sku,
+                packageCode: sku,
+                costPriceUSD: pp.costPrice,
+                costCurrency: pp.currency,
+                markupPercent: pp.markupPercent,
+                source: 'CATALOG_PRODUCT',
+                isActive: true,
+                providerPackageId: pp.id,
+              },
+            })
+            created++
+          }
+
+          await tx.providerPackage.update({
+            where: { id: pp.id },
+            data: { publishStatus: 'PUBLISHED' },
+          })
         })
-        updated++
-      } else {
-        const sku = await generateOneSimSku(pp)
-        await prisma.eSIMPackage.create({
-          data: {
-            name: pp.name,
-            displayName: pp.name,
-            dataGB: pp.dataGB,
-            validityDays: pp.validityDays,
-            priceUSD: sellPrice,
-            localPrice: sellPrice,
-            currency: pp.sellingCurrency,
-            providerName: pp.provider?.name || null,
-            providerPlanId: pp.providerPlanId,
-            providerId: pp.providerId,
-            sku,
-            packageCode: sku,
-            costPriceUSD: pp.costPrice,
-            costCurrency: pp.currency,
-            markupPercent: pp.markupPercent ? parseFloat(pp.markupPercent.toString()) : null,
-            source: 'CATALOG_PRODUCT',
-            isActive: true,
-            providerPackageId: pp.id,
-          },
-        })
-        created++
+      } catch (e: any) {
+        skipped++
+        let reason = e.message || 'unknown error'
+        if (e.code === 'P2002') reason = `duplicate SKU/packageCode (${pp.providerPlanCode || 'none'})`
+        skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `create/update failed: ${reason}` })
+        console.error(`[publishToCatalog] Failed: ${pp.name} (${pp.id}) — ${reason}`)
       }
-
-      await prisma.providerPackage.update({
-        where: { id: pp.id },
-        data: { publishStatus: 'PUBLISHED' },
-      })
-    } catch (e: any) {
-      skipped++
-      let reason = e.message || 'unknown error'
-      if (e.code === 'P2002') reason = `duplicate SKU/packageCode (${pp.providerPlanCode || 'none'})`
-      skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `create/update failed: ${reason}` })
-      console.error(`[publishToCatalog] Failed: ${pp.name} (${pp.id}) — ${reason}`)
     }
   }
 
@@ -201,9 +190,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
     metadata: { created, updated, skipped, total: providerPackages.length },
   })
 
-  revalidatePath('/admin/provider-catalog')
-  revalidatePath('/admin/packages')
-  revalidatePath('/admin/catalog-products')
+  await revalidateCatalogRoutes()
 
   return { success: true, created, updated, skipped, skippedDetails }
 }
@@ -216,17 +203,24 @@ export async function bulkSetPublishStatus(packageIds: string[], status: 'HIDDEN
   const validStatuses = ['HIDDEN', 'ARCHIVED']
   if (!validStatuses.includes(status)) return { success: false, error: 'Invalid status' }
 
-  const result = await prisma.providerPackage.updateMany({
-    where: { id: { in: packageIds } },
-    data: { publishStatus: status },
+  await prisma.$transaction(async (tx) => {
+    await tx.providerPackage.updateMany({
+      where: { id: { in: packageIds } },
+      data: { publishStatus: status },
+    })
+
+    await tx.eSIMPackage.updateMany({
+      where: { providerPackageId: { in: packageIds } },
+      data: { isActive: status === 'HIDDEN' ? false : undefined },
+    })
   })
 
   await prisma.auditLog.create({
-    data: { userId: session.user.id, action: `BULK_${status}`, entity: 'ProviderPackage', details: `Set ${result.count} packages to ${status}` },
+    data: { userId: session.user.id, action: `BULK_${status}`, entity: 'ProviderPackage', details: `Set ${packageIds.length} packages to ${status}` },
   }).catch(() => {})
 
-  revalidatePath('/admin/provider-catalog')
-  return { success: true, updated: result.count }
+  await revalidateCatalogRoutes()
+  return { success: true, updated: packageIds.length }
 }
 
 export async function getPublishSummary(packageIds: string[]) {

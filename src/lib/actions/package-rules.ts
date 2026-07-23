@@ -5,6 +5,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
+import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
 
 export async function createRule(formData: FormData) {
   const session = await getServerSession(authOptions)
@@ -89,101 +90,138 @@ export async function toggleRuleActive(ruleId: string) {
   redirect('/admin/package-rules?success=toggled')
 }
 
+export async function duplicateRule(ruleId: string) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const original = await prisma.packageConfigurationRule.findUnique({ where: { id: ruleId } })
+  if (!original) redirect('/admin/package-rules?error=not_found')
+
+  await prisma.packageConfigurationRule.create({
+    data: {
+      name: `${original.name} (copy)`,
+      providerId: original.providerId,
+      country: original.country,
+      region: original.region,
+      productType: original.productType,
+      dataMinGB: original.dataMinGB,
+      dataMaxGB: original.dataMaxGB,
+      validityMinDays: original.validityMinDays,
+      validityMaxDays: original.validityMaxDays,
+      costPrice: original.costPrice,
+      markupPercent: original.markupPercent,
+      fixedPrice: original.fixedPrice,
+      sellingCurrency: original.sellingCurrency,
+      publishStatus: original.publishStatus,
+      priority: original.priority,
+      isActive: false,
+    },
+  })
+
+  await prisma.auditLog.create({ data: { userId: session.user.id, action: 'RULE_DUPLICATED', entity: 'PackageConfigurationRule', entityId: ruleId, details: `Duplicated "${original.name}"` } }).catch(() => {})
+  revalidatePath('/admin/package-rules')
+  redirect('/admin/package-rules?success=duplicated')
+}
+
 export async function applyRulesToPackages(packageIds?: string[]): Promise<{ success: boolean; matched?: number; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
 
-  // Get active rules ordered by priority (highest first)
-  const rules = await prisma.packageConfigurationRule.findMany({
-    where: { isActive: true },
-    orderBy: { priority: 'desc' },
-  })
-
-  if (rules.length === 0) return { success: false, error: 'No active rules configured' }
-
-  // Get packages to process — include UNCONFIGURED and AUTO_CONFIGURED
-  // where the auto-configured rule has been updated since last apply
-  const where: any = {
-    OR: [
-      { configurationStatus: 'UNCONFIGURED' },
-      { configurationStatus: 'AUTO_CONFIGURED' },
-    ],
-  }
-  if (packageIds && packageIds.length > 0) where.id = { in: packageIds }
-
-  const providerPackages = await prisma.providerPackage.findMany({
-    where,
-    include: { configuredByRule: { select: { id: true, updatedAt: true } } },
-  })
-
-  let matched = 0
-
-  for (const pp of providerPackages) {
-    // Find matching rule (highest priority first)
-    const rule = rules.find(r => {
-      if (r.providerId && r.providerId !== pp.providerId) return false
-      if (r.country && r.country !== pp.country) return false
-      if (r.region && r.region !== pp.region) return false
-      if (r.dataMinGB != null && pp.dataGB < r.dataMinGB) return false
-      if (r.dataMaxGB != null && pp.dataGB > r.dataMaxGB) return false
-      if (r.validityMinDays != null && pp.validityDays < r.validityMinDays) return false
-      if (r.validityMaxDays != null && pp.validityDays > r.validityMaxDays) return false
-      return true
+  try {
+    // Get active rules ordered by priority (highest first)
+    const rules = await prisma.packageConfigurationRule.findMany({
+      where: { isActive: true },
+      orderBy: { priority: 'desc' },
     })
 
-    if (!rule) continue
+    if (rules.length === 0) return { success: false, error: 'No active rules configured' }
 
-    // Determine if rule was updated since this package was last configured
-    const ruleUpdatedSince = pp.lastConfiguredAt && rule.updatedAt > pp.lastConfiguredAt
-    const needsReconfigure = pp.configurationStatus === 'UNCONFIGURED' || ruleUpdatedSince
+    // Get packages to process — include UNCONFIGURED and AUTO_CONFIGURED
+    // where the auto-configured rule has been updated since last apply
+    const where: any = {
+      OR: [
+        { configurationStatus: 'UNCONFIGURED' },
+        { configurationStatus: 'AUTO_CONFIGURED' },
+      ],
+    }
+    if (packageIds && packageIds.length > 0) where.id = { in: packageIds }
 
-    if (!needsReconfigure && pp.configurationStatus !== 'UNCONFIGURED') continue
+    const providerPackages = await prisma.providerPackage.findMany({
+      where,
+      include: { configuredByRule: { select: { id: true, updatedAt: true } } },
+    })
 
-    // Cost price: use rule.costPrice if set AND (package has no cost OR rule updated after config)
-    let effectiveCost = parseFloat(pp.costPrice.toString())
-    if (rule.costPrice && parseFloat(rule.costPrice.toString()) > 0) {
-      if (effectiveCost <= 0 || (ruleUpdatedSince && pp.autoConfiguredByRuleId === rule.id)) {
-        effectiveCost = parseFloat(rule.costPrice.toString())
+    const matchedUpdates: { pp: typeof providerPackages[number]; updateData: any }[] = []
+
+    for (const pp of providerPackages) {
+      const rule = rules.find(r => {
+        if (r.providerId && r.providerId !== pp.providerId) return false
+        if (r.country && r.country !== pp.country) return false
+        if (r.region && r.region !== pp.region) return false
+        if (r.dataMinGB != null && pp.dataGB < r.dataMinGB) return false
+        if (r.dataMaxGB != null && pp.dataGB > r.dataMaxGB) return false
+        if (r.validityMinDays != null && pp.validityDays < r.validityMinDays) return false
+        if (r.validityMaxDays != null && pp.validityDays > r.validityMaxDays) return false
+        return true
+      })
+
+      if (!rule) continue
+
+      const ruleUpdatedSince = pp.lastConfiguredAt && rule.updatedAt > pp.lastConfiguredAt
+      const needsReconfigure = pp.configurationStatus === 'UNCONFIGURED' || ruleUpdatedSince
+
+      if (!needsReconfigure && pp.configurationStatus !== 'UNCONFIGURED') continue
+
+      let effectiveCost = parseFloat(pp.costPrice.toString())
+      if (rule.costPrice && parseFloat(rule.costPrice.toString()) > 0) {
+        if (effectiveCost <= 0 || (ruleUpdatedSince && pp.autoConfiguredByRuleId === rule.id)) {
+          effectiveCost = parseFloat(rule.costPrice.toString())
+        }
       }
+
+      let sellingPrice: number | undefined
+
+      if (rule.fixedPrice && parseFloat(rule.fixedPrice.toString()) > 0) {
+        sellingPrice = parseFloat(rule.fixedPrice.toString())
+      } else if (rule.markupPercent && effectiveCost > 0) {
+        const markup = parseFloat(rule.markupPercent.toString())
+        sellingPrice = parseFloat((effectiveCost * (1 + markup / 100)).toFixed(2))
+      }
+
+      if (!sellingPrice || sellingPrice <= 0) continue
+
+      const updateData: any = {
+        sellingPrice,
+        sellingCurrency: rule.sellingCurrency,
+        markupPercent: rule.markupPercent,
+        pricingMode: rule.fixedPrice ? 'FIXED_PRICE' : 'MARKUP_PERCENT',
+        publishStatus: rule.publishStatus || 'READY',
+        configurationStatus: 'AUTO_CONFIGURED',
+        autoConfiguredByRuleId: rule.id,
+        lastConfiguredAt: new Date(),
+      }
+
+      if (effectiveCost !== parseFloat(pp.costPrice.toString())) {
+        updateData.costPrice = effectiveCost
+      }
+
+      matchedUpdates.push({ pp, updateData })
     }
 
-    // Selling price calculation
-    let sellingPrice: number | undefined
-
-    if (rule.fixedPrice && parseFloat(rule.fixedPrice.toString()) > 0) {
-      sellingPrice = parseFloat(rule.fixedPrice.toString())
-    } else if (rule.markupPercent && effectiveCost > 0) {
-      const markup = parseFloat(rule.markupPercent.toString())
-      sellingPrice = parseFloat((effectiveCost * (1 + markup / 100)).toFixed(2))
+    if (matchedUpdates.length > 0) {
+      await prisma.$transaction(async (tx) => {
+        for (const { pp, updateData } of matchedUpdates) {
+          await tx.providerPackage.update({ where: { id: pp.id }, data: updateData })
+          const merged = { ...pp, ...updateData }
+          await syncProviderPackageToPublishedProducts(tx, merged as any)
+        }
+      })
     }
 
-    if (!sellingPrice || sellingPrice <= 0) continue
-
-    const updateData: any = {
-      sellingPrice,
-      sellingCurrency: rule.sellingCurrency,
-      markupPercent: rule.markupPercent,
-      pricingMode: rule.fixedPrice ? 'FIXED_PRICE' : 'MARKUP_PERCENT',
-      publishStatus: rule.publishStatus || 'READY',
-      configurationStatus: 'AUTO_CONFIGURED',
-      autoConfiguredByRuleId: rule.id,
-      lastConfiguredAt: new Date(),
-    }
-
-    // Only set costPrice from rule if provider cost was missing and rule has costPrice
-    if (effectiveCost !== parseFloat(pp.costPrice.toString())) {
-      updateData.costPrice = effectiveCost
-    }
-
-    await prisma.providerPackage.update({
-      where: { id: pp.id },
-      data: updateData,
-    })
-
-    matched++
+    await prisma.auditLog.create({ data: { userId: session.user.id, action: 'RULES_APPLIED', entity: 'ProviderPackage', details: `Applied ${rules.length} rules to ${matchedUpdates.length} packages` } }).catch(() => {})
+    await revalidateCatalogRoutes()
+    return { success: true, matched: matchedUpdates.length }
+  } catch (e: any) {
+    console.error('[applyRulesToPackages] Failed:', e)
+    return { success: false, error: e.message || 'Rules application failed' }
   }
-
-  await prisma.auditLog.create({ data: { userId: session.user.id, action: 'RULES_APPLIED', entity: 'ProviderPackage', details: `Applied ${rules.length} rules to ${matched} packages` } }).catch(() => {})
-  revalidatePath('/admin/provider-catalog')
-  return { success: true, matched }
 }

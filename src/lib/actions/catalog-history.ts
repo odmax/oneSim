@@ -4,6 +4,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
+import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
 
 const TRACKED_FIELDS = ['sellingPrice','sellingCurrency','markupPercent','pricingMode','publishStatus','configurationStatus','tags','notes','isPreferred','preferredReason','preferredAt','excludedFromAutoPick','autoPickReason']
 
@@ -57,34 +58,53 @@ export async function rollbackChangeSet(changeSetId: string): Promise<{ success:
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
 
-  const changeSet = await prisma.catalogChangeSet.findUnique({ where: { id: changeSetId }, include: { items: true } })
-  if (!changeSet) return { success: false, error: 'Change set not found' }
-  if (changeSet.actionType === 'ROLLBACK') return { success: false, error: 'Cannot rollback a rollback' }
+  try {
+    const changeSet = await prisma.catalogChangeSet.findUnique({ where: { id: changeSetId }, include: { items: true } })
+    if (!changeSet) return { success: false, error: 'Change set not found' }
+    if (changeSet.actionType === 'ROLLBACK') return { success: false, error: 'Cannot rollback a rollback' }
 
-  let rolledBack = 0
-  let skipped = 0
-
-  for (const item of changeSet.items) {
-    const before = (item.before || {}) as Record<string, any>
-    const updateData: any = {}
-    for (const f of TRACKED_FIELDS) {
-      if (before[f] !== undefined) updateData[f] = before[f]
+    const rollbackOps: { providerPackageId: string; before: Record<string, any> }[] = []
+    for (const item of changeSet.items) {
+      const before = (item.before || {}) as Record<string, any>
+      const updateData: any = {}
+      for (const f of TRACKED_FIELDS) {
+        if (before[f] !== undefined) updateData[f] = before[f]
+      }
+      if (Object.keys(updateData).length > 0) {
+        rollbackOps.push({ providerPackageId: item.providerPackageId, before: updateData })
+      }
     }
-    if (Object.keys(updateData).length > 0) {
-      try {
-        await prisma.providerPackage.update({ where: { id: item.providerPackageId }, data: updateData })
-        rolledBack++
-      } catch { skipped++ }
-    } else { skipped++ }
+
+    if (rollbackOps.length > 0) {
+      const packages = await prisma.providerPackage.findMany({
+        where: { id: { in: rollbackOps.map(o => o.providerPackageId) } },
+        select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, sellingPrice: true, sellingCurrency: true, markupPercent: true, providerPlanId: true, providerId: true, publishStatus: true },
+      })
+      const pkgMap = new Map(packages.map(p => [p.id, p]))
+
+      await prisma.$transaction(async (tx) => {
+        for (const op of rollbackOps) {
+          await tx.providerPackage.update({ where: { id: op.providerPackageId }, data: op.before })
+          const original = pkgMap.get(op.providerPackageId)
+          if (original) {
+            const merged = { ...original, ...op.before }
+            await syncProviderPackageToPublishedProducts(tx, merged as any)
+          }
+        }
+      })
+    }
+
+    await prisma.catalogChangeSet.create({
+      data: { actionType: 'ROLLBACK', description: `Rollback of ${changeSet.actionType}`, createdById: session.user.id, totalChanged: rollbackOps.length, metadata: { originalChangeSetId: changeSetId } },
+    })
+
+    await prisma.auditLog.create({ data: { userId: session.user.id, action: 'CATALOG_ROLLBACK', entity: 'CatalogChangeSet', entityId: changeSetId, details: `Rolled back ${rollbackOps.length} packages` } }).catch(() => {})
+
+    await revalidateCatalogRoutes()
+    revalidatePath('/admin/provider-catalog/history')
+    return { success: true, rolledBack: rollbackOps.length, skipped: changeSet.items.length - rollbackOps.length }
+  } catch (e: any) {
+    console.error('[rollbackChangeSet] Failed:', e)
+    return { success: false, error: e.message || 'Rollback failed' }
   }
-
-  await prisma.catalogChangeSet.create({
-    data: { actionType: 'ROLLBACK', description: `Rollback of ${changeSet.actionType}`, createdById: session.user.id, totalChanged: rolledBack, metadata: { originalChangeSetId: changeSetId } },
-  })
-
-  await prisma.auditLog.create({ data: { userId: session.user.id, action: 'CATALOG_ROLLBACK', entity: 'CatalogChangeSet', entityId: changeSetId, details: `Rolled back ${rolledBack} packages, skipped ${skipped}` } }).catch(() => {})
-
-  revalidatePath('/admin/provider-catalog')
-  revalidatePath('/admin/provider-catalog/history')
-  return { success: true, rolledBack, skipped }
 }
