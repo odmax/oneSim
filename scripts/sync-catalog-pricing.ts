@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client'
-import { buildCatalogProductSyncData, getCatalogPricingDifferences, parseDecimalSafe, decimalValuesEqual } from '../src/lib/services/catalog-price-sync'
+import { buildCatalogProductSyncData, getCatalogPricingDifferences, parseDecimalSafe, decimalValuesEqual } from '../src/lib/services/catalog-price-utils'
 
 interface CliArgs {
   dryRun: boolean

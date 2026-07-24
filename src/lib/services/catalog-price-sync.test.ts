@@ -21,12 +21,14 @@ import {
   parseDecimalSafe,
   buildCatalogProductSyncData,
   getCatalogPricingDifferences,
+  ProviderPackageInput,
+  CatalogProductSummary,
+} from './catalog-price-utils'
+import {
   syncProviderPackageToPublishedProducts,
   recordCatalogPriceSyncAudit,
   revalidateCatalogRoutes,
   CatalogPriceSyncResult,
-  ProviderPackageInput,
-  CatalogProductSummary,
 } from './catalog-price-sync'
 
 const mockProviderPackage: ProviderPackageInput = {
