@@ -81,9 +81,16 @@ export class PurchaseOrchestrator {
       return this.fail('INSUFFICIENT_WALLET', `Wallet balance $${business.walletBalance} is insufficient for $${totalAmount}`, false)
     }
 
-    // Step 5: Validate provider
+    // Step 5: Validate provider — use routing engine if not assigned
     let providerId = pkg.providerId
-    if (!providerId) return this.fail('NO_PROVIDER', 'Package has no assigned provider', false)
+    if (!providerId) {
+      const { ProviderRoutingEngine } = await import('@/lib/services/routing/provider-routing-engine')
+      const engine = new ProviderRoutingEngine()
+      const route = await engine.selectBestProvider({ packageId: pkg.id, quantity })
+      if (!route.success || !route.selected) return this.fail('NO_PROVIDER', 'No eligible provider found via routing', false)
+      providerId = route.selected.providerId
+      console.log(`[ROUTING] Selected provider=${route.selected.providerName}(${providerId}) score=${route.selected.score}`)
+    }
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
     if (!provider) return this.fail('PROVIDER_NOT_FOUND', 'Provider not found', false)

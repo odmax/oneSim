@@ -25,6 +25,7 @@ import { TestPurchasePanel } from '@/components/admin/providers/TestPurchasePane
 import { TelnaDiscoveryPanel } from '@/components/admin/providers/telna/TelnaDiscoveryPanel'
 import { ProviderBalanceCard } from '@/components/admin/providers/ProviderBalanceCell'
 import { ProviderRoamingProfilesCard } from '@/components/admin/providers/ProviderRoamingProfilesCard'
+import { RoutingSimulator } from '@/components/admin/providers/RoutingSimulator'
 
 function maskApiToken(token: string | null): string {
   if (!token) return ''
@@ -395,6 +396,11 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       {/* Roaming Profiles */}
       <div className="mb-6">
         <ProviderRoamingProfilesCard providerId={provider.id} />
+      </div>
+
+      {/* Routing Simulator */}
+      <div className="mb-6">
+        <RoutingSimulator />
       </div>
 
       {/* Certification Wizard */}
