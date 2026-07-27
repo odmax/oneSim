@@ -33,12 +33,20 @@ interface ApplyRuleWizardProps {
 }
 
 type Step = 'review' | 'scope' | 'filters' | 'preview' | 'executing' | 'results'
-type Scope = 'configured' | 'draft' | 'configured_draft'
+type Scope = 'unconfigured' | 'configured' | 'draft' | 'all_eligible'
 
 const SCOPE_LABELS: Record<string, string> = {
+  unconfigured: 'Unconfigured Plans Only',
   configured: 'Configured Plans Only',
   draft: 'Draft Plans Only',
-  configured_draft: 'Configured + Draft Plans',
+  all_eligible: 'All Eligible Plans',
+}
+
+const SCOPE_DESCRIPTIONS: Record<string, string> = {
+  unconfigured: 'Provider plans that have not yet been configured.',
+  configured: 'Plans with completed configuration.',
+  draft: 'Configured plans that have not yet been published.',
+  all_eligible: 'All unconfigured, configured, and draft plans that can accept this rule.',
 }
 
 const defaultFilters: ApplyRuleFilters = {
@@ -258,7 +266,7 @@ export default function ApplyRuleWizard({ rule, onClose, onApplied }: ApplyRuleW
                     <p className="text-sm text-gray-500 mt-1">Choose which plans this rule should target</p>
                   </div>
                   <div className="space-y-2">
-                    {(['configured', 'draft', 'configured_draft'] as Scope[]).map(s => (
+                    {(['unconfigured', 'configured', 'draft', 'all_eligible'] as Scope[]).map(s => (
                       <label key={s} className={`flex items-start gap-3 rounded-xl border p-4 cursor-pointer transition-all ${
                         scope === s ? 'border-cyan-300 bg-cyan-50 ring-1 ring-cyan-200' : 'border-gray-200 hover:bg-gray-50 hover:border-gray-300'
                       }`}>
@@ -272,11 +280,7 @@ export default function ApplyRuleWizard({ rule, onClose, onApplied }: ApplyRuleW
                         />
                         <div>
                           <span className="text-sm font-semibold text-gray-900">{SCOPE_LABELS[s]}</span>
-                          <p className="text-xs text-gray-500 mt-0.5">
-                            {s === 'configured' && 'Plans with configuration status = Configured'}
-                            {s === 'draft' && 'Plans with publish status = Draft'}
-                            {s === 'configured_draft' && 'Both configured and draft plans'}
-                          </p>
+                          <p className="text-xs text-gray-500 mt-0.5">{SCOPE_DESCRIPTIONS[s]}</p>
                         </div>
                       </label>
                     ))}

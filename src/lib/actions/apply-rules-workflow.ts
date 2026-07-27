@@ -403,15 +403,20 @@ export async function getRuleTimesApplied(ruleId: string): Promise<number> {
 function buildScopeWhere(scope: string, filters: ApplyRuleFilters, selectedIds?: string[]): any {
   const where: any = {}
 
-  if (scope === 'configured') {
-    where.configurationStatus = 'CONFIGURED'
+  if (scope === 'unconfigured') {
+    where.configurationStatus = 'UNCONFIGURED'
+    where.publishStatus = { notIn: ['PUBLISHED', 'ARCHIVED', 'HIDDEN'] }
+  } else if (scope === 'configured') {
+    where.configurationStatus = { in: ['CONFIGURED', 'AUTO_CONFIGURED'] }
   } else if (scope === 'draft') {
     where.publishStatus = 'DRAFT'
-  } else if (scope === 'configured_draft') {
+  } else if (scope === 'all_eligible') {
     where.OR = [
-      { configurationStatus: 'CONFIGURED' },
+      { configurationStatus: 'UNCONFIGURED' },
+      { configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] } },
       { publishStatus: 'DRAFT' },
     ]
+    where.publishStatus = { notIn: ['PUBLISHED', 'ARCHIVED', 'HIDDEN'] }
   } else if (scope === 'selected') {
     if (selectedIds && selectedIds.length > 0) where.id = { in: selectedIds }
   }
