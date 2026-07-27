@@ -63,6 +63,16 @@ export class ProviderRoutingEngine {
       }
     }
 
+    return this.rankProviders(request)
+  }
+
+  async getRankedProviders(request: RoutingRequest): Promise<ProviderScore[]> {
+    const result = await this.rankProviders(request)
+    return result.candidates || []
+  }
+
+  private async rankProviders(request: RoutingRequest): Promise<{ success: boolean; selected?: ProviderScore; candidates?: ProviderScore[]; error?: string }> {
+
     // Get eligible providers
     const excludeIds = request.excludeProviderIds || []
     const allProviders = await prisma.provider.findMany({

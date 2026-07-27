@@ -6,8 +6,9 @@ vi.mock('@/lib/prisma', () => ({
     customer: { findFirst: vi.fn(), update: vi.fn(), create: vi.fn() },
     eSIMPurchase: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
     eSIM: { create: vi.fn(), findMany: vi.fn() },
-    provider: { findUnique: vi.fn() },
+    provider: { findUnique: vi.fn(), findMany: vi.fn() },
     eSIMPackage: { findUnique: vi.fn() },
+    providerPackage: { findMany: vi.fn().mockResolvedValue([]) },
     auditLog: { create: vi.fn() },
     orderTimelineEvent: { create: vi.fn() },
     walletTransaction: { create: vi.fn() },
@@ -87,6 +88,7 @@ describe('PurchaseOrchestrator', () => {
 
   function setupProvider(caps = ['PURCHASE'] as string[]) {
     mockPrisma.provider.findUnique.mockResolvedValue({ id: 'prov-1', code: 'CHOICE', name: 'Choice', status: 'ACTIVE', type: 'CHOICE', apiBaseUrl: 'https://a.b', apiToken: 'tok', environment: 'staging', authUrl: 'https://a.b/auth', enabledCapabilities: caps, config: {} } as any)
+    mockPrisma.provider.findMany.mockResolvedValue([{ id: 'prov-1', code: 'CHOICE', name: 'Choice', status: 'ACTIVE', enabledCapabilities: caps, errorCount: 0, priority: 0, lastSuccessfulConnection: new Date(), activationSuccessRate: 0.95 } as any])
   }
 
   function setupSuccessAdapter() {
@@ -105,7 +107,7 @@ describe('PurchaseOrchestrator', () => {
     setupSuccessAdapter()
     mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
     mockPrisma.eSIMPurchase.create.mockResolvedValue({ id: 'order-1' } as any)
-    mockPrisma.customer.create.mockResolvedValue({ id: 'cust-1' } as any)
+    setupCustomer()
     mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
     mockCapture.mockResolvedValue({ success: true })
     mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
@@ -264,6 +266,19 @@ describe('PurchaseOrchestrator', () => {
     setupBusiness()
     setupPackage()
     setupProvider()
+    setupCustomer()
+    // Mock two providers so failover can exhaust
+    mockPrisma.provider.findMany.mockResolvedValue([
+      { id: 'prov-1', code: 'CHOICE', name: 'Choice', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'], errorCount: 0, priority: 0, lastSuccessfulConnection: new Date() },
+      { id: 'prov-2', code: 'AIRHUB', name: 'AirHub', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'], errorCount: 0, priority: 0, lastSuccessfulConnection: new Date() },
+    ] as any)
+    // findUnique should work for any provider ID
+    mockPrisma.provider.findUnique.mockImplementation((args: any) => {
+      const id = (args as any)?.where?.id
+      if (id === 'prov-2') return Promise.resolve({ id: 'prov-2', code: 'AIRHUB', name: 'AirHub', status: 'ACTIVE', type: 'CUSTOM', apiBaseUrl: 'https://a.b', apiToken: 'tok', environment: 'staging', authUrl: 'https://a.b/auth', enabledCapabilities: ['PURCHASE'], config: {} } as any)
+      return Promise.resolve({ id: 'prov-1', code: 'CHOICE', name: 'Choice', status: 'ACTIVE', type: 'CHOICE', apiBaseUrl: 'https://a.b', apiToken: 'tok', environment: 'staging', authUrl: 'https://a.b/auth', enabledCapabilities: ['PURCHASE'], config: {} } as any)
+    })
+    // Both providers fail — should exhaust
     mockAdapter.mockResolvedValue({
       activateESIM: vi.fn().mockResolvedValue({ success: false, error: { code: 'RATE_LIMITED', message: 'Too many requests', details: { retryable: true } } }),
       validatePurchase: vi.fn().mockResolvedValue({ valid: true }),
@@ -273,7 +288,7 @@ describe('PurchaseOrchestrator', () => {
     mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
 
     const result = await orchestrator.executePurchase(validRequest)
-    expect(result.retryable).toBe(true)
-    expect(result.errorCode).toBe('RATE_LIMITED')
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('ALL_PROVIDERS_EXHAUSTED')
   })
 })
