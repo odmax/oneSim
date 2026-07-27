@@ -301,6 +301,32 @@ export class TelnaConnector implements IProviderConnector {
     return { success: true, data: { wallet } }
   }
 
+  async getBalance(): Promise<ConnectorResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>> {
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { config: true } })
+    if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }
+    const cfg = (provider.config as any) || {}
+    const walletId = cfg.walletId
+    if (walletId == null) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'No walletId configured in provider config' } }
+    }
+
+    const result = await this.getWallet(Number(walletId))
+    if (!result.success || !result.data?.wallet) {
+      return { success: false, error: result.error || { code: 'WALLET_FAILED', message: 'Failed to fetch wallet' } }
+    }
+
+    const wallet = result.data.wallet
+    return {
+      success: true,
+      data: {
+        balance: wallet.balance ?? null,
+        currency: wallet.currency || null,
+        accountId: wallet.id ? String(wallet.id) : null,
+        accountName: wallet.name || null,
+      },
+    }
+  }
+
   // ── Package Template Discovery (Telna Phase 2A) ───────────────────────
 
   async listPackageTemplates(inventoryId?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaPackageTemplate[]; total: number }>> {

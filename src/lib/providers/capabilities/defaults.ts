@@ -11,6 +11,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.CATALOG_SYNC,
     ProviderCapability.PURCHASE,
     ProviderCapability.STATUS,
+    ProviderCapability.BALANCE,
   ],
 
   // AirHub — full eSIM lifecycle (auth, catalog, purchase, status, QR)
@@ -47,6 +48,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.WALLET,
     ProviderCapability.INVENTORY,
     ProviderCapability.PCR_PROFILE,
+    ProviderCapability.BALANCE,
   ],
 
   // Telna SeamlessOS — purchase lifecycle (usage/suspend deferred)

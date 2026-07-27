@@ -23,6 +23,7 @@ import { ProviderActionButton, ActionForm } from '@/components/admin/providers/A
 import { MappingValidator } from '@/components/admin/providers/MappingValidator'
 import { TestPurchasePanel } from '@/components/admin/providers/TestPurchasePanel'
 import { TelnaDiscoveryPanel } from '@/components/admin/providers/telna/TelnaDiscoveryPanel'
+import { ProviderBalanceCard } from '@/components/admin/providers/ProviderBalanceCell'
 
 function maskApiToken(token: string | null): string {
   if (!token) return ''
@@ -383,6 +384,11 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
         <ProviderHealthCards provider={provider} />
         <ProviderCapabilityMatrix provider={provider} />
+      </div>
+
+      {/* Running Balance */}
+      <div className="mb-6">
+        <ProviderBalanceCard providerId={provider.id} />
       </div>
 
       {/* Certification Wizard */}

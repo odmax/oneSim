@@ -8,6 +8,7 @@ import { toggleProviderStatus } from '@/lib/actions/providers'
 import { restoreProvider } from '@/lib/actions/provider-lifecycle'
 import { inferProviderCapabilities } from '@/lib/providers/capabilities'
 import { ProviderSearchBar } from '@/components/admin/providers/ProviderSearchBar'
+import { ProviderBalanceCell } from '@/components/admin/providers/ProviderBalanceCell'
 
 function maskApiToken(token: string | null): string {
   if (!token || token.length <= 4) return token ? '••••' + token.slice(-4) : ''
@@ -87,6 +88,7 @@ export default async function AdminProvidersPage({ searchParams }: { searchParam
               <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Auth</th>
               <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Environment</th>
               <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Capabilities</th>
+              <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Balance</th>
               <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Health</th>
               <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>
             </tr>
@@ -150,6 +152,9 @@ export default async function AdminProvidersPage({ searchParams }: { searchParam
                       ))
                     })()}
                   </div>
+                </td>
+                <td className="whitespace-nowrap px-6 py-4">
+                  <ProviderBalanceCell providerId={p.id} providerCode={p.code} showCapability />
                 </td>
                 <td className="whitespace-nowrap px-6 py-4 text-sm">
                   <div className="flex flex-col gap-0.5">

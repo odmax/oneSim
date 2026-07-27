@@ -52,6 +52,9 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
     validatePurchase: connector.validatePurchase
       ? async (params) => await connector.validatePurchase!(params)
       : undefined,
+    getBalance: connector.getBalance
+      ? async () => await connector.getBalance!()
+      : undefined,
     getActivationStatus: async (id) => {
       const r = await connector.getStatus(id)
       if (!r.success) return { success: false, error: r.error }

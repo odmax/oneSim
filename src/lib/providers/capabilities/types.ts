@@ -14,6 +14,7 @@ export const ProviderCapability = {
   WALLET: 'WALLET',
   INVENTORY: 'INVENTORY',
   PCR_PROFILE: 'PCR_PROFILE',
+  BALANCE: 'BALANCE',
 } as const
 
 export type ProviderCapability = (typeof ProviderCapability)[keyof typeof ProviderCapability]
@@ -34,6 +35,7 @@ export const CAPABILITY_LABELS: Record<ProviderCapability, string> = {
   WALLET: 'Wallet',
   INVENTORY: 'Inventory',
   PCR_PROFILE: 'PCR Profile',
+  BALANCE: 'Balance',
 }
 
 export const CAPABILITY_COLORS: Record<ProviderCapability, string> = {
@@ -52,4 +54,5 @@ export const CAPABILITY_COLORS: Record<ProviderCapability, string> = {
   WALLET: 'bg-green-100 text-green-700',
   INVENTORY: 'bg-gray-100 text-gray-700',
   PCR_PROFILE: 'bg-violet-100 text-violet-700',
+  BALANCE: 'bg-sky-100 text-sky-700',
 }

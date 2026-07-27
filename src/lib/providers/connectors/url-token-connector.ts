@@ -57,6 +57,42 @@ export class UrlTokenConnector extends RestCatalogConnector {
     return {}
   }
 
+  async getBalance(): Promise<ConnectorResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>> {
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'API base URL not configured' } }
+    const token = this.config.apiToken || ''
+    if (!token) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'No API token configured' } }
+
+    const path = `/account/v03_09/prepaid_balance/${token}`
+    console.log(`[PROVIDER_BALANCE_REQUEST] providerCode=CHOICE endpoint=/account/v03_09/prepaid_balance/[REDACTED]`)
+
+    const { text, error, status } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    if (error) {
+      console.log(`[PROVIDER_BALANCE_RESULT] providerCode=CHOICE success=false error=${error.code}`)
+      return { success: false, error }
+    }
+    if (!text) return { success: false, error: { code: 'EMPTY', message: 'Empty balance response' } }
+
+    try {
+      const json = JSON.parse(text)
+      const rawBalance = json.balance ?? json.prepaid_balance ?? json.amount ?? null
+      const balance = rawBalance != null ? parseFloat(String(rawBalance)) : null
+      const currency = json.currency || null
+
+      console.log(`[PROVIDER_BALANCE_RESULT] providerCode=CHOICE success=true hasBalance=${balance != null} currency=${currency || 'null'}`)
+      return {
+        success: true,
+        data: {
+          balance: balance != null && !isNaN(balance) ? balance : null,
+          currency: currency || null,
+          accountId: json.account_id || json.accountId || null,
+          accountName: json.account_name || json.accountName || null,
+        },
+      }
+    } catch {
+      return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse balance response' } }
+    }
+  }
+
   async diagnoseConnection(): Promise<ConnectorResult<DiagnosticInfo>> {
     const token = this.config.apiToken || ''
     const path = `/account/v03_09/bundle_templates/${token}`

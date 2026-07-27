@@ -175,4 +175,5 @@ export interface IProviderConnector {
    * Optional — connectors without this method are treated as valid.
    */
   validatePurchase?(params: { planId: string; quantity: number; subscriber: { email: string } }): Promise<{ valid: boolean; reason?: string }>
+  getBalance?(): Promise<ConnectorResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>>
 }

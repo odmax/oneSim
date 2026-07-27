@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
+import { invalidateProviderBalanceSnapshot } from '@/lib/services/providers/provider-balance'
 import { getAdapterForType, authenticateProviderViaAdapter, isTemplateDrivenProvider, buildAdapter } from '@/lib/providers/adapter-manager'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 import { classifyError } from '@/lib/providers/connectors/connector-interface'
@@ -122,6 +123,7 @@ export async function authenticateProvider(providerId: string, formData: FormDat
   }
 
   await prisma.provider.update({ where: { id: providerId }, data: updateData })
+  invalidateProviderBalanceSnapshot(providerId).catch(() => {})
 
   // Safe diagnostics: log token storage without values
   const tokenStored = !!authResult.token && !hasMultipleAccounts
@@ -189,6 +191,7 @@ export async function selectProviderAccount(providerId: string, formData: FormDa
       },
     },
   })
+  invalidateProviderBalanceSnapshot(providerId).catch(() => {})
 
   await prisma.auditLog.create({
     data: { userId: session.user.id, action: 'PROVIDER_ACCOUNT_SELECTED', entity: 'Provider', entityId: provider.code, details: `Account "${account.accountName}" (${account.account}) selected for "${provider.name}"` },
@@ -328,6 +331,7 @@ export async function testProviderConnection(providerId: string) {
             lastError: null,
           },
         })
+        invalidateProviderBalanceSnapshot(providerId).catch(() => {})
         await advanceCertificationTo(providerId, 'AUTHENTICATED')
         await recordHealthEvent(providerId, { eventType: 'CONNECTION_TEST', success: true, message: 'Template provider authenticated', durationMs })
 

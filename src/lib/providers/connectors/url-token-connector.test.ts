@@ -640,4 +640,69 @@ describe('UrlTokenConnector', () => {
       expect(result.error?.code).toBe('NOT_SUPPORTED')
     })
   })
+
+  describe('getBalance', () => {
+    it('returns balance from prepaid_balance endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ balance: 1250.50, currency: 'USD' })) })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(1250.50)
+      expect(result.data?.currency).toBe('USD')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('handles balance without currency', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ balance: 500 })) })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(500)
+      expect(result.data?.currency).toBeNull()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns null for non-numeric balance', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ balance: 'N/A' })) })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBeNull()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('reads prepaid_balance field', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ prepaid_balance: '999.99', currency: 'EUR' })) })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.data?.balance).toBe(999.99)
+      expect(result.data?.currency).toBe('EUR')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns error when no API token', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', { apiBaseUrl: 'https://api.example.com', apiToken: '' })
+      const result = await c.getBalance!()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_CONFIGURED')
+    })
+
+    it('returns error on HTTP failure', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve('') })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(false)
+
+      vi.unstubAllGlobals()
+    })
+  })
 })

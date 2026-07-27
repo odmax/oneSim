@@ -130,6 +130,7 @@ export interface ProviderAdapter {
    * Called before any wallet hold. Optional — adapters without this are treated as valid.
    */
   validatePurchase?(params: { planId: string; quantity: number; subscriber: { email: string } }): Promise<{ valid: boolean; reason?: string }>
+  getBalance?(): Promise<ProviderResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>>
 
   getActivationStatus(activationId: string): Promise<ProviderResult<{ status: string; iccids?: string[] }>>
 
