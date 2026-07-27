@@ -93,6 +93,15 @@ async function markFailedWithRetry(jobId: string, error: string) {
   })
 }
 
+async function executeProviderOperation(payload: any) {
+  try {
+    const { executeProviderOperation } = await import('./handlers/provider-operation')
+    return executeProviderOperation(payload)
+  } catch (error: any) {
+    return { completed: false, error: error.message || 'Provider operation handler failed' }
+  }
+}
+
 async function executeJob(job: { id: string; type: string; payload: any }) {
   switch (job.type) {
     case 'ACTIVATION_SYNC':
@@ -101,6 +110,8 @@ async function executeJob(job: { id: string; type: string; payload: any }) {
       return executeUsageSync(job.payload)
     case 'EMAIL_DELIVERY':
       return { completed: true }
+    case 'PROVIDER_OPERATION':
+      return executeProviderOperation(job.payload)
     default:
       return { completed: false, error: `Unknown job type: ${job.type}` }
   }

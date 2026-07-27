@@ -182,7 +182,25 @@ export class PurchaseOrchestrator {
       const data = result.data
       const providerOrderId = data.activationId || (data as any).providerOrderId || undefined
 
-      // Map eSIMs
+      // Detect async provider responses (no ICCIDs yet but has reference)
+      const hasIccids = data.iccids && data.iccids.length > 0
+      const isAsync = !hasIccids && (data.status === 'PENDING' || data.status === 'PROCESSING' || data.status === 'QUEUED' || data.status === 'PENDING_ACTIVATION')
+
+      if (isAsync && providerOrderId) {
+        // Create background job and return ACCEPTED
+        const { ProviderJobEngine } = await import('@/lib/services/jobs/provider-job-engine')
+        await ProviderJobEngine.createJob({
+          orderId, businessId, providerId: provider.id,
+          providerRef: providerOrderId, totalAmount, operation: 'activation',
+        })
+        await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { providerId: provider.id, providerReservationId: providerOrderId, providerStatus: 'PENDING' } })
+        await transitionOrder(orderId, 'PROCESSING')
+        await createTimelineEvent(orderId, { eventType: 'PROVIDER_ACCEPTED', message: `Async job queued — ${provider.name} ref: ${providerOrderId}` })
+        await this.writeAudit(businessId, userId, providerId, pkg.id, displayName, totalAmount, 'ACCEPTED', `Async job for ${providerOrderId}`)
+        return { success: true, orderId, status: 'PROCESSING', provider: provider.name, providerReference: providerOrderId, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD' }
+      }
+
+      // Map eSIMs for immediate results
       const extractString = (raw: any): string | null => raw == null ? null : String(raw)
       const esimIccids: string[] = []
       for (let i = 0; i < quantity; i++) {

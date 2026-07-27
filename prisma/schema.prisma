@@ -998,6 +998,7 @@ enum JobType {
   WEBHOOK_DELIVERY
   USAGE_SYNC
   EMAIL_DELIVERY
+  PROVIDER_OPERATION
 }
 
 enum JobStatus {
