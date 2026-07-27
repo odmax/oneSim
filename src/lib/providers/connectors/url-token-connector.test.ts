@@ -641,6 +641,101 @@ describe('UrlTokenConnector', () => {
     })
   })
 
+  describe('getRoamingProfiles', () => {
+    it('returns profiles from roaming_profiles endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true, status: 200,
+        text: () => Promise.resolve(JSON.stringify([
+          { id: 'rp-1', code: 'AIRTEL_UG', name: 'Airtel Uganda', isDefault: true },
+          { id: 'rp-2', code: 'MTN_NG', name: 'MTN Nigeria', isDefault: false },
+        ])),
+      })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getRoamingProfiles!()
+      expect(result.success).toBe(true)
+      expect(result.data).toHaveLength(2)
+      expect(result.data![0].code).toBe('AIRTEL_UG')
+      expect(result.data![0].isDefault).toBe(true)
+      expect(result.data![1].code).toBe('MTN_NG')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('handles empty response', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true, status: 200,
+        text: () => Promise.resolve(JSON.stringify([])),
+      })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getRoamingProfiles!()
+      expect(result.success).toBe(true)
+      expect(result.data).toHaveLength(0)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('handles response wrapped in data key', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true, status: 200,
+        text: () => Promise.resolve(JSON.stringify({ data: [{ code: 'RP1', name: 'Profile 1' }] })),
+      })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getRoamingProfiles!()
+      expect(result.data).toHaveLength(1)
+      expect(result.data![0].code).toBe('RP1')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns error on HTTP failure', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(errorResponse(500))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getRoamingProfiles!()
+      expect(result.success).toBe(false)
+
+      vi.unstubAllGlobals()
+    })
+  })
+
+  describe('activateESIM with roaming profile', () => {
+    it('includes imsi1_roaming_profile when fieldMapping is set', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim', roamingProfileId: 'AIRTEL_UG' },
+      }))
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: 'icc-1', imsi: 'imsi-1' }] } }))
+      vi.stubGlobal('fetch', mockFetch)
+      await c.activateESIM({ planId: 'sku-test', quantity: 1, subscriber: { email: 't@t.com' } })
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).imsi1_roaming_profile).toBe('AIRTEL_UG')
+      vi.unstubAllGlobals()
+    })
+
+    it('omits imsi1_roaming_profile when fieldMapping is not set', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' },
+      }))
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: 'icc-1', imsi: 'imsi-1' }] } }))
+      vi.stubGlobal('fetch', mockFetch)
+      await c.activateESIM({ planId: 'sku-test', quantity: 1, subscriber: { email: 't@t.com' } })
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).imsi1_roaming_profile).toBeUndefined()
+      vi.unstubAllGlobals()
+    })
+
+    it('omits imsi1_roaming_profile when roamingProfileId is empty', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim', roamingProfileId: '' },
+      }))
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: 'icc-1', imsi: 'imsi-1' }] } }))
+      vi.stubGlobal('fetch', mockFetch)
+      await c.activateESIM({ planId: 'sku-test', quantity: 1, subscriber: { email: 't@t.com' } })
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).imsi1_roaming_profile).toBeUndefined()
+      vi.unstubAllGlobals()
+    })
+  })
+
   describe('getBalance', () => {
     it('returns balance from prepaid_balance endpoint', async () => {
       const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ balance: 1250.50, currency: 'USD' })) })

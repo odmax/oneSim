@@ -93,6 +93,41 @@ export class UrlTokenConnector extends RestCatalogConnector {
     }
   }
 
+  async getRoamingProfiles(): Promise<ConnectorResult<Array<{ id: string; code: string; name: string; description?: string; isDefault?: boolean }>>> {
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'API base URL not configured' } }
+    const token = this.config.apiToken || ''
+    if (!token) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'No API token configured' } }
+
+    const path = `/account/v03_09/roaming_profiles/${token}`
+    console.log(`[PROVIDER_ROAMING_REQUEST] providerCode=CHOICE endpoint=/account/v03_09/roaming_profiles/[REDACTED]`)
+
+    const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    if (error) {
+      console.log(`[PROVIDER_ROAMING_RESULT] providerCode=CHOICE success=false error=${error.code}`)
+      return { success: false, error }
+    }
+    if (!text) return { success: false, error: { code: 'EMPTY', message: 'Empty roaming profiles response' } }
+
+    try {
+      const json = JSON.parse(text)
+      const list = Array.isArray(json) ? json : (json.data || json.profiles || json.roaming_profiles || [])
+      if (!Array.isArray(list)) return { success: false, error: { code: 'INVALID_RESPONSE', message: 'Roaming profiles response is not an array' } }
+
+      const profiles = list.map((p: any) => ({
+        id: String(p.id || p.code || p.roaming_profile_id || p.profile_id || ''),
+        code: String(p.code || p.id || p.roaming_profile_code || ''),
+        name: String(p.name || p.roaming_profile_name || p.profile_name || p.code || ''),
+        description: p.description || p.desc || undefined,
+        isDefault: typeof p.isDefault === 'boolean' ? p.isDefault : typeof p.default === 'boolean' ? p.default : undefined,
+      }))
+
+      console.log(`[PROVIDER_ROAMING_RESULT] providerCode=CHOICE success=true profileCount=${profiles.length}`)
+      return { success: true, data: profiles }
+    } catch {
+      return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse roaming profiles response' } }
+    }
+  }
+
   async diagnoseConnection(): Promise<ConnectorResult<DiagnosticInfo>> {
     const token = this.config.apiToken || ''
     const path = `/account/v03_09/bundle_templates/${token}`
@@ -313,7 +348,14 @@ export class UrlTokenConnector extends RestCatalogConnector {
         user_id: this.fieldMappings.userId || 'onesim',
         eu_email_address: params.subscriber.email || undefined,
       }
+
+      const roamingProfileId = this.fieldMappings.roamingProfileId
+      if (roamingProfileId && typeof roamingProfileId === 'string' && roamingProfileId.trim()) {
+        body.imsi1_roaming_profile = roamingProfileId.trim()
+      }
+
       maskedBody = { ...body, sku: body.sku }
+      if (body.imsi1_roaming_profile) maskedBody.imsi1_roaming_profile = body.imsi1_roaming_profile
       console.log(`[UrlTokenConnector] Choice activation:\n  URL: ${this.baseUrl(maskedPath)}\n  Body: ${JSON.stringify(maskedBody)}`)
     } else {
       body = { template_id: params.planId, quantity: params.quantity, email: params.subscriber.email }
