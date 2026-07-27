@@ -155,154 +155,65 @@ export class PurchaseOrchestrator {
 
     const planId = pkg.providerPlanId || pkg.id
 
-    // Step 13-14: Dispatch to provider with failover
+    // Step 13-14: Dispatch to provider with failover via shared service
     const nameParts = (customer?.name || 'Business Order').trim().split(/\s+/)
     const subscriber = { email: customer?.email || '', first_name: nameParts[0] || '', last_name: nameParts.slice(1).join(' ') || undefined }
 
+    const { executeProviderAttempt, tryFailoverAfterAttempt } = await import('./provider-attempt-service')
+    const { ProviderRoutingEngine } = await import('@/lib/services/routing/provider-routing-engine')
+    const rankedProviders = await new ProviderRoutingEngine().getRankedProviders({ packageId: pkg.id, quantity })
+
     let currentProviderId = provider.id
     let currentProviderName = provider.name
-    let currentProvider = provider
-    const attemptedIds = new Set<string>()
-    attemptedIds.add(currentProviderId)
+    const attemptedIds: string[] = []
+    attemptedIds.push(currentProviderId)
 
-    const { classifyRetry } = await import('@/lib/services/routing/provider-failover-engine')
-    const { ProviderRoutingEngine } = await import('@/lib/services/routing/provider-routing-engine')
-    const routingEngine = new ProviderRoutingEngine()
-    const rankedProviders = await routingEngine.getRankedProviders({ packageId: pkg.id, quantity })
-    const attemptHistory: Array<{ provider: string; errorCode?: string; errorMessage?: string }> = []
-
-    const { getAdapterForType } = await import('@/lib/providers/adapter-manager')
-
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      // Update order with current provider
-      await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { providerId: currentProviderId } })
-      await createTimelineEvent(orderId, { eventType: 'PROVIDER_DISPATCH', message: `Attempt ${attempt}: Dispatching to ${currentProviderName}` })
-
-      // Resolve adapter for current provider
-      const currentAdapter = await getAdapterForType(currentProvider.type, {
-        apiBaseUrl: currentProvider.apiBaseUrl, apiToken: currentProvider.apiToken,
-        providerId: currentProvider.id, environment: currentProvider.environment, authUrl: currentProvider.authUrl,
+    for (let attemptNum = 1; attemptNum <= 3; attemptNum++) {
+      const result = await executeProviderAttempt({
+        orderId, businessId, providerId: currentProviderId, providerName: currentProviderName,
+        planId, quantity, subscriber, totalAmount, displayName, packageId: pkg.id,
+        packageSnapshot, pkg, customerId, rankedProviders, policy: 'PREFERRED',
       })
 
-      // Validate config
-      if (currentAdapter.validatePurchase) {
-        const v = await currentAdapter.validatePurchase({ planId, quantity, subscriber })
-        if (!v.valid) {
-          attemptHistory.push({ provider: currentProvider.id, errorCode: 'PROVIDER_CONFIG', errorMessage: v.reason })
-          // Try next provider
-          const next = rankedProviders.find(p => !attemptedIds.has(p.providerId))
-          if (!next) break
-          currentProviderId = next.providerId
-          currentProviderName = next.providerName
-          currentProvider = await prisma.provider.findUnique({ where: { id: next.providerId } }) || currentProvider
-          attemptedIds.add(currentProviderId)
-          continue
-        }
-      }
-
-      // Activate
-      try {
-        const result = await currentAdapter.activateESIM({ planId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: businessId })
-
-        if (!result.success || !result.data) {
-          const err = result.error
-          const cls = classifyRetry(err)
-          attemptHistory.push({ provider: currentProviderId, errorCode: err?.code, errorMessage: err?.message })
-
-          if (cls !== 'RETRYABLE' || attempt >= 3) {
-            await releaseReservedFunds(orderId, businessId, totalAmount)
-            await failOrder(orderId, err?.message || 'Provider activation failed')
-            await this.writeAudit(businessId, userId, currentProviderId, pkg.id, displayName, totalAmount, 'FAILED', err?.message)
-            return this.fail(err?.code || 'PROVIDER_FAILED', err?.message || 'Provider activation failed', err?.details?.retryable || false)
-          }
-
-          // Failover: try next provider
-          const next = rankedProviders.find(p => !attemptedIds.has(p.providerId))
-          if (!next) {
-            await releaseReservedFunds(orderId, businessId, totalAmount)
-            await failOrder(orderId, 'All providers exhausted')
-            await this.writeAudit(businessId, userId, currentProviderId, pkg.id, displayName, totalAmount, 'FAILED', 'All providers exhausted')
-            return this.fail('ALL_PROVIDERS_EXHAUSTED', 'All available providers failed', false)
-          }
-
-          createTimelineEvent(orderId, { eventType: 'PROVIDER_FAILOVER', message: `Failover: ${currentProviderName} → ${next.providerName} (${err?.code || 'error'})` })
-          currentProviderId = next.providerId
-          currentProviderName = next.providerName
-          currentProvider = await prisma.provider.findUnique({ where: { id: next.providerId } }) || currentProvider
-          attemptedIds.add(currentProviderId)
-          continue
-        }
-
-        // Success — same flow as before
-        const data = result.data
-        const providerOrderId = data.activationId || (data as any).providerOrderId || undefined
-
-        const hasIccids = data.iccids && data.iccids.length > 0
-        const isAsync = !hasIccids && (data.status === 'PENDING' || data.status === 'PROCESSING' || data.status === 'QUEUED' || data.status === 'PENDING_ACTIVATION')
-
-        if (isAsync && providerOrderId) {
-          const { ProviderJobEngine } = await import('@/lib/services/jobs/provider-job-engine')
-          await ProviderJobEngine.createJob({ orderId, businessId, providerId: currentProviderId, providerRef: providerOrderId, totalAmount, operation: 'activation' })
-          await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { providerId: currentProviderId, providerReservationId: providerOrderId, providerStatus: 'PENDING' } })
-          await transitionOrder(orderId, 'PROCESSING')
-          await createTimelineEvent(orderId, { eventType: 'PROVIDER_ACCEPTED', message: `Async job queued — ${currentProviderName} ref: ${providerOrderId}` })
-          await this.writeAudit(businessId, userId, currentProviderId, pkg.id, displayName, totalAmount, 'ACCEPTED', `Async job for ${providerOrderId}`)
-          return { success: true, orderId, status: 'PROCESSING', provider: currentProviderName, providerReference: providerOrderId, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD' }
-        }
-
-        // Map eSIMs and complete
-        const extractString = (raw: any): string | null => raw == null ? null : String(raw)
-        const esimIccids: string[] = []
-        for (let i = 0; i < quantity; i++) {
-          esimIccids.push(extractString(data.iccids?.[i]) || extractString(data.imsis?.[i])?.replace(/[^0-9]/g, '') || '')
-        }
-        if (esimIccids.some(e => !e)) {
-          await releaseReservedFunds(orderId, businessId, totalAmount)
-          await failOrder(orderId, 'Provider returned incomplete ICCID data')
-          return this.fail('INCOMPLETE_RESPONSE', 'Provider returned incomplete data', false)
-        }
-
-        // Save eSIMs
-        for (let i = 0; i < quantity; i++) {
-          await prisma.eSIM.create({ data: { purchaseId: orderId, customerId: customerId || null, iccid: esimIccids[i], imsi: extractString(data.imsis?.[i]), activationCode: extractString(data.activationCodes?.[i]) || extractString(data.qrCodeUrl), qrCodeUrl: extractString(data.qrCodeUrl) || undefined, status: 'PENDING_ACTIVATION', providerActivationId: providerOrderId || null, providerStatus: 'PENDING', expiresAt: new Date(Date.now() + pkg.validityDays * 24 * 60 * 60 * 1000), packageSnapshot: packageSnapshot as any, packageName: displayName, packageDataGB: pkg.dataGB, packageValidityDays: pkg.validityDays } })
-        }
-
-        await captureReservedFunds(orderId, businessId, totalAmount)
-        await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { providerFulfillId: providerOrderId || null, providerStatus: data.status || 'ACTIVE' } })
-        await transitionOrder(orderId, 'FULFILLED')
-        await createTimelineEvent(orderId, { eventType: 'PURCHASE_COMPLETE', message: `Fulfilled via ${currentProviderName} (attempt ${attempt})` })
-        await this.writeAudit(businessId, userId, currentProviderId, pkg.id, displayName, totalAmount, 'COMPLETED')
-
+      if (result.success && (result.status === 'SUCCEEDED' || result.status === 'ALREADY_COMPLETE')) {
+        // Load saved eSIMs
         const savedEsims = await prisma.eSIM.findMany({ where: { purchaseId: orderId }, select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } })
-        return { success: true, orderId, status: 'FULFILLED', provider: currentProviderName || provider.name, providerReference: providerOrderId || undefined, iccid: esimIccids[0], qrCode: extractString(data.qrCodeUrl) || undefined, activationCode: extractString(data.activationCodes?.[0]) || undefined, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD', esims: savedEsims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi, activationCode: e.activationCode, status: e.status, qrCodeUrl: e.qrCodeUrl })) }
-      } catch (e: any) {
-        attemptHistory.push({ provider: currentProviderId, errorCode: 'PROVIDER_ERROR', errorMessage: e.message })
-        const cls = classifyRetry({ code: 'PROVIDER_ERROR', message: e.message })
-        if (cls !== 'RETRYABLE' || attempt >= 3) {
-          await releaseReservedFunds(orderId, businessId, totalAmount)
-          await failOrder(orderId, `Provider error: ${e.message}`)
-          await this.writeAudit(businessId, userId, currentProviderId, pkg.id, displayName, totalAmount, 'FAILED', e.message)
-          return this.fail('PROVIDER_ERROR', `Provider error: ${e.message}`, true)
-        }
-        const next = rankedProviders.find(p => !attemptedIds.has(p.providerId))
-        if (!next) {
-          await releaseReservedFunds(orderId, businessId, totalAmount)
-          await failOrder(orderId, 'All providers exhausted after error')
-          return this.fail('ALL_PROVIDERS_EXHAUSTED', 'All available providers failed', false)
-        }
-        createTimelineEvent(orderId, { eventType: 'PROVIDER_FAILOVER', message: `Failover: ${currentProviderName} → ${next.providerName} (error)` })
-        currentProviderId = next.providerId
-        currentProviderName = next.providerName
-        currentProvider = await prisma.provider.findUnique({ where: { id: next.providerId } }) || currentProvider
-        attemptedIds.add(currentProviderId)
+        return { success: true, orderId, status: 'FULFILLED', provider: currentProviderName, providerReference: result.providerReference, iccid: result.iccids?.[0], qrCode: result.qrCode, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD', esims: savedEsims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi, activationCode: e.activationCode, status: e.status, qrCodeUrl: e.qrCodeUrl })) }
       }
+
+      if (result.success && result.status === 'PROCESSING') {
+        return { success: true, orderId, status: 'PROCESSING', provider: currentProviderName, providerReference: result.providerReference, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD' }
+      }
+
+      // Not retryable — fail immediately
+      if (result.status !== 'RETRYABLE') {
+        await releaseReservedFunds(orderId, businessId, totalAmount)
+        await failOrder(orderId, result.errorMessage || 'Provider activation failed')
+        await this.writeAudit(businessId, userId, currentProviderId, pkg.id, displayName, totalAmount, 'FAILED', result.errorMessage)
+        return this.fail(result.errorCode || 'PROVIDER_FAILED', result.errorMessage || 'Provider activation failed', false)
+      }
+
+      // Try failover
+      const next = await tryFailoverAfterAttempt({
+        ...(await this.buildActivationInput(orderId, businessId, currentProviderId, provider, planId, quantity, subscriber, totalAmount, displayName, pkg, packageSnapshot, customerId, rankedProviders)),
+        currentProviderId, attemptedIds,
+      })
+
+      if (!next?.shouldContinue) break
+      currentProviderId = next.providerId!
+      currentProviderName = next.providerName!
+      attemptedIds.push(currentProviderId)
     }
 
-    // Exhausted all retries
+    // Exhausted
     await releaseReservedFunds(orderId, businessId, totalAmount)
     await failOrder(orderId, 'All provider attempts exhausted')
-    await this.writeAudit(businessId, userId, provider.id, pkg.id, displayName, totalAmount, 'FAILED', 'All attempts exhausted: ' + JSON.stringify(attemptHistory))
+    await this.writeAudit(businessId, userId, provider.id, pkg.id, displayName, totalAmount, 'FAILED', 'All attempts exhausted')
     return this.fail('ALL_PROVIDERS_EXHAUSTED', 'All available providers failed', false)
+  }
+
+  private async buildActivationInput(orderId: string, businessId: string, providerId: string, provider: any, planId: string, quantity: number, subscriber: any, totalAmount: number, displayName: string, pkg: any, packageSnapshot: any, customerId: any, rankedProviders: any) {
+    return { orderId, businessId, providerId, providerName: provider.name, planId, quantity, subscriber, totalAmount, displayName, packageId: pkg.id, packageSnapshot, pkg, customerId, rankedProviders }
   }
 
   private fail(code: string, message: string, retryable: boolean): PurchaseResult {

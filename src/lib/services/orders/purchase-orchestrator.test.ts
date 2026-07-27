@@ -4,9 +4,10 @@ vi.mock('@/lib/prisma', () => ({
   prisma: {
     business: { findUnique: vi.fn() },
     customer: { findFirst: vi.fn(), update: vi.fn(), create: vi.fn() },
-    eSIMPurchase: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
-    eSIM: { create: vi.fn(), findMany: vi.fn() },
+    eSIMPurchase: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+    eSIM: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn() },
     provider: { findUnique: vi.fn(), findMany: vi.fn() },
+    providerAttempt: { create: vi.fn(), count: vi.fn(), update: vi.fn(), findMany: vi.fn() },
     eSIMPackage: { findUnique: vi.fn() },
     providerPackage: { findMany: vi.fn().mockResolvedValue([]) },
     auditLog: { create: vi.fn() },
@@ -89,11 +90,15 @@ describe('PurchaseOrchestrator', () => {
   function setupProvider(caps = ['PURCHASE'] as string[]) {
     mockPrisma.provider.findUnique.mockResolvedValue({ id: 'prov-1', code: 'CHOICE', name: 'Choice', status: 'ACTIVE', type: 'CHOICE', apiBaseUrl: 'https://a.b', apiToken: 'tok', environment: 'staging', authUrl: 'https://a.b/auth', enabledCapabilities: caps, config: {} } as any)
     mockPrisma.provider.findMany.mockResolvedValue([{ id: 'prov-1', code: 'CHOICE', name: 'Choice', status: 'ACTIVE', enabledCapabilities: caps, errorCount: 0, priority: 0, lastSuccessfulConnection: new Date(), activationSuccessRate: 0.95 } as any])
+    mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockPrisma.providerAttempt.create.mockResolvedValue({ id: 'att-1' } as any)
   }
 
   function setupSuccessAdapter() {
     mockPrisma.customer.findFirst.mockResolvedValue(null)
     mockPrisma.customer.create.mockResolvedValue({ id: 'cust-1' } as any)
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({ id: 'order-1', businessId: 'biz-1', userId: 'user-1', status: 'CREATED', totalAmount: { toString: () => '5' }, esims: [], providerId: undefined, packageId: 'pkg-1', packageSnapshot: {}, packageName: 'Test', packageDataGB: 1, packageValidityDays: 7 } as any)
+    mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
     mockAdapter.mockResolvedValue({
       activateESIM: vi.fn().mockResolvedValue({ success: true, data: { activationId: 'act-1', iccids: ['89012345678901234567'], status: 'ACTIVE', qrCodeUrl: 'https://qr', activationCodes: ['CODE'] } }),
       validatePurchase: vi.fn().mockResolvedValue({ valid: true }),
