@@ -381,13 +381,304 @@ export class AirHubConnector implements IProviderConnector {
     return { success: false, error: { code: 'UNKNOWN', message: 'syncPlans exhausted retries' } }
   }
 
-  // Stub methods — not yet implemented for AirHub
-  async activateESIM(): Promise<ConnectorResult<ActivateESIMResult>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not implemented' } } }
-  async getStatus(): Promise<ConnectorResult<StatusResult>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not implemented' } } }
-  async getUsage(): Promise<ConnectorResult<UsageResult>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not implemented' } } }
-  async suspendESIM(): Promise<ConnectorResult<void>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not implemented' } } }
-  async resumeESIM(): Promise<ConnectorResult<void>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not implemented' } } }
-  async getRates(): Promise<ConnectorResult<RateResult[]>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not implemented' } } }
-  async getQRCode(): Promise<ConnectorResult<{ qrCodeUrl: string }>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not implemented' } } }
-  async topUpESIM(): Promise<ConnectorResult<TopUpESIMResult>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not implemented' } } }
+  async validatePurchase(_params: { planId: string; quantity: number; subscriber: { email: string } }): Promise<{ valid: boolean; reason?: string }> {
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiBaseUrl: true, config: true } })
+    if (!provider) return { valid: false, reason: 'Provider not found' }
+    if (!provider.apiBaseUrl) return { valid: false, reason: 'API base URL not configured' }
+    const cfg = (provider.config as any) || {}
+    if (!cfg.partnerCode && cfg.partnerCode !== 0) return { valid: false, reason: 'partnerCode not configured in provider config' }
+    if (!cfg.username || !cfg.password) return { valid: false, reason: 'Credentials (username/password) not configured' }
+    return { valid: true }
+  }
+
+  async activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
+    const correlationId = `airhub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const startMs = Date.now()
+
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiBaseUrl: true, apiToken: true, config: true, code: true } })
+    if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }
+
+    const cfg = (provider.config as any) || {}
+    const partnerCode = cfg.partnerCode || 200652387
+
+    const tokenResult = await this.ensureAuthenticated()
+    if (!tokenResult.success) return { success: false, error: tokenResult.error }
+
+    const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/PurchaseEsim`
+    const body = { partnerCode, planCode: params.planId, quantity: params.quantity, email: params.subscriber.email }
+
+    console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} orderId=${params.externalId || 'unknown'} endpoint=POST ${url} planCode=${params.planId} quantity=${params.quantity} partnerCode=${partnerCode}`)
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 30000)
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+        clearTimeout(timeout)
+
+        const text = await response.text()
+        const durationMs = Date.now() - startMs
+        let data: any
+        try { data = JSON.parse(text) } catch {
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} durationMs=${durationMs} error=NON_JSON bodyPreview=${text.substring(0, 200)}`)
+          return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: `AirHub returned non-JSON response (HTTP ${response.status})` } }
+        }
+
+        const dataKeys = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
+        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess} durationMs=${durationMs} topKeys=${Object.keys(data).join(',')} dataKeys=${dataKeys.join(',')}`)
+
+        if (response.status === 401 && attempt === 1) {
+          const refreshed = await this.refreshTokenFromConfig()
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} reason=401 refreshSuccess=${refreshed}`)
+          if (refreshed) continue
+          return { success: false, error: { code: 'AUTH_ERROR', message: 'AirHub returned 401 and reauthentication failed', details: { retryable: false, providerStatus: 401 } } }
+        }
+
+        if (!response.ok) {
+          const code = this.classifyHttpError(response.status, data)
+          return { success: false, error: { code, message: `AirHub returned HTTP ${response.status}: ${data.message || text.substring(0, 200)}`, details: { retryable: response.status >= 500, providerStatus: response.status } } }
+        }
+
+        if (data.isSuccess === false) {
+          const code = this.classifyProviderError(data)
+          return { success: false, error: { code: this.classifyProviderError(data), message: `AirHub rejected purchase: ${data.message || 'isSuccess=false'}`, details: { retryable: false, providerStatus: response.status } } }
+        }
+
+        const d = data.data || data
+        const iccids = this.extractIccids(d, params.quantity)
+        const orderId = d.orderId || d.order_id || d.transactionId || d.id || data.orderId || data.order_id || ''
+
+        if (!iccids.length) {
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} warning=NO_ICCIDS orderId=${orderId} dataKeys=${Object.keys(d).join(',')}`)
+          const pendingStatus = this.detectPendingStatus(d)
+          if (pendingStatus) {
+            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} pendingStatus=${pendingStatus}`)
+            return { success: true, data: { activationId: orderId, iccids: [], status: pendingStatus } }
+          }
+          return { success: false, error: { code: 'NO_ICCIDS', message: 'AirHub returned no ICCIDs in response', details: { retryable: false, providerStatus: response.status } } }
+        }
+
+        const activationCode = d.activationCode || d.data?.activationCode || d.lpa || d.data?.lpa || undefined
+        const qrCodeUrl = d.qrCodeUrl || d.qr_code_url || d.data?.qrCodeUrl || d.data?.qr_code_url || undefined
+        const matchingId = d.matchingId || d.matching_id || d.data?.matchingId || undefined
+        const smdpAddress = d.smdpAddress || d.smdp_address || d.data?.smdpAddress || undefined
+        const imsis = d.imsis || (d.imsi ? [d.imsi] : undefined)
+        const activationCodes = activationCode ? [activationCode] : d.activationCodes || undefined
+
+        if (!qrCodeUrl) {
+          try {
+            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR iccid=${iccids[0]}`)
+            const qrResult = await this.getQRCode(iccids[0])
+            if (qrResult.success && qrResult.data?.qrCodeUrl) {
+              console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR success=true`)
+              return {
+                success: true,
+                data: {
+                  activationId: orderId, iccids, imsis: imsis as string[] | undefined,
+                  activationCodes, qrCodeUrl: qrResult.data.qrCodeUrl, matchingId, smdpAddress,
+                  status: this.normalizeStatus(d.status || d.orderStatus || 'ACTIVATED'),
+                },
+              }
+            }
+            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR success=false reason=${qrResult.error?.code || 'unknown'}`)
+          } catch (qrErr: any) {
+            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR error=${qrErr.message?.substring(0, 100)}`)
+          }
+        }
+
+        const status = this.normalizeStatus(d.status || d.orderStatus || 'ACTIVATED')
+        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} result=SUCCESS orderId=${orderId} iccidCount=${iccids.length} status=${status} durationMs=${durationMs}`)
+
+        return {
+          success: true,
+          data: {
+            activationId: orderId, iccids, imsis: imsis as string[] | undefined,
+            activationCodes, qrCodeUrl, matchingId, smdpAddress, status,
+          },
+        }
+      } catch (e: any) {
+        const durationMs = Date.now() - startMs
+        if (e.name === 'AbortError') {
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} error=TIMEOUT durationMs=${durationMs}`)
+          return { success: false, error: { code: 'TIMEOUT', message: `AirHub activation timed out after ${durationMs}ms`, details: { retryable: true, providerStatus: undefined } } }
+        }
+        const causeCode = e?.cause?.code || ''
+        let msg: string, code: string
+        if (causeCode === 'ENOTFOUND') { code = 'NETWORK_ERROR'; msg = 'AirHub host not found (DNS failure)' }
+        else if (causeCode === 'ECONNREFUSED') { code = 'NETWORK_ERROR'; msg = 'AirHub refused the connection' }
+        else if (causeCode?.includes('TLS') || causeCode?.includes('CERT')) { code = 'NETWORK_ERROR'; msg = 'TLS connection to AirHub failed' }
+        else { code = 'NETWORK_ERROR'; msg = `AirHub activation error: ${e.message?.substring(0, 200)}` }
+        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} error=${code} message=${msg.substring(0, 200)} durationMs=${durationMs}`)
+        return { success: false, error: { code, message: msg, details: { retryable: true } } }
+      }
+    }
+    return { success: false, error: { code: 'RETRIES_EXHAUSTED', message: 'AirHub activation exhausted retries' } }
+  }
+
+  async getStatus(subscriptionId: string): Promise<ConnectorResult<StatusResult>> {
+    const correlationId = `airhub-status-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiBaseUrl: true, apiToken: true, config: true } })
+    if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }
+
+    const tokenResult = await this.ensureAuthenticated()
+    if (!tokenResult.success) return { success: false, error: tokenResult.error }
+
+    const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/OrderDetails`
+    const cfg = (provider.config as any) || {}
+    const body = { partnerCode: cfg.partnerCode || 200652387, orderId: subscriptionId }
+
+    console.log(`[AIRHUB_STATUS] correlationId=${correlationId} orderId=${subscriptionId}`)
+
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 20000)
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      clearTimeout(timeout)
+
+      const text = await response.text()
+      let data: any
+      try { data = JSON.parse(text) } catch {
+        return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: 'AirHub returned non-JSON status response' } }
+      }
+
+      console.log(`[AIRHUB_STATUS] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess}`)
+
+      if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `AirHub status check returned ${response.status}` } }
+      if (data.isSuccess === false) return { success: false, error: { code: 'PROVIDER_REJECTED', message: `AirHub rejected status check: ${data.message || 'isSuccess=false'}` } }
+
+      const d = data.data || data
+      const status = this.normalizeStatus(d.status || d.orderStatus || data.status || 'UNKNOWN')
+      const iccids = this.extractIccids(d, 1)
+
+      return { success: true, data: { status, iccids: iccids.length ? iccids : undefined, iccid: iccids[0] || undefined } }
+    } catch (e: any) {
+      if (e.name === 'AbortError') return { success: false, error: { code: 'TIMEOUT', message: 'AirHub status check timed out' } }
+      return { success: false, error: { code: 'NETWORK_ERROR', message: `AirHub status error: ${e.message?.substring(0, 200)}` } }
+    }
+  }
+
+  async getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>> {
+    const correlationId = `airhub-qr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiBaseUrl: true, apiToken: true, config: true } })
+    if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }
+
+    const tokenResult = await this.ensureAuthenticated()
+    if (!tokenResult.success) return { success: false, error: tokenResult.error }
+
+    const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/GetActivationCode`
+    const cfg = (provider.config as any) || {}
+    const body = { partnerCode: cfg.partnerCode || 200652387, iccid }
+
+    console.log(`[AIRHUB_QR] correlationId=${correlationId} iccid=${iccid}`)
+
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 20000)
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      clearTimeout(timeout)
+
+      const text = await response.text()
+      let data: any
+      try { data = JSON.parse(text) } catch {
+        return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: 'AirHub returned non-JSON QR response' } }
+      }
+
+      console.log(`[AIRHUB_QR] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess}`)
+
+      if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `AirHub QR retrieval returned ${response.status}` } }
+      if (data.isSuccess === false) return { success: false, error: { code: 'PROVIDER_REJECTED', message: `AirHub rejected QR request: ${data.message || 'isSuccess=false'}` } }
+
+      const d = data.data || data
+      const qrCodeUrl = d.qrCodeUrl || d.qr_code_url || d.qrCode || d.activationCode || d.data?.qrCodeUrl || d.data?.qr_code_url || d.data?.qrCode || d.data?.activationCode || ''
+
+      if (!qrCodeUrl) return { success: false, error: { code: 'NO_QR_CODE', message: 'AirHub returned no QR code data' } }
+      return { success: true, data: { qrCodeUrl } }
+    } catch (e: any) {
+      if (e.name === 'AbortError') return { success: false, error: { code: 'TIMEOUT', message: 'AirHub QR retrieval timed out' } }
+      return { success: false, error: { code: 'NETWORK_ERROR', message: `AirHub QR error: ${e.message?.substring(0, 200)}` } }
+    }
+  }
+
+  async getUsage(_iccid: string): Promise<ConnectorResult<UsageResult>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Usage retrieval not supported for AirHub' } } }
+  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<void>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Suspend not supported for AirHub' } } }
+  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<void>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Resume not supported for AirHub' } } }
+  async getRates(): Promise<ConnectorResult<RateResult[]>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Rates not supported for AirHub' } } }
+  async topUpESIM(_params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Top-up not supported for AirHub' } } }
+
+  private extractIccids(d: any, minCount: number): string[] {
+    const iccids: string[] = []
+    const candidates = [
+      d.iccids, d.iccid_list, d.data?.iccids, d.data?.iccid_list,
+      d.esim?.iccids, d.order?.iccids, d.result?.iccids,
+    ]
+    for (const c of candidates) {
+      if (Array.isArray(c) && c.length >= minCount) return c.map(String)
+      if (Array.isArray(c) && c.length > 0 && !iccids.length) iccids.push(...c.map(String))
+    }
+    const singles = [d.iccid, d.data?.iccid, d.esim?.iccid, d.result?.iccid, d.sim?.iccid, d.sims?.[0]?.iccid]
+    for (const s of singles) {
+      if (s && typeof s === 'string' && s.length >= 10 && !iccids.includes(s)) { iccids.push(s); break }
+    }
+    return iccids
+  }
+
+  private normalizeStatus(raw: string): 'PENDING' | 'ACTIVE' | 'PROCESSING' {
+    if (!raw) return 'PENDING'
+    const s = raw.toUpperCase()
+    if (s === 'ACTIVE' || s === 'ACTIVATED' || s === 'COMPLETED' || s === 'SUCCESS') return 'ACTIVE'
+    if (s === 'PROCESSING' || s === 'QUEUED' || s === 'PENDING' || s === 'IN_PROGRESS') return 'PROCESSING'
+    return 'PENDING'
+  }
+
+  private detectPendingStatus(d: any): 'PENDING' | 'PROCESSING' | null {
+    const raw = (d.status || d.orderStatus || '').toString().toUpperCase()
+    if (['PROCESSING', 'QUEUED', 'PENDING', 'IN_PROGRESS', 'INITIATED'].includes(raw)) {
+      if (raw === 'PROCESSING' || raw === 'QUEUED' || raw === 'IN_PROGRESS') return 'PROCESSING'
+      return 'PENDING'
+    }
+    return null
+  }
+
+  private classifyHttpError(status: number, data: any): string {
+    const msg = (data?.message || '').toLowerCase()
+    if (status === 401 || status === 403) return 'AUTH_ERROR'
+    if (status === 404) return 'NOT_FOUND'
+    if (status === 429) return 'RATE_LIMITED'
+    if (status === 402) return 'INSUFFICIENT_BALANCE'
+    if (status === 400) {
+      if (msg.includes('balance') || msg.includes('insufficient')) return 'INSUFFICIENT_BALANCE'
+      if (msg.includes('plan') || msg.includes('package') || msg.includes('invalid')) return 'VALIDATION_ERROR'
+      return 'VALIDATION_ERROR'
+    }
+    if (status >= 500) return 'PROVIDER_UNAVAILABLE'
+    return 'PROVIDER_ERROR'
+  }
+
+  private classifyProviderError(data: any): string {
+    const msg = (data.message || data.error || '').toLowerCase()
+    if (msg.includes('auth') || msg.includes('login') || msg.includes('credential')) return 'AUTH_ERROR'
+    if (msg.includes('balance') || msg.includes('insufficient') || msg.includes('credit')) return 'INSUFFICIENT_BALANCE'
+    if (msg.includes('plan') || msg.includes('package') || msg.includes('sku')) return 'INVALID_PACKAGE'
+    if (msg.includes('duplicate') || msg.includes('already') || msg.includes('exists')) return 'DUPLICATE_REQUEST'
+    if (msg.includes('timeout') || msg.includes('unavailable') || msg.includes('maintenance')) return 'PROVIDER_UNAVAILABLE'
+    return 'VALIDATION_ERROR'
+  }
 }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { testProviderPurchase, cleanupTestOrder } from '@/lib/actions/provider-test-purchase'
+import { testProviderPurchase } from '@/lib/actions/provider-test-purchase'
 
 interface Package {
   id: string
@@ -19,20 +19,23 @@ export function TestPurchasePanel({ providerId, packages, endpointMappings, requ
   requestMappings?: Record<string, any> | null
   responseMappings?: Record<string, any> | null
 }) {
-  const [packageId, setPackageId] = useState(packages[0]?.id || '')
+  const [providerPackageId, setProviderPackageId] = useState(packages[0]?.id || '')
   const [quantity, setQuantity] = useState(1)
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
 
+  const selectedPackage = packages.find(p => p.id === providerPackageId)
+  const hasValidPlanId = !!selectedPackage?.providerPlanId
+
   async function runTest() {
-    if (!packageId) return
+    if (!providerPackageId) return
     setRunning(true)
     setError('')
     setResult(null)
 
     try {
-      const res = await testProviderPurchase(providerId, packageId, quantity)
+      const res = await testProviderPurchase(providerId, providerPackageId, quantity)
       if (res.success) {
         setResult(res)
       } else {
@@ -46,8 +49,8 @@ export function TestPurchasePanel({ providerId, packages, endpointMappings, requ
     }
   }
 
-  async function handleCleanup(orderId: string) {
-    await cleanupTestOrder(orderId)
+  async function handleCleanup(_orderId: string) {
+    // Test purchase no longer creates database records — no cleanup needed
     setResult(null)
     setError('')
   }
@@ -71,12 +74,15 @@ export function TestPurchasePanel({ providerId, packages, endpointMappings, requ
       <div className="space-y-3 mb-4">
         <div>
           <label className="block text-xs font-medium text-gray-500 mb-1">Test Package</label>
-          <select value={packageId} onChange={e => setPackageId(e.target.value)}
+          <select value={providerPackageId} onChange={e => setProviderPackageId(e.target.value)}
             className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none">
             {packages.map(p => (
               <option key={p.id} value={p.id}>{p.name} ({p.dataGB}GB, ${Number(p.priceUSD).toFixed(2)})</option>
             ))}
           </select>
+          {selectedPackage?.providerPlanId && (
+            <p className="text-[10px] text-gray-400 mt-1">Provider plan ID: {selectedPackage.providerPlanId}</p>
+          )}
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-500 mb-1">Quantity</label>
@@ -85,16 +91,28 @@ export function TestPurchasePanel({ providerId, packages, endpointMappings, requ
         </div>
       </div>
 
-      <button type="button" onClick={runTest} disabled={running || !packageId}
+      <button type="button" onClick={runTest} disabled={running || !providerPackageId || !hasValidPlanId}
         className="w-full rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
         {running ? (
           <><svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg> Running...</>
-        ) : 'Run Test Purchase'}
+        ) : !hasValidPlanId ? 'Missing Provider Plan ID' : 'Run Test Purchase'}
       </button>
 
       {/* Result display */}
       {result && (
         <div className="mt-4 space-y-3">
+          {/* Diagnostics */}
+          {result.diagnostics && (
+            <div className="rounded-lg border p-3 bg-gray-50">
+              <p className="text-xs font-medium text-gray-500 mb-1">Diagnostics</p>
+              <div className="text-[10px] text-gray-600 space-y-0.5">
+                <div>Provider Plan ID: <code className="font-mono">{result.diagnostics.providerPlanId}</code></div>
+                <div>Package: {result.diagnostics.providerPackageName}</div>
+                <div>Quantity: {result.diagnostics.quantity}</div>
+              </div>
+            </div>
+          )}
+
           <div className="rounded-lg border p-3">
             <p className="text-xs font-medium text-gray-500 mb-2">Timeline</p>
             <div className="space-y-1.5">
@@ -146,20 +164,6 @@ export function TestPurchasePanel({ providerId, packages, endpointMappings, requ
             <div className="rounded-lg bg-red-50 p-3 text-xs text-red-700">
               <p className="font-medium">Error at step: {result?.errorStep || 'unknown'}</p>
               <p>{error}</p>
-            </div>
-          )}
-
-          {/* Order link + cleanup */}
-          {result.orderId && (
-            <div className="flex items-center justify-between pt-2 border-t">
-              <a href={`/admin/orders/${result.orderId}`} target="_blank" rel="noopener noreferrer"
-                className="text-xs text-cyan-600 hover:underline">
-                View Order #{result.orderId.slice(-8)} →
-              </a>
-              <button type="button" onClick={() => handleCleanup(result.orderId)}
-                className="text-xs text-red-500 hover:text-red-700">
-                Cleanup & Delete
-              </button>
             </div>
           )}
         </div>

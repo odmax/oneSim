@@ -30,6 +30,8 @@ export interface ActivateESIMResult {
   imsis?: string[]
   activationCodes?: string[]
   qrCodeUrl?: string
+  matchingId?: string
+  smdpAddress?: string
   status?: string
 }
 
@@ -167,4 +169,10 @@ export interface IProviderConnector {
   getRates(): Promise<ConnectorResult<RateResult[]>>
   getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>>
   topUpESIM(params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>>
+  /**
+   * Validate that the connector is configured for purchase.
+   * Called before any wallet hold. Returns the reason if invalid.
+   * Optional — connectors without this method are treated as valid.
+   */
+  validatePurchase?(params: { planId: string; quantity: number; subscriber: { email: string } }): Promise<{ valid: boolean; reason?: string }>
 }

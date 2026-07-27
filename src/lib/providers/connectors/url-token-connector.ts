@@ -245,6 +245,23 @@ export class UrlTokenConnector extends RestCatalogConnector {
     }
   }
 
+  async validatePurchase(_params: { planId: string; quantity: number; subscriber: { email: string } }): Promise<{ valid: boolean; reason?: string }> {
+    if (!this.config.apiBaseUrl) {
+      return { valid: false, reason: 'API base URL not configured' }
+    }
+    if (!this.config.apiToken) {
+      return { valid: false, reason: 'API token not configured' }
+    }
+    const payloadType = this.fieldMappings.activationPayloadType
+    if (!payloadType) {
+      return { valid: false, reason: `Required field mapping "activationPayloadType" is missing. Set it to "CHOICE_ADD_BUNDLE_FROM_POOL" in the provider fieldMappings.` }
+    }
+    if (!this.fieldMappings.userId) {
+      return { valid: false, reason: `Required field mapping "userId" is missing. Set it in the provider fieldMappings.` }
+    }
+    return { valid: true }
+  }
+
   async activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
     const token = this.config.apiToken || ''
     const path = `/template/v03_09/add_bundle_using_template_from_pool/${token}`

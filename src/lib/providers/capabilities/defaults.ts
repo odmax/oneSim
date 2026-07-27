@@ -13,10 +13,12 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.STATUS,
   ],
 
-  // AirHub — catalog only currently
+  // AirHub — full eSIM lifecycle (auth, catalog, purchase, status, QR)
   AIRHUB: [
     ProviderCapability.AUTH,
     ProviderCapability.CATALOG_SYNC,
+    ProviderCapability.PURCHASE,
+    ProviderCapability.STATUS,
   ],
 
   // Rakuten — full eSIM lifecycle
@@ -45,6 +47,14 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.WALLET,
     ProviderCapability.INVENTORY,
     ProviderCapability.PCR_PROFILE,
+  ],
+
+  // Telna SeamlessOS — purchase lifecycle (usage/suspend deferred)
+  TELNA_SEAMLESS: [
+    ProviderCapability.AUTH,
+    ProviderCapability.CATALOG_SYNC,
+    ProviderCapability.PURCHASE,
+    ProviderCapability.STATUS,
   ],
 }
 

@@ -125,6 +125,12 @@ export interface ProviderAdapter {
 
   activateESIM(params: ActivateESIMParams): Promise<ProviderResult<ActivateESIMResult>>
 
+  /**
+   * Validate that the adapter is configured for purchase.
+   * Called before any wallet hold. Optional — adapters without this are treated as valid.
+   */
+  validatePurchase?(params: { planId: string; quantity: number; subscriber: { email: string } }): Promise<{ valid: boolean; reason?: string }>
+
   getActivationStatus(activationId: string): Promise<ProviderResult<{ status: string; iccids?: string[] }>>
 
   suspendESIM(subscriptionId: string): Promise<ProviderResult<void>>

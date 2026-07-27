@@ -2,6 +2,12 @@ import { prisma } from '@/lib/prisma'
 import { getAdapterForType, isProviderOperational } from '@/lib/providers/adapter-manager'
 import { createTimelineEvent, transitionOrder, failOrder } from './order-state-machine'
 import { reserveWalletFunds, captureReservedFunds, releaseReservedFunds } from './wallet-actions'
+import { DEFAULT_PROVIDER_CAPABILITIES } from '@/lib/providers/capabilities/defaults'
+
+function providerSupportsPurchase(provider: { code?: string; type: string; enabledCapabilities?: any }): boolean {
+  const caps = provider.enabledCapabilities || DEFAULT_PROVIDER_CAPABILITIES[provider.code || ''] || DEFAULT_PROVIDER_CAPABILITIES[provider.type] || []
+  return caps.includes('PURCHASE')
+}
 
 interface PurchaseParams {
   businessId: string
@@ -81,6 +87,7 @@ async function selectProvider(pkg: any): Promise<{ success: boolean; selection?:
   const dbProvider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!dbProvider) return { success: false, error: 'Provider not found' }
   if (!isProviderOperational(dbProvider.status)) return { success: false, error: `Provider is ${dbProvider.status}` }
+  if (!providerSupportsPurchase(dbProvider)) return { success: false, error: `Provider does not support PURCHASE capability` }
 
   const adapter = await getAdapterForType(dbProvider.type, {
     apiBaseUrl: dbProvider.apiBaseUrl,
@@ -149,33 +156,40 @@ async function saveESIMs(orderId: string, esims: MappedESIMData[], customerId: s
   }
 }
 
+async function validateProviderPurchase(selection: ProviderSelection, params: PurchaseParams): Promise<{ valid: boolean; reason?: string }> {
+  const { adapter, planId } = selection
+
+  if (!adapter.validatePurchase) return { valid: true }
+
+  const nameParts = (params.customerName || 'Business Order').trim().split(/\s+/)
+  try {
+    return await adapter.validatePurchase({
+      planId,
+      quantity: params.quantity,
+      subscriber: {
+        email: params.customerEmail || '',
+        first_name: nameParts[0] || '',
+        last_name: nameParts.slice(1).join(' ') || undefined,
+      },
+    })
+  } catch (e: any) {
+    return { valid: false, reason: `Config validation threw: ${e.message}` }
+  }
+}
+
 export async function initiateAndFulfillPurchase(orderId: string, order: any, params: PurchaseParams): Promise<PurchaseResult> {
   const totalAmount = Number(order.totalAmount)
 
-  // 1. Reserve wallet funds
-  const reserve = await reserveWalletFunds(orderId, params.businessId, totalAmount)
-  if (!reserve.success) {
-    await failOrder(orderId, `Wallet reserve failed: ${reserve.error}`)
-    await createTimelineEvent(orderId, { eventType: 'PURCHASE_FAILED', message: reserve.error })
-    return { success: false, error: reserve.error, errorStatus: 402 }
-  }
-  await transitionOrder(orderId, 'PAYMENT_RESERVED')
-
-  // 2. Transition to pending provider
-  await transitionOrder(orderId, 'PENDING_PROVIDER')
-  await createTimelineEvent(orderId, { eventType: 'PROVIDER_DISPATCH', message: 'Dispatching to provider' })
-
-  // 3. Select provider
+  // 1. Resolve package
   const pkg = await prisma.eSIMPackage.findUnique({ where: { id: params.packageId } })
   if (!pkg) {
-    await releaseReservedFunds(orderId, params.businessId, totalAmount)
     await failOrder(orderId, 'Package not found')
     return { success: false, error: 'Package not found', errorStatus: 404 }
   }
 
+  // 2. Select provider
   const selection = await selectProvider(pkg)
   if (!selection.success || !selection.selection) {
-    await releaseReservedFunds(orderId, params.businessId, totalAmount)
     await failOrder(orderId, selection.error || 'No provider available')
     await createTimelineEvent(orderId, { eventType: 'PROVIDER_FAILED', message: selection.error })
     return { success: false, error: selection.error || 'No provider available', errorStatus: 502 }
@@ -183,13 +197,33 @@ export async function initiateAndFulfillPurchase(orderId: string, order: any, pa
 
   const { selection: sel } = selection
 
+  // 3. Validate provider purchase readiness BEFORE wallet hold
+  const validation = await validateProviderPurchase(sel, params)
+  if (!validation.valid) {
+    const msg = `Provider configuration error: ${validation.reason}`
+    await failOrder(orderId, msg)
+    await createTimelineEvent(orderId, { eventType: 'PROVIDER_FAILED', message: msg })
+    return { success: false, error: msg, errorStatus: 502 }
+  }
+
+  // 4. Reserve wallet funds (only after validation passes)
+  const reserve = await reserveWalletFunds(orderId, params.businessId, totalAmount)
+  if (!reserve.success) {
+    await failOrder(orderId, `Wallet reserve failed: ${reserve.error}`)
+    await createTimelineEvent(orderId, { eventType: 'PURCHASE_FAILED', message: reserve.error })
+    return { success: false, error: reserve.error, errorStatus: 402 }
+  }
+  await transitionOrder(orderId, 'PAYMENT_RESERVED')
+  await transitionOrder(orderId, 'PENDING_PROVIDER')
+  await createTimelineEvent(orderId, { eventType: 'PROVIDER_DISPATCH', message: 'Dispatching to provider' })
+
   await prisma.eSIMPurchase.update({
     where: { id: orderId },
     data: { providerId: sel.providerId },
   })
   await createTimelineEvent(orderId, { eventType: 'PROVIDER_SELECTED', message: `Provider: ${sel.providerName}` })
 
-  // 4. Dispatch purchase
+  // 5. Dispatch purchase
   const dispatch = await dispatchPurchase(sel, params)
   if (!dispatch.success || !dispatch.data) {
     await releaseReservedFunds(orderId, params.businessId, totalAmount)
@@ -203,9 +237,8 @@ export async function initiateAndFulfillPurchase(orderId: string, order: any, pa
   const providerStatus = providerData.status || 'ACTIVE'
   const reservationId = extractString(providerData.reservationId) || undefined
 
-  // 5. Handle two-step reservation state
+  // 6. Handle two-step reservation state
   if (reservationId && (!providerData.iccids || providerData.iccids.length === 0)) {
-    // Reservation created but no ICCIDs yet — order is reserved, not fulfilled
     await prisma.eSIMPurchase.update({
       where: { id: orderId },
       data: {
@@ -217,16 +250,14 @@ export async function initiateAndFulfillPurchase(orderId: string, order: any, pa
     await transitionOrder(orderId, 'RESERVED')
     await createTimelineEvent(orderId, { eventType: 'PROVIDER_RESERVATION_CREATED', message: `Reservation: ${reservationId} at ${sel.providerName}` })
     return {
-      success: true,
-      orderId,
-      esims: [],
+      success: true, orderId, esims: [],
       providerReservationId: reservationId,
       providerFulfillId: undefined,
       providerStatus: 'RESERVED',
     }
   }
 
-  // 6. Map response to standardized fields
+  // 7. Map response to standardized fields
   const esims: MappedESIMData[] = []
   for (let i = 0; i < params.quantity; i++) {
     esims.push(mapProviderResponse(providerData, i))
@@ -234,7 +265,6 @@ export async function initiateAndFulfillPurchase(orderId: string, order: any, pa
 
   const missingIccid = esims.some(e => !e.iccid)
   if (missingIccid) {
-    // If we have a reservation, try to cancel it before failing
     if (reservationId) {
       await cancelPurchase(orderId, params.businessId, totalAmount).catch(() => {})
     }
@@ -244,14 +274,14 @@ export async function initiateAndFulfillPurchase(orderId: string, order: any, pa
     return { success: false, error: 'Provider returned incomplete data', errorStatus: 502 }
   }
 
-  // 7. Save eSIM records
+  // 8. Save eSIM records
   const packageSnapshot = order.packageSnapshot || {}
   await saveESIMs(orderId, esims, params.customerId || null, packageSnapshot, pkg.validityDays)
 
-  // 8. Capture wallet funds
+  // 9. Capture wallet funds
   await captureReservedFunds(orderId, params.businessId, totalAmount)
 
-  // 9. Mark order as fulfilled
+  // 10. Mark order as fulfilled
   const updateData: any = {
     providerFulfillId: providerOrderId || null,
     providerStatus,
@@ -265,9 +295,7 @@ export async function initiateAndFulfillPurchase(orderId: string, order: any, pa
   await createTimelineEvent(orderId, { eventType: 'PROVIDER_FULFILLED', message: `Provider: ${sel.providerName}, Reference: ${providerOrderId || 'N/A'}` })
 
   return {
-    success: true,
-    orderId,
-    esims,
+    success: true, orderId, esims,
     providerReservationId: reservationId,
     providerFulfillId: providerOrderId,
     providerStatus,

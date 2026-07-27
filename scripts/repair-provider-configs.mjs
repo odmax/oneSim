@@ -71,6 +71,10 @@ const CONFIGS = {
       _legacyConnector: true,
       _note: 'Auth: POST to authUrl with {request:{un,pw,command:"accounts_getaccounts"}} → response.response.data[0].token. IMSI API base: apiBaseUrl.',
     },
+    fieldMappings: {
+      activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL',
+      userId: 'onesim',
+    },
     supportsESIM: true, supportsUsage: true, supportsTopUp: true,
     templateName: 'Choice Wireless',
   },
@@ -143,6 +147,12 @@ async function main() {
         console.log(`  ${code}: Created`)
       }
     } else {
+      // Merge fieldMappings to preserve existing values
+      if (cfg.fieldMappings) {
+        const existingFm = (existing.fieldMappings && typeof existing.fieldMappings === 'object') ? existing.fieldMappings : {}
+        providerData.fieldMappings = { ...cfg.fieldMappings, ...existingFm }
+        console.log(`  ${code}: Merging fieldMappings — existing keys: ${Object.keys(existingFm).join(', ') || '(none)'}, new keys: ${Object.keys(cfg.fieldMappings).join(', ')}`)
+      }
       if (DRY_RUN) {
         console.log(`  ${code}: Would update (existing ID=${existing.id.slice(-8)})`)
       } else {

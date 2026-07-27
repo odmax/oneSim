@@ -8,12 +8,14 @@ import { UrlTokenConnector } from './url-token-connector'
 import { HeaderTokenRestConnector } from './header-token-rest-connector'
 import { StandardProviderConnector } from './standard-connector'
 import { TelnaConnector } from './telna-connector'
+import { TelnaSeamlessConnector } from './telna-seamless-connector'
 
-export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB' | 'TELNA'
+export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB' | 'TELNA' | 'TELNA_SEAMLESS'
 
 export function resolveConnectorType(adapterStrategy: string | null | undefined, providerType: string): ConnectorType {
   if (providerType === 'MOCK') return 'MOCK'
   if (adapterStrategy === 'AIRHUB') return 'AIRHUB'
+  if (adapterStrategy === 'TELNA_SEAMLESS') return 'TELNA_SEAMLESS'
   if (adapterStrategy === 'TELNA') return 'TELNA'
   switch (adapterStrategy) {
     case 'STANDARD': return 'STANDARD'
@@ -54,6 +56,8 @@ export function createConnector(providerId: string, name: string | undefined, co
       return new MockConnector(providerId, name)
     case 'AIRHUB':
       return new AirHubConnector(providerId)
+    case 'TELNA_SEAMLESS':
+      return new TelnaSeamlessConnector(providerId)
     case 'STANDARD':
       return new StandardProviderConnector({
         providerId, name,

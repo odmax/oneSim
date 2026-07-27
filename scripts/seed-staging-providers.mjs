@@ -183,6 +183,10 @@ const templates = [
       authType: 'credentials',
       tokenPlacement: 'URL_PATH',
       isSystemTemplate: true,
+      defaultFieldMappings: {
+        activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL',
+        userId: 'onesim',
+      },
     },
     provider: {
       code: 'CHOICE',

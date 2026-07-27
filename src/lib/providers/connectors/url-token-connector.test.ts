@@ -405,6 +405,107 @@ describe('UrlTokenConnector', () => {
     })
   })
 
+  describe('validatePurchase', () => {
+    it('returns valid when activationPayloadType and userId are set', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' },
+      }))
+      const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
+      expect(result.valid).toBe(true)
+    })
+
+    it('returns invalid when activationPayloadType is missing', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
+        fieldMappings: {},
+      }))
+      const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
+      expect(result.valid).toBe(false)
+      expect(result.reason).toContain('activationPayloadType')
+    })
+
+    it('returns invalid when apiBaseUrl is missing', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', {
+        apiBaseUrl: '',
+        apiToken: 'tok',
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' },
+      })
+      const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
+      expect(result.valid).toBe(false)
+      expect(result.reason).toContain('base URL')
+    })
+
+    it('returns invalid when apiToken is missing', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', {
+        apiBaseUrl: 'https://api.example.com',
+        apiToken: '',
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' },
+      })
+      const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
+      expect(result.valid).toBe(false)
+      expect(result.reason).toContain('token')
+    })
+
+    it('returns invalid when userId is missing', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL' },
+      }))
+      const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
+      expect(result.valid).toBe(false)
+      expect(result.reason).toContain('userId')
+    })
+  })
+
+  describe('CHOICE body dispatch regression', () => {
+    it('sends CHOICE body when fieldMappings have activationPayloadType', async () => {
+      const c = new UrlTokenConnector('choice-1', 'Choice', makeChoiceConfig({
+        fieldMappings: {
+          activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL',
+          userId: 'onesim',
+        },
+      }))
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        data: { imsis: [{ iccid: '89012345678901234567', imsi: '310410123456789' }] },
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await c.activateESIM({ planId: 'sku-test-plan', quantity: 1, subscriber: { email: 'test@test.com' } })
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body)
+      expect(body.sku).toBe('sku-test-plan')
+      expect(body.user_id).toBe('onesim')
+      expect(body.eu_email_address).toBe('test@test.com')
+      expect(body.template_id).toBeUndefined()
+      expect(body.quantity).toBeUndefined()
+      expect(body.email).toBeUndefined()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('omits eu_email_address when subscriber email is empty', async () => {
+      const c = new UrlTokenConnector('choice-1', 'Choice', makeChoiceConfig({
+        fieldMappings: {
+          activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL',
+          userId: 'onesim',
+        },
+      }))
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        data: { imsis: [{ iccid: '89012345678901234567', imsi: '310410123456789' }] },
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await c.activateESIM({ planId: 'sku-a', quantity: 1, subscriber: { email: '' } })
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body)
+      expect(body.sku).toBe('sku-a')
+      expect(body.user_id).toBe('onesim')
+      expect(body.eu_email_address).toBeUndefined()
+      expect(body.template_id).toBeUndefined()
+      expect(body.email).toBeUndefined()
+
+      vi.unstubAllGlobals()
+    })
+  })
+
   describe('getStatus', () => {
     it('returns status and ICCID', async () => {
       const mockFetch = vi.fn().mockResolvedValue(okJson({ status: 'ACTIVE', iccid: '89012345678901234567' }))

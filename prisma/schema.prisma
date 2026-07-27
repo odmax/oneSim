@@ -93,8 +93,8 @@ model User {
   assignedTickets       SupportTicket[]      @relation("TicketAssignee")
   auditNotes            ProviderAuditNote[]
   orderTimelineEvents   OrderTimelineEvent[]
-  catalogChangeSets     CatalogChangeSet[]  @relation("UserChangeSets")
-  ruleExecutions        RuleExecution[]     @relation("UserRuleExecutions")
+  catalogChangeSets     CatalogChangeSet[]   @relation("UserChangeSets")
+  ruleExecutions        RuleExecution[]      @relation("UserRuleExecutions")
 
   @@map("users")
 }
@@ -128,23 +128,23 @@ model Business {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  users              BusinessUser[]
-  purchases          ESIMPurchase[]
-  invoices           Invoice[]
-  transactions       WalletTransaction[]
-  topUpRequests      WalletTopUpRequest[]
-  esimTopUps         ESIMTopUp[]               @relation("BusinessESIMTopUps")
-  supportTickets     SupportTicket[]
-  customers          Customer[]
-  apiKeys            BusinessApiKey[]
-  webhookEndpoints   BusinessWebhookEndpoint[]
-  webhookDeliveries  WebhookDelivery[]
-  apiRequestLogs     ApiRequestLog[]
-  rateLimitPerMinute Int?
-  pricingRules       PricingRule[]
+  users               BusinessUser[]
+  purchases           ESIMPurchase[]
+  invoices            Invoice[]
+  transactions        WalletTransaction[]
+  topUpRequests       WalletTopUpRequest[]
+  esimTopUps          ESIMTopUp[]               @relation("BusinessESIMTopUps")
+  supportTickets      SupportTicket[]
+  customers           Customer[]
+  apiKeys             BusinessApiKey[]
+  webhookEndpoints    BusinessWebhookEndpoint[]
+  webhookDeliveries   WebhookDelivery[]
+  apiRequestLogs      ApiRequestLog[]
+  rateLimitPerMinute  Int?
+  pricingRules        PricingRule[]
   assignedSalesUserId String?
 
-  salesAgent InternalAdmin? @relation("SalesAssignment", fields: [assignedSalesUserId], references: [id])
+  salesAgent     InternalAdmin?  @relation("SalesAssignment", fields: [assignedSalesUserId], references: [id])
   billingRecords BillingRecord[] @relation("BillingRecordBusiness")
 
   @@map("businesses")
@@ -178,7 +178,7 @@ model InternalAdmin {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  assignedBusinesses Business[] @relation("SalesAssignment")
+  assignedBusinesses Business[]      @relation("SalesAssignment")
   billingRecords     BillingRecord[] @relation("BillingRecordSalesAgent")
 
   @@map("internal_admins")
@@ -239,92 +239,105 @@ model Provider {
   lastSyncResult           String? /// Summary of last sync result
   lastSyncCount            Int? /// Number of plans fetched in last sync
   /// Certification workflow fields
-  certificationStatus      String? @default("CONFIGURING")
+  certificationStatus      String?        @default("CONFIGURING")
   certifiedAt              DateTime?
   certificationNotes       String?
   lastCertificationRunAt   DateTime?
   /// Catalog management fields
-  catalogPriority           Int       @default(100)
-  autoPublishEnabled        Boolean   @default(false)
-  createdAt                 DateTime  @default(now())
+  catalogPriority          Int            @default(100)
+  autoPublishEnabled       Boolean        @default(false)
+  /// Provider Framework V2 linkage (nullable — V1 continues working without these)
+  pv2TemplateId            String?
+  pv2TemplateVersionId     String?
+  pv2ConfigStatus          String? /// NOT_CONFIGURED | CONFIGURING | CONFIGURED | VALIDATED
+  pv2MigrationStatus       String? /// NOT_STARTED | IN_PROGRESS | COMPLETED | FAILED | ROLLED_BACK
+  pv2LastValidationResult  Json?
+  pv2LastTemplateUpgradeAt DateTime?
+  pv2EnabledFeaturePacks   Json?
+  createdAt                DateTime       @default(now())
   updatedAt                DateTime       @updatedAt
 
-  packages        ESIMPackage[]
-  providerPackages ProviderPackage[]
-  healthSnapshots ProviderHealthSnapshot[]
-  audits          ProviderAudit[]
-  providerTemplate ProviderTemplate? @relation("ProviderTemplateRelation", fields: [providerTemplateId], references: [id])
-  purchases       ESIMPurchase[]
-  billingRecords  BillingRecord[] @relation("BillingRecordProvider")
-  configurationRules PackageConfigurationRule[] @relation("ProviderConfigurationRules")
+  packages                ESIMPackage[]
+  providerPackages        ProviderPackage[]
+  healthSnapshots         ProviderHealthSnapshot[]
+  audits                  ProviderAudit[]
+  providerTemplate        ProviderTemplate?                @relation("ProviderTemplateRelation", fields: [providerTemplateId], references: [id])
+  pv2Template             PV2Template?                     @relation(fields: [pv2TemplateId], references: [id], onDelete: SetNull)
+  pv2TemplateVersion      PV2TemplateVersion?              @relation(fields: [pv2TemplateVersionId], references: [id], onDelete: SetNull)
+  pv2FeaturePackOverrides PV2ProviderFeaturePackOverride[]
+  purchases               ESIMPurchase[]
+  billingRecords          BillingRecord[]                  @relation("BillingRecordProvider")
+  configurationRules      PackageConfigurationRule[]       @relation("ProviderConfigurationRules")
 
+  @@index([pv2TemplateId])
+  @@index([pv2TemplateVersionId])
   @@map("providers")
 }
 
 model ProviderPackage {
-  id              String   @id @default(cuid())
-  providerId      String
-  providerPlanId  String
+  id                 String  @id @default(cuid())
+  providerId         String
+  providerPlanId     String
   providerPlanCode   String?
   providerTemplateId String?
   providerStatus     String?
-  name            String
-  dataGB          Int
-  validityDays    Int
-  costPrice       Decimal
-  currency        String   @default("USD")
-  country         String?
-  region          String?
-  planType        String?  /// PREMIUM | STANDARD | LIFETIME
-  isAvailable     Boolean  @default(true)
-  readyToPublish  Boolean  @default(false)
+  name               String
+  dataGB             Int
+  validityDays       Int
+  costPrice          Decimal
+  currency           String  @default("USD")
+  country            String?
+  region             String?
+  planType           String? /// PREMIUM | STANDARD | LIFETIME
+  isAvailable        Boolean @default(true)
+  readyToPublish     Boolean @default(false)
 
   // Pricing fields
-  adminCostPrice          Decimal?
-  effectiveCostPrice      Decimal?
-  costSource              String?  /// PROVIDER | ADMIN_OVERRIDE | MISSING
+  adminCostPrice     Decimal?
+  effectiveCostPrice Decimal?
+  costSource         String? /// PROVIDER | ADMIN_OVERRIDE | MISSING
 
   // Package management engine fields
-  publishStatus           String?  @default("DRAFT") /// DRAFT | READY | PUBLISHED | HIDDEN | ARCHIVED
-  configurationStatus     String?  @default("UNCONFIGURED") /// UNCONFIGURED | PARTIAL | CONFIGURED | AUTO_CONFIGURED
-  sellingPrice            Decimal?
-  sellingCurrency         String?  @default("USD")
-  markupPercent           Decimal?
-  pricingMode             String?  @default("MARKUP_PERCENT") /// MARKUP_PERCENT | FIXED_PRICE | FIXED_MARGIN
-  autoConfiguredByRuleId  String?
-  lastConfiguredAt        DateTime?
-  tags                    Json?
-  notes                   String?
+  publishStatus          String?   @default("DRAFT") /// DRAFT | READY | PUBLISHED | HIDDEN | ARCHIVED
+  configurationStatus    String?   @default("UNCONFIGURED") /// UNCONFIGURED | PARTIAL | CONFIGURED | AUTO_CONFIGURED
+  sellingPrice           Decimal?
+  sellingCurrency        String?   @default("USD")
+  markupPercent          Decimal?
+  pricingMode            String?   @default("MARKUP_PERCENT") /// MARKUP_PERCENT | FIXED_PRICE | FIXED_MARGIN
+  autoConfiguredByRuleId String?
+  lastConfiguredAt       DateTime?
+  tags                   Json?
+  notes                  String?
 
   // Normalization fields
-  comparableKey           String?
-  normalizedCountry       String?
-  normalizedDataLabel     String?
-  normalizedValidityDays  Int?
-  normalizedCoverageType  String?
+  comparableKey          String?
+  normalizedCountry      String?
+  normalizedDataLabel    String?
+  normalizedValidityDays Int?
+  normalizedCoverageType String?
 
   // Cheapest ranking fields
-  cheapestRank            Int?
-  isCheapestCandidate     Boolean  @default(false)
-  cheapestReason          String?
-  excludedFromCheapest    Boolean  @default(false)
-  exclusionReason         String?
+  cheapestRank         Int?
+  isCheapestCandidate  Boolean @default(false)
+  cheapestReason       String?
+  excludedFromCheapest Boolean @default(false)
+  exclusionReason      String?
 
   // Preferred package & auto-pick fields
-  isPreferred             Boolean  @default(false)
-  preferredReason         String?
-  preferredAt             DateTime?
-  excludedFromAutoPick    Boolean  @default(false)
-  autoPickReason          String?
+  isPreferred          Boolean   @default(false)
+  preferredReason      String?
+  preferredAt          DateTime?
+  excludedFromAutoPick Boolean   @default(false)
+  autoPickReason       String?
 
   providerRawData Json?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  provider      Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  publishedAs   ESIMPackage?
+  provider         Provider                  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  publishedAs      ESIMPackage?
   configuredByRule PackageConfigurationRule? @relation("PackageAutoConfiguration", fields: [autoConfiguredByRuleId], references: [id], onDelete: SetNull)
-  changeItems  CatalogChangeItem[] @relation("PackageChangeItems")
+  changeItems      CatalogChangeItem[]       @relation("PackageChangeItems")
 
   @@unique([providerId, providerPlanId])
   @@index([providerId])
@@ -339,7 +352,7 @@ model PackageConfigurationRule {
   providerId      String?
   country         String?
   region          String?
-  productType     String?  /// NEW_ESIM | TOP_UP | BOTH
+  productType     String? /// NEW_ESIM | TOP_UP | BOTH
   dataMinGB       Int?
   dataMaxGB       Int?
   validityMinDays Int?
@@ -354,9 +367,9 @@ model PackageConfigurationRule {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  provider Provider? @relation("ProviderConfigurationRules", fields: [providerId], references: [id], onDelete: SetNull)
+  provider           Provider?         @relation("ProviderConfigurationRules", fields: [providerId], references: [id], onDelete: SetNull)
   configuredPackages ProviderPackage[] @relation("PackageAutoConfiguration")
-  executions         RuleExecution[] @relation("RuleToExecution")
+  executions         RuleExecution[]   @relation("RuleToExecution")
 
   @@index([providerId])
   @@index([priority])
@@ -365,25 +378,25 @@ model PackageConfigurationRule {
 }
 
 model RuleExecution {
-  id          String   @id @default(cuid())
-  ruleId      String
-  ruleName    String
+  id           String    @id @default(cuid())
+  ruleId       String
+  ruleName     String
   executedById String?
-  executedAt  DateTime @default(now())
-  startedAt   DateTime
-  finishedAt  DateTime?
-  durationMs  Int?
-  scope       String
-  filtersUsed Json?
-  totalMatched Int     @default(0)
-  updatedCount Int     @default(0)
-  skippedCount Int     @default(0)
-  failedCount  Int     @default(0)
+  executedAt   DateTime  @default(now())
+  startedAt    DateTime
+  finishedAt   DateTime?
+  durationMs   Int?
+  scope        String
+  filtersUsed  Json?
+  totalMatched Int       @default(0)
+  updatedCount Int       @default(0)
+  skippedCount Int       @default(0)
+  failedCount  Int       @default(0)
   skipDetails  Json?
-  status      String   @default("PENDING") /// PENDING | RUNNING | COMPLETED | FAILED | CANCELLED
+  status       String    @default("PENDING") /// PENDING | RUNNING | COMPLETED | FAILED | CANCELLED
 
-  rule PackageConfigurationRule @relation("RuleToExecution", fields: [ruleId], references: [id], onDelete: Cascade)
-  executedBy User? @relation("UserRuleExecutions", fields: [executedById], references: [id], onDelete: SetNull)
+  rule       PackageConfigurationRule @relation("RuleToExecution", fields: [ruleId], references: [id], onDelete: Cascade)
+  executedBy User?                    @relation("UserRuleExecutions", fields: [executedById], references: [id], onDelete: SetNull)
 
   @@index([ruleId])
   @@index([executedAt])
@@ -400,19 +413,19 @@ model CatalogChangeSet {
   totalChanged Int      @default(0)
   metadata     Json?
 
-  createdBy User?              @relation("UserChangeSets", fields: [createdById], references: [id], onDelete: SetNull)
+  createdBy User?               @relation("UserChangeSets", fields: [createdById], references: [id], onDelete: SetNull)
   items     CatalogChangeItem[]
 
   @@map("catalog_change_sets")
 }
 
 model CatalogChangeItem {
-  id               String   @id @default(cuid())
-  changeSetId      String
+  id                String   @id @default(cuid())
+  changeSetId       String
   providerPackageId String
-  before           Json
-  after            Json
-  createdAt        DateTime @default(now())
+  before            Json
+  after             Json
+  createdAt         DateTime @default(now())
 
   changeSet CatalogChangeSet @relation(fields: [changeSetId], references: [id], onDelete: Cascade)
   pkg       ProviderPackage  @relation("PackageChangeItems", fields: [providerPackageId], references: [id], onDelete: Cascade)
@@ -439,7 +452,7 @@ model ESIMPackage {
   providerId                String?
   providerRawData           Json?
   costPriceUSD              Decimal?
-  costCurrency              String?   @default("USD")
+  costCurrency              String?       @default("USD")
   markupPercent             Decimal?
   createdAt                 DateTime      @default(now())
   updatedAt                 DateTime      @updatedAt
@@ -454,8 +467,8 @@ model ESIMPackage {
   hiddenFromCatalog         Boolean       @default(false)
   providerPackageId         String?       @unique
 
-  purchases    ESIMPurchase[]
-  provider     Provider?      @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  purchases       ESIMPurchase[]
+  provider        Provider?        @relation(fields: [providerId], references: [id], onDelete: SetNull)
   providerPackage ProviderPackage? @relation(fields: [providerPackageId], references: [id], onDelete: SetNull)
   pricingRules    PricingRule[]
   topUpRecords    ESIMTopUp[]
@@ -464,52 +477,52 @@ model ESIMPackage {
 }
 
 model ESIMPurchase {
-  id                  String   @id @default(cuid())
-  businessId          String
-  userId              String
-  packageId           String
-  quantity            Int
-  totalAmount         Decimal
-  status              String   @default("PENDING")
-  providerStatus      String?
-  providerResponse    Json?
-  callbackUrl         String?
-  packageSnapshot     Json?
-  packageName         String?
-  packageDataGB       Int?
-  packageValidityDays Int?
-  packageUnitPrice    Decimal?
-  packageCurrency     String?
+  id                    String    @id @default(cuid())
+  businessId            String
+  userId                String
+  packageId             String
+  quantity              Int
+  totalAmount           Decimal
+  status                String    @default("PENDING")
+  providerStatus        String?
+  providerResponse      Json?
+  callbackUrl           String?
+  packageSnapshot       Json?
+  packageName           String?
+  packageDataGB         Int?
+  packageValidityDays   Int?
+  packageUnitPrice      Decimal?
+  packageCurrency       String?
   /// State machine fields
-  previousStatus      String?
-  statusChangedAt     DateTime?
-  failureReason       String?
-  providerErrorCode   String?
-  providerErrorMessage String?
+  previousStatus        String?
+  statusChangedAt       DateTime?
+  failureReason         String?
+  providerErrorCode     String?
+  providerErrorMessage  String?
   /// Provider dispatch fields
   providerId            String?
   providerReservationId String?
   providerFulfillId     String?
   /// Idempotency key for duplicate prevention
-  providerPurchaseKey   String?  @unique
+  providerPurchaseKey   String?   @unique
   /// Retry fields
-  retryCount          Int      @default(0)
-  maxRetries          Int      @default(3)
-  nextRetryAt         DateTime?
-  lastRetryAt         DateTime?
-  retryReason         String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  retryCount            Int       @default(0)
+  maxRetries            Int       @default(3)
+  nextRetryAt           DateTime?
+  lastRetryAt           DateTime?
+  retryReason           String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  business Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  package  ESIMPackage @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  esims    ESIM[]
-  invoice  Invoice?
-  events   OrderTimelineEvent[]
-  provider Provider?   @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  business           Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  package            ESIMPackage          @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  esims              ESIM[]
+  invoice            Invoice?
+  events             OrderTimelineEvent[]
+  provider           Provider?            @relation(fields: [providerId], references: [id], onDelete: SetNull)
   walletTransactions WalletTransaction[]
-  billingRecords     BillingRecord[] @relation("BillingRecordOrder")
+  billingRecords     BillingRecord[]      @relation("BillingRecordOrder")
 
   @@map("esim_purchases")
 }
@@ -525,8 +538,8 @@ model OrderTimelineEvent {
   createdById String?
   createdAt   DateTime @default(now())
 
-  order   ESIMPurchase @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  createdBy User?      @relation(fields: [createdById], references: [id])
+  order     ESIMPurchase @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdBy User?        @relation(fields: [createdById], references: [id])
 
   @@index([orderId, createdAt])
   @@map("order_timeline_events")
@@ -566,14 +579,14 @@ model ESIM {
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
-  purchase     ESIMPurchase     @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
-  customer     Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  usageRecords  UsageRecord[]
-  usageSessions UsageSession[]
-  usageAlerts   UsageAlert[]
-  topUps        ESIMTopUp[]      @relation("ESIMTopUps")
-  shareTokens  ESIMShareToken[]
-  billingRecords BillingRecord[] @relation("BillingRecordESIM")
+  purchase       ESIMPurchase     @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  customer       Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  usageRecords   UsageRecord[]
+  usageSessions  UsageSession[]
+  usageAlerts    UsageAlert[]
+  topUps         ESIMTopUp[]      @relation("ESIMTopUps")
+  shareTokens    ESIMShareToken[]
+  billingRecords BillingRecord[]  @relation("BillingRecordESIM")
 
   @@map("esims")
 }
@@ -621,20 +634,20 @@ model UsageRecord {
 }
 
 model UsageSession {
-  id            String   @id @default(cuid())
-  esimId        String
-  sessionId     String?
-  startTime     DateTime
-  endTime       DateTime?
-  durationSec   Int?
-  dataUsedMB    Int?
-  country       String?
-  operator      String?
-  network       String?
-  cost          Decimal?
-  currency      String?
-  rawData       Json?
-  createdAt     DateTime @default(now())
+  id          String    @id @default(cuid())
+  esimId      String
+  sessionId   String?
+  startTime   DateTime
+  endTime     DateTime?
+  durationSec Int?
+  dataUsedMB  Int?
+  country     String?
+  operator    String?
+  network     String?
+  cost        Decimal?
+  currency    String?
+  rawData     Json?
+  createdAt   DateTime  @default(now())
 
   esim ESIM @relation(fields: [esimId], references: [id], onDelete: Cascade)
 
@@ -643,15 +656,15 @@ model UsageSession {
 }
 
 model UsageAlert {
-  id          String   @id @default(cuid())
-  esimId      String
-  alertType   String   /// USAGE_80 | USAGE_90 | USAGE_100 | NO_ACTIVITY | LOW_WALLET | USAGE_SPIKE
-  severity    String   /// INFO | WARNING | CRITICAL
-  message     String
-  details     Json?
+  id             String    @id @default(cuid())
+  esimId         String
+  alertType      String /// USAGE_80 | USAGE_90 | USAGE_100 | NO_ACTIVITY | LOW_WALLET | USAGE_SPIKE
+  severity       String /// INFO | WARNING | CRITICAL
+  message        String
+  details        Json?
   acknowledgedAt DateTime?
   acknowledgedBy String?
-  createdAt   DateTime @default(now())
+  createdAt      DateTime  @default(now())
 
   esim ESIM @relation(fields: [esimId], references: [id], onDelete: Cascade)
 
@@ -692,10 +705,10 @@ model Invoice {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  business  Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  purchase  ESIMPurchase?     @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
-  topUp     ESIMTopUp?        @relation(fields: [topUpId], references: [id], onDelete: SetNull)
-  lineItems InvoiceLineItem[]
+  business       Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  purchase       ESIMPurchase?     @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  topUp          ESIMTopUp?        @relation(fields: [topUpId], references: [id], onDelete: SetNull)
+  lineItems      InvoiceLineItem[]
   billingRecords BillingRecord[]
 
   @@unique([purchaseId])
@@ -712,7 +725,7 @@ model WalletTransaction {
   description String?
   createdAt   DateTime @default(now())
 
-  business Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
   order    ESIMPurchase? @relation(fields: [orderId], references: [id], onDelete: SetNull)
 
   @@map("wallet_transactions")
@@ -724,11 +737,11 @@ model BillingRecord {
   orderId       String?
   esimId        String?
   invoiceId     String?
-  type          String   /// PURCHASE | TOPUP | REFUND | CREDIT | DEBIT | COST_ADJUSTMENT
+  type          String /// PURCHASE | TOPUP | REFUND | CREDIT | DEBIT | COST_ADJUSTMENT
   amount        Decimal
   cost          Decimal? /// provider cost (nullable for non-purchases)
   marginAmount  Decimal? /// amount - cost
-  marginPercent Float?   /// (margin/amount) * 100
+  marginPercent Float? /// (margin/amount) * 100
   currency      String   @default("USD")
   providerId    String?
   salesAgentId  String?
@@ -736,11 +749,11 @@ model BillingRecord {
   description   String?
   createdAt     DateTime @default(now())
 
-  business   Business      @relation("BillingRecordBusiness", fields: [businessId], references: [id])
-  order      ESIMPurchase? @relation("BillingRecordOrder", fields: [orderId], references: [id], onDelete: SetNull)
-  esim       ESIM?         @relation("BillingRecordESIM", fields: [esimId], references: [id], onDelete: SetNull)
-  invoice    Invoice?      @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
-  provider   Provider?     @relation("BillingRecordProvider", fields: [providerId], references: [id], onDelete: SetNull)
+  business   Business       @relation("BillingRecordBusiness", fields: [businessId], references: [id])
+  order      ESIMPurchase?  @relation("BillingRecordOrder", fields: [orderId], references: [id], onDelete: SetNull)
+  esim       ESIM?          @relation("BillingRecordESIM", fields: [esimId], references: [id], onDelete: SetNull)
+  invoice    Invoice?       @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  provider   Provider?      @relation("BillingRecordProvider", fields: [providerId], references: [id], onDelete: SetNull)
   salesAgent InternalAdmin? @relation("BillingRecordSalesAgent", fields: [salesAgentId], references: [id], onDelete: SetNull)
 
   @@index([businessId, createdAt])
@@ -758,7 +771,7 @@ model InvoiceLineItem {
   totalPrice  Decimal
   taxRate     Decimal? @default(0)
   taxAmount   Decimal? @default(0)
-  type        String?  /// PURCHASE | TOPUP | REFUND | CREDIT | ADJUSTMENT
+  type        String? /// PURCHASE | TOPUP | REFUND | CREDIT | ADJUSTMENT
   createdAt   DateTime @default(now())
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -1212,11 +1225,11 @@ model ProviderTemplate {
   defaultResponseListKey String?
   defaultFieldMappings   Json     @default("{}")
   defaultCapabilities    Json     @default("{}")
-  endpointMappings       Json?    /// Capability → endpoint mapping (e.g. {"AUTH_LOGIN": "POST /api/auth/login", "PURCHASE_ESIM": "POST /api/esim/purchase"})
-  requestMappings        Json?    /// Template for building request bodies per capability
-  responseMappings       Json?    /// Template for parsing responses per capability
-  requiredConfigFields   Json?    /// Array of {name, label, type, placeholder} for credential form
-  optionalConfigFields   Json?    /// Array of optional config fields
+  endpointMappings       Json? /// Capability → endpoint mapping (e.g. {"AUTH_LOGIN": "POST /api/auth/login", "PURCHASE_ESIM": "POST /api/esim/purchase"})
+  requestMappings        Json? /// Template for building request bodies per capability
+  responseMappings       Json? /// Template for parsing responses per capability
+  requiredConfigFields   Json? /// Array of {name, label, type, placeholder} for credential form
+  optionalConfigFields   Json? /// Array of optional config fields
   isSystemTemplate       Boolean  @default(false)
   createdBy              String?
   createdAt              DateTime @default(now())
@@ -1228,17 +1241,17 @@ model ProviderTemplate {
 }
 
 model ProviderAudit {
-  id               String   @id @default(cuid())
-  providerId       String   @unique
-  certificationStatus String @default("NOT_STARTED") /// NOT_STARTED | IN_PROGRESS | CERTIFIED | FAILED
-  passCount        Int      @default(0)
-  failCount        Int      @default(0)
-  totalChecks      Int      @default(0)
-  startedAt        DateTime @default(now())
-  completedAt      DateTime?
-  updatedAt        DateTime @updatedAt
+  id                  String    @id @default(cuid())
+  providerId          String    @unique
+  certificationStatus String    @default("NOT_STARTED") /// NOT_STARTED | IN_PROGRESS | CERTIFIED | FAILED
+  passCount           Int       @default(0)
+  failCount           Int       @default(0)
+  totalChecks         Int       @default(0)
+  startedAt           DateTime  @default(now())
+  completedAt         DateTime?
+  updatedAt           DateTime  @updatedAt
 
-  provider Provider    @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  provider Provider             @relation(fields: [providerId], references: [id], onDelete: Cascade)
   checks   ProviderAuditCheck[]
   notes    ProviderAuditNote[]
 
@@ -1246,19 +1259,19 @@ model ProviderAudit {
 }
 
 model ProviderAuditCheck {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   auditId     String
-  category    String   /// CONNECTIVITY | CATALOG | PRICING | PUBLISHING | PROVISIONING | FEATURES | COMMERCIAL | OPERATIONS
-  checkKey    String   /// test_connection, auth_success, sync_plans, etc.
+  category    String /// CONNECTIVITY | CATALOG | PRICING | PUBLISHING | PROVISIONING | FEATURES | COMMERCIAL | OPERATIONS
+  checkKey    String /// test_connection, auth_success, sync_plans, etc.
   label       String
   description String?
-  status      String   @default("PENDING") /// PENDING | PASS | FAIL
-  isCritical  Boolean  @default(false)
+  status      String    @default("PENDING") /// PENDING | PASS | FAIL
+  isCritical  Boolean   @default(false)
   notes       String?
   checkedAt   DateTime?
   checkedBy   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   audit ProviderAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
 
@@ -1273,39 +1286,39 @@ model ProviderAuditNote {
   authorId  String?
   createdAt DateTime @default(now())
 
-  audit    ProviderAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
-  author   User?         @relation(fields: [authorId], references: [id])
+  audit  ProviderAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  author User?         @relation(fields: [authorId], references: [id])
 
   @@index([auditId])
   @@map("provider_audit_notes")
 }
 
 model MaintenanceJob {
-  jobKey    String    @id
-  status    String
-  startedAt DateTime  @default(now())
+  jobKey     String    @id
+  status     String
+  startedAt  DateTime  @default(now())
   finishedAt DateTime?
-  error     String?
-  metadata  Json?
+  error      String?
+  metadata   Json?
 
   @@map("maintenance_jobs")
 }
 
 model CatalogPipelineRun {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   providerId   String?
   providerCode String?
-  trigger      String   /// MANUAL | SCHEDULED | WEBHOOK | SYSTEM
-  status       String   @default("RUNNING") /// RUNNING | SUCCESS | PARTIAL | FAILED
-  startedAt    DateTime @default(now())
+  trigger      String /// MANUAL | SCHEDULED | WEBHOOK | SYSTEM
+  status       String    @default("RUNNING") /// RUNNING | SUCCESS | PARTIAL | FAILED
+  startedAt    DateTime  @default(now())
   finishedAt   DateTime?
   durationMs   Int?
-  totalInput   Int      @default(0)
-  totalOutput  Int      @default(0)
+  totalInput   Int       @default(0)
+  totalOutput  Int       @default(0)
   errorMessage String?
   metadata     Json?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   stages CatalogPipelineStage[]
 
@@ -1317,18 +1330,18 @@ model CatalogPipelineRun {
 }
 
 model CatalogPipelineStage {
-  id              String   @id @default(cuid())
-  pipelineRunId   String
-  stage           String   /// PROVIDER_SYNC | CONFIGURATION | CATALOG_HEALTH | CHEAPEST_SELECTION | READY_FOR_PUBLISH | PUBLISH | MARKETPLACE | ORDERABLE
-  status          String   @default("RUNNING") /// RUNNING | SUCCESS | PARTIAL | FAILED
-  total           Int      @default(0)
-  passed          Int      @default(0)
-  failed          Int      @default(0)
-  skipped         Int      @default(0)
-  durationMs      Int      @default(0)
-  reasonCounts    Json?
-  metadata        Json?
-  createdAt       DateTime @default(now())
+  id            String   @id @default(cuid())
+  pipelineRunId String
+  stage         String /// PROVIDER_SYNC | CONFIGURATION | CATALOG_HEALTH | CHEAPEST_SELECTION | READY_FOR_PUBLISH | PUBLISH | MARKETPLACE | ORDERABLE
+  status        String   @default("RUNNING") /// RUNNING | SUCCESS | PARTIAL | FAILED
+  total         Int      @default(0)
+  passed        Int      @default(0)
+  failed        Int      @default(0)
+  skipped       Int      @default(0)
+  durationMs    Int      @default(0)
+  reasonCounts  Json?
+  metadata      Json?
+  createdAt     DateTime @default(now())
 
   pipelineRun CatalogPipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
 
@@ -1338,19 +1351,19 @@ model CatalogPipelineStage {
 }
 
 model CatalogEvent {
-  id             String   @id @default(cuid())
-  eventType      String   /// PACKAGE_CREATED | PACKAGE_UPDATED | ...
-  status         String   @default("PENDING") /// PENDING | PROCESSING | COMPLETED | FAILED
-  providerId     String?
-  providerCode   String?
-  packageId      String?
-  comparableKey  String?
-  payload        Json
-  attempts       Int      @default(0)
-  lastError      String?
-  createdAt      DateTime @default(now())
-  startedAt      DateTime?
-  completedAt    DateTime?
+  id            String    @id @default(cuid())
+  eventType     String /// PACKAGE_CREATED | PACKAGE_UPDATED | ...
+  status        String    @default("PENDING") /// PENDING | PROCESSING | COMPLETED | FAILED
+  providerId    String?
+  providerCode  String?
+  packageId     String?
+  comparableKey String?
+  payload       Json
+  attempts      Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  startedAt     DateTime?
+  completedAt   DateTime?
 
   @@index([status])
   @@index([comparableKey])
@@ -1369,3 +1382,1069 @@ model CatalogDeadLetter {
   @@map("catalog_dead_letters")
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — ENUMS
+// ══════════════════════════════════════════════════════════════════════
+
+enum PV2TemplateStatus {
+  DRAFT
+  ACTIVE
+  DEPRECATED
+  ARCHIVED
+}
+
+enum PV2TemplateProtocol {
+  REST
+  SOAP
+  GRAPHQL
+  CUSTOM
+}
+
+enum PV2AuthStrategy {
+  NONE
+  API_KEY
+  BEARER_TOKEN
+  STATIC_TOKEN
+  BASIC
+  OAUTH1
+  OAUTH2
+  HMAC
+  SOAP_WS_SECURITY
+  CUSTOM
+}
+
+enum PV2HttpMethod {
+  GET
+  POST
+  PUT
+  PATCH
+  DELETE
+  HEAD
+  OPTIONS
+}
+
+enum PV2ContentType {
+  APPLICATION_JSON
+  APPLICATION_XML
+  APPLICATION_FORM_URLENCODED
+  TEXT_PLAIN
+  TEXT_XML
+  MULTIPART_FORM_DATA
+  OCTET_STREAM
+}
+
+enum PV2ParamSourceType {
+  STATIC
+  CREDENTIAL
+  INPUT
+  CONTEXT
+  PREVIOUS_STEP
+  ENVIRONMENT
+  COMPUTED
+}
+
+enum PV2FieldDataType {
+  STRING
+  INTEGER
+  DECIMAL
+  BOOLEAN
+  DATE
+  DATETIME
+  UUID
+  JSON
+  ARRAY
+  OBJECT
+}
+
+enum PV2MappingFailureBehavior {
+  FAIL
+  WARN
+  SKIP
+  USE_DEFAULT
+}
+
+enum PV2MappingAssociation {
+  REQUEST
+  RESPONSE
+  WEBHOOK
+  ERROR
+  PAGINATION
+}
+
+enum PV2TransformationType {
+  TRIM
+  LOWERCASE
+  UPPERCASE
+  NUMBER
+  BOOLEAN
+  DATE_FORMAT
+  ENUM_MAP
+  UNIT_CONVERSION
+  CURRENCY_CONVERSION
+  CONCAT
+  SPLIT
+  PREFIX
+  SUFFIX
+  REGEX_REPLACE
+  JSON_PARSE
+  JSON_STRINGIFY
+  CUSTOM
+}
+
+enum PV2ErrorCategory {
+  AUTHENTICATION_ERROR
+  VALIDATION_ERROR
+  NOT_FOUND
+  RATE_LIMITED
+  INSUFFICIENT_BALANCE
+  DUPLICATE_REQUEST
+  TEMPORARY_FAILURE
+  PROVIDER_UNAVAILABLE
+  TIMEOUT
+  CONFLICT
+  UNKNOWN
+}
+
+enum PV2ErrorSeverity {
+  ERROR
+  WARNING
+  INFO
+}
+
+enum PV2BackoffStrategy {
+  FIXED
+  LINEAR
+  EXPONENTIAL
+}
+
+enum PV2CacheScope {
+  GLOBAL
+  PROVIDER
+  BUSINESS
+  CUSTOMER
+  REQUEST
+}
+
+enum PV2PaginationStrategy {
+  NONE
+  PAGE_NUMBER
+  OFFSET_LIMIT
+  CURSOR
+  NEXT_URL
+  LINK_HEADER
+  CUSTOM
+}
+
+enum PV2WebhookSignatureStrategy {
+  NONE
+  HMAC_SHA256
+  HMAC_SHA512
+  RSA
+  SIMPLE
+}
+
+enum PV2NormalizedWebhookEvent {
+  SUBSCRIPTION_STATUS_CHANGED
+  SUBSCRIPTION_ACTIVATED
+  ESIM_STATUS_CHANGED
+  ORDER_STATUS_CHANGED
+  USAGE_UPDATED
+  THRESHOLD_REACHED
+  BALANCE_UPDATED
+  PLAN_CHANGED
+  PORTABILITY_STATUS_CHANGED
+  CUSTOM
+}
+
+enum PV2SyncType {
+  CATALOG
+  PRICING
+  INVENTORY
+  STATUS
+  USAGE
+  BALANCE
+}
+
+enum PV2SyncConflictStrategy {
+  PROVIDER_WINS
+  LOCAL_WINS
+  LATEST_WINS
+  MANUAL
+}
+
+enum PV2SyncDeletionStrategy {
+  IGNORE
+  SOFT_DELETE
+  DEACTIVATE
+}
+
+enum PV2PipelineStage {
+  AUTHENTICATE
+  PRE_REQUEST
+  BUILD_REQUEST
+  SIGN_REQUEST
+  EXECUTE
+  VALIDATE_RESPONSE
+  MAP_RESPONSE
+  TRANSFORM
+  NORMALIZE
+  POST_PROCESS
+  EMIT_EVENTS
+}
+
+enum PV2PipelineFailureBehavior {
+  FAIL
+  SKIP
+  ABORT
+}
+
+enum PV2EventType {
+  PROVIDER_REQUEST_STARTED
+  PROVIDER_REQUEST_SUCCEEDED
+  PROVIDER_REQUEST_FAILED
+  PROVIDER_HEALTH_CHANGED
+  SYNC_STARTED
+  SYNC_COMPLETED
+  SYNC_FAILED
+  PRODUCT_CREATED
+  PRODUCT_UPDATED
+  PRODUCT_DEACTIVATED
+  ESIM_ALLOCATED
+  SUBSCRIPTION_CHANGED
+  USAGE_UPDATED
+  BALANCE_UPDATED
+  WEBHOOK_RECEIVED
+}
+
+enum PV2EventStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+enum PV2ValidationSeverity {
+  ERROR
+  WARNING
+  INFO
+}
+
+enum PV2ValidationPhase {
+  DRAFT
+  PUBLISH
+  INSTALL
+  UPGRADE
+  RUNTIME
+}
+
+enum PV2RequestBodyMode {
+  NONE
+  JSON
+  FORM_DATA
+  RAW
+  STREAM
+}
+
+enum PV2ResponseBodyMode {
+  JSON
+  XML
+  STREAM
+  TEXT
+}
+
+enum PV2FeaturePackStatus {
+  ACTIVE
+  DEPRECATED
+  ARCHIVED
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — CORE MODELS
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2Operation {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  category    String?
+  isSystem    Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  endpointBindings PV2TemplateEndpoint[]
+  featurePackOps   PV2FeaturePackOperation[]
+  syncConfigs      PV2TemplateSyncConfig[]
+  healthChecks     PV2TemplateHealthCheck[]
+  validationRules  PV2TemplateValidationRule[]
+
+  @@index([category])
+  @@index([isActive])
+  @@map("pv2_operations")
+}
+
+model PV2FeaturePack {
+  id          String               @id @default(cuid())
+  code        String               @unique
+  name        String
+  description String?
+  version     Int                  @default(1)
+  isActive    Boolean              @default(true)
+  status      PV2FeaturePackStatus @default(ACTIVE)
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  operations        PV2FeaturePackOperation[]
+  templateBindings  PV2TemplateFeaturePack[]
+  providerOverrides PV2ProviderFeaturePackOverride[]
+
+  @@map("pv2_feature_packs")
+}
+
+model PV2FeaturePackOperation {
+  id            String   @id @default(cuid())
+  featurePackId String
+  operationId   String
+  isRequired    Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  featurePack PV2FeaturePack @relation(fields: [featurePackId], references: [id], onDelete: Cascade)
+  operation   PV2Operation   @relation(fields: [operationId], references: [id], onDelete: Cascade)
+
+  @@unique([featurePackId, operationId])
+  @@map("pv2_feature_pack_operations")
+}
+
+model PV2Template {
+  id                      String              @id @default(cuid())
+  code                    String
+  displayName             String
+  description             String?
+  providerFamily          String
+  providerCategory        String?
+  semanticVersion         String
+  schemaVersion           Int                 @default(1)
+  status                  PV2TemplateStatus   @default(DRAFT)
+  isActive                Boolean             @default(true)
+  isSystemTemplate        Boolean             @default(false)
+  minimumFrameworkVersion String?
+  parentTemplateId        String?
+  parentTemplateVersion   String?
+  upgradeMetadata         Json?
+  protocolType            PV2TemplateProtocol @default(REST)
+  baseUrl                 String?
+  baseUrlDev              String?
+  baseUrlStaging          String?
+  changelog               String?
+  createdBy               String?
+  publishedAt             DateTime?
+  deprecatedAt            DateTime?
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+
+  versions            PV2TemplateVersion[]
+  featurePackBindings PV2TemplateFeaturePack[]
+  authConfig          PV2TemplateAuthConfig?
+  endpoints           PV2TemplateEndpoint[]
+  fieldMappings       PV2TemplateFieldMapping[]
+  transformations     PV2TemplateTransformation[]
+  errorMappings       PV2TemplateErrorMapping[]
+  webhookConfigs      PV2TemplateWebhookConfig[]
+  syncConfigs         PV2TemplateSyncConfig[]
+  pipelineConfigs     PV2TemplatePipelineConfig[]
+  validationRules     PV2TemplateValidationRule[]
+  providers           Provider[]
+  healthChecks        PV2TemplateHealthCheck[]
+  retryPolicies       PV2TemplateRetryPolicy[]
+  rateLimitPolicy     PV2TemplateRateLimitPolicy?
+  cachePolicies       PV2TemplateCachePolicy[]
+
+  @@unique([code, semanticVersion])
+  @@index([code])
+  @@index([providerFamily])
+  @@index([status])
+  @@index([isActive])
+  @@map("pv2_templates")
+}
+
+model PV2TemplateVersion {
+  id              String            @id @default(cuid())
+  templateId      String
+  version         Int
+  semanticVersion String
+  status          PV2TemplateStatus @default(DRAFT)
+  changelog       String?
+  schemaVersion   Int               @default(1)
+  isActive        Boolean           @default(true)
+  isPublished     Boolean           @default(false)
+  publishedAt     DateTime?
+  deprecatedAt    DateTime?
+  publishedBy     String?
+  metadata        Json?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  template        PV2Template                 @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  providers       Provider[]
+  endpoints       PV2TemplateEndpoint[]
+  fieldMappings   PV2TemplateFieldMapping[]
+  transformations PV2TemplateTransformation[]
+  errorMappings   PV2TemplateErrorMapping[]
+  webhookConfigs  PV2TemplateWebhookConfig[]
+  syncConfigs     PV2TemplateSyncConfig[]
+  pipelineConfigs PV2TemplatePipelineConfig[]
+  validationRules PV2TemplateValidationRule[]
+  healthChecks    PV2TemplateHealthCheck[]
+
+  @@unique([templateId, version])
+  @@unique([templateId, semanticVersion])
+  @@index([templateId])
+  @@index([status])
+  @@map("pv2_template_versions")
+}
+
+model PV2TemplateFeaturePack {
+  id            String   @id @default(cuid())
+  templateId    String
+  featurePackId String
+  isEnabled     Boolean  @default(true)
+  config        Json?
+  createdAt     DateTime @default(now())
+
+  template    PV2Template    @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  featurePack PV2FeaturePack @relation(fields: [featurePackId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, featurePackId])
+  @@map("pv2_template_feature_packs")
+}
+
+model PV2ProviderFeaturePackOverride {
+  id             String   @id @default(cuid())
+  providerId     String
+  featurePackId  String
+  isEnabled      Boolean  @default(true)
+  overrideConfig Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  provider    Provider       @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  featurePack PV2FeaturePack @relation(fields: [featurePackId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, featurePackId])
+  @@map("pv2_provider_feature_pack_overrides")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — AUTHENTICATION CONFIGURATION
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplateAuthConfig {
+  id                String          @id @default(cuid())
+  templateId        String          @unique
+  strategy          PV2AuthStrategy @default(NONE)
+  customStrategyKey String?
+  authEndpoint      String?
+  authMethod        String          @default("POST")
+  contentType       PV2ContentType  @default(APPLICATION_JSON)
+  headerName        String?
+  queryParamName    String?
+  bodyFieldName     String?
+  tokenPrefix       String?
+  tokenPath         String?
+  tokenExpiryPath   String?
+  refreshTokenPath  String?
+  secretFields      Json?
+  optionalFields    Json?
+  credentialDefs    Json?
+  validationRules   Json?
+  refreshConfig     Json?
+  metadata          Json?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  template PV2Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  requestMappings  PV2TemplateAuthRequestMapping[]
+  responseMappings PV2TemplateAuthResponseMapping[]
+
+  @@map("pv2_template_auth_configs")
+}
+
+model PV2TemplateAuthRequestMapping {
+  id              String             @id @default(cuid())
+  authConfigId    String
+  sourcePath      String
+  destinationPath String
+  sourceType      PV2ParamSourceType @default(INPUT)
+  dataType        PV2FieldDataType   @default(STRING)
+  isRequired      Boolean            @default(false)
+  isSecret        Boolean            @default(false)
+  defaultValue    String?
+  transformId     String?
+  validationId    String?
+  order           Int                @default(0)
+  createdAt       DateTime           @default(now())
+
+  authConfig PV2TemplateAuthConfig @relation(fields: [authConfigId], references: [id], onDelete: Cascade)
+
+  @@index([authConfigId])
+  @@map("pv2_template_auth_request_mappings")
+}
+
+model PV2TemplateAuthResponseMapping {
+  id              String           @id @default(cuid())
+  authConfigId    String
+  sourcePath      String
+  destinationPath String
+  dataType        PV2FieldDataType @default(STRING)
+  isRequired      Boolean          @default(false)
+  defaultValue    String?
+  transformId     String?
+  order           Int              @default(0)
+  createdAt       DateTime         @default(now())
+
+  authConfig PV2TemplateAuthConfig @relation(fields: [authConfigId], references: [id], onDelete: Cascade)
+
+  @@index([authConfigId])
+  @@map("pv2_template_auth_response_mappings")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — ENDPOINT DEFINITIONS
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplateEndpoint {
+  id                 String                @id @default(cuid())
+  templateId         String?
+  templateVersionId  String?
+  operationId        String
+  endpointKey        String
+  displayName        String?
+  httpMethod         PV2HttpMethod         @default(GET)
+  relativePath       String
+  absoluteUrl        String?
+  protocolType       PV2TemplateProtocol   @default(REST)
+  contentType        PV2ContentType        @default(APPLICATION_JSON)
+  timeoutMs          Int                   @default(30000)
+  authRequired       Boolean               @default(true)
+  paginationStrategy PV2PaginationStrategy @default(NONE)
+  idempotencyKey     String?
+  idempotencyHeader  String?
+  requestBodyMode    PV2RequestBodyMode    @default(JSON)
+  responseBodyMode   PV2ResponseBodyMode   @default(JSON)
+  isActive           Boolean               @default(true)
+  isPrimary          Boolean               @default(true)
+  executionOrder     Int                   @default(0)
+  cachePolicyId      String?
+  retryPolicyId      String?
+  healthRelevant     Boolean               @default(false)
+  description        String?
+  metadata           Json?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  template        PV2Template?            @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateVersion PV2TemplateVersion?     @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+  operation       PV2Operation            @relation(fields: [operationId], references: [id], onDelete: Cascade)
+  cachePolicy     PV2TemplateCachePolicy? @relation(fields: [cachePolicyId], references: [id], onDelete: SetNull)
+  retryPolicy     PV2TemplateRetryPolicy? @relation(fields: [retryPolicyId], references: [id], onDelete: SetNull)
+
+  headers          PV2TemplateEndpointHeader[]
+  queryParams      PV2TemplateEndpointQueryParam[]
+  pathParams       PV2TemplateEndpointPathParam[]
+  bodyParams       PV2TemplateEndpointBodyParam[]
+  fieldMappings    PV2TemplateFieldMapping[]
+  paginationConfig PV2TemplatePaginationConfig?
+
+  @@unique([templateId, endpointKey])
+  @@unique([templateVersionId, endpointKey])
+  @@index([templateId])
+  @@index([templateVersionId])
+  @@index([operationId])
+  @@index([isActive])
+  @@map("pv2_template_endpoints")
+}
+
+model PV2TemplateEndpointHeader {
+  id           String             @id @default(cuid())
+  endpointId   String
+  name         String
+  value        String?
+  sourceType   PV2ParamSourceType @default(STATIC)
+  sourcePath   String?
+  isRequired   Boolean            @default(false)
+  isSecret     Boolean            @default(false)
+  dataType     PV2FieldDataType   @default(STRING)
+  defaultValue String?
+  transformId  String?
+  validationId String?
+  condition    String?
+  order        Int                @default(0)
+  createdAt    DateTime           @default(now())
+
+  endpoint PV2TemplateEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([endpointId])
+  @@map("pv2_template_endpoint_headers")
+}
+
+model PV2TemplateEndpointQueryParam {
+  id           String             @id @default(cuid())
+  endpointId   String
+  name         String
+  value        String?
+  sourceType   PV2ParamSourceType @default(STATIC)
+  sourcePath   String?
+  isRequired   Boolean            @default(false)
+  dataType     PV2FieldDataType   @default(STRING)
+  defaultValue String?
+  transformId  String?
+  validationId String?
+  condition    String?
+  order        Int                @default(0)
+  createdAt    DateTime           @default(now())
+
+  endpoint PV2TemplateEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([endpointId])
+  @@map("pv2_template_endpoint_query_params")
+}
+
+model PV2TemplateEndpointPathParam {
+  id           String             @id @default(cuid())
+  endpointId   String
+  name         String
+  value        String?
+  sourceType   PV2ParamSourceType @default(INPUT)
+  sourcePath   String?
+  dataType     PV2FieldDataType   @default(STRING)
+  transformId  String?
+  validationId String?
+  createdAt    DateTime           @default(now())
+
+  endpoint PV2TemplateEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([endpointId])
+  @@map("pv2_template_endpoint_path_params")
+}
+
+model PV2TemplateEndpointBodyParam {
+  id              String             @id @default(cuid())
+  endpointId      String
+  name            String
+  value           String?
+  sourceType      PV2ParamSourceType @default(INPUT)
+  sourcePath      String?
+  destinationPath String?
+  isRequired      Boolean            @default(false)
+  isSecret        Boolean            @default(false)
+  dataType        PV2FieldDataType   @default(STRING)
+  defaultValue    String?
+  transformId     String?
+  validationId    String?
+  condition       String?
+  order           Int                @default(0)
+  createdAt       DateTime           @default(now())
+
+  endpoint PV2TemplateEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([endpointId])
+  @@map("pv2_template_endpoint_body_params")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — STRONGLY TYPED FIELD MAPPINGS
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplateFieldMapping {
+  id                  String                    @id @default(cuid())
+  templateId          String?
+  templateVersionId   String?
+  endpointId          String?
+  association         PV2MappingAssociation     @default(REQUEST)
+  operationCode       String?
+  sourcePath          String
+  destinationPath     String
+  dataType            PV2FieldDataType          @default(STRING)
+  isNullable          Boolean                   @default(true)
+  isRequired          Boolean                   @default(false)
+  defaultValue        String?
+  transformId         String?
+  validationId        String?
+  arrayMapping        Json?
+  nestedObjectMapping Json?
+  enumMapping         Json?
+  fallbackPaths       Json?
+  omissionRule        String?
+  failureBehavior     PV2MappingFailureBehavior @default(FAIL)
+  order               Int                       @default(0)
+  isActive            Boolean                   @default(true)
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+
+  template        PV2Template?         @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateVersion PV2TemplateVersion?  @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+  endpoint        PV2TemplateEndpoint? @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@index([templateVersionId])
+  @@index([endpointId])
+  @@index([association])
+  @@index([operationCode])
+  @@map("pv2_template_field_mappings")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — TRANSFORMATION DEFINITIONS
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplateTransformation {
+  id                String                @id @default(cuid())
+  templateId        String?
+  templateVersionId String?
+  code              String
+  type              PV2TransformationType @default(TRIM)
+  config            Json?
+  inputType         PV2FieldDataType      @default(STRING)
+  outputType        PV2FieldDataType      @default(STRING)
+  isGlobal          Boolean               @default(false)
+  executionOrder    Int                   @default(0)
+  description       String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  template        PV2Template?        @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateVersion PV2TemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, code])
+  @@index([templateId])
+  @@index([templateVersionId])
+  @@index([type])
+  @@index([isGlobal])
+  @@map("pv2_template_transformations")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — ERROR MAPPINGS
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplateErrorMapping {
+  id                   String           @id @default(cuid())
+  templateId           String?
+  templateVersionId    String?
+  httpStatus           Int?
+  providerErrorCode    String?
+  providerMessage      String?
+  providerMessageRegex String?
+  jsonPath             String?
+  operationCode        String?
+  endpointKey          String?
+  normalizedCode       PV2ErrorCategory @default(UNKNOWN)
+  normalizedMessage    String?
+  internalErrorCode    String?
+  severity             PV2ErrorSeverity @default(ERROR)
+  retryable            Boolean          @default(false)
+  userSafeMessage      String?
+  loggingLevel         String           @default("ERROR")
+  isActive             Boolean          @default(true)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  template        PV2Template?        @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateVersion PV2TemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@index([templateVersionId])
+  @@index([httpStatus])
+  @@index([providerErrorCode])
+  @@index([normalizedCode])
+  @@index([operationCode])
+  @@map("pv2_template_error_mappings")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — RETRY, RATE LIMIT & CACHE POLICIES
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplateRetryPolicy {
+  id                  String             @id @default(cuid())
+  templateId          String
+  code                String
+  name                String?
+  maxAttempts         Int                @default(3)
+  initialDelayMs      Int                @default(1000)
+  maxDelayMs          Int                @default(30000)
+  backoffStrategy     PV2BackoffStrategy @default(EXPONENTIAL)
+  multiplier          Float              @default(2.0)
+  jitter              Boolean            @default(true)
+  retryableStatuses   Json?
+  retryableErrorTypes Json?
+  idempotentOnly      Boolean            @default(false)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  template  PV2Template           @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  endpoints PV2TemplateEndpoint[]
+
+  @@unique([templateId, code])
+  @@index([templateId])
+  @@map("pv2_template_retry_policies")
+}
+
+model PV2TemplateRateLimitPolicy {
+  id                     String   @id @default(cuid())
+  templateId             String   @unique
+  requestsPerSecond      Int      @default(10)
+  requestsPerMinute      Int      @default(600)
+  requestsPerHour        Int      @default(36000)
+  concurrentLimit        Int      @default(10)
+  burstLimit             Int      @default(20)
+  providerHeaderMappings Json?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  template PV2Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@map("pv2_template_rate_limit_policies")
+}
+
+model PV2TemplateCachePolicy {
+  id                     String        @id @default(cuid())
+  templateId             String
+  code                   String
+  name                   String?
+  enabled                Boolean       @default(false)
+  ttlMs                  Int           @default(300000)
+  staleWhileRevalidate   Boolean       @default(false)
+  staleTtlMs             Int?
+  cacheKeyFields         Json?
+  invalidateOnOps        Json?
+  scope                  PV2CacheScope @default(REQUEST)
+  sensitiveDataExclusion Json?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  template  PV2Template           @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  endpoints PV2TemplateEndpoint[]
+
+  @@unique([templateId, code])
+  @@index([templateId])
+  @@map("pv2_template_cache_policies")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — PAGINATION CONFIGURATION
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplatePaginationConfig {
+  id              String                @id @default(cuid())
+  endpointId      String                @unique
+  strategy        PV2PaginationStrategy @default(NONE)
+  pageParam       String?
+  pageSizeParam   String?
+  offsetParam     String?
+  limitParam      String?
+  cursorParam     String?
+  nextCursorPath  String?
+  nextUrlPath     String?
+  resultsPath     String?
+  totalCountPath  String?
+  maxPages        Int                   @default(100)
+  defaultPageSize Int                   @default(50)
+  stopConditions  Json?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  endpoint PV2TemplateEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@map("pv2_template_pagination_configs")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — WEBHOOK DEFINITIONS
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplateWebhookConfig {
+  id                    String                      @id @default(cuid())
+  templateId            String?
+  templateVersionId     String?
+  eventCode             String
+  normalizedEvent       PV2NormalizedWebhookEvent   @default(CUSTOM)
+  httpMethod            String                      @default("POST")
+  signatureStrategy     PV2WebhookSignatureStrategy @default(NONE)
+  signatureHeader       String?
+  secretCredentialKey   String?
+  payloadMappings       Json?
+  acknowledgementCode   Int                         @default(200)
+  acknowledgementBody   Json?
+  replayProtection      Boolean                     @default(false)
+  timestampPath         String?
+  eventIdPath           String?
+  deduplicationStrategy String?
+  isActive              Boolean                     @default(true)
+  description           String?
+  createdAt             DateTime                    @default(now())
+  updatedAt             DateTime                    @updatedAt
+
+  template        PV2Template?        @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateVersion PV2TemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, eventCode])
+  @@index([templateId])
+  @@index([templateVersionId])
+  @@index([normalizedEvent])
+  @@map("pv2_template_webhook_configs")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — HEALTH CHECK & SYNC CONFIGURATION
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplateHealthCheck {
+  id                      String   @id @default(cuid())
+  templateId              String?
+  templateVersionId       String?
+  operationId             String
+  endpointKey             String
+  expectedStatuses        Json?
+  expectedResponseMapping Json?
+  intervalMs              Int      @default(60000)
+  timeoutMs               Int      @default(5000)
+  failureThreshold        Int      @default(3)
+  recoveryThreshold       Int      @default(2)
+  isActive                Boolean  @default(true)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  template        PV2Template?        @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateVersion PV2TemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+  operation       PV2Operation        @relation(fields: [operationId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@index([templateVersionId])
+  @@index([operationId])
+  @@map("pv2_template_health_checks")
+}
+
+model PV2TemplateSyncConfig {
+  id                 String                  @id @default(cuid())
+  templateId         String?
+  templateVersionId  String?
+  syncType           PV2SyncType
+  operationId        String
+  scheduleCron       String?
+  scheduleIntervalMs Int?
+  paginationConfig   Json?
+  incrementalCursor  String?
+  cursorStorageKey   String?
+  batchSize          Int                     @default(50)
+  conflictStrategy   PV2SyncConflictStrategy @default(PROVIDER_WINS)
+  deletionStrategy   PV2SyncDeletionStrategy @default(IGNORE)
+  emitEvents         Boolean                 @default(false)
+  eventTypes         Json?
+  isActive           Boolean                 @default(true)
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  template        PV2Template?        @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateVersion PV2TemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+  operation       PV2Operation        @relation(fields: [operationId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, syncType])
+  @@index([templateId])
+  @@index([templateVersionId])
+  @@index([syncType])
+  @@index([isActive])
+  @@map("pv2_template_sync_configs")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — PIPELINE CONFIGURATION
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplatePipelineConfig {
+  id                String                     @id @default(cuid())
+  templateId        String?
+  templateVersionId String?
+  stage             PV2PipelineStage
+  isEnabled         Boolean                    @default(true)
+  executionOrder    Int                        @default(0)
+  adapterKey        String?
+  stageConfig       Json?
+  failureBehavior   PV2PipelineFailureBehavior @default(FAIL)
+  condition         String?
+  description       String?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+
+  template        PV2Template?        @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateVersion PV2TemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, stage])
+  @@unique([templateVersionId, stage])
+  @@index([templateId])
+  @@index([templateVersionId])
+  @@index([stage])
+  @@map("pv2_template_pipeline_configs")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — EVENT BUS (OUTBOX PATTERN)
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2Event {
+  id            String         @id @default(cuid())
+  eventType     PV2EventType
+  aggregateType String
+  aggregateId   String
+  providerId    String?
+  businessId    String?
+  payload       Json
+  status        PV2EventStatus @default(PENDING)
+  retryCount    Int            @default(0)
+  maxRetries    Int            @default(5)
+  lastError     String?
+  availableAt   DateTime       @default(now())
+  processedAt   DateTime?
+  createdAt     DateTime       @default(now())
+
+  @@index([status, availableAt])
+  @@index([eventType])
+  @@index([aggregateType, aggregateId])
+  @@index([providerId])
+  @@index([businessId])
+  @@index([createdAt])
+  @@map("pv2_events")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER FRAMEWORK V2 — TEMPLATE VALIDATION RULES
+// ══════════════════════════════════════════════════════════════════════
+
+model PV2TemplateValidationRule {
+  id                String                @id @default(cuid())
+  templateId        String?
+  templateVersionId String?
+  operationId       String?
+  ruleCode          String
+  description       String?
+  severity          PV2ValidationSeverity @default(ERROR)
+  phase             PV2ValidationPhase    @default(DRAFT)
+  category          String
+  ruleConfig        Json?
+  isActive          Boolean               @default(true)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  template        PV2Template?        @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateVersion PV2TemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+  operation       PV2Operation?       @relation(fields: [operationId], references: [id], onDelete: SetNull)
+
+  @@unique([templateId, ruleCode])
+  @@index([templateId])
+  @@index([templateVersionId])
+  @@index([severity])
+  @@index([phase])
+  @@index([category])
+  @@map("pv2_template_validation_rules")
+}

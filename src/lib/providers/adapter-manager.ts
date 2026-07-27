@@ -49,6 +49,9 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
       if (!r.success) return { success: false, error: r.error }
       return { success: true, data: r.data }
     },
+    validatePurchase: connector.validatePurchase
+      ? async (params) => await connector.validatePurchase!(params)
+      : undefined,
     getActivationStatus: async (id) => {
       const r = await connector.getStatus(id)
       if (!r.success) return { success: false, error: r.error }
@@ -144,6 +147,7 @@ export function isTemplateDrivenProvider(provider: {
   // adapterStrategy is the primary signal — explicit non-template strategies must be respected
   if (provider.adapterStrategy === 'AIRHUB') return false // AirHub uses dedicated connector
   if (provider.adapterStrategy === 'TELNA') return false // Telna uses dedicated connector
+  if (provider.adapterStrategy === 'TELNA_SEAMLESS') return false // Telna SeamlessOS uses dedicated connector
   if (provider.adapterStrategy === 'TEMPLATE') return true
   if (provider.adapterStrategy && !['TEMPLATE', 'MOCK'].includes(provider.adapterStrategy)) return false
   if (provider.providerTemplateId) return true
