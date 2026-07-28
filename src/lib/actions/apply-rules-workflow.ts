@@ -5,6 +5,12 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
+import { markSellingPriceByPercent } from '@/lib/pricing/pricing-engine'
+import { doesRuleMatchPackage, inferPricingStrategy, extractPricingValue } from '@/lib/pricing/pricing-rule-evaluator'
+import { buildUpdateRequest } from '@/lib/pricing/pricing-update-service'
+import { simulateRulePricing } from '@/lib/pricing/pricing-simulation-service'
+import type { SimulationResult } from '@/lib/pricing/pricing-simulation-service'
+import type { PricingRuleSummary } from '@/lib/pricing/types'
 
 export interface ApplyRuleFilters {
   providerId?: string
@@ -99,7 +105,7 @@ export async function getApplyRulePreview(
   }
 
   for (const pkg of packages) {
-    if (!matchesRule(rule, pkg)) {
+    if (!doesRuleMatchPackage(rule as any, pkg)) {
       addSkip('Does not match rule criteria', pkg)
       skipped++
       continue
@@ -197,7 +203,7 @@ export async function executeApplyRule(
     })
 
     for (const pkg of packages) {
-      if (!matchesRule(rule, pkg)) {
+      if (!doesRuleMatchPackage(rule as any, pkg)) {
         skipped++
         skipReasonsMap['Does not match rule criteria'] = (skipReasonsMap['Does not match rule criteria'] || 0) + 1
         skipDetails.push({ id: pkg.id, name: pkg.name, reason: 'Does not match rule criteria' })
@@ -216,12 +222,14 @@ export async function executeApplyRule(
         effectiveCost = parseFloat(rule.costPrice.toString())
       }
 
+      const strategy = inferPricingStrategy(rule as any)
+      const pricingValue = extractPricingValue(rule as any)
+
       let sellingPrice: number | undefined
-      if (rule.fixedPrice && parseFloat(rule.fixedPrice.toString()) > 0) {
-        sellingPrice = parseFloat(rule.fixedPrice.toString())
-      } else if (rule.markupPercent && effectiveCost > 0) {
-        const markup = parseFloat(rule.markupPercent.toString())
-        sellingPrice = parseFloat((effectiveCost * (1 + markup / 100)).toFixed(2))
+      if (strategy === 'FIXED_SELLING_PRICE' && pricingValue != null) {
+        sellingPrice = pricingValue
+      } else if (strategy === 'MARKUP_PERCENT' && pricingValue != null && effectiveCost > 0) {
+        sellingPrice = markSellingPriceByPercent(effectiveCost, pricingValue)
       }
 
       if (!sellingPrice || sellingPrice <= 0) {
@@ -246,23 +254,20 @@ export async function executeApplyRule(
       }
 
       try {
-        const updateData: any = {
-          sellingPrice,
+        const updateData = buildUpdateRequest({
+          packageId: pkg.id,
+          ruleId: rule.id,
+          ruleName: rule.name ?? '',
+          sellingPrice: sellingPrice!,
           sellingCurrency: rule.sellingCurrency,
-          markupPercent: rule.markupPercent,
+          markupPercent: rule.markupPercent ? parseFloat(rule.markupPercent.toString()) : null,
           pricingMode: rule.fixedPrice ? 'FIXED_PRICE' : 'MARKUP_PERCENT',
           publishStatus: rule.publishStatus || 'READY',
-          configurationStatus: 'AUTO_CONFIGURED',
-          autoConfiguredByRuleId: rule.id,
-          lastConfiguredAt: new Date(),
-        }
-
-        if (effectiveCost !== parseFloat(pkg.costPrice.toString())) {
-          updateData.costPrice = effectiveCost
-        }
+          costPrice: effectiveCost !== parseFloat(pkg.costPrice.toString()) ? effectiveCost : undefined,
+        })
 
         matched++
-        matchedUpdates.push({ pkg, updateData })
+        matchedUpdates.push({ pkg, updateData: { ...updateData, lastConfiguredAt: new Date() } })
       } catch {
         failed++
       }
@@ -444,13 +449,81 @@ function buildScopeWhere(scope: string, filters: ApplyRuleFilters, selectedIds?:
   return where
 }
 
-function matchesRule(rule: any, pkg: any): boolean {
-  if (rule.providerId && rule.providerId !== pkg.providerId) return false
-  if (rule.country && rule.country !== pkg.country) return false
-  if (rule.region && rule.region !== pkg.region) return false
-  if (rule.dataMinGB != null && pkg.dataGB < rule.dataMinGB) return false
-  if (rule.dataMaxGB != null && pkg.dataGB > rule.dataMaxGB) return false
-  if (rule.validityMinDays != null && pkg.validityDays < rule.validityMinDays) return false
-  if (rule.validityMaxDays != null && pkg.validityDays > rule.validityMaxDays) return false
-  return true
+/**
+ * Phase 2A — Simulate rule pricing without database writes.
+ *
+ * Fetches the rule + matching packages from the database,
+ * then delegates to the pure simulation service.
+ * Returns a SimulationResult with per-package before/after comparisons,
+ * an aggregated impact summary, and validation warnings.
+ *
+ * ZERO database writes.
+ */
+export async function simulateRuleApplication(
+  ruleId: string,
+  scope: string,
+  filters: ApplyRuleFilters,
+  selectedIds?: string[],
+): Promise<{ success: boolean; data?: SimulationResult; error?: string }> {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+
+  const rule = await prisma.packageConfigurationRule.findUnique({
+    where: { id: ruleId },
+    include: { provider: { select: { name: true } } },
+  })
+  if (!rule) return { success: false, error: 'Rule not found' }
+  if (!rule.isActive) return { success: false, error: 'Rule is inactive — activate it first' }
+
+  const where: any = buildScopeWhere(scope, filters, selectedIds)
+  if (filters.includeArchived) delete where.ARCHIVED
+  if (filters.includeHidden) delete where.HIDDEN
+
+  const providerPackages = await prisma.providerPackage.findMany({
+    where,
+    include: { provider: { select: { name: true } } },
+  })
+
+  const ruleSummary: PricingRuleSummary = {
+    id: rule.id,
+    name: rule.name,
+    providerId: rule.providerId,
+    country: rule.country,
+    region: rule.region,
+    productType: rule.productType,
+    dataMinGB: rule.dataMinGB,
+    dataMaxGB: rule.dataMaxGB,
+    validityMinDays: rule.validityMinDays,
+    validityMaxDays: rule.validityMaxDays,
+    costPrice: rule.costPrice ? parseFloat(rule.costPrice.toString()) : null,
+    markupPercent: rule.markupPercent ? parseFloat(rule.markupPercent.toString()) : null,
+    fixedPrice: rule.fixedPrice ? parseFloat(rule.fixedPrice.toString()) : null,
+    sellingCurrency: rule.sellingCurrency,
+    publishStatus: rule.publishStatus,
+    priority: rule.priority,
+    isActive: rule.isActive,
+  }
+
+  const result = simulateRulePricing({
+    rule: ruleSummary,
+    packages: providerPackages.map(pp => ({
+      id: pp.id,
+      name: pp.name,
+      costPrice: parseFloat(pp.costPrice.toString()),
+      sellingPrice: pp.sellingPrice ? parseFloat(pp.sellingPrice.toString()) : null,
+      markupPercent: pp.markupPercent ? parseFloat(pp.markupPercent.toString()) : null,
+      sellingCurrency: pp.sellingCurrency,
+      providerId: pp.providerId,
+      providerName: (pp as any).provider?.name ?? null,
+      country: pp.country,
+      region: pp.region,
+      dataGB: pp.dataGB,
+      validityDays: pp.validityDays,
+      publishStatus: pp.publishStatus,
+      configurationStatus: pp.configurationStatus,
+      autoConfiguredByRuleId: pp.autoConfiguredByRuleId,
+    })),
+  })
+
+  return { success: true, data: result }
 }

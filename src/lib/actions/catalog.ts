@@ -7,6 +7,7 @@ import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { suggestDisplayName } from '@/lib/packages/package-utils'
+import { computeMarkupFromCostAndSell } from '@/lib/pricing/pricing-engine'
 
 export async function convertToCatalogProduct(packageId: string, formData: FormData) {
   const session = await getServerSession(authOptions)
@@ -31,9 +32,7 @@ export async function convertToCatalogProduct(packageId: string, formData: FormD
     const displayName = pkg.displayName || suggestDisplayName(pkg)
     const newPriceUSD = parseFloat(priceUSD)
     const costPriceUSD = pkg.costPriceUSD ? parseFloat(pkg.costPriceUSD.toString()) : 0
-    const markupPercent = costPriceUSD > 0
-      ? Math.round(((newPriceUSD - costPriceUSD) / costPriceUSD) * 100 * 100) / 100
-      : undefined
+    const markupPercent = computeMarkupFromCostAndSell(costPriceUSD, newPriceUSD)
 
     await prisma.eSIMPackage.update({
       where: { id: packageId },
@@ -93,9 +92,7 @@ export async function saveAndConvertToCatalog(packageId: string, formData: FormD
 
   const newPriceUSD = parseFloat(priceUSD)
   const costPriceUSD = pkg.costPriceUSD ? parseFloat(pkg.costPriceUSD.toString()) : 0
-  const markupPercent = costPriceUSD > 0
-    ? Math.round(((newPriceUSD - costPriceUSD) / costPriceUSD) * 100 * 100) / 100
-    : undefined
+  const markupPercent = computeMarkupFromCostAndSell(costPriceUSD, newPriceUSD)
 
   const updateData: any = {
     source: 'CATALOG_PRODUCT',
@@ -150,9 +147,7 @@ export async function bulkConvertToCatalog(packageIds: string[], formData: FormD
     if (pkg && pkg.source === 'PROVIDER_PLAN') {
       const costPriceUSD = pkg.costPriceUSD ? parseFloat(pkg.costPriceUSD.toString()) : 0
       const newPriceUSD = parseFloat(pkg.priceUSD.toString())
-      const markupPercent = costPriceUSD > 0 && newPriceUSD > 0
-        ? Math.round(((newPriceUSD - costPriceUSD) / costPriceUSD) * 100 * 100) / 100
-        : undefined
+      const markupPercent = computeMarkupFromCostAndSell(costPriceUSD, newPriceUSD)
 
       await prisma.eSIMPackage.update({
         where: { id },

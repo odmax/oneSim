@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { roundPercentage, computeMarginAmount, computeMarginFromCostAndSell } from '@/lib/pricing/pricing-engine'
 
 export type BillingType = 'PURCHASE' | 'TOPUP' | 'REFUND' | 'CREDIT' | 'DEBIT' | 'COST_ADJUSTMENT'
 
@@ -19,8 +20,8 @@ export interface CreateBillingRecordParams {
 export async function createBillingRecord(params: CreateBillingRecordParams): Promise<{ success: boolean; id?: string; error?: string }> {
   try {
     const cost = params.cost ?? undefined
-    const marginAmount = cost != null ? params.amount - cost : undefined
-    const marginPercent = cost != null && params.amount > 0 ? parseFloat(((marginAmount! / params.amount) * 100).toFixed(2)) : undefined
+    const marginAmount = cost != null ? computeMarginAmount(cost, params.amount) : undefined
+    const marginPercent = cost != null ? computeMarginFromCostAndSell(cost, params.amount) : undefined
 
     const record = await prisma.billingRecord.create({
       data: {
@@ -84,7 +85,7 @@ export async function getBillingStats(filters?: {
     netRevenue,
     costs,
     grossProfit,
-    profitMargin: revenue > 0 ? parseFloat(((grossProfit / revenue) * 100).toFixed(2)) : 0,
+    profitMargin: revenue > 0 ? roundPercentage((grossProfit / revenue) * 100) : 0,
     byType,
   }
 }
@@ -115,7 +116,7 @@ export async function getRevenueByProvider(filters?: { startDate?: Date; endDate
   return Object.entries(byProvider).map(([name, data]) => ({
     name,
     ...data,
-    marginPercent: data.revenue > 0 ? parseFloat(((data.profit / data.revenue) * 100).toFixed(2)) : 0,
+    marginPercent: data.revenue > 0 ? roundPercentage((data.profit / data.revenue) * 100) : 0,
   })).sort((a, b) => b.revenue - a.revenue)
 }
 
@@ -149,7 +150,7 @@ export async function getRevenueByBusiness(filters?: { startDate?: Date; endDate
   return Object.entries(byBusiness).map(([name, data]) => ({
     name,
     ...data,
-    marginPercent: data.revenue > 0 ? parseFloat(((data.profit / data.revenue) * 100).toFixed(2)) : 0,
+    marginPercent: data.revenue > 0 ? roundPercentage((data.profit / data.revenue) * 100) : 0,
   })).sort((a, b) => b.revenue - a.revenue)
 }
 
@@ -179,6 +180,6 @@ export async function getRevenueBySalesAgent(filters?: { startDate?: Date; endDa
   return Object.entries(byAgent).map(([name, data]) => ({
     name,
     ...data,
-    marginPercent: data.revenue > 0 ? parseFloat(((data.profit / data.revenue) * 100).toFixed(2)) : 0,
+    marginPercent: data.revenue > 0 ? roundPercentage((data.profit / data.revenue) * 100) : 0,
   })).sort((a, b) => b.revenue - a.revenue)
 }

@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
+import { computeMarkupFromCostAndSell } from '@/lib/pricing/pricing-engine'
 
 export async function togglePackageActivation(packageId: string, formData: FormData) {
   const session = await getServerSession(authOptions)
@@ -139,9 +140,7 @@ export async function updatePackagePrice(packageId: string, formData: FormData) 
   }
 
   const costPriceUSD = pkg.costPriceUSD ? parseFloat(pkg.costPriceUSD.toString()) : 0
-  const markupPercent = costPriceUSD > 0
-    ? Math.round(((newPriceUSD - costPriceUSD) / costPriceUSD) * 100 * 100) / 100
-    : undefined
+  const markupPercent = computeMarkupFromCostAndSell(costPriceUSD, newPriceUSD)
 
   const updateData: any = {
     priceUSD: newPriceUSD,
@@ -209,9 +208,7 @@ export async function savePackage(packageId: string, formData: FormData) {
   }
 
   const costPriceUSD = pkg.costPriceUSD ? parseFloat(pkg.costPriceUSD.toString()) : 0
-  const markupPercent = costPriceUSD > 0
-    ? Math.round(((newPriceUSD - costPriceUSD) / costPriceUSD) * 100 * 100) / 100
-    : undefined
+  const markupPercent = computeMarkupFromCostAndSell(costPriceUSD, newPriceUSD)
 
   let finalIsActive = pkg.isActive
   let auditAction = 'UPDATE'

@@ -1,3 +1,5 @@
+import { derivePricing } from '@/lib/pricing/pricing-engine'
+
 export function calculatePackageProfit(params: {
   sellingPrice: number | null
   effectiveCostPrice: number | null
@@ -12,13 +14,10 @@ export function calculatePackageProfit(params: {
     return { marginAmount: null, marginPercent: null, markupPercent: null }
   }
 
-  const marginAmount = sellingPrice - effectiveCostPrice
-  const marginPercent = sellingPrice > 0 ? (marginAmount / sellingPrice) * 100 : null
-  const markupPercent = effectiveCostPrice > 0 ? (marginAmount / effectiveCostPrice) * 100 : null
-
+  const derived = derivePricing(effectiveCostPrice, sellingPrice)
   return {
-    marginAmount: Math.round(marginAmount * 100) / 100,
-    marginPercent: marginPercent != null ? Math.round(marginPercent * 100) / 100 : null,
-    markupPercent: markupPercent != null ? Math.round(markupPercent * 100) / 100 : null,
+    marginAmount: derived.profit,
+    marginPercent: derived.marginPercent,
+    markupPercent: derived.markupPercent,
   }
 }

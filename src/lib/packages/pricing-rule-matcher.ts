@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { roundMoney, roundPercentage } from '@/lib/pricing/pricing-engine'
 
 export interface PackagePricingContext {
   providerId?: string | null
@@ -128,9 +129,9 @@ export function generatePricingSummary(calculations: PriceCalculation[]): {
   const profitMarginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0
 
   return {
-    totalCost: Math.round(totalCost * 100) / 100,
-    totalRevenue: Math.round(totalRevenue * 100) / 100,
-    grossProfit: Math.round(grossProfit * 100) / 100,
-    profitMarginPercent: Math.round(profitMarginPercent * 100) / 100,
+    totalCost: roundMoney(totalCost),
+    totalRevenue: roundMoney(totalRevenue),
+    grossProfit: roundMoney(grossProfit),
+    profitMarginPercent: roundPercentage(profitMarginPercent),
   }
 }

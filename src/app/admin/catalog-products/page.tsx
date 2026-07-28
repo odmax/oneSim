@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { togglePackageActivation } from '@/lib/actions/markup'
+import { computeMarkupFromCostAndSell } from '@/lib/pricing/pricing-engine'
 
 export default async function CatalogProductsPage({
   searchParams,
@@ -93,7 +94,7 @@ export default async function CatalogProductsPage({
             {products.map((pkg) => {
               const costPrice = pkg.costPriceUSD ? parseFloat(pkg.costPriceUSD.toString()) : 0
               const sellingPrice = parseFloat(pkg.priceUSD.toString())
-              const profitMargin = costPrice > 0 ? ((sellingPrice - costPrice) / costPrice * 100).toFixed(1) : null
+              const markupPercent = computeMarkupFromCostAndSell(costPrice, sellingPrice)
 
               return (
                 <tr key={pkg.id} className="hover:bg-gray-50">
@@ -116,8 +117,8 @@ export default async function CatalogProductsPage({
                     {costPrice > 0 ? `$${costPrice.toFixed(2)}` : '—'}
                   </td>
                   <td className="px-4 py-3">
-                    {profitMargin ? (
-                      <span className="font-medium text-green-600">{profitMargin}%</span>
+                    {markupPercent != null ? (
+                      <span className="font-medium text-green-600">{markupPercent.toFixed(1)}%</span>
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}

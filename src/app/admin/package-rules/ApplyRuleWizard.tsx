@@ -2,8 +2,10 @@
 
 import { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { getApplyRulePreview, executeApplyRule, getRuleExecutionDetail } from '@/lib/actions/apply-rules-workflow'
+import { getApplyRulePreview, executeApplyRule, getRuleExecutionDetail, simulateRuleApplication } from '@/lib/actions/apply-rules-workflow'
 import type { ApplyRulePreview, ApplyRuleFilters } from '@/lib/actions/apply-rules-workflow'
+import SimulationPreview from '@/components/admin/pricing/SimulationPreview'
+import type { SimulationResult } from '@/lib/pricing/pricing-simulation-service'
 
 interface Rule {
   id: string
@@ -65,6 +67,7 @@ export default function ApplyRuleWizard({ rule, onClose, onApplied }: ApplyRuleW
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [filters, setFilters] = useState<ApplyRuleFilters>({ ...defaultFilters })
   const [preview, setPreview] = useState<ApplyRulePreview | null>(null)
+  const [simulation, setSimulation] = useState<SimulationResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [executionResult, setExecutionResult] = useState<any>(null)
@@ -78,6 +81,7 @@ export default function ApplyRuleWizard({ rule, onClose, onApplied }: ApplyRuleW
     setShowAdvanced(false)
     setFilters({ ...defaultFilters })
     setPreview(null)
+    setSimulation(null)
     setLoading(false)
     setError('')
     setExecutionResult(null)
@@ -93,13 +97,25 @@ export default function ApplyRuleWizard({ rule, onClose, onApplied }: ApplyRuleW
     setLoading(true)
     setError('')
     setPreview(null)
-    const res = await getApplyRulePreview(rule.id, scope, filters)
+    setSimulation(null)
+    const res = await simulateRuleApplication(rule.id, scope, filters)
     setLoading(false)
     if (res.success && res.data) {
-      setPreview(res.data)
+      setSimulation(res.data)
+      setPreview({
+        ruleId: rule.id,
+        ruleName: rule.name,
+        scope,
+        filters,
+        matched: res.data.summary.packagesUpdated,
+        skipped: res.data.summary.packagesSkipped,
+        skipReasons: [],
+        totalInScope: res.data.summary.packagesEvaluated,
+        estimatedTimeMs: res.data.durationMs,
+      })
       setStep('preview')
     } else {
-      setError(res.error || 'Failed to generate preview')
+      setError(res.error || 'Failed to generate simulation')
     }
   }
 
@@ -396,18 +412,30 @@ export default function ApplyRuleWizard({ rule, onClose, onApplied }: ApplyRuleW
               {/* STEP 4: Preview */}
               {step === 'preview' && (
                 <div className="space-y-5">
-                  <div>
-                    <h3 className="text-base font-semibold text-gray-900">Before you apply</h3>
-                    <p className="text-sm text-gray-500 mt-1">Here&apos;s what will happen when this rule runs</p>
-                  </div>
-
                   {loading ? (
                     <div className="flex items-center justify-center py-12">
                       <div className="flex items-center gap-3 text-sm text-gray-500">
                         <svg className="animate-spin w-5 h-5 text-cyan-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" /></svg>
-                        Analyzing plans...
+                        Running simulation...
                       </div>
                     </div>
+                  ) : simulation ? (
+                    <>
+                      <SimulationPreview simulation={simulation} />
+
+                      {error && (
+                        <div className="rounded-xl bg-red-50 border border-red-200 p-4 text-sm text-red-700 flex items-center gap-2">
+                          <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
+                          {error}
+                        </div>
+                      )}
+
+                      {simulation.summary.packagesUpdated === 0 && (
+                        <div className="rounded-xl bg-gray-50 border border-gray-200 p-4 text-center">
+                          <p className="text-sm text-gray-500">No plans match the current criteria. Try broadening your filters or selecting a different scope.</p>
+                        </div>
+                      )}
+                    </>
                   ) : preview ? (
                     <>
                       <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
@@ -613,12 +641,16 @@ export default function ApplyRuleWizard({ rule, onClose, onApplied }: ApplyRuleW
                     {loading ? 'Analyzing...' : 'Preview Results'}
                   </button>
                 )}
-                {step === 'preview' && preview && preview.matched > 0 && (
+                {step === 'preview' && ((preview && preview.matched > 0) || (simulation && simulation.summary.packagesUpdated > 0)) && (
                   <button
                     onClick={handleExecute}
-                    className="rounded-lg bg-cyan-600 px-5 py-2 text-sm font-semibold text-white hover:bg-cyan-700 transition-colors shadow-sm"
+                    disabled={!!(simulation && simulation.warnings.some(w => w.type === 'BELOW_COST' || w.type === 'INVALID_PRICING'))}
+                    className="rounded-lg bg-cyan-600 px-5 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                   >
-                    Apply to {preview.matched} Plan{preview.matched !== 1 ? 's' : ''}
+                    {simulation && simulation.warnings.some(w => w.type === 'BELOW_COST' || w.type === 'INVALID_PRICING')
+                      ? 'Fix Warnings Before Applying'
+                      : `Apply to ${simulation?.summary.packagesUpdated ?? preview?.matched ?? 0} Plan${(simulation?.summary.packagesUpdated ?? preview?.matched ?? 0) !== 1 ? 's' : ''}`
+                    }
                   </button>
                 )}
                 {step === 'preview' && preview && preview.matched === 0 && !loading && (

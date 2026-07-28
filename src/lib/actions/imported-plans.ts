@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { revalidatePath } from 'next/cache'
+import { computeMarkupFromCostAndSell, markSellingPriceByPercent } from '@/lib/pricing/pricing-engine'
 
 export type ImportedPlanStatus = 'unconfigured' | 'configured' | 'ready_to_publish' | 'published' | 'archived'
 
@@ -255,8 +256,10 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
     await prisma.eSIMPackage.update({ where: { id: esim.id }, data: updateData })
 
     if (costPriceUSD && costPriceUSD > 0 && sellingPrice && sellingPrice > 0) {
-      const computed = Math.round(((sellingPrice - costPriceUSD) / costPriceUSD) * 100 * 100) / 100
-      await prisma.eSIMPackage.update({ where: { id: esim.id }, data: { markupPercent: computed } })
+      const computed = computeMarkupFromCostAndSell(costPriceUSD, sellingPrice)
+      if (computed != null) {
+        await prisma.eSIMPackage.update({ where: { id: esim.id }, data: { markupPercent: computed } })
+      }
     }
   }
 
@@ -463,7 +466,7 @@ export async function previewPricingRules(formData: FormData): Promise<{
 
     if (!cost || cost <= 0) { skippedMissingCost++; continue }
 
-    const newSell = Math.round(cost * (1 + markupPercent / 100) * 100) / 100
+    const newSell = markSellingPriceByPercent(cost, markupPercent)
     const currentSell = pp.publishedAs?.priceUSD ? Number(pp.publishedAs.priceUSD) : null
 
     if (applyToMissingOnly && currentSell != null && currentSell > 0) {

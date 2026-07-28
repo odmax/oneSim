@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { roundMoney, applyDiscount } from '@/lib/pricing/pricing-engine'
 
 export interface ClientPriceParams {
   packageId?: string
@@ -109,16 +110,15 @@ function applyRule(
   switch (rule.ruleMode) {
     case 'PERCENTAGE': {
       if (val <= 0 || val > 100) return null
-      const discount = basePrice * (val / 100)
-      return { finalPrice: Math.max(0, Math.round((basePrice - discount) * 100) / 100) }
+      return { finalPrice: applyDiscount(basePrice, val) }
     }
     case 'FIXED_AMOUNT': {
       if (val <= 0) return null
-      return { finalPrice: Math.max(0, Math.round((basePrice - val) * 100) / 100) }
+      return { finalPrice: Math.max(0, roundMoney(basePrice - val)) }
     }
     case 'FIXED_PRICE': {
       if (val <= 0) return null
-      return { finalPrice: Math.round(val * 100) / 100 }
+      return { finalPrice: roundMoney(val) }
     }
     default:
       return null

@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import PackageActions from '@/components/admin/packages/PackageActions'
+import { roundMoney, computeMarkupFromCostAndSell, computeMarginAmount } from '@/lib/pricing/pricing-engine'
 
 const TABS = [
   { id: 'catalog', label: 'Catalog Products' },
@@ -149,9 +150,8 @@ export default async function AdminPackagesPage({
           {allPackages.map((pkg) => {
             const costPrice = pkg.costPriceUSD ? parseFloat(pkg.costPriceUSD.toString()) : 0
             const sellingPrice = parseFloat(pkg.priceUSD.toString())
-            const profitMargin = costPrice > 0 ? ((sellingPrice - costPrice) / costPrice * 100).toFixed(1) : null
-            const profitMarginAmount = costPrice > 0 ? (sellingPrice - costPrice).toFixed(2) : null
-            const markupPct = costPrice > 0 ? ((sellingPrice - costPrice) / costPrice * 100).toFixed(1) : null
+            const markupPct = computeMarkupFromCostAndSell(costPrice, sellingPrice)
+            const profitAmount = computeMarginAmount(costPrice, sellingPrice)
 
             return (
               <div key={pkg.id} className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
@@ -200,10 +200,10 @@ export default async function AdminPackagesPage({
                   </div>
                   <div className="flex justify-between col-span-2">
                     <span className="text-gray-500">Margin</span>
-                    {profitMargin ? (
-                      <span className={`font-medium ${parseFloat(profitMargin) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                        ${profitMarginAmount} ({profitMargin}%)
-                        {parseFloat(profitMargin) < 0 && ' ↓'}
+                    {profitAmount != null ? (
+                      <span className={`font-medium ${profitAmount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        ${profitAmount.toFixed(2)} ({markupPct?.toFixed(1)}%)
+                        {profitAmount < 0 && ' ↓'}
                       </span>
                     ) : (
                       <span className="text-gray-400">N/A</span>
@@ -211,8 +211,8 @@ export default async function AdminPackagesPage({
                   </div>
                   <div className="flex justify-between col-span-2">
                     <span className="text-gray-500">Markup</span>
-                    {markupPct ? (
-                      <span className="font-medium text-gray-700">{markupPct}%</span>
+                    {markupPct != null ? (
+                      <span className="font-medium text-gray-700">{markupPct.toFixed(1)}%</span>
                     ) : (
                       <span className="text-gray-400">N/A</span>
                     )}

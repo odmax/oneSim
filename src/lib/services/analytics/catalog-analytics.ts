@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { roundMoney, roundPercentage, computeMarkupFromCostAndSell } from '@/lib/pricing/pricing-engine'
 
 export interface CatalogProductAnalytics {
   productId: string
@@ -59,7 +60,7 @@ export async function getCatalogAnalytics(dateFrom?: Date, dateTo?: Date): Promi
       (sum, pu) => sum + pu.esims.reduce((s, e) => s + e.usageRecords.reduce((u, r) => u + r.dataUsedMB, 0), 0),
       0
     )
-    const profitMargin = totalCost > 0 && totalRevenue > 0 ? ((totalRevenue - totalCost) / totalCost) * 100 : null
+    const profitMargin = computeMarkupFromCostAndSell(totalCost, totalRevenue) ?? null
     const avgRevenuePerActivation = totalActivations > 0 ? totalRevenue / totalActivations : 0
 
     return {
@@ -67,10 +68,10 @@ export async function getCatalogAnalytics(dateFrom?: Date, dateTo?: Date): Promi
       productName: p.name,
       totalRevenue,
       totalCost,
-      profitMargin: profitMargin !== null ? Math.round(profitMargin * 100) / 100 : null,
+      profitMargin: profitMargin != null ? roundPercentage(profitMargin) : null,
       totalActivations,
       totalUsageMB,
-      avgRevenuePerActivation: Math.round(avgRevenuePerActivation * 100) / 100,
+      avgRevenuePerActivation: roundMoney(avgRevenuePerActivation),
       providerName: p.provider?.name || p.providerName || null,
       isActive: p.isActive,
     }
@@ -79,7 +80,7 @@ export async function getCatalogAnalytics(dateFrom?: Date, dateTo?: Date): Promi
   const totalRevenue = productAnalytics.reduce((sum, p) => sum + p.totalRevenue, 0)
   const totalCost = productAnalytics.reduce((sum, p) => sum + p.totalCost, 0)
   const totalProfit = totalRevenue - totalCost
-  const overallMargin = totalCost > 0 ? (totalProfit / totalCost) * 100 : null
+  const overallMargin = computeMarkupFromCostAndSell(totalCost, totalRevenue) ?? null
 
   const topProducts = [...productAnalytics]
     .sort((a, b) => b.totalRevenue - a.totalRevenue)
@@ -108,10 +109,10 @@ export async function getCatalogAnalytics(dateFrom?: Date, dateTo?: Date): Promi
     .sort((a, b) => b.revenue - a.revenue)
 
   return {
-    totalRevenue: Math.round(totalRevenue * 100) / 100,
-    totalCost: Math.round(totalCost * 100) / 100,
-    totalProfit: Math.round(totalProfit * 100) / 100,
-    overallMargin: overallMargin !== null ? Math.round(overallMargin * 100) / 100 : null,
+    totalRevenue: roundMoney(totalRevenue),
+    totalCost: roundMoney(totalCost),
+    totalProfit: roundMoney(totalProfit),
+    overallMargin: overallMargin != null ? roundPercentage(overallMargin) : null,
     totalActivations: productAnalytics.reduce((sum, p) => sum + p.totalActivations, 0),
     totalProducts: products.length,
     activeProducts: products.filter(p => p.isActive).length,

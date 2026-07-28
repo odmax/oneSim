@@ -6,6 +6,9 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
+import { markSellingPriceByPercent } from '@/lib/pricing/pricing-engine'
+import { doesRuleMatchPackage, inferPricingStrategy, extractPricingValue } from '@/lib/pricing/pricing-rule-evaluator'
+import { buildUpdateRequest } from '@/lib/pricing/pricing-update-service'
 
 export async function createRule(formData: FormData) {
   const session = await getServerSession(authOptions)
@@ -153,16 +156,7 @@ export async function applyRulesToPackages(packageIds?: string[]): Promise<{ suc
     const matchedUpdates: { pp: typeof providerPackages[number]; updateData: any }[] = []
 
     for (const pp of providerPackages) {
-      const rule = rules.find(r => {
-        if (r.providerId && r.providerId !== pp.providerId) return false
-        if (r.country && r.country !== pp.country) return false
-        if (r.region && r.region !== pp.region) return false
-        if (r.dataMinGB != null && pp.dataGB < r.dataMinGB) return false
-        if (r.dataMaxGB != null && pp.dataGB > r.dataMaxGB) return false
-        if (r.validityMinDays != null && pp.validityDays < r.validityMinDays) return false
-        if (r.validityMaxDays != null && pp.validityDays > r.validityMaxDays) return false
-        return true
-      })
+      const rule = rules.find(r => doesRuleMatchPackage(r as any, pp as any))
 
       if (!rule) continue
 
@@ -178,30 +172,31 @@ export async function applyRulesToPackages(packageIds?: string[]): Promise<{ suc
         }
       }
 
-      let sellingPrice: number | undefined
+      const strategy = inferPricingStrategy(rule as any)
+      const pricingValue = extractPricingValue(rule as any)
 
-      if (rule.fixedPrice && parseFloat(rule.fixedPrice.toString()) > 0) {
-        sellingPrice = parseFloat(rule.fixedPrice.toString())
-      } else if (rule.markupPercent && effectiveCost > 0) {
-        const markup = parseFloat(rule.markupPercent.toString())
-        sellingPrice = parseFloat((effectiveCost * (1 + markup / 100)).toFixed(2))
+      let sellingPrice: number | undefined
+      if (strategy === 'FIXED_SELLING_PRICE' && pricingValue != null) {
+        sellingPrice = pricingValue
+      } else if (strategy === 'MARKUP_PERCENT' && pricingValue != null && effectiveCost > 0) {
+        sellingPrice = markSellingPriceByPercent(effectiveCost, pricingValue)
       }
 
       if (!sellingPrice || sellingPrice <= 0) continue
 
-      const updateData: any = {
-        sellingPrice,
-        sellingCurrency: rule.sellingCurrency,
-        markupPercent: rule.markupPercent,
-        pricingMode: rule.fixedPrice ? 'FIXED_PRICE' : 'MARKUP_PERCENT',
-        publishStatus: rule.publishStatus || 'READY',
-        configurationStatus: 'AUTO_CONFIGURED',
-        autoConfiguredByRuleId: rule.id,
+      const updateData = {
+        ...buildUpdateRequest({
+          packageId: pp.id,
+          ruleId: rule.id,
+          ruleName: rule.name,
+          sellingPrice: sellingPrice!,
+          sellingCurrency: rule.sellingCurrency,
+          markupPercent: rule.markupPercent ? parseFloat(rule.markupPercent.toString()) : null,
+          pricingMode: rule.fixedPrice ? 'FIXED_PRICE' : 'MARKUP_PERCENT',
+          publishStatus: rule.publishStatus || 'READY',
+          costPrice: effectiveCost !== parseFloat(pp.costPrice.toString()) ? effectiveCost : undefined,
+        }),
         lastConfiguredAt: new Date(),
-      }
-
-      if (effectiveCost !== parseFloat(pp.costPrice.toString())) {
-        updateData.costPrice = effectiveCost
       }
 
       matchedUpdates.push({ pp, updateData })
