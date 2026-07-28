@@ -2472,3 +2472,109 @@ model PV2TemplateValidationRule {
   @@index([category])
   @@map("pv2_template_validation_rules")
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// CATALOG REVIEW & APPROVAL CENTER — Phase 3C
+// ══════════════════════════════════════════════════════════════════════
+
+enum PipelineRunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum ReviewItemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  IGNORED
+  APPLIED
+  FAILED
+}
+
+model PipelineRun {
+  id            String            @id @default(cuid())
+  idempotencyKey String?         @unique
+  trigger       String            @default("MANUAL") // MANUAL / PROVIDER_SYNC / SCHEDULED
+  status        PipelineRunStatus @default(RUNNING)
+  totalPackages  Int              @default(0)
+  newPackages    Int              @default(0)
+  updatedPackages Int             @default(0)
+  readyForReview Int              @default(0)
+  needsAttention Int              @default(0)
+  unchanged      Int              @default(0)
+  estimatedRevenueImpact Float?
+  estimatedProfitImpact  Float?
+  currency       String           @default("USD")
+  startedAt      DateTime         @default(now())
+  finishedAt     DateTime?
+  createdById    String?
+  createdAt      DateTime         @default(now())
+
+  reviewItems    CatalogReviewItem[]
+
+  @@index([idempotencyKey])
+  @@index([createdAt])
+  @@map("pipeline_runs")
+}
+
+model CatalogReviewItem {
+  id                    String           @id @default(cuid())
+  pipelineRunId         String
+  pipelineRun           PipelineRun      @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+
+  packageId             String
+  packageName           String
+  providerId            String?
+  providerName          String?
+
+  // Classification
+  classification        String           // NEW / UPDATED / READY_FOR_REVIEW / NEEDS_ATTENTION / UNCHANGED
+  processingState       String           // DETECTED / ANALYZED / SIMULATED / OPTIMIZED / READY_FOR_REVIEW
+
+  // Pricing
+  currentSellingPrice   Float?
+  proposedSellingPrice  Float?
+  currentMarginPercent  Float?
+  proposedMarginPercent Float?
+
+  // Provider
+  currentProviderId     String?
+  currentProviderName   String?
+  recommendedProviderId String?
+  recommendedProviderName String?
+  costDifference        Float?
+  profitDifference      Float?
+
+  // Recommendation
+  suggestedAction       String           // CONFIGURE / REVIEW_PRICING / SWITCH_PROVIDER / ARCHIVE
+  confidence            Int              @default(0)
+  reason                String?
+
+  // Decision
+  reviewStatus          ReviewItemStatus @default(PENDING)
+  reviewedById          String?
+  reviewedAt            DateTime?
+  reviewNote            String?
+  decision              String?
+  applyResult           String?           // success reason or failure details
+  isStale               Boolean          @default(false)
+  staleReason           String?
+
+  // Audit
+  beforeSnapshot        Json?            // snapshot of values before decision
+  afterSnapshot         Json?            // snapshot of values after application
+  changes               Json?            // detected field changes
+  warnings              Json?            // validation warnings
+
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  @@unique([pipelineRunId, packageId])
+  @@index([pipelineRunId])
+  @@index([packageId])
+  @@index([reviewStatus])
+  @@index([reviewedAt])
+  @@index([providerId])
+  @@map("catalog_review_items")
+}
