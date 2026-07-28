@@ -5,6 +5,8 @@ import { authOptions } from '@/lib/auth/config'
 import { revalidatePath } from 'next/cache'
 import { enqueueJob, startJob, completeJob, failJob, cancelJob, updateJobProgress, getJobs, getJobStats } from '@/lib/jobs/job-queue'
 import { executeProviderSync, executeCatalogPipelineJob } from '@/lib/jobs/provider-sync-runner'
+import { claimJob, processJob } from '@/lib/jobs/worker'
+import { createScheduledJobs, getSchedules, updateSchedule } from '@/lib/jobs/scheduler'
 
 async function requireAdmin() {
   const session = await getServerSession(authOptions)
@@ -68,4 +70,55 @@ export async function getJobsAction(params: { status?: string; type?: string }):
 export async function getJobStatsAction() {
   await requireAdmin()
   return getJobStats()
+}
+
+export async function runWorkerAction(): Promise<{ claimed: boolean; jobId?: string }> {
+  await requireAdmin()
+  const job = await claimJob()
+  if (!job) return { claimed: false }
+  await processJob(job)
+  revalidatePath('/admin/jobs')
+  return { claimed: true, jobId: job.id }
+}
+
+export async function retryJobAction(jobId: string): Promise<{ success: boolean }> {
+  await requireAdmin()
+  await enqueueJob('PROVIDER_SYNC' as any, {}, undefined, 'MANUAL')
+  const { updateJobProgress } = await import('@/lib/jobs/job-queue')
+  await updateJobProgress(jobId, 0)
+  revalidatePath('/admin/jobs')
+  return { success: true }
+}
+
+export async function createScheduledJobsAction(): Promise<{ created: number }> {
+  await requireAdmin()
+  const result = await createScheduledJobs()
+  revalidatePath('/admin/jobs')
+  return result
+}
+
+export async function getSchedulesAction() {
+  await requireAdmin()
+  return getSchedules()
+}
+
+export async function updateScheduleAction(
+  providerId: string,
+  data: { enabled?: boolean; frequency?: string },
+) {
+  await requireAdmin()
+  const result = await updateSchedule(providerId, data as any)
+  revalidatePath('/admin/jobs')
+  return result
+}
+
+export async function requestCancellationAction(jobId: string): Promise<{ success: boolean }> {
+  await requireAdmin()
+  const { prisma } = await import('@/lib/prisma')
+  await (prisma as any).backgroundJob.update({
+    where: { id: jobId },
+    data: { cancellationRequested: true },
+  })
+  revalidatePath('/admin/jobs')
+  return { success: true }
 }

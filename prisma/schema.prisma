@@ -1013,25 +1013,39 @@ enum JobStatus {
 }
 
 model BackgroundJob {
-  id            String    @id @default(cuid())
-  type          JobType
-  status        JobStatus @default(PENDING)
-  payload       Json
-  attempts      Int       @default(0)
-  maxAttempts   Int       @default(5)
-  runAt         DateTime  @default(now())
-  providerId    String?
-  progress      Int?
-  startedAt     DateTime?
-  finishedAt    DateTime?
-  triggerSource String?
-  metricsData   Json?
-  resultsData   Json?
-  lastError     String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id                    String    @id @default(cuid())
+  type                  JobType
+  status                JobStatus @default(PENDING)
+  payload               Json
+  attempts              Int       @default(0)
+  maxAttempts           Int       @default(5)
+  runAt                 DateTime  @default(now())
+  providerId            String?
+  progress              Int?
+  startedAt             DateTime?
+  finishedAt            DateTime?
+  triggerSource         String?
+  metricsData           Json?
+  resultsData           Json?
+  lastError             String?
+
+  // Phase 4B hardening fields
+  idempotencyKey        String?   @unique
+  workerId              String?
+  lockedAt              DateTime?
+  cancellationRequested Boolean   @default(false)
+  nextRetryAt           DateTime?
+  retryBackoffMs        Int       @default(0)
+  retryClassification   String?   // RETRYABLE | NON_RETRYABLE
+  staleReason           String?
+  scheduleId            String?
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([status, runAt])
+  @@index([idempotencyKey])
+  @@index([providerId, status])
   @@map("background_jobs")
 }
 
@@ -1056,6 +1070,34 @@ model ProviderAttempt {
   @@index([status])
   @@index([startedAt])
   @@map("provider_attempts")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// JOB QUEUE HARDENING — Phase 4B
+// ══════════════════════════════════════════════════════════════════════
+
+enum ScheduleFrequency {
+  HOURLY
+  DAILY
+  WEEKLY
+  CUSTOM
+}
+
+model ProviderSyncSchedule {
+  id               String            @id @default(cuid())
+  providerId       String            @unique
+  enabled          Boolean           @default(true)
+  frequency        ScheduleFrequency @default(DAILY)
+  cronExpression   String?
+  timezone         String            @default("UTC")
+  nextRunAt        DateTime          @default(now())
+  lastRunAt        DateTime?
+  lastRunJobId     String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([enabled, nextRunAt])
+  @@map("provider_sync_schedules")
 }
 
 model ApiRequestLog {

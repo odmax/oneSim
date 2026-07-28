@@ -8,7 +8,24 @@ export async function enqueueJob(
   payload: Record<string, unknown>,
   providerId?: string,
   trigger?: string,
+  idempotencyKey?: string,
 ): Promise<{ id: string }> {
+  if (idempotencyKey) {
+    const existing = await prisma.backgroundJob.findUnique({ where: { idempotencyKey } })
+    if (existing) {
+      if (existing.status === 'COMPLETED' || existing.status === 'FAILED' || existing.status === 'CANCELLED') {
+        // Re-enqueue: reset the job
+        await prisma.backgroundJob.update({
+          where: { id: existing.id },
+          data: { status: 'PENDING', runAt: new Date(), attempts: 0, workerId: null, lockedAt: null },
+        })
+        return { id: existing.id }
+      }
+      // Job still active — return existing
+      return { id: existing.id }
+    }
+  }
+
   const job = await prisma.backgroundJob.create({
     data: {
       type,
@@ -17,6 +34,8 @@ export async function enqueueJob(
       providerId: providerId || null,
       triggerSource: trigger || 'MANUAL',
       maxAttempts: 3,
+      idempotencyKey: idempotencyKey || null,
+      runAt: new Date(),
     },
   })
   return { id: job.id }

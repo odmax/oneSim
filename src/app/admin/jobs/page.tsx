@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { getJobsAction, getJobStatsAction, cancelJobAction } from '@/lib/actions/job-management'
+import { getJobsAction, getJobStatsAction, cancelJobAction, getSchedulesAction, updateScheduleAction, createScheduledJobsAction } from '@/lib/actions/job-management'
 
 function formatDuration(ms: number | null): string {
   if (ms == null) return '—'
@@ -41,16 +41,19 @@ export default function JobsPage() {
   const [stats, setStats] = useState<any>({})
   const [filter, setFilter] = useState({ status: '', type: '' })
   const [feedback, setFeedback] = useState<{ type: string; message: string } | null>(null)
+  const [schedules, setSchedules] = useState<any[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [j, s] = await Promise.all([
+      const [j, s, sch] = await Promise.all([
         getJobsAction({ status: filter.status || undefined, type: filter.type || undefined }),
         getJobStatsAction(),
+        getSchedulesAction(),
       ])
       setJobs(j)
       setStats(s)
+      setSchedules(sch)
     } catch (e: any) {
       setFeedback({ type: 'error', message: e.message })
     } finally {
@@ -195,6 +198,53 @@ export default function JobsPage() {
           </table>
         </div>
       </div>
+
+      {/* Schedules */}
+      {schedules.length > 0 && (
+        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b bg-gray-50/50 flex items-center justify-between">
+            <span className="text-sm font-semibold text-gray-700">Sync Schedules</span>
+            <span className="text-xs text-gray-400">{schedules.length} providers</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50/80 text-[11px] uppercase tracking-wider text-gray-500">
+                <tr>
+                  <th className="px-3 py-2 text-left">Provider</th>
+                  <th className="px-3 py-2 text-left">Frequency</th>
+                  <th className="px-3 py-2 text-left">Next Run</th>
+                  <th className="px-3 py-2 text-left">Last Run</th>
+                  <th className="px-3 py-2 text-center">Status</th>
+                  <th className="px-3 py-2 text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {schedules.map((s: any) => (
+                  <tr key={s.id} className="hover:bg-gray-50/50">
+                    <td className="px-3 py-3 text-xs font-medium text-gray-900">{s.providerId}</td>
+                    <td className="px-3 py-3 text-xs text-gray-500">{s.frequency}</td>
+                    <td className="px-3 py-3 text-xs text-gray-500">{s.nextRunAt ? new Date(s.nextRunAt).toLocaleString() : '—'}</td>
+                    <td className="px-3 py-3 text-xs text-gray-400">{s.lastRunAt ? new Date(s.lastRunAt).toLocaleString() : 'Never'}</td>
+                    <td className="px-3 py-3 text-center">
+                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${s.enabled ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-400'}`}>
+                        {s.enabled ? 'Active' : 'Disabled'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      <button
+                        onClick={async () => { await updateScheduleAction(s.providerId, { enabled: !s.enabled }); load() }}
+                        className="rounded-md bg-gray-100 px-2 py-1 text-[10px] font-medium text-gray-600 hover:bg-gray-200"
+                      >
+                        {s.enabled ? 'Disable' : 'Enable'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
