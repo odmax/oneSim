@@ -3,8 +3,17 @@
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { handleServerActionError } from '@/lib/errors/handle-prisma-error'
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth/config'
+
+async function requireAdmin() {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  return session.user.id
+}
 
 export async function createPackage(formData: FormData) {
+  const userId = await requireAdmin()
   try {
     const name = formData.get('name') as string
     const description = formData.get('description') as string
@@ -29,6 +38,7 @@ export async function createPackage(formData: FormData) {
 }
 
 export async function updatePackage(formData: FormData) {
+  const userId = await requireAdmin()
   try {
     const id = formData.get('id') as string
     const name = formData.get('name') as string
@@ -52,6 +62,7 @@ export async function updatePackage(formData: FormData) {
 }
 
 export async function deletePackageAction(formData: FormData) {
+  const userId = await requireAdmin()
   const id = formData.get('id') as string
   if (!id) return
 

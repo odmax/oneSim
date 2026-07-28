@@ -12,6 +12,9 @@ import { buildESIMInstallEmail } from '@/lib/email/esim-share-email'
 import crypto from 'crypto'
 
 export async function suspendESIM(esimId: string) {
+  const session = await getServerSession(authOptions)
+  if (!session) redirect('/login')
+
   await prisma.eSIM.update({
     where: { id: esimId },
     data: { status: 'SUSPENDED' },

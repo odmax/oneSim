@@ -1,6 +1,13 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth/config'
+
+async function requireAdmin() {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+}
 
 export async function getApiLogs(params: {
   page?: number
@@ -12,6 +19,7 @@ export async function getApiLogs(params: {
   dateFrom?: string
   dateTo?: string
 }) {
+  await requireAdmin()
   const page = params.page || 1
   const pageSize = params.pageSize || 50
   const skip = (page - 1) * pageSize
@@ -44,6 +52,7 @@ export async function getApiLogs(params: {
 }
 
 export async function getApiLogSummary() {
+  await requireAdmin()
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
@@ -83,6 +92,7 @@ export async function getApiLogSummary() {
 }
 
 export async function getBusinessApiUsage(businessId: string) {
+  await requireAdmin()
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 

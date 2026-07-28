@@ -17,10 +17,7 @@ async function safeAuditLog(data: { userId: string; action: string; entity: stri
 
 export async function updateBusiness(formData: FormData) {
   const session = await getServerSession(authOptions)
-  
-  if (!session) {
-    redirect('/login')
-  }
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
   const businessId = formData.get('businessId') as string
   const name = formData.get('name') as string
@@ -64,7 +61,7 @@ export async function updateBusiness(formData: FormData) {
 
 export async function updateBusinessStatus(businessId: string, status: string) {
   const session = await getServerSession(authOptions)
-  if (!session) redirect('/login')
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
   try {
     await prisma.business.update({ where: { id: businessId }, data: { status: status as any } })
