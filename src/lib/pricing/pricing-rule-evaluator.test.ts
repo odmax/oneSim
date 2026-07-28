@@ -298,3 +298,41 @@ describe('evaluatePackageRules', () => {
     expect(result.pricingValue).toBeDefined()
   })
 })
+
+describe('regression: Choice 1GB 9% Markup rule', () => {
+  it('exactly 1 GB data matches a 1-1 GB rule', () => {
+    const rule = makeRule({ dataMinGB: 1, dataMaxGB: 1 })
+    const pkg = makePkg({ dataGB: 1 })
+    expect(doesRuleMatchPackage(rule, pkg)).toBe(true)
+  })
+
+  it('exactly 20 days validity matches a 1-20 day rule', () => {
+    const rule = makeRule({ validityMinDays: 1, validityMaxDays: 20 })
+    const pkg = makePkg({ validityDays: 20 })
+    expect(doesRuleMatchPackage(rule, pkg)).toBe(true)
+  })
+
+  it('exactly 1 day validity matches a 1-20 day rule', () => {
+    const rule = makeRule({ validityMinDays: 1, validityMaxDays: 20 })
+    const pkg = makePkg({ validityDays: 1 })
+    expect(doesRuleMatchPackage(rule, pkg)).toBe(true)
+  })
+
+  it('provider matching uses providerId', () => {
+    const rule = makeRule({ providerId: 'cmpm-choice-id' })
+    const pkg = makePkg({ providerId: 'cmpm-choice-id' })
+    expect(doesRuleMatchPackage(rule, pkg)).toBe(true)
+  })
+
+  it('provider mismatch rejects correctly', () => {
+    const rule = makeRule({ providerId: 'cmpm-choice-id' })
+    const pkg = makePkg({ providerId: 'different-prov' })
+    expect(doesRuleMatchPackage(rule, pkg)).toBe(false)
+  })
+
+  it('evaluator correctly infers 9% markup strategy and value', () => {
+    const rule = makeRule({ markupPercent: 9, fixedPrice: null })
+    expect(inferPricingStrategy(rule)).toBe('MARKUP_PERCENT')
+    expect(extractPricingValue(rule)).toBe(9)
+  })
+})
