@@ -5,6 +5,8 @@ import { createTimelineEvent, transitionOrder, failOrder } from './order-state-m
 import { reserveWalletFunds, captureReservedFunds, releaseReservedFunds } from './wallet-actions'
 import { getProviderBalance } from '@/lib/services/providers/provider-balance'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
+import { executeProviderAttempt, tryFailoverAfterAttempt } from './provider-attempt-service'
+import { ProviderRoutingEngine } from '@/lib/services/routing/provider-routing-engine'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 
 const DUP_WINDOW_MS = 30_000
@@ -159,8 +161,6 @@ export class PurchaseOrchestrator {
     const nameParts = (customer?.name || 'Business Order').trim().split(/\s+/)
     const subscriber = { email: customer?.email || '', first_name: nameParts[0] || '', last_name: nameParts.slice(1).join(' ') || undefined }
 
-    const { executeProviderAttempt, tryFailoverAfterAttempt } = await import('./provider-attempt-service')
-    const { ProviderRoutingEngine } = await import('@/lib/services/routing/provider-routing-engine')
     const rankedProviders = await new ProviderRoutingEngine().getRankedProviders({ packageId: pkg.id, quantity })
 
     let currentProviderId = provider.id
