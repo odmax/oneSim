@@ -999,6 +999,9 @@ enum JobType {
   USAGE_SYNC
   EMAIL_DELIVERY
   PROVIDER_OPERATION
+  PROVIDER_SYNC
+  CATALOG_PIPELINE
+  REVIEW_REBUILD
 }
 
 enum JobStatus {
@@ -1006,19 +1009,27 @@ enum JobStatus {
   PROCESSING
   COMPLETED
   FAILED
+  CANCELLED
 }
 
 model BackgroundJob {
-  id          String    @id @default(cuid())
-  type        JobType
-  status      JobStatus @default(PENDING)
-  payload     Json
-  attempts    Int       @default(0)
-  maxAttempts Int       @default(5)
-  runAt       DateTime  @default(now())
-  lastError   String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id            String    @id @default(cuid())
+  type          JobType
+  status        JobStatus @default(PENDING)
+  payload       Json
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(5)
+  runAt         DateTime  @default(now())
+  providerId    String?
+  progress      Int?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  triggerSource String?
+  metricsData   Json?
+  resultsData   Json?
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@index([status, runAt])
   @@map("background_jobs")
