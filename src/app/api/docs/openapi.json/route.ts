@@ -1,7 +1,3 @@
-export const dynamic = 'force-dynamic';
-
-import { NextResponse } from 'next/server'
-
 const spec = {
   openapi: '3.0.3',
   info: {
