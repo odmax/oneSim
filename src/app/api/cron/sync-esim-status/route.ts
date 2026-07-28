@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server'
 import { batchSyncPendingEsims } from '@/lib/services/esims/sync-esim-status'
 

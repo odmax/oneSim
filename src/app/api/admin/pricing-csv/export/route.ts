@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { exportPricingCsv } from '@/lib/actions/pricing-csv'

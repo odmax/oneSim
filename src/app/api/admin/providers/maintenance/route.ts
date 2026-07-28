@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextResponse } from 'next/server'
 import { runProviderMaintenance, getCatalogSyncDueProviders } from '@/lib/services/providers/provider-maintenance'
 import { syncProviderPlans } from '@/lib/actions/provider-sync'

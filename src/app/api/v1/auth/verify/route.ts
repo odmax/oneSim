@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest } from 'next/server'
 import { authenticateAndCheck, respond } from '@/lib/api/v1-response'
 
