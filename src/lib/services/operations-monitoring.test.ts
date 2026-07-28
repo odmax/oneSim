@@ -13,7 +13,11 @@ vi.mock('@/lib/prisma', () => ({
       count: vi.fn().mockResolvedValue(3),
       findMany: vi.fn().mockResolvedValue([]),
     },
-    providerPackage: { count: vi.fn().mockResolvedValue(0) },
+    providerPackage: {
+      count: vi.fn().mockResolvedValue(0),
+      groupBy: vi.fn().mockResolvedValue([]),
+    },
+    $queryRawUnsafe: vi.fn().mockResolvedValue([]),
   },
 }))
 

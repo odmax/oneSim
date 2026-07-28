@@ -106,18 +106,40 @@ export async function getSystemHealth(): Promise<SystemHealth> {
 export async function getProviderHealth(): Promise<ProviderHealthItem[]> {
   const providers = await prisma.provider.findMany({ select: { id: true, code: true, name: true, status: true } })
 
-  const items: ProviderHealthItem[] = []
-  for (const p of providers) {
-    const [packages, lastCompleted, lastFailed, completedJobs, retries] = await Promise.all([
-      prisma.providerPackage.count({ where: { providerId: p.id } }),
-      prisma.backgroundJob.findFirst({ where: { providerId: p.id, status: 'COMPLETED', type: 'PROVIDER_SYNC' }, orderBy: { finishedAt: 'desc' }, select: { finishedAt: true } }),
-      prisma.backgroundJob.findFirst({ where: { providerId: p.id, status: 'FAILED', type: 'PROVIDER_SYNC' }, orderBy: { finishedAt: 'desc' }, select: { finishedAt: true } }),
-      prisma.backgroundJob.count({ where: { providerId: p.id, status: 'COMPLETED' } }),
-      prisma.backgroundJob.count({ where: { providerId: p.id, attempts: { gt: 1 } } }),
-    ])
+  const providerIds = providers.map(p => p.id)
 
-    const total = completedJobs + (await prisma.backgroundJob.count({ where: { providerId: p.id, status: 'FAILED' } }))
-    const successRate = total > 0 ? Math.round((completedJobs / total) * 100) : null
+  // Batch all counts in single groupBy queries (fixes N+1)
+  const [pkgCounts, jobCounts, retryCounts, failedCounts] = await Promise.all([
+    prisma.providerPackage.groupBy({ by: ['providerId'], where: { providerId: { in: providerIds } }, _count: true }),
+    prisma.backgroundJob.groupBy({ by: ['providerId'], where: { providerId: { in: providerIds }, status: 'COMPLETED' }, _count: true }),
+    prisma.backgroundJob.groupBy({ by: ['providerId'], where: { providerId: { in: providerIds }, attempts: { gt: 1 } }, _count: true }),
+    prisma.backgroundJob.groupBy({ by: ['providerId'], where: { providerId: { in: providerIds }, status: 'FAILED' }, _count: true }),
+  ])
+
+  // Batch last timestamps
+  const lastCompleted = await prisma.$queryRawUnsafe<{ providerId: string; finishedAt: Date }[]>(
+    `SELECT DISTINCT ON ("providerId") "providerId", "finishedAt" FROM "background_jobs" WHERE "type" = 'PROVIDER_SYNC' AND "status" = 'COMPLETED' AND "providerId" = ANY($1) ORDER BY "providerId", "finishedAt" DESC`,
+    providerIds,
+  )
+  const lastFailed = await prisma.$queryRawUnsafe<{ providerId: string; finishedAt: Date }[]>(
+    `SELECT DISTINCT ON ("providerId") "providerId", "finishedAt" FROM "background_jobs" WHERE "type" = 'PROVIDER_SYNC' AND "status" = 'FAILED' AND "providerId" = ANY($1) ORDER BY "providerId", "finishedAt" DESC`,
+    providerIds,
+  )
+
+  const pkgMap = mapGroupBy(pkgCounts, 'providerId')
+  const jobMap = mapGroupBy(jobCounts, 'providerId')
+  const retryMap = mapGroupBy(retryCounts, 'providerId')
+  const failMap = mapGroupBy(failedCounts, 'providerId')
+  const completedMap = new Map(lastCompleted.map(r => [r.providerId, (r.finishedAt as any).getTime ? new Date(r.finishedAt as any) : null]))
+  const failedMap = new Map(lastFailed.map(r => [r.providerId, (r.finishedAt as any).getTime ? new Date(r.finishedAt as any) : null]))
+
+  const items: ProviderHealthItem[] = providers.map(p => {
+    const pkgs = pkgMap.get(p.id) || 0
+    const completed = jobMap.get(p.id) || 0
+    const failed = failMap.get(p.id) || 0
+    const retries = retryMap.get(p.id) || 0
+    const total = completed + failed
+    const successRate = total > 0 ? Math.round((completed / total) * 100) : null
 
     let health: ProviderHealthItem['health'] = 'HEALTHY'
     if (p.status === 'INACTIVE' || p.status === 'ARCHIVED') health = 'OFFLINE'
@@ -125,20 +147,26 @@ export async function getProviderHealth(): Promise<ProviderHealthItem[]> {
     else if (successRate != null && successRate < 50) health = 'CRITICAL'
     else if (successRate != null && successRate < 80) health = 'WARNING'
 
-    items.push({
+    return {
       providerId: p.id, providerCode: p.code, providerName: p.name, status: p.status, health,
-      lastSyncAt: lastCompleted?.finishedAt || null,
-      lastSuccessAt: lastCompleted?.finishedAt || null,
-      lastFailureAt: lastFailed?.finishedAt || null,
+      lastSyncAt: completedMap.get(p.id) || null,
+      lastSuccessAt: completedMap.get(p.id) || null,
+      lastFailureAt: failedMap.get(p.id) || null,
       avgResponseTimeMs: null,
       successRate,
-      packagesSynced: packages,
+      packagesSynced: pkgs,
       retryCount: retries,
       queueStatus: 'IDLE',
-    })
-  }
+    }
+  })
 
   return items
+}
+
+function mapGroupBy(rows: Record<string, any>[], key: string): Map<string, number> {
+  const m = new Map<string, number>()
+  for (const r of rows) m.set(r[key], (r._count as any)?.id || r._count || 0)
+  return m
 }
 
 export async function getPipelineMetrics(): Promise<PipelineMetric[]> {
@@ -232,6 +260,7 @@ export async function getRunningJobs(): Promise<any[]> {
   return prisma.backgroundJob.findMany({
     where: { status: 'PROCESSING' },
     orderBy: { startedAt: 'desc' },
+    take: 50,
     select: {
       id: true, type: true, providerId: true, progress: true,
       startedAt: true, attempts: true, maxAttempts: true,

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeAll } from 'vitest'
 
 vi.mock('@/lib/prisma', () => ({
   prisma: {
+    $transaction: vi.fn((ops: any[]) => Promise.all(ops)),
     pipelineRun: {
       findUnique: vi.fn(),
       create: vi.fn(),

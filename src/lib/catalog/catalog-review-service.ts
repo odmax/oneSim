@@ -38,10 +38,11 @@ export async function persistPipelineReview(
   })
 
   let created = 0
+  const upserts: any[] = []
   for (const item of pipelineResult.reviewItems) {
     if (item.state === 'SKIPPED') continue
 
-    await prisma.catalogReviewItem.upsert({
+    upserts.push(prisma.catalogReviewItem.upsert({
       where: { pipelineRunId_packageId: { pipelineRunId: run.id, packageId: item.packageId } },
       create: {
         pipelineRunId: run.id,
@@ -69,8 +70,12 @@ export async function persistPipelineReview(
         beforeSnapshot: item.currentSellingPrice != null ? JSON.parse(JSON.stringify({ sellingPrice: item.currentSellingPrice, margin: item.currentMargin, provider: item.currentProvider })) : undefined,
       },
       update: { reviewStatus: 'PENDING' },
-    })
+    }))
     created++
+  }
+
+  if (upserts.length > 0) {
+    await prisma.$transaction(upserts)
   }
 
   return { runId: run.id, created, skipped: pipelineResult.totalProcessed - created }

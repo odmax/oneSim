@@ -3,8 +3,17 @@
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth/config'
+
+async function requireAdmin() {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  return session.user.id
+}
 
 export async function syncEsimStatus(esimId: string) {
+  const userId = await requireAdmin()
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
     include: { purchase: { include: { package: true } } },
