@@ -102,6 +102,22 @@ export default function ApplyRuleWizard({ rule, onClose, onApplied }: ApplyRuleW
     setLoading(false)
     if (res.success && res.data) {
       setSimulation(res.data)
+      // Build skip reasons from simulation warnings
+      const skipReasonMap: Record<string, { count: number; examples: { id: string; name: string }[] }> = {}
+      for (const w of res.data.warnings) {
+        const reason = `${w.type.replace(/_/g, ' ')}: ${w.packageName}`
+        if (!skipReasonMap[w.type]) skipReasonMap[w.type] = { count: 0, examples: [] }
+        skipReasonMap[w.type].count++
+        if (skipReasonMap[w.type].examples.length < 3) {
+          skipReasonMap[w.type].examples.push({ id: w.packageId, name: w.packageName })
+        }
+      }
+      // Also add non-match packages (evaluated but not in packages array)
+      const matchedIds = new Set(res.data.packages.map(p => p.packageId))
+      const nonMatchCount = res.data.summary.packagesEvaluated - res.data.summary.packagesUpdated - res.data.summary.packagesSkipped
+      if (nonMatchCount > 0) {
+        skipReasonMap['RULE_MISMATCH'] = { count: nonMatchCount, examples: [] }
+      }
       setPreview({
         ruleId: rule.id,
         ruleName: rule.name,
@@ -109,7 +125,11 @@ export default function ApplyRuleWizard({ rule, onClose, onApplied }: ApplyRuleW
         filters,
         matched: res.data.summary.packagesUpdated,
         skipped: res.data.summary.packagesSkipped,
-        skipReasons: [],
+        skipReasons: Object.entries(skipReasonMap).map(([reason, info]) => ({
+          reason,
+          count: info.count,
+          examples: info.examples,
+        })),
         totalInScope: res.data.summary.packagesEvaluated,
         estimatedTimeMs: res.data.durationMs,
       })

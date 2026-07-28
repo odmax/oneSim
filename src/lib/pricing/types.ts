@@ -391,7 +391,7 @@ export interface RuleImpactSummary {
 export interface SimulationWarning {
   packageId: string
   packageName: string
-  type: 'BELOW_COST' | 'LOW_MARGIN' | 'HIGH_MARKUP' | 'NO_COST' | 'INVALID_PRICING'
+  type: 'BELOW_COST' | 'LOW_MARGIN' | 'HIGH_MARKUP' | 'NO_COST' | 'INVALID_PRICING' | 'RULE_MISMATCH'
   message: string
   currentValue: number | null
   newValue: number | null

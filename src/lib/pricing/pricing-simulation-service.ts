@@ -91,6 +91,14 @@ export function simulateRulePricing(request: SimulationRequest): SimulationResul
 
     if (!evaluation.matched) {
       skipped++
+      warnings.push({
+        packageId: pkg.id,
+        packageName: pkg.name,
+        type: 'RULE_MISMATCH' as any,
+        message: evaluation.skipReason || 'Package does not match rule criteria',
+        currentValue: null,
+        newValue: null,
+      })
       continue
     }
 
