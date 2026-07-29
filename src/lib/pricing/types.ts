@@ -263,6 +263,7 @@ export interface PricingRuleSummary {
   id: string
   name: string
   providerId: string | null
+  providerName?: string | null
   country: string | null
   region: string | null
   productType: string | null

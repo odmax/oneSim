@@ -86,6 +86,9 @@ export async function getApplyRulePreview(
   const where: any = buildScopeWhere(scope, filters, selectedIds)
   if (filters.includeArchived) delete where.ARCHIVED
   if (filters.includeHidden) delete where.HIDDEN
+  if (rule.providerId && !where.providerId) {
+    where.providerId = rule.providerId
+  }
 
   const packages = await prisma.providerPackage.findMany({
     where,
@@ -176,6 +179,11 @@ export async function executeApplyRule(
     const where: any = buildScopeWhere(scope, filters, selectedIds)
     if (filters.includeArchived) delete where.ARCHIVED
     if (filters.includeHidden) delete where.HIDDEN
+    // Inject the rule's own providerId into the DB query so we only fetch
+    // packages from the provider this rule actually targets.
+    if (rule.providerId && !where.providerId) {
+      where.providerId = rule.providerId
+    }
 
     const packages = await prisma.providerPackage.findMany({
       where,
@@ -487,6 +495,9 @@ export async function simulateRuleApplication(
   const where: any = buildScopeWhere(scope, filters, selectedIds)
   if (filters.includeArchived) delete where.ARCHIVED
   if (filters.includeHidden) delete where.HIDDEN
+  if (rule.providerId && !where.providerId) {
+    where.providerId = rule.providerId
+  }
 
   const providerPackages = await prisma.providerPackage.findMany({
     where,
@@ -497,6 +508,7 @@ export async function simulateRuleApplication(
     id: rule.id,
     name: rule.name,
     providerId: rule.providerId,
+    providerName: (rule as any).provider?.name ?? null,
     country: rule.country,
     region: rule.region,
     productType: rule.productType,

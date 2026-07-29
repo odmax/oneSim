@@ -129,7 +129,8 @@ export function describeSkipReason(
   pkg: ProviderPackageSummary,
 ): string {
   if (rule.providerId && rule.providerId !== pkg.providerId) {
-    return `Provider mismatch (expected: ${rule.providerId})`
+    const expected = rule.providerName ? `${rule.providerName} (${rule.providerId})` : rule.providerId
+    return `Provider mismatch (rule expects: ${expected})`
   }
   if (rule.country && rule.country !== pkg.country) {
     return `Country mismatch (expected: ${rule.country}, got: ${pkg.country})`
