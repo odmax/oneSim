@@ -7,6 +7,7 @@ import {
   describeSkipReason,
   evaluateRule,
   evaluatePackageRules,
+  resolveEffectiveCost,
 } from './pricing-rule-evaluator'
 import type { PricingRuleSummary, ProviderPackageSummary } from './types'
 
@@ -334,5 +335,39 @@ describe('regression: Choice 1GB 9% Markup rule', () => {
     const rule = makeRule({ markupPercent: 9, fixedPrice: null })
     expect(inferPricingStrategy(rule)).toBe('MARKUP_PERCENT')
     expect(extractPricingValue(rule)).toBe(9)
+  })
+})
+
+describe('resolveEffectiveCost', () => {
+  it('uses rule costPrice override when set', () => {
+    expect(resolveEffectiveCost(1.60, 0)).toBe(1.60)
+  })
+
+  it('falls back to package costPrice when rule has no override', () => {
+    expect(resolveEffectiveCost(null, 1.60)).toBe(1.60)
+  })
+
+  it('uses package adminCostPrice over provider costPrice', () => {
+    expect(resolveEffectiveCost(null, 2.00, 1.50)).toBe(1.50)
+  })
+
+  it('uses package effectiveCost when no admin override', () => {
+    expect(resolveEffectiveCost(null, 2.00, null, 1.80)).toBe(1.80)
+  })
+
+  it('rule override wins over all package-level costs', () => {
+    expect(resolveEffectiveCost(1.60, 2.00, 1.50, 1.80)).toBe(1.60)
+  })
+
+  it('returns 0 when nothing is set', () => {
+    expect(resolveEffectiveCost(null, 0)).toBe(0)
+  })
+
+  it('returns pkgCost even if 0 when no override', () => {
+    expect(resolveEffectiveCost(null, 0, null, null)).toBe(0)
+  })
+
+  it('returns provider cost when admin and effective are both null', () => {
+    expect(resolveEffectiveCost(null, 1.60, null, null)).toBe(1.60)
   })
 })

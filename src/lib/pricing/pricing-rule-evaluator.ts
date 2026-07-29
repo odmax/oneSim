@@ -68,6 +68,36 @@ function toNumber(val: unknown): number | null {
 }
 
 /**
+ * Resolve the effective cost price for a package under a rule.
+ *
+ * Precedence:
+ *   1. Rule's costPrice (admin override — always wins if > 0)
+ *   2. Package's effectiveCostPrice (admin-level override)
+ *   3. Package's costPrice (provider cost)
+ *
+ * This is the SINGLE canonical cost-resolution function.
+ * Both preview and execution must use it.
+ */
+export function resolveEffectiveCost(
+  ruleCostPrice: number | null,
+  pkgCostPrice: number,
+  pkgAdminCostPrice?: number | null,
+  pkgEffectiveCost?: number | null,
+): number {
+  // Rule override takes absolute precedence
+  if (ruleCostPrice != null && ruleCostPrice > 0) return ruleCostPrice
+  // Package-level admin override
+  if (pkgAdminCostPrice != null && pkgAdminCostPrice > 0) return pkgAdminCostPrice
+  // Computed effective cost
+  if (pkgEffectiveCost != null && pkgEffectiveCost > 0) return pkgEffectiveCost
+  // Fallback to provider cost
+  return pkgCostPrice
+}
+
+/** Export toNumber for use by other cost-resolution callers */
+export { toNumber }
+
+/**
  * Determine if a rule matches a provider package.
  *
  * This is the ONE canonical place where rule matching logic lives.

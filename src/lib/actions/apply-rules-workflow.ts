@@ -114,15 +114,14 @@ export async function getApplyRulePreview(
       continue
     }
 
-    const cost = parseFloat(pkg.costPrice.toString())
-    if (!cost || cost <= 0) {
-      addSkip('Missing cost price', pkg)
-      skipped++
-      continue
+    let cost = parseFloat(pkg.costPrice.toString())
+    // Rule costPrice overrides the package's cost
+    if (rule.costPrice && parseFloat(rule.costPrice.toString()) > 0) {
+      cost = parseFloat(rule.costPrice.toString())
     }
 
-    if (rule.markupPercent && cost <= 0) {
-      addSkip('Markup requires cost price', pkg)
+    if (!cost || cost <= 0) {
+      addSkip('Missing cost price', pkg)
       skipped++
       continue
     }
@@ -219,15 +218,16 @@ export async function executeApplyRule(
       }
 
       let effectiveCost = parseFloat(pkg.costPrice.toString())
+      // Rule costPrice overrides the package's cost — apply it first
+      if (rule.costPrice && parseFloat(rule.costPrice.toString()) > 0) {
+        effectiveCost = parseFloat(rule.costPrice.toString())
+      }
+
       if (!effectiveCost || effectiveCost <= 0) {
         skipped++
         skipReasonsMap['Missing cost price'] = (skipReasonsMap['Missing cost price'] || 0) + 1
         skipDetails.push({ id: pkg.id, name: pkg.name, reason: 'Missing cost price' })
         continue
-      }
-
-      if (rule.costPrice && parseFloat(rule.costPrice.toString()) > 0) {
-        effectiveCost = parseFloat(rule.costPrice.toString())
       }
 
       const strategy = inferPricingStrategy(rule as any)
