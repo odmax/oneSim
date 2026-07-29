@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import { PackageBuyCard } from './PackageBuyCard'
+import { SearchablePackageGrid } from './SearchablePackageGrid'
 
 export default async function BuyESIMPage({
   searchParams
@@ -60,11 +61,7 @@ export default async function BuyESIMPage({
       </div>
 
       {/* Package grid */}
-      <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-        {packages.map((pkg) => (
-          <PackageBuyCard key={pkg.id} pkg={stripPackageProviderFields(pkg)} walletBalance={walletBalance} />
-        ))}
-      </div>
+      <SearchablePackageGrid packages={packages.map(pkg => stripPackageProviderFields(pkg))} walletBalance={walletBalance} />
     </div>
   )
 }

@@ -5,7 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import PackageActions from '@/components/admin/packages/PackageActions'
-import { roundMoney, computeMarkupFromCostAndSell, computeMarginAmount } from '@/lib/pricing/pricing-engine'
+import { roundMoney, computeMarkupFromCostAndSell, computeMarginAmount, computeMarginFromCostAndSell } from '@/lib/pricing/pricing-engine'
 
 const TABS = [
   { id: 'catalog', label: 'Catalog Products' },
@@ -152,6 +152,7 @@ export default async function AdminPackagesPage({
             const sellingPrice = parseFloat(pkg.priceUSD.toString())
             const markupPct = computeMarkupFromCostAndSell(costPrice, sellingPrice)
             const profitAmount = computeMarginAmount(costPrice, sellingPrice)
+            const marginPct = computeMarginFromCostAndSell(costPrice, sellingPrice)
 
             return (
               <div key={pkg.id} className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
@@ -202,7 +203,7 @@ export default async function AdminPackagesPage({
                     <span className="text-gray-500">Margin</span>
                     {profitAmount != null ? (
                       <span className={`font-medium ${profitAmount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                        ${profitAmount.toFixed(2)} ({markupPct?.toFixed(1)}%)
+                        ${profitAmount.toFixed(2)} ({marginPct?.toFixed(1)}%)
                         {profitAmount < 0 && ' ↓'}
                       </span>
                     ) : (

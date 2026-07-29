@@ -316,6 +316,37 @@ describe('computeMarginAmount', () => {
   })
 })
 
+describe('concrete example: $1.60 cost → $1.76 sell', () => {
+  it('profit = $0.16', () => {
+    const profit = computeMarginAmount(1.60, 1.76)
+    expect(profit).toBe(0.16)
+  })
+
+  it('markup = 10.00%', () => {
+    const markup = computeMarkupFromCostAndSell(1.60, 1.76)
+    expect(markup).toBe(10.00)
+  })
+
+  it('margin = 9.09%', () => {
+    const margin = computeMarginFromCostAndSell(1.60, 1.76)
+    expect(margin).toBe(9.09)
+  })
+
+  it('derivePricing returns consistent values', () => {
+    const derived = derivePricing(1.60, 1.76)
+    expect(derived.profit).toBe(0.16)
+    expect(derived.markupPercent).toBe(10.00)
+    expect(derived.marginPercent).toBe(9.09)
+  })
+
+  it('markup ≠ margin (labels must not be swapped)', () => {
+    const markup = computeMarkupFromCostAndSell(1.60, 1.76)!
+    const margin = computeMarginFromCostAndSell(1.60, 1.76)!
+    expect(markup).not.toBe(margin)
+    expect(markup).toBeGreaterThan(margin)
+  })
+})
+
 describe('explainPricing', () => {
   it('returns structured explanation with steps', () => {
     const { result, explanation } = explainPricing({ cost: 100, strategy: 'MARKUP_PERCENT', value: 25 })

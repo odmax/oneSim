@@ -83,7 +83,7 @@ export default async function CatalogProductsPage({
               <th className="px-4 py-3 text-left font-medium text-gray-500">Validity</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500">Price</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500">Cost</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Margin</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-500">Markup</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500">SKU</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500">Purchases</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500">Status</th>

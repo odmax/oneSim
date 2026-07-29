@@ -8,6 +8,7 @@ import { getPackageDisplayName, getPackageDataGB, isPackageArchived } from '@/li
 import { getAppUrl } from '@/lib/config/urls'
 import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
+import { QrCodeButton } from '@/components/business/QrCodeModal'
 
 function StatusPill({ status }: { status: string }) {
   const config: Record<string, { label: string; bg: string; dot: string }> = {
@@ -173,9 +174,13 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                             {/* Assign / Manage */}
                             {esim.customer ? (
                               <>
-                                {esim.qrCodeUrl && (
-                                  <a href={esim.qrCodeUrl} target="_blank" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">View QR Code</a>
-                                )}
+                                <QrCodeButton esim={{
+                                  esimId: esim.id, iccid: esim.iccid,
+                                  activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
+                                  providerResponse: esim.providerResponse,
+                                  status: esim.status,
+                                  customerName: esim.customer?.name || null,
+                                }} />
                                 <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
                                 {esim.deliveryStatus === 'NOT_SENT' ? (
                                   <form action={sendToCustomer}>
