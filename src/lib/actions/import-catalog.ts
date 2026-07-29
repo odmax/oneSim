@@ -4,7 +4,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
-import { TRACKED_FIELDS as SAFE_FIELDS } from './catalog-history'
+import { TRACKED_FIELDS as SAFE_FIELDS } from '@/lib/catalog/tracked-fields'
 const FIELD_MAP: Record<string, string> = {
   sellingPrice: 'sellingPrice',
   sellingCurrency: 'sellingCurrency',

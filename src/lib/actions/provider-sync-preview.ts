@@ -36,7 +36,7 @@ interface SyncPreviewResult {
   items: SyncPreviewItem[]
 }
 
-import { TRACKED_FIELDS as SAFE_FIELDS } from './catalog-history'
+import { TRACKED_FIELDS as SAFE_FIELDS } from '@/lib/catalog/tracked-fields'
 
 export async function previewSync(providerId: string): Promise<SyncPreviewResult | { error: string }> {
   const session = await getServerSession(authOptions)

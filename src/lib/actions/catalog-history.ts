@@ -5,8 +5,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
-
-export const TRACKED_FIELDS = ['sellingPrice','sellingCurrency','markupPercent','pricingMode','publishStatus','configurationStatus','tags','notes','isPreferred','preferredReason','preferredAt','excludedFromAutoPick','autoPickReason']
+import { TRACKED_FIELDS } from '@/lib/catalog/tracked-fields'
 
 export async function recordChangeSet(actionType: string, packageIds: string[], description?: string) {
   try {
