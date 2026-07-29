@@ -681,4 +681,57 @@ export class AirHubConnector implements IProviderConnector {
     if (msg.includes('timeout') || msg.includes('unavailable') || msg.includes('maintenance')) return 'PROVIDER_UNAVAILABLE'
     return 'VALIDATION_ERROR'
   }
+
+  async getWalletBalance(): Promise<ConnectorResult<{ balance: number; currency: string; rawAvailable?: any }>> {
+    const tokenCheck = await this.ensureAuthenticated()
+    if (!tokenCheck.success) return { success: false, error: tokenCheck.error || { code: 'NO_TOKEN', message: 'No token available' } }
+
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId } })
+    if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }
+
+    const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
+    const partnerCode = (provider.config as any)?.partnerCode
+    if (!partnerCode) return { success: false, error: { code: 'NO_PARTNER_CODE', message: 'Partner code not configured' } }
+
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/get_wallet_individual`
+
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 25000)
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${this.token}`,
+          'partnercode': String(partnerCode),
+        },
+        signal: controller.signal,
+      })
+      clearTimeout(timeout)
+
+      const text = await response.text()
+      let data: any
+      try { data = JSON.parse(text) } catch {
+        return { success: false, error: { code: 'NON_JSON', message: 'Wallet response is not valid JSON' } }
+      }
+
+      if (response.status === 401) {
+        return { success: false, error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } }
+      }
+      if (!response.ok) {
+        return { success: false, error: { code: `HTTP_${response.status}`, message: `Wallet fetch failed: HTTP ${response.status}` } }
+      }
+
+      const balance = parseFloat(data.balance || data.Balance || data.walletBalance || '0')
+      const currency = data.currency || data.Currency || 'USD'
+      const available = data.available || data.Available || data.availableBalance || null
+
+      return { success: true, data: { balance: isNaN(balance) ? 0 : balance, currency: String(currency), rawAvailable: available } }
+    } catch (e: any) {
+      if (e.name === 'AbortError') return { success: false, error: { code: 'TIMEOUT', message: 'Wallet fetch timed out after 25 seconds' } }
+      if (e?.cause?.code === 'ENOTFOUND') return { success: false, error: { code: 'DNS_ERROR', message: 'AirHub host not found' } }
+      return { success: false, error: { code: 'NETWORK_ERROR', message: e.message?.substring(0, 100) || 'Network error' } }
+    }
+  }
 }

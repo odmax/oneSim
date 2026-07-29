@@ -2631,3 +2631,40 @@ model CatalogReviewItem {
   @@index([providerId])
   @@map("catalog_review_items")
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// PROVIDER WALLET — Phase 5C
+// ══════════════════════════════════════════════════════════════════════
+
+model ProviderWallet {
+  id          String   @id @default(cuid())
+  providerId  String   @unique
+  balance     Float    @default(0)
+  currency    String   @default("USD")
+  available   String?
+  lastSyncedAt DateTime?
+  syncStatus  String?  @default("OK")
+  lastError   String?
+  lowBalanceThreshold Float? @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  snapshots   ProviderWalletSnapshot[]
+
+  @@index([providerId])
+  @@map("provider_wallets")
+}
+
+model ProviderWalletSnapshot {
+  id          String   @id @default(cuid())
+  walletId    String
+  balance     Float    @default(0)
+  currency    String   @default("USD")
+  available   String?
+  snapshotAt  DateTime @default(now())
+
+  wallet      ProviderWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId, snapshotAt])
+  @@map("provider_wallet_snapshots")
+}
