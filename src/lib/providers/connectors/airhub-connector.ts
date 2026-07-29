@@ -693,7 +693,7 @@ export class AirHubConnector implements IProviderConnector {
     const partnerCode = (provider.config as any)?.partnerCode
     if (!partnerCode) return { success: false, error: { code: 'NO_PARTNER_CODE', message: 'Partner code not configured' } }
 
-    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/get_wallet_individual`
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/get_wallet_individual?partnercode=${encodeURIComponent(String(partnerCode))}`
 
     try {
       const controller = new AbortController()
@@ -701,10 +701,8 @@ export class AirHubConnector implements IProviderConnector {
       const response = await fetch(url, {
         method: 'GET',
         headers: {
-          'Content-Type': 'application/json',
           'Accept': 'application/json',
           'Authorization': `Bearer ${this.token}`,
-          'partnercode': String(partnerCode),
         },
         signal: controller.signal,
       })
@@ -723,11 +721,21 @@ export class AirHubConnector implements IProviderConnector {
         return { success: false, error: { code: `HTTP_${response.status}`, message: `Wallet fetch failed: HTTP ${response.status}` } }
       }
 
-      const balance = parseFloat(data.balance || data.Balance || data.walletBalance || '0')
+      const balanceRaw = data.balance ?? data.Balance ?? data.walletBalance
       const currency = data.currency || data.Currency || 'USD'
+
+      if (balanceRaw == null && currency === 'USD') {
+        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: 'Wallet response missing balance field' } }
+      }
+
+      const balance = parseFloat(String(balanceRaw ?? '0'))
+      if (isNaN(balance)) {
+        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: 'Wallet balance is not a valid number' } }
+      }
+
       const available = data.available || data.Available || data.availableBalance || null
 
-      return { success: true, data: { balance: isNaN(balance) ? 0 : balance, currency: String(currency), rawAvailable: available } }
+      return { success: true, data: { balance, currency: String(currency), rawAvailable: available } }
     } catch (e: any) {
       if (e.name === 'AbortError') return { success: false, error: { code: 'TIMEOUT', message: 'Wallet fetch timed out after 25 seconds' } }
       if (e?.cause?.code === 'ENOTFOUND') return { success: false, error: { code: 'DNS_ERROR', message: 'AirHub host not found' } }

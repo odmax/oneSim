@@ -8,6 +8,7 @@ import { syncProviderPlans } from '@/lib/actions/provider-sync'
 import { previewSync, applySafeSync } from '@/lib/actions/provider-sync-preview'
 import { DeletePackageButton } from '@/components/admin/providers/DeletePackageButton'
 import { PlanImportTable } from '@/components/admin/providers/PlanImportTable'
+import ProviderWalletCard from '@/components/admin/providers/ProviderWalletCard'
 import { ProviderAuthPanel } from '@/components/admin/providers/ProviderAuthPanel'
 import { SetupWizard } from '@/components/admin/providers/SetupWizard'
 import { ProviderLifecycleActions } from '@/components/admin/providers/ProviderLifecycleActions'
@@ -56,6 +57,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   const healthLogs: HealthEvent[] = await getRecentHealthLogs(provider.id, 10)
 
   const packageCount = await prisma.providerPackage.count({ where: { providerId: provider.id } })
+  const wallet = provider.code === 'AIRHUB' ? await prisma.providerWallet.findUnique({ where: { providerId: provider.id } }) : null
   const importedPackages = await prisma.providerPackage.findMany({
     where: { providerId: provider.id },
     orderBy: { createdAt: 'desc' },
@@ -392,6 +394,21 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       <div className="mb-6">
         <ProviderBalanceCard providerId={provider.id} />
       </div>
+
+      {/* Airhub Wallet (Phase 5C) */}
+      {provider.code === 'AIRHUB' && (
+        <div className="mb-6">
+          <ProviderWalletCard
+            providerId={provider.id}
+            initialBalance={wallet?.balance ?? null}
+            initialCurrency={wallet?.currency ?? null}
+            initialStatus={wallet?.syncStatus ?? null}
+            initialLastSync={wallet?.lastSyncedAt?.toISOString() ?? null}
+            initialError={wallet?.lastError ?? null}
+            initialThreshold={wallet?.lowBalanceThreshold ?? null}
+          />
+        </div>
+      )}
 
       {/* Roaming Profiles */}
       <div className="mb-6">
