@@ -4,11 +4,8 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
-
-const SAFE_FIELDS = ['sellingPrice', 'sellingCurrency', 'markupPercent', 'pricingMode', 'publishStatus', 'configurationStatus', 'tags', 'notes'] as const
-type SafeField = typeof SAFE_FIELDS[number]
-
-const FIELD_MAP: Record<string, SafeField> = {
+import { TRACKED_FIELDS as SAFE_FIELDS } from './catalog-history'
+const FIELD_MAP: Record<string, string> = {
   sellingPrice: 'sellingPrice',
   sellingCurrency: 'sellingCurrency',
   markupPercent: 'markupPercent',

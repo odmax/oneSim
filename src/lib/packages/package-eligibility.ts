@@ -9,7 +9,7 @@ export interface EligibilityInput {
   costPrice: { toString(): string } | string | number | null
   effectiveCostPrice: number | null
   provider?: { status?: string | null } | null
-  publishedAs?: { archivedAt?: Date | string | null } | null
+  publishedAs?: { archivedAt?: Date | string | null; hiddenFromCatalog?: boolean | null } | null
 }
 
 export interface EligibilityResult {
@@ -85,6 +85,11 @@ export function checkPackageEligibility(pkg: EligibilityInput): EligibilityResul
 
   if (pkg.publishedAs?.archivedAt) {
     reasons.push('archived in catalog')
+    cheapestCandidateEligible = false
+  }
+
+  if (pkg.publishedAs?.hiddenFromCatalog) {
+    reasons.push('hidden from catalog')
     cheapestCandidateEligible = false
   }
 
