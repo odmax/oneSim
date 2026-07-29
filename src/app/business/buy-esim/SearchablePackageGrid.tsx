@@ -116,15 +116,15 @@ export function SearchablePackageGrid({ packages, walletBalance }: Props) {
 
     if (query.maxBudget != null) {
       results = results.filter(p => {
-        const price = parseFloat(p.priceUSD?.toString() || p.priceUSD || '0')
-        return price <= query.maxBudget!
+        const price = parseFloat(p.priceUSD?.toString?.() || p.priceUSD || '0')
+        return !isNaN(price) && price <= query.maxBudget!
       })
     }
 
     if (query.cheapest) {
       results.sort((a, b) => {
-        const ap = parseFloat(a.priceUSD?.toString() || a.priceUSD || '0')
-        const bp = parseFloat(b.priceUSD?.toString() || b.priceUSD || '0')
+        const ap = parseFloat(a.priceUSD?.toString?.() || a.priceUSD || '0')
+        const bp = parseFloat(b.priceUSD?.toString?.() || b.priceUSD || '0')
         return ap - bp
       })
     }

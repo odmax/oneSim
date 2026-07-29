@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState } from 'react'
 
 interface ParsedQuery {
   country: string | null
@@ -127,12 +127,16 @@ const SUGGESTIONS = [
 export default function EsimSearchAssistant({ onSearch, onClear }: Props) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
 
   const handleSearch = () => {
     if (!input.trim()) return
+    executeSearch(input)
+  }
+
+  const executeSearch = (text: string) => {
     setLoading(true)
-    const parsed = parseQuery(input)
+    setInput(text)
+    const parsed = parseQuery(text)
     onSearch(parsed)
     setTimeout(() => setLoading(false), 300)
   }
@@ -157,7 +161,6 @@ export default function EsimSearchAssistant({ onSearch, onClear }: Props) {
 
       <div className="flex gap-2">
         <input
-          ref={inputRef}
           type="text"
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -184,7 +187,8 @@ export default function EsimSearchAssistant({ onSearch, onClear }: Props) {
         {SUGGESTIONS.map(s => (
           <button
             key={s}
-            onClick={() => { setInput(s); handleSearch() }}
+            type="button"
+            onClick={() => executeSearch(s)}
             className="rounded-full bg-white border border-gray-200 px-2.5 py-0.5 text-xs text-gray-500 hover:bg-cyan-50 hover:text-cyan-600 hover:border-cyan-200 transition-colors"
           >
             {s}
