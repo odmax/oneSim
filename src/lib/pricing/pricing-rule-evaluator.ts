@@ -38,8 +38,10 @@ import type {
  * The presence of these fields determines the strategy.
  */
 export function inferPricingStrategy(rule: PricingRuleSummary): PricingStrategy {
-  if (rule.fixedPrice != null && rule.fixedPrice > 0) return 'FIXED_SELLING_PRICE'
-  if (rule.markupPercent != null && rule.markupPercent > 0) return 'MARKUP_PERCENT'
+  const fp = toNumber(rule.fixedPrice)
+  const mp = toNumber(rule.markupPercent)
+  if (fp != null && fp > 0) return 'FIXED_SELLING_PRICE'
+  if (mp != null && mp > 0) return 'MARKUP_PERCENT'
   return 'MARKUP_PERCENT'
 }
 
@@ -50,9 +52,19 @@ export function inferPricingStrategy(rule: PricingRuleSummary): PricingStrategy 
  * - FIXED_SELLING_PRICE → fixedPrice
  */
 export function extractPricingValue(rule: PricingRuleSummary): number | null {
-  if (rule.fixedPrice != null && rule.fixedPrice > 0) return rule.fixedPrice
-  if (rule.markupPercent != null && rule.markupPercent > 0) return rule.markupPercent
+  const fp = toNumber(rule.fixedPrice)
+  const mp = toNumber(rule.markupPercent)
+  if (fp != null && fp > 0) return fp
+  if (mp != null && mp > 0) return mp
   return null
+}
+
+function toNumber(val: unknown): number | null {
+  if (val == null) return null
+  if (typeof val === 'number') return val
+  if (typeof val === 'string') { const n = parseFloat(val); return isNaN(n) ? null : n }
+  // Prisma Decimal or other object with toString()
+  try { const n = parseFloat((val as any).toString()); return isNaN(n) ? null : n } catch { return null }
 }
 
 /**
@@ -173,10 +185,13 @@ export function evaluateRule(request: {
     }
   }
 
-  const effectiveCost = rule.costPrice != null && rule.costPrice > 0
-    ? rule.costPrice
-    : pkg.costPrice > 0
-      ? pkg.costPrice
+  const ruleCostNum = toNumber(rule.costPrice)
+  const pkgCostNum = typeof pkg.costPrice === 'number' ? pkg.costPrice : toNumber(pkg.costPrice) ?? 0
+
+  const effectiveCost = ruleCostNum != null && ruleCostNum > 0
+    ? ruleCostNum
+    : pkgCostNum > 0
+      ? pkgCostNum
       : null
 
   return {
