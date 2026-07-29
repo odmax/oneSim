@@ -54,8 +54,8 @@ const SCOPE_DESCRIPTIONS: Record<string, string> = {
 const defaultFilters: ApplyRuleFilters = {
   configurationStatus: 'CONFIGURED',
   publishStatus: 'DRAFT',
-  hasCostPrice: true,
-  hasSellingPrice: true,
+  hasCostPrice: false,
+  hasSellingPrice: false,
   includeArchived: false,
   includeHidden: false,
 }
