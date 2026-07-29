@@ -137,18 +137,19 @@ export function buildUpdateRequest(params: {
   pricingMode: string
   publishStatus: string
   costPrice?: number
-}): PricingUpdateRequest {
-  return {
+}): Omit<PricingUpdateRequest, 'packageId'> {
+  const { packageId: _, ...updateFields } = {
     packageId: params.packageId,
     sellingPrice: params.sellingPrice,
     sellingCurrency: params.sellingCurrency,
     markupPercent: params.markupPercent,
     pricingMode: params.pricingMode,
     publishStatus: params.publishStatus,
-    configurationStatus: 'AUTO_CONFIGURED',
+    configurationStatus: 'AUTO_CONFIGURED' as const,
     autoConfiguredByRuleId: params.ruleId,
     costPrice: params.costPrice,
   }
+  return updateFields
 }
 
 export type { PricingUpdateRequest, PricingUpdateResult }
