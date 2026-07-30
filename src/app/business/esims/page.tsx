@@ -151,7 +151,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                       <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
                         {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '—'}
                       </td>
-                      {isAdmin && (
+                       {isAdmin && (
                         <td className="whitespace-nowrap px-5 py-4">
                           <div className="flex flex-col gap-1.5">
                             {/* Top Up */}
@@ -162,6 +162,14 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                             <form action={syncEsimStatusAction.bind(null, esim.id)}>
                               <button type="submit" className="text-xs font-medium text-cyan-600 hover:text-cyan-700">Refresh Status</button>
                             </form>
+                            {/* View QR Code — visible regardless of customer assignment */}
+                            <QrCodeButton esim={{
+                              esimId: esim.id, iccid: esim.iccid,
+                              activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
+                              providerResponse: esim.providerResponse,
+                              status: esim.status,
+                              customerName: esim.customer?.name || null,
+                            }} />
                             {/* Share Actions */}
                             <ShareActions
                               esimId={esim.id}
@@ -175,13 +183,6 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                             {/* Assign / Manage */}
                             {esim.customer ? (
                               <>
-                                <QrCodeButton esim={{
-                                  esimId: esim.id, iccid: esim.iccid,
-                                  activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
-                                  providerResponse: esim.providerResponse,
-                                  status: esim.status,
-                                  customerName: esim.customer?.name || null,
-                                }} />
                                 <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
                                 {esim.deliveryStatus === 'NOT_SENT' ? (
                                   <form action={sendToCustomer}>
