@@ -330,6 +330,16 @@ model ProviderPackage {
   excludedFromAutoPick Boolean   @default(false)
   autoPickReason       String?
 
+  // Phase 5C — Provider Cost Normalization
+  costStatus           String?   @default("VALID")  /// VALID | STALE | MISSING | INVALID | OVERRIDDEN
+  costReceivedAt       DateTime?
+  costExpiresAt        DateTime?
+  isTaxInclusive       Boolean   @default(false)
+  taxAmount            Decimal?
+  costDerivationMethod String?   /// DIRECT_COST | RETAIL_MINUS_COMMISSION | RETAIL_MINUS_COMMISSION_PERCENT | RETAIL_DISCOUNT_PERCENT
+  costDerivationConfig Json?
+  pricingStatus        String?   @default("COST_UNAVAILABLE")  /// READY | REQUIRES_RECALCULATION | MARGIN_BELOW_MINIMUM | EXCHANGE_RATE_MISSING | COST_UNAVAILABLE | DISABLED
+
   providerRawData Json?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -338,6 +348,8 @@ model ProviderPackage {
   publishedAs      ESIMPackage?
   configuredByRule PackageConfigurationRule? @relation("PackageAutoConfiguration", fields: [autoConfiguredByRuleId], references: [id], onDelete: SetNull)
   changeItems      CatalogChangeItem[]       @relation("PackageChangeItems")
+  fees             ProviderPackageFee[]
+  costSnapshots    ProviderCostSnapshot[]
 
   @@unique([providerId, providerPlanId])
   @@index([providerId])
@@ -2667,4 +2679,49 @@ model ProviderWalletSnapshot {
 
   @@index([walletId, snapshotAt])
   @@map("provider_wallet_snapshots")
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PROVIDER COST NORMALIZATION — Phase 5C
+// ══════════════════════════════════════════════════════════════════
+
+model ProviderPackageFee {
+  id               String   @id @default(cuid())
+  providerPackageId String
+  type             String   // ACTIVATION | TRANSACTION | RECURRING | RENEWAL | TAX | OTHER
+  amount           Decimal
+  currency         String   @default("USD")
+  chargeTiming     String   // AT_PURCHASE | AT_ACTIVATION | MONTHLY | AT_RENEWAL | PROVIDER_INCLUDED
+  label            String?
+  createdAt        DateTime @default(now())
+
+  providerPackage  ProviderPackage @relation(fields: [providerPackageId], references: [id], onDelete: Cascade)
+
+  @@index([providerPackageId])
+  @@map("provider_package_fees")
+}
+
+model ProviderCostSnapshot {
+  id                  String   @id @default(cuid())
+  providerPackageId   String
+  originalAmount      Decimal
+  originalCurrency    String   @default("USD")
+  normalizedAmount    Decimal
+  normalizedCurrency  String   @default("USD")
+  costSource          String   // PROVIDER_COST | PROVIDER_WHOLESALE | PROVIDER_NET_PRICE | DERIVED_FROM_COMMISSION | DERIVED_FROM_DISCOUNT | ADMIN_OVERRIDE
+  exchangeRate        Decimal?
+  exchangeRateSource  String?
+  exchangeRateVersion String?
+  isTaxInclusive      Boolean  @default(false)
+  taxAmount           Decimal?
+  feesSnapshot        Json?    // serialized fee array at snapshot time
+  receivedAt          DateTime
+  expiresAt           DateTime?
+  createdAt           DateTime @default(now())
+  metadata            Json?
+
+  providerPackage     ProviderPackage @relation(fields: [providerPackageId], references: [id], onDelete: Cascade)
+
+  @@index([providerPackageId, createdAt])
+  @@map("provider_cost_snapshots")
 }
