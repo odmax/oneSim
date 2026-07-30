@@ -90,13 +90,23 @@ export class AirHubConnector implements IProviderConnector {
     console.log(`[AIRHUB_AUTH_START] providerId=${this.providerId} baseUrl=${baseUrl} resolvedUrl=${url}`)
     console.log(`[AIRHUB_AUTH_REQUEST] method=POST bodyFields=userName,password`)
 
+    // Validate credentials before making HTTP request
+    const resolvedUsername = (credentials.username || '').trim()
+    const resolvedPassword = (credentials.password || '').trim()
+    if (!resolvedUsername || !resolvedPassword) {
+      return {
+        success: false,
+        error: { code: 'AIRHUB_CREDENTIALS_MISSING', message: 'Username and password are required. Add them to provider.config.' },
+      }
+    }
+
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 25000)
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ userName: credentials.username, password: credentials.password }),
+        body: JSON.stringify({ userName: resolvedUsername, password: resolvedPassword }),
         signal: controller.signal,
       })
       clearTimeout(timeout)

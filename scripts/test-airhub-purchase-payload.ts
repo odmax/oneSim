@@ -24,7 +24,7 @@ async function main() {
   })
   if (!plan) { console.log('No plans found for AirHub'); process.exit(1) }
 
-  const token = provider.apiToken ? mask(decryptToken(provider.apiToken)) : 'none'
+  const token = provider.apiToken ? mask(decryptToken(provider.apiToken) || '') : 'none'
 
   console.log('=== AirHub Purchase Payload Preview (DRY RUN) ===')
   console.log(`Provider: ${provider.name} (${provider.code})`)
