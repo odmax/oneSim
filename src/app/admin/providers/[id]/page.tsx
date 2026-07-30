@@ -56,6 +56,21 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   const authStatus = await getProviderAuthStatus(provider.id)
   const healthLogs: HealthEvent[] = await getRecentHealthLogs(provider.id, 10)
 
+  // Safely normalize provider config for rendering
+  const safeConfig: Record<string, string> = {}
+  const rawConfig = (provider.config || {}) as Record<string, unknown>
+  for (const [k, v] of Object.entries(rawConfig)) {
+    safeConfig[k] = typeof v === 'string' ? v : String(v ?? '')
+  }
+  // Ensure configurationFields is always an array
+  const safeConfigFields: any[] = (() => {
+    const cf = rawConfig.configurationFields
+    if (Array.isArray(cf)) return cf
+    if (typeof cf === 'string') { try { const p = JSON.parse(cf); return Array.isArray(p) ? p : [] } catch { return [] } }
+    return []
+  })()
+  const hasCredentials = !!(safeConfig.username || safeConfig.userName)
+
   const packageCount = await prisma.providerPackage.count({ where: { providerId: provider.id } })
   const wallet = provider.code === 'AIRHUB' ? await prisma.providerWallet.findUnique({ where: { providerId: provider.id } }) : null
   const importedPackages = await prisma.providerPackage.findMany({
@@ -194,9 +209,10 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
           authType={provider.authType}
           authUrl={provider.authUrl}
           initialStatus={authStatus}
-          configValues={(provider.config || {}) as Record<string, string>}
+          configValues={safeConfig}
           requiredConfigFields={(provider.requiredConfigFields || []) as any[]}
-          configurationFields={((provider.config as any)?.configurationFields || []) as any[]}
+          configurationFields={safeConfigFields}
+          credentialsConfigured={hasCredentials}
         />
 
         <div className="rounded-lg border bg-white p-6 shadow-sm">

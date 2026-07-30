@@ -33,6 +33,7 @@ interface ProviderAuthPanelProps {
   authUrl?: string | null
   initialStatus?: AuthStatusData
   configValues?: Record<string, string>
+  credentialsConfigured?: boolean
   requiredConfigFields?: Array<{ name: string; label: string; type: string; required: boolean; placeholder?: string }>
   configurationFields?: Array<{ key: string; label: string; type: string; required?: boolean; secret?: boolean; placeholder?: string; options?: { value: string; label: string }[]; group?: string; default?: string }>
 }
@@ -46,7 +47,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: string
   unknown: { label: 'Unknown', color: 'text-gray-700 bg-gray-50 border-gray-200', icon: '❓' },
 }
 
-export function ProviderAuthPanel({ providerId, providerType, providerName, authType, authUrl, initialStatus, configValues = {}, requiredConfigFields = [], configurationFields }: ProviderAuthPanelProps) {
+export function ProviderAuthPanel({ providerId, providerType, providerName, authType, authUrl, initialStatus, configValues = {}, requiredConfigFields = [], configurationFields, credentialsConfigured }: ProviderAuthPanelProps) {
   const router = useRouter()
   const [authStatus, setAuthStatus] = useState<AuthStatusData>(initialStatus || { hasToken: false, isConnected: false, status: 'unknown' })
   const [accountConfig, setAccountConfig] = useState<any>(null)
@@ -219,6 +220,13 @@ export function ProviderAuthPanel({ providerId, providerType, providerName, auth
       {result && (
         <div className={`mb-4 rounded-lg border p-3 text-sm ${result.type === 'success' ? 'border-green-200 bg-green-50 text-green-800' : result.type === 'error' ? 'border-red-200 bg-red-50 text-red-800' : 'border-cyan-200 bg-cyan-50 text-cyan-800'}`}>
           {result.message}
+        </div>
+      )}
+
+      {/* Credentials not configured warning */}
+      {!authStatus.hasToken && !credentialsConfigured && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          Credentials not configured. Click &quot;Configure Connection&quot; below to add username and password.
         </div>
       )}
 
