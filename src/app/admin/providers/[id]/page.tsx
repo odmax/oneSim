@@ -53,26 +53,30 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   const provider = await prisma.provider.findUnique({ where: { id: params.id } })
   if (!provider) redirect('/admin/providers?error=Provider+not+found')
 
-  const authStatus = await getProviderAuthStatus(provider.id)
-  const healthLogs: HealthEvent[] = await getRecentHealthLogs(provider.id, 10)
+  const authStatus = await getProviderAuthStatus(provider.id).catch(() => ({ hasToken: false, isConnected: false, status: 'error' as const }))
+  const healthLogs: HealthEvent[] = await getRecentHealthLogs(provider.id, 10).catch(() => [])
 
   // Safely normalize provider config for rendering
   const safeConfig: Record<string, string> = {}
   const rawConfig = (provider.config || {}) as Record<string, unknown>
-  for (const [k, v] of Object.entries(rawConfig)) {
-    safeConfig[k] = typeof v === 'string' ? v : String(v ?? '')
-  }
+  try {
+    for (const [k, v] of Object.entries(rawConfig || {})) {
+      safeConfig[k] = typeof v === 'string' ? v : String(v ?? '')
+    }
+  } catch { /* malformed config */ }
   // Ensure configurationFields is always an array
   const safeConfigFields: any[] = (() => {
-    const cf = rawConfig.configurationFields
-    if (Array.isArray(cf)) return cf
-    if (typeof cf === 'string') { try { const p = JSON.parse(cf); return Array.isArray(p) ? p : [] } catch { return [] } }
+    try {
+      const cf = rawConfig.configurationFields
+      if (Array.isArray(cf)) return cf
+      if (typeof cf === 'string') { const p = JSON.parse(cf); return Array.isArray(p) ? p : [] }
+    } catch { /* malformed */ }
     return []
   })()
   const hasCredentials = !!(safeConfig.username || safeConfig.userName)
 
-  const packageCount = await prisma.providerPackage.count({ where: { providerId: provider.id } })
-  const wallet = provider.code === 'AIRHUB' ? await prisma.providerWallet.findUnique({ where: { providerId: provider.id } }) : null
+  const packageCount = await prisma.providerPackage.count({ where: { providerId: provider.id } }).catch(() => 0)
+  const wallet = provider.code === 'AIRHUB' ? await prisma.providerWallet.findUnique({ where: { providerId: provider.id } }).catch(() => null) : null
   const importedPackages = await prisma.providerPackage.findMany({
     where: { providerId: provider.id },
     orderBy: { createdAt: 'desc' },

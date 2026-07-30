@@ -54,18 +54,18 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
-    }),
-    prisma.providerPackage.count({ where }),
-    prisma.provider.findMany({ where: { providerPackages: { some: {} } }, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
-    prisma.providerPackage.findMany({ where: { country: { not: null } }, select: { country: true }, distinct: ['country'], orderBy: { country: 'asc' } }),
+    }).catch(() => []),
+    prisma.providerPackage.count({ where }).catch(() => 0),
+    prisma.provider.findMany({ where: { providerPackages: { some: {} } }, select: { id: true, name: true }, orderBy: { name: 'asc' } }).catch(() => []),
+    prisma.providerPackage.findMany({ where: { country: { not: null } }, select: { country: true }, distinct: ['country'], orderBy: { country: 'asc' } }).catch(() => []),
   ])
 
   const totalPages = Math.ceil(total / limit)
   const stats = {
     total,
-    configured: await prisma.providerPackage.count({ where: { ...where, configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] } } }),
-    unconfigured: await prisma.providerPackage.count({ where: { ...where, configurationStatus: 'UNCONFIGURED' } }),
-    published: await prisma.providerPackage.count({ where: { ...where, publishStatus: 'PUBLISHED' } }),
+    configured: await prisma.providerPackage.count({ where: { ...where, configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] } } }).catch(() => 0),
+    unconfigured: await prisma.providerPackage.count({ where: { ...where, configurationStatus: 'UNCONFIGURED' } }).catch(() => 0),
+    published: await prisma.providerPackage.count({ where: { ...where, publishStatus: 'PUBLISHED' } }).catch(() => 0),
   }
 
   return (
