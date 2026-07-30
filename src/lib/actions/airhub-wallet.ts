@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma'
 /**
  * Fetch Airhub wallet balance. Preserves last valid balance on failure.
  *
- * Contract: GET /api/ESIM/get_wallet_individual?partnercode=12345
+ * Contract: GET /api/ESIM/get_wallet_invidual?partnercode=12345
  *           Header: Authorization: Bearer {token}
  */
 export async function fetchAirhubWallet(providerId: string, syncSource: string = 'MANUAL', actorId?: string) {

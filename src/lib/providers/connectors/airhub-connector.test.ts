@@ -171,7 +171,7 @@ describe('AirHubConnector', () => {
 
       expect(fetchSpy).toHaveBeenCalledTimes(1)
       const [url, opts] = fetchSpy.mock.calls[0]
-      expect(url).toContain('/api/ESIM/PurchaseEsim')
+      expect(url).toContain('/api/ESIM/PurhaseSim')
       expect(opts.method).toBe('POST')
       expect(opts.headers['Authorization']).toBe('Bearer test-token')
       const body = JSON.parse(opts.body)

@@ -405,8 +405,18 @@ export class AirHubConnector implements IProviderConnector {
     if (!tokenResult.success) return { success: false, error: tokenResult.error }
 
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
-    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/PurchaseEsim`
-    const body = { partnerCode, planCode: params.planId, quantity: params.quantity, email: params.subscriber.email }
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/PurhaseSim`
+    const body: Record<string, any> = {
+      partnerCode,
+      planCode: params.planId,
+      quantity: params.quantity,
+      unique_order_id: params.externalId || `onesim-${Date.now()}`,
+    }
+    // email: historically sent, not in Swagger but kept for backward compat
+    if (params.subscriber?.email) body.email = params.subscriber.email
+    // travelDate: include when available
+    const travelDate = (params as any).travelDate || (params.subscriber as any)?.travelDate
+    if (travelDate) body.travelDate = travelDate
 
     console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} orderId=${params.externalId || 'unknown'} endpoint=POST ${url} planCode=${params.planId} quantity=${params.quantity} partnerCode=${partnerCode}`)
 
@@ -693,7 +703,7 @@ export class AirHubConnector implements IProviderConnector {
     const partnerCode = (provider.config as any)?.partnerCode
     if (!partnerCode) return { success: false, error: { code: 'NO_PARTNER_CODE', message: 'Partner code not configured' } }
 
-    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/get_wallet_individual?partnercode=${encodeURIComponent(String(partnerCode))}`
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/get_wallet_invidual?partnercode=${encodeURIComponent(String(partnerCode))}`
 
     try {
       const controller = new AbortController()

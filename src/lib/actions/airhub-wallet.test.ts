@@ -89,7 +89,7 @@ describe('Airhub Wallet — Full Integration', () => {
     const result = await fetchAirhubWallet('airhub-1')
     expect(result.success).toBe(true)
     expect(capturedUrl).toContain('partnercode=12345')
-    expect(capturedUrl).toContain('/api/ESIM/get_wallet_individual')
+    expect(capturedUrl).toContain('/api/ESIM/get_wallet_invidual')
     vi.unstubAllGlobals()
   })
 
