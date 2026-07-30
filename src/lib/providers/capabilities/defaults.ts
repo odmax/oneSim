@@ -20,6 +20,7 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.CATALOG_SYNC,
     ProviderCapability.PURCHASE,
     ProviderCapability.STATUS,
+    ProviderCapability.BALANCE,
   ],
 
   // Rakuten — full eSIM lifecycle

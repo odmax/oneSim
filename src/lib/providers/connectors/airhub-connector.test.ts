@@ -873,13 +873,14 @@ describe('AirHubConnector', () => {
   })
 
   describe('capability defaults', () => {
-    it('AirHub has AUTH, CATALOG_SYNC, PURCHASE, STATUS capabilities', () => {
+    it('AirHub has AUTH, CATALOG_SYNC, PURCHASE, STATUS, BALANCE capabilities', () => {
       const caps = DEFAULT_PROVIDER_CAPABILITIES['AIRHUB']
       expect(caps).toContain(ProviderCapability.AUTH)
       expect(caps).toContain(ProviderCapability.CATALOG_SYNC)
       expect(caps).toContain(ProviderCapability.PURCHASE)
       expect(caps).toContain(ProviderCapability.STATUS)
-      expect(caps).toHaveLength(4)
+      expect(caps).toContain(ProviderCapability.BALANCE)
+      expect(caps).toHaveLength(5)
     })
   })
 

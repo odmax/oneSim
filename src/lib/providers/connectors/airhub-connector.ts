@@ -702,6 +702,16 @@ export class AirHubConnector implements IProviderConnector {
     return 'VALIDATION_ERROR'
   }
 
+  /** Standard connector interface — delegates to AirHub's wallet endpoint */
+  async getBalance(): Promise<ConnectorResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>> {
+    const result = await this.getWalletBalance()
+    if (!result.success) return result as any
+    return {
+      success: true,
+      data: { balance: result.data!.balance, currency: result.data!.currency, accountId: null, accountName: null },
+    }
+  }
+
   async getWalletBalance(): Promise<ConnectorResult<{ balance: number; currency: string; rawAvailable?: any }>> {
     const tokenCheck = await this.ensureAuthenticated()
     if (!tokenCheck.success) return { success: false, error: tokenCheck.error || { code: 'NO_TOKEN', message: 'No token available' } }
