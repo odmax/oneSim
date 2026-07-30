@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/prisma'
-import { getExchangeRateMaxAge } from './currency-config'
+import { getExchangeRateMaxAge, PLATFORM_BASE_CURRENCY } from './currency-config'
 
 export type ExchangeRateResolutionType = 'DIRECT' | 'INVERSE' | 'CROSS_RATE' | 'SAME_CURRENCY'
 
@@ -52,6 +52,29 @@ export async function getExchangeRate(from: string, to: string): Promise<Exchang
       resolutionType: 'INVERSE', source: inverse.source,
       exchangeRateId: inverse.id, version: inverse.version,
       effectiveAt: inverse.effectiveAt, expiresAt: inverse.expiresAt || undefined,
+    }
+  }
+
+  // CROSS_RATE via platform base currency
+  if (base !== PLATFORM_BASE_CURRENCY && quote !== PLATFORM_BASE_CURRENCY) {
+    const leg1 = await prisma.exchangeRate.findFirst({
+      where: { baseCurrency: base, quoteCurrency: PLATFORM_BASE_CURRENCY, status: 'ACTIVE', expiresAt: { gte: now } },
+      orderBy: { effectiveAt: 'desc' },
+    })
+    if (!leg1) return null
+
+    const leg2 = await prisma.exchangeRate.findFirst({
+      where: { baseCurrency: PLATFORM_BASE_CURRENCY, quoteCurrency: quote, status: 'ACTIVE', expiresAt: { gte: now } },
+    })
+    if (!leg2) return null
+
+    return {
+      rate: Number(leg1.rate) * Number(leg2.rate),
+      baseCurrency: base, quoteCurrency: quote,
+      resolutionType: 'CROSS_RATE', source: 'SYSTEM',
+      exchangeRateId: `${leg1.id},${leg2.id}`, version: Math.max(leg1.version, leg2.version),
+      effectiveAt: new Date(Math.min(leg1.effectiveAt.getTime(), leg2.effectiveAt.getTime())),
+      expiresAt: leg1.expiresAt && leg2.expiresAt ? new Date(Math.min(leg1.expiresAt.getTime(), leg2.expiresAt.getTime())) : undefined,
     }
   }
 
