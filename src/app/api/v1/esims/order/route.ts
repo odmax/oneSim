@@ -65,6 +65,17 @@ export async function POST(request: NextRequest) {
     }
     const pkg = resolution.package
 
+    // Phase 5C — purchasability check
+    if (pkg.providerPackageId) {
+      const pp = await prisma.providerPackage.findUnique({
+        where: { id: pkg.providerPackageId },
+        select: { costStatus: true, pricingStatus: true },
+      })
+      if (pp && (pp.costStatus === 'MISSING' || pp.costStatus === 'INVALID' || pp.pricingStatus === 'COST_UNAVAILABLE' || pp.pricingStatus === 'DISABLED')) {
+        return respond(request, makeError('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.'), 400, startTime, businessId, { errorMessage: `Cost unavailable: ${pp.costStatus}/${pp.pricingStatus}`, rateLimit })
+      }
+    }
+
     // Wallet check
     const totalAmount = parseFloat(pkg.priceUSD.toString()) * quantity
     if (parseFloat(business.walletBalance.toString()) < totalAmount) {

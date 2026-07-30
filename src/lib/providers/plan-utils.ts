@@ -31,7 +31,42 @@ export type NormalizedPlan = {
   rawData: any
   templateVersion?: string
   normalizedDebug: NormalizedDebug
+  // Phase 5C — Provider Cost Normalization
+  providerCost?: {
+    amount: number
+    currency: string
+    source?: string
+    isTaxInclusive?: boolean
+    taxAmount?: number
+    receivedAt?: Date
+    expiresAt?: Date
+    fees?: Array<{ type: string; amount: number; currency: string; chargeTiming: string; label?: string }>
+    derivationMethod?: string
+    derivationConfig?: Record<string, unknown>
+  }
 }
+
+export type ProviderCostMapping = {
+  strategy:
+    | 'DIRECT_COST'
+    | 'WHOLESALE_PRICE'
+    | 'NET_PRICE'
+    | 'RETAIL_MINUS_COMMISSION'
+    | 'RETAIL_MINUS_COMMISSION_PERCENT'
+    | 'RETAIL_DISCOUNT_PERCENT'
+  amountPath?: string
+  currencyPath?: string
+  retailPricePath?: string
+  commissionAmountPath?: string
+  commissionPercentPath?: string
+  discountPercentPath?: string
+  taxAmountPath?: string
+  taxInclusivePath?: string
+  activationFeePath?: string
+  recurringFeePath?: string
+}
+
+const CURRENCY_FIELDS = ['currency', 'currencyCode', 'currency_code', 'Currency', 'planCurrency']
 
 const PLAN_ID_FIELDS = ['id', 'planId', 'plan_id', 'bundle_code', 'code', 'sku', 'productCode', 'product_code', 'ratePlanId', 'bundle_template_id']
 const PLAN_NAME_FIELDS = ['name', 'planName', 'plan_name', 'bundle_name', 'productName', 'product_name', 'description', 'title']
@@ -164,6 +199,10 @@ export function normalizePlan(raw: any): NormalizedPlan {
 
   const costPriceUSD = normalizePlanValue(rawPrice ?? 0, 'float')
 
+  // Phase 5C — Extract currency from provider response
+  const providerCurrency = getField(planData, CURRENCY_FIELDS) as string | undefined
+  const currency = providerCurrency || 'USD'
+
   let description = getField(planData, PLAN_DESC_FIELDS)
   if ((description === undefined || description === null || description === '') && name) {
     description = name
@@ -194,5 +233,8 @@ export function normalizePlan(raw: any): NormalizedPlan {
   // Resolve the rawData to include in normalized output (try planData itself, then raw_data, then providerRawData)
   const outputRawData = getRawData(planData) || planData
 
-  return { providerPlanId, sku, name, dataGB, validityDays, costPriceUSD, description, rawData: outputRawData, templateVersion: templateVersionStr, normalizedDebug }
+  return { providerPlanId, sku, name, dataGB, validityDays, costPriceUSD, description, rawData: outputRawData, templateVersion: templateVersionStr, normalizedDebug,
+    // Phase 5C — include extracted currency
+    providerCost: costPriceUSD > 0 ? { amount: costPriceUSD, currency, source: 'PROVIDER_COST', receivedAt: new Date() } : undefined,
+  }
 }

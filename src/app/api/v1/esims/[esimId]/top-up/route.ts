@@ -51,6 +51,17 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
       return respond(request, makeError('INVALID_TOPUP_PACKAGE', 'Top-up package not found'), 404, startTime, businessId, { errorMessage: 'Package not found', rateLimit })
     }
 
+    // Phase 5C — purchasability check
+    if (resolution.package.providerPackageId) {
+      const pp = await prisma.providerPackage.findUnique({
+        where: { id: resolution.package.providerPackageId },
+        select: { costStatus: true, pricingStatus: true },
+      })
+      if (pp && (pp.costStatus === 'MISSING' || pp.costStatus === 'INVALID' || pp.pricingStatus === 'COST_UNAVAILABLE' || pp.pricingStatus === 'DISABLED')) {
+        return respond(request, makeError('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable.'), 400, startTime, businessId, { errorMessage: 'Cost unavailable', rateLimit })
+      }
+    }
+
     // Find business user for audit
     const businessUser = await prisma.businessUser.findFirst({
       where: { businessId, role: 'ADMIN' },
