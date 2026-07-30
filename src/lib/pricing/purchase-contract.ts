@@ -33,11 +33,19 @@ export async function buildValidatedPurchaseContext(
 
   const pkg = await prisma.providerPackage.findUnique({
     where: { id: quote.providerPackageId },
-    select: { providerId: true, providerPlanId: true, provider: { select: { status: true } }, pricingStatus: true },
+    select: {
+      providerId: true, providerPlanId: true, activePriceSnapshotId: true,
+      provider: { select: { status: true, code: true } }, pricingStatus: true,
+    },
   })
   if (!pkg) return { success: false, error: 'Package not found' }
   if (pkg.pricingStatus !== 'READY') return { success: false, error: 'Package not available' }
+  if (!pkg.activePriceSnapshotId) return { success: false, error: 'No active price snapshot' }
+  if (!pkg.providerPlanId) return { success: false, error: 'Missing provider plan ID' }
   if (pkg.provider.status !== 'ACTIVE' && pkg.provider.status !== 'TESTING') return { success: false, error: 'Provider not available' }
+
+  // Verify quote references the active snapshot
+  if (quote.packagePriceSnapshotId !== pkg.activePriceSnapshotId) return { success: false, error: 'Quote snapshot mismatch' }
 
   return {
     success: true,

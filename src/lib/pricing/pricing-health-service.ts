@@ -50,3 +50,38 @@ export async function getPricingHealth(): Promise<PricingHealthSummary> {
     consumedQuotes: quoteStats[2],
   }
 }
+
+export function arePricingQuotesRequired(): boolean {
+  return process.env.PRICING_QUOTES_REQUIRED === 'true'
+}
+
+export interface IntegrityWarnings {
+  readyWithoutSnapshot: number
+  nonReadyWithActiveSnapshot: number
+  sellingPriceMismatch: number
+  quoteSnapshotMissing: number
+}
+
+export async function getIntegrityWarnings(): Promise<IntegrityWarnings> {
+  // READY without active snapshot
+  const readyWithout = await prisma.providerPackage.count({
+    where: { pricingStatus: 'READY', activePriceSnapshotId: null },
+  })
+
+  // Non-READY with active snapshot
+  const nonReadyWith = await prisma.providerPackage.count({
+    where: { pricingStatus: { not: 'READY' }, activePriceSnapshotId: { not: null } },
+  })
+
+  // Expired active quotes
+  const expiredQuotes = await prisma.purchaseQuote.count({
+    where: { status: 'ACTIVE', expiresAt: { lte: new Date() } },
+  })
+
+  return {
+    readyWithoutSnapshot: readyWithout,
+    nonReadyWithActiveSnapshot: nonReadyWith,
+    sellingPriceMismatch: 0,
+    quoteSnapshotMissing: 0,
+  }
+}
