@@ -10,28 +10,37 @@ export async function createPurchaseQuote(params: {
 
   const pkg = await prisma.providerPackage.findUnique({
     where: { id: providerPackageId },
-    select: { pricingStatus: true, sellingPrice: true, sellingCurrency: true, effectiveCostPrice: true, currency: true, id: true },
+    select: { pricingStatus: true, sellingPrice: true, sellingCurrency: true, effectiveCostPrice: true, currency: true, id: true, activePriceSnapshotId: true, provider: { select: { status: true } } },
   })
   if (!pkg) return { success: false, error: 'Package not found' }
   if (pkg.pricingStatus !== 'READY') return { success: false, error: `Package not available for purchase (${pkg.pricingStatus})` }
+  if (!pkg.activePriceSnapshotId) return { success: false, error: 'No active price snapshot — package requires recalculation' }
 
-  const sellPrice = pkg.sellingPrice ? Number(pkg.sellingPrice) : 0
+  // Verify active snapshot exists and belongs to this package
+  const snapshot = await prisma.packagePriceSnapshot.findUnique({
+    where: { id: pkg.activePriceSnapshotId },
+    select: { id: true, finalSellingPrice: true, sellingCurrency: true, effectiveCostAmount: true, effectiveCostCurrency: true, status: true },
+  })
+  if (!snapshot || snapshot.status !== 'ACTIVE') return { success: false, error: 'Active price snapshot invalid' }
+
+  // Use snapshot values, not mutable package fields
+  const sellPrice = Number(snapshot.finalSellingPrice)
   if (sellPrice <= 0) return { success: false, error: 'No valid selling price' }
 
   const now = new Date()
   const expiresAt = new Date(now.getTime() + getQuoteExpiryMinutes() * 60 * 1000)
   const quoteRef = `QT-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const totalAmount = sellPrice * quantity
-  const costAmount = pkg.effectiveCostPrice ? Number(pkg.effectiveCostPrice) : 0
+  const costAmount = Number(snapshot.effectiveCostAmount)
 
   const quote = await prisma.purchaseQuote.create({
     data: {
       quoteReference: quoteRef,
-      providerPackageId, packagePriceSnapshotId: pkg.id,
+      providerPackageId, packagePriceSnapshotId: snapshot.id,
       businessId, quantity,
       unitPrice: sellPrice, totalAmount,
-      currency: pkg.sellingCurrency || 'USD',
-      effectiveCostAmount: costAmount, effectiveCostCurrency: pkg.currency || 'USD',
+      currency: snapshot.sellingCurrency || 'USD',
+      effectiveCostAmount: costAmount, effectiveCostCurrency: snapshot.effectiveCostCurrency || 'USD',
       pricingEngineVersion: PRICING_ENGINE_VERSION,
       expiresAt,
     },

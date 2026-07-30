@@ -105,46 +105,51 @@ export async function recalculatePackagePrice(
   const sellCurrency = pkg.sellingCurrency || baseCurrency
   sellPrice = roundCurrencyAmount(sellPrice, sellCurrency)
 
-  // Step 7: Create snapshot
+  // Step 7: Atomic transaction — create snapshot + update package
   const round6dp = (v: number) => Math.round(v * 1000000) / 1000000
+  let snapshotId: string | undefined
 
-  const snapshot = await prisma.packagePriceSnapshot.create({
-    data: {
-      providerPackageId: packageId,
-      originalCostAmount: round6dp(Number(pkg.costPrice)),
-      originalCostCurrency: (pkg as any).currency || 'USD',
-      effectiveCostAmount: round6dp(effectiveCost),
-      effectiveCostCurrency: baseCurrency,
-      baseSellingPrice: round6dp(sellPrice),
-      finalSellingPrice: round6dp(sellPrice),
-      sellingCurrency: sellCurrency,
-      profitAmount: round6dp(profit),
-      marginPercent: round6dp(marginPercent),
-      pricingEngineVersion: PRICING_ENGINE_VERSION,
-      reason,
-      status: 'ACTIVE',
-    },
-  })
+  try {
+    await prisma.$transaction(async (tx) => {
+      const snap = await (tx as any).packagePriceSnapshot.create({
+        data: {
+          providerPackageId: packageId,
+          originalCostAmount: round6dp(Number(pkg.costPrice)),
+          originalCostCurrency: (pkg as any).currency || 'USD',
+          effectiveCostAmount: round6dp(effectiveCost),
+          effectiveCostCurrency: baseCurrency,
+          baseSellingPrice: round6dp(sellPrice),
+          finalSellingPrice: round6dp(sellPrice),
+          sellingCurrency: sellCurrency,
+          profitAmount: round6dp(profit),
+          marginPercent: round6dp(marginPercent),
+          pricingEngineVersion: PRICING_ENGINE_VERSION,
+          reason,
+          status: 'ACTIVE',
+        },
+      })
+      snapshotId = snap.id
 
-  // Step 8: Update package
-  await prisma.providerPackage.update({
-    where: { id: packageId },
-    data: {
-      sellingPrice: sellPrice,
-      sellingCurrency: sellCurrency,
-      effectiveCostPrice: round6dp(effectiveCost),
-      pricingStatus: 'READY',
-    },
-  })
-
-  return {
-    success: true,
-    providerPackageId: packageId,
-    pricingStatus: 'READY',
-    priceSnapshotId: snapshot.id,
-    finalSellingPrice: round6dp(sellPrice),
-    sellingCurrency: sellCurrency,
+      await (tx as any).providerPackage.update({
+        where: { id: packageId },
+        data: {
+          sellingPrice: sellPrice,
+          sellingCurrency: sellCurrency,
+          effectiveCostPrice: round6dp(effectiveCost),
+          pricingStatus: 'READY',
+          activePriceSnapshotId: snap.id,
+        },
+      })
+    })
+  } catch (e: any) {
+    await prisma.providerPackage.update({
+      where: { id: packageId },
+      data: { pricingStatus: 'CALCULATION_FAILED', activePriceSnapshotId: null },
+    }).catch(() => {})
+    return { success: false, providerPackageId: packageId, pricingStatus: 'CALCULATION_FAILED', reason: e.message }
   }
+  // Should never reach here — all paths return
+  return { success: false, providerPackageId: packageId, pricingStatus: 'CALCULATION_FAILED', reason: 'Unhandled path' }
 }
 
 export async function recalculateAffectedByCurrency(baseCurrency: string): Promise<{ total: number; recalculated: number }> {

@@ -331,14 +331,18 @@ model ProviderPackage {
   autoPickReason       String?
 
   // Phase 5C — Provider Cost Normalization
-  costStatus           String?   @default("MISSING")  /// VALID | STALE | MISSING | INVALID | OVERRIDDEN
+  costStatus           String?   @default("MISSING")
   costReceivedAt       DateTime?
   costExpiresAt        DateTime?
   isTaxInclusive       Boolean   @default(false)
   taxAmount            Decimal?
-  costDerivationMethod String?   /// DIRECT_COST | RETAIL_MINUS_COMMISSION | RETAIL_MINUS_COMMISSION_PERCENT | RETAIL_DISCOUNT_PERCENT
+  costDerivationMethod String?
   costDerivationConfig Json?
-  pricingStatus        String?   @default("COST_UNAVAILABLE")  /// READY | REQUIRES_RECALCULATION | MARGIN_BELOW_MINIMUM | EXCHANGE_RATE_MISSING | COST_UNAVAILABLE | DISABLED
+  pricingStatus        String?   @default("COST_UNAVAILABLE")
+
+  // Phase 3C — Active Price Snapshot
+  activePriceSnapshotId String?   @unique
+  activePriceSnapshot   PackagePriceSnapshot? @relation("ActivePriceSnapshot", fields: [activePriceSnapshotId], references: [id], onDelete: SetNull)
 
   providerRawData Json?
   createdAt       DateTime @default(now())
@@ -2804,6 +2808,9 @@ model PackagePriceSnapshot {
   createdAt               DateTime @default(now())
   metadata                Json?
 
+  // Reverse relation: packages using this as active snapshot
+  activeForPackage        ProviderPackage? @relation("ActivePriceSnapshot")
+
   @@index([providerPackageId, createdAt])
   @@index([status])
   @@map("package_price_snapshots")
@@ -2850,4 +2857,17 @@ model PurchaseQuote {
   @@index([providerPackageId])
   @@index([expiresAt])
   @@map("purchase_quotes")
+}
+
+model SystemJobLock {
+  id          String   @id @default(cuid())
+  jobName     String   @unique
+  lockedAt    DateTime
+  lockedUntil DateTime
+  owner       String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("system_job_locks")
 }
