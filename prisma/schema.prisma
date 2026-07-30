@@ -2725,3 +2725,129 @@ model ProviderCostSnapshot {
   @@index([providerPackageId, createdAt])
   @@map("provider_cost_snapshots")
 }
+
+// ══════════════════════════════════════════════════════════════════
+// PHASE 3 — EXCHANGE RATES, PRICE SNAPSHOTS, PURCHASE QUOTES
+// ══════════════════════════════════════════════════════════════════
+
+enum ExchangeRateSource {
+  MANUAL
+  PROVIDER
+  EXTERNAL_API
+  SYSTEM
+}
+
+enum ExchangeRateStatus {
+  ACTIVE
+  STALE
+  DISABLED
+  INVALID
+}
+
+enum PurchaseQuoteStatus {
+  ACTIVE
+  EXPIRED
+  CONSUMED
+  INVALIDATED
+  CANCELLED
+}
+
+model ExchangeRate {
+  id            String              @id @default(cuid())
+  baseCurrency  String
+  quoteCurrency String
+  rate          Decimal             @db.Decimal(24, 12)
+  source        ExchangeRateSource
+  status        ExchangeRateStatus  @default(ACTIVE)
+  effectiveAt   DateTime
+  expiresAt     DateTime?
+  fetchedAt     DateTime            @default(now())
+  version       Int                 @default(1)
+  metadata      Json?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@unique([baseCurrency, quoteCurrency, effectiveAt])
+  @@index([baseCurrency, quoteCurrency, status])
+  @@index([expiresAt])
+  @@map("exchange_rates")
+}
+
+model PackagePriceSnapshot {
+  id                      String   @id @default(cuid())
+  providerPackageId       String
+  businessId              String?
+
+  originalCostAmount      Decimal  @db.Decimal(18, 6)
+  originalCostCurrency    String
+
+  effectiveCostAmount     Decimal  @db.Decimal(18, 6)
+  effectiveCostCurrency   String
+
+  baseSellingPrice        Decimal  @db.Decimal(18, 6)
+  finalSellingPrice       Decimal  @db.Decimal(18, 6)
+  sellingCurrency         String
+
+  profitAmount            Decimal  @db.Decimal(18, 6)
+  marginPercent           Decimal  @db.Decimal(10, 4)
+
+  providerCostSnapshotId  String?
+  exchangeRateId          String?
+  exchangeRateVersion     Int?
+
+  pricingEngineVersion    String
+
+  reason                  String
+  status                  String   @default("ACTIVE")
+
+  effectiveAt             DateTime @default(now())
+  createdAt               DateTime @default(now())
+  metadata                Json?
+
+  @@index([providerPackageId, createdAt])
+  @@index([status])
+  @@map("package_price_snapshots")
+}
+
+model PurchaseQuote {
+  id                       String              @id @default(cuid())
+  quoteReference           String              @unique
+
+  providerPackageId        String
+  packagePriceSnapshotId   String
+
+  businessId               String
+  customerId               String?
+
+  quantity                 Int                 @default(1)
+
+  unitPrice                Decimal             @db.Decimal(18, 6)
+  totalAmount              Decimal             @db.Decimal(18, 6)
+  currency                 String
+
+  effectiveCostAmount      Decimal             @db.Decimal(18, 6)
+  effectiveCostCurrency    String
+
+  providerCostSnapshotId   String?
+  exchangeRateId           String?
+  exchangeRateVersion      Int?
+
+  pricingEngineVersion     String
+
+  status                   PurchaseQuoteStatus @default(ACTIVE)
+
+  expiresAt                DateTime
+  consumedAt               DateTime?
+  invalidatedAt            DateTime?
+
+  idempotencyKey           String?
+  metadata                 Json?
+
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+
+  @@index([businessId, status])
+  @@index([providerPackageId])
+  @@index([expiresAt])
+  @@map("purchase_quotes")
+}
