@@ -92,6 +92,23 @@ function extractCurrency(raw: TelnaPackageTemplate | TelnaPackageTemplateDetail)
   return ''
 }
 
+function extractFees(raw: TelnaPackageTemplate | TelnaPackageTemplateDetail): Array<{ type: string; amount: number; currency: string; chargeTiming: string }> {
+  const fees: Array<{ type: string; amount: number; currency: string; chargeTiming: string }> = []
+  const currency = extractCurrency(raw) || 'USD'
+
+  // Activation/one-time charge from charging field
+  if (raw.charging && typeof raw.charging.amount === 'number' && raw.charging.amount > 0) {
+    fees.push({ type: 'ACTIVATION', amount: raw.charging.amount, currency: raw.charging.currency || currency, chargeTiming: 'AT_ACTIVATION' })
+  }
+
+  // Recurring fee
+  if (raw.recurring?.enabled && raw.recurring?.renewal_price != null && raw.recurring.renewal_price > 0) {
+    fees.push({ type: 'RECURRING', amount: raw.recurring.renewal_price, currency: raw.recurring.period?.unit ? currency : 'USD', chargeTiming: 'MONTHLY' })
+  }
+
+  return fees
+}
+
 function mapCoverage(raw: TelnaPackageTemplate | TelnaPackageTemplateDetail): {
   countries: string[]; countryCodes: string[]; regions: string[]; warnings: string[]
 } {
@@ -190,6 +207,7 @@ export function mapTelnaPackageTemplate(template: TelnaPackageTemplate | TelnaPa
     trafficPolicyId: template.traffic_policy_id != null ? String(template.traffic_policy_id) : null,
     routePolicyId: template.route_policy_id != null ? String(template.route_policy_id) : null,
     warnings,
+    fees: extractFees(template), // Phase 5C — extracted fees
     rawData,
   }
 }

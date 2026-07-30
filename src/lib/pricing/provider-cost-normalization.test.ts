@@ -23,6 +23,9 @@ import {
   persistProviderCost,
   resolveEffectiveCost,
   isPackagePurchasable,
+  triggerPricingRecalculation,
+  setPricingReady,
+  checkCostFreshness,
 } from './provider-cost-normalization'
 import type { NormalizedProviderCost } from './provider-cost-normalization'
 
@@ -237,3 +240,55 @@ function makeCost(overrides: Partial<NormalizedProviderCost> = {}): NormalizedPr
     ...overrides,
   }
 }
+
+describe('triggerPricingRecalculation', () => {
+  it('sets pricingStatus to REQUIRES_RECALCULATION', async () => {
+    const updateMock = vi.mocked(prisma.providerPackage.update)
+    await triggerPricingRecalculation('pkg-1')
+    expect(updateMock).toHaveBeenCalledWith({ where: { id: 'pkg-1' }, data: { pricingStatus: 'REQUIRES_RECALCULATION' } })
+  })
+})
+
+describe('setPricingReady', () => {
+  it('sets READY when cost is VALID and sellingPrice > 0', async () => {
+    ;(prisma.providerPackage.findUnique as any).mockResolvedValue({ costStatus: 'VALID', sellingPrice: { toString: () => '5' } })
+    const updateMock = vi.mocked(prisma.providerPackage.update)
+    await setPricingReady('pkg-1', null)
+    expect(updateMock).toHaveBeenCalledWith({ where: { id: 'pkg-1' }, data: { pricingStatus: 'READY' } })
+  })
+
+  it('sets COST_UNAVAILABLE when cost is MISSING', async () => {
+    ;(prisma.providerPackage.findUnique as any).mockResolvedValue({ costStatus: 'MISSING', sellingPrice: { toString: () => '5' } })
+    const updateMock = vi.mocked(prisma.providerPackage.update)
+    await setPricingReady('pkg-1', null)
+    expect(updateMock).toHaveBeenCalledWith({ where: { id: 'pkg-1' }, data: { pricingStatus: 'COST_UNAVAILABLE' } })
+  })
+})
+
+describe('checkCostFreshness', () => {
+  it('returns true for fresh VALID cost', async () => {
+    ;(prisma.providerPackage.findUnique as any).mockResolvedValue({
+      costStatus: 'VALID', costReceivedAt: new Date(), costExpiresAt: null,
+    })
+    const result = await checkCostFreshness('pkg-1')
+    expect(result).toBe(true)
+  })
+
+  it('returns false and marks STALE for expired cost', async () => {
+    ;(prisma.providerPackage.findUnique as any).mockResolvedValue({
+      costStatus: 'VALID', costReceivedAt: new Date(Date.now() - 200 * 86400000), costExpiresAt: null,
+    })
+    const updateMock = vi.mocked(prisma.providerPackage.update)
+    const result = await checkCostFreshness('pkg-1')
+    expect(result).toBe(false)
+    expect(updateMock).toHaveBeenCalledWith({ where: { id: 'pkg-1' }, data: { costStatus: 'STALE', pricingStatus: 'REQUIRES_RECALCULATION' } })
+  })
+
+  it('returns true for OVERRIDDEN regardless of age', async () => {
+    ;(prisma.providerPackage.findUnique as any).mockResolvedValue({
+      costStatus: 'OVERRIDDEN', costReceivedAt: new Date(Date.now() - 500 * 86400000), costExpiresAt: null,
+    })
+    const result = await checkCostFreshness('pkg-1')
+    expect(result).toBe(true)
+  })
+})

@@ -333,3 +333,65 @@ export function isPackagePurchasable(
   if (!costStatus) return false
   return costStatus === 'VALID' || costStatus === 'OVERRIDDEN'
 }
+
+// ──────────────── Recalculation Trigger ────────────────
+
+/**
+ * Mark a package for pricing recalculation after cost changes.
+ */
+export async function triggerPricingRecalculation(packageId: string): Promise<void> {
+  await prisma.providerPackage.update({
+    where: { id: packageId },
+    data: { pricingStatus: 'REQUIRES_RECALCULATION' },
+  }).catch(() => {})
+}
+
+/**
+ * Mark pricing as READY only when cost is valid and selling price > 0.
+ */
+export async function setPricingReady(packageId: string, sellingPrice: number | null): Promise<void> {
+  const pkg = await prisma.providerPackage.findUnique({
+    where: { id: packageId },
+    select: { costStatus: true, sellingPrice: true },
+  })
+  if (!pkg) return
+
+  const sellPrice = sellingPrice ?? (pkg.sellingPrice ? Number(pkg.sellingPrice) : 0)
+  const isReady = (pkg.costStatus === 'VALID' || pkg.costStatus === 'OVERRIDDEN') && sellPrice > 0
+
+  await prisma.providerPackage.update({
+    where: { id: packageId },
+    data: { pricingStatus: isReady ? 'READY' : 'COST_UNAVAILABLE' },
+  }).catch(() => {})
+}
+
+// ──────────────── Cost Freshness ────────────────
+
+const DEFAULT_FRESHNESS_MS = 90 * 24 * 60 * 60 * 1000 // 90 days
+
+/**
+ * Check and update cost staleness for a package.
+ */
+export async function checkCostFreshness(packageId: string, freshnessMs: number = DEFAULT_FRESHNESS_MS): Promise<boolean> {
+  const pkg = await prisma.providerPackage.findUnique({
+    where: { id: packageId },
+    select: { costStatus: true, costReceivedAt: true, costExpiresAt: true },
+  })
+
+  if (!pkg || pkg.costStatus === 'MISSING' || pkg.costStatus === 'INVALID') return false
+  if (pkg.costStatus === 'OVERRIDDEN') return true
+
+  const now = Date.now()
+  const expiry = pkg.costExpiresAt?.getTime() || (pkg.costReceivedAt ? pkg.costReceivedAt.getTime() + freshnessMs : now - 1)
+  const isStale = now > expiry
+
+  if (isStale && (pkg.costStatus === 'VALID')) {
+    await prisma.providerPackage.update({
+      where: { id: packageId },
+      data: { costStatus: 'STALE', pricingStatus: 'REQUIRES_RECALCULATION' },
+    }).catch(() => {})
+    return false
+  }
+
+  return true
+}

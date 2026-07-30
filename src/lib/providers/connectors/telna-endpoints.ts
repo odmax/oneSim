@@ -210,6 +210,7 @@ export interface MappedTelnaPackageTemplate {
   trafficPolicyId: string | null
   routePolicyId: string | null
   warnings: string[]
+  fees?: Array<{ type: string; amount: number; currency: string; chargeTiming: string }>
   rawData: Record<string, unknown>
 }
 
