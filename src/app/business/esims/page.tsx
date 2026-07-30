@@ -12,13 +12,14 @@ import { QrCodeButton } from '@/components/business/QrCodeModal'
 
 function StatusPill({ status }: { status: string }) {
   const config: Record<string, { label: string; bg: string; dot: string }> = {
-    ACTIVE: { label: 'Activated on device', bg: 'bg-emerald-50 text-emerald-600', dot: 'bg-emerald-400' },
+    ACTIVE: { label: 'Active', bg: 'bg-emerald-50 text-emerald-600', dot: 'bg-emerald-400' },
     PENDING_ACTIVATION: { label: 'Ready to install', bg: 'bg-amber-50 text-amber-600', dot: 'bg-amber-400' },
-    PENDING: { label: 'Ready to install', bg: 'bg-amber-50 text-amber-600', dot: 'bg-amber-400' },
+    PENDING: { label: 'Provisioning', bg: 'bg-blue-50 text-blue-600', dot: 'bg-blue-400' },
     FAILED: { label: 'Provisioning failed', bg: 'bg-red-50 text-red-600', dot: 'bg-red-400' },
     EXPIRED: { label: 'Expired', bg: 'bg-red-50 text-red-600', dot: 'bg-red-400' },
     SUSPENDED: { label: 'Suspended', bg: 'bg-orange-50 text-orange-600', dot: 'bg-orange-400' },
     INACTIVE: { label: 'Inactive', bg: 'bg-gray-50 text-gray-500', dot: 'bg-gray-400' },
+    INSTALLED: { label: 'Installed on device', bg: 'bg-cyan-50 text-cyan-600', dot: 'bg-cyan-400' },
   }
   const c = config[status] || { label: status, bg: 'bg-gray-50 text-gray-600', dot: 'bg-gray-400' }
   return (

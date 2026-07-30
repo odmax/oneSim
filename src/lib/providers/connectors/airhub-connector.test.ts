@@ -166,7 +166,7 @@ describe('AirHubConnector', () => {
       expect(result.success).toBe(true)
       expect(result.data?.activationId).toBe('AH-789')
       expect(result.data?.iccids).toEqual(['8901234567890123456'])
-      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.status).toBe('PENDING_ACTIVATION')
       expect(result.data?.qrCodeUrl).toBe('https://qr.airhub.com/12345')
 
       expect(fetchSpy).toHaveBeenCalledTimes(1)
@@ -194,7 +194,7 @@ describe('AirHubConnector', () => {
 
       expect(result.success).toBe(true)
       expect(result.data?.iccids).toEqual(['8901234567890999999'])
-      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.status).toBe('PENDING_ACTIVATION')
     })
 
     it('handles single iccid string at root level', async () => {
@@ -623,7 +623,7 @@ describe('AirHubConnector', () => {
       const result = await connector.getStatus('AH-789')
 
       expect(result.success).toBe(true)
-      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.status).toBe('PENDING_ACTIVATION')
       expect(result.data?.iccid).toBe('8901234567890123456')
 
       const [url, opts] = fetchSpy.mock.calls[0]
@@ -921,34 +921,34 @@ describe('AirHubConnector', () => {
   })
 
   describe('normalizeStatus', () => {
-    it('maps ACTIVATED to ACTIVE', async () => {
+    it('maps ACTIVATED to PENDING_ACTIVATION (purchase complete, not device-active)', async () => {
       mockFetchSuccess({
         isSuccess: true,
         data: { orderId: 'AH1', iccids: ['8901234567890123456'], status: 'ACTIVATED' },
       })
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.activateESIM(ACTIVATE_PARAMS)
-      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.status).toBe('PENDING_ACTIVATION')
     })
 
-    it('maps COMPLETED to ACTIVE', async () => {
+    it('maps COMPLETED to PENDING_ACTIVATION (purchase complete, not device-active)', async () => {
       mockFetchSuccess({
         isSuccess: true,
         data: { orderId: 'AH2', iccids: ['8901234567890123456'], status: 'COMPLETED' },
       })
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.activateESIM(ACTIVATE_PARAMS)
-      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.status).toBe('PENDING_ACTIVATION')
     })
 
-    it('maps SUCCESS to ACTIVE', async () => {
+    it('maps SUCCESS to PENDING_ACTIVATION (purchase complete, not device-active)', async () => {
       mockFetchSuccess({
         isSuccess: true,
         data: { orderId: 'AH3', iccids: ['8901234567890123456'], status: 'SUCCESS' },
       })
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.activateESIM(ACTIVATE_PARAMS)
-      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.status).toBe('PENDING_ACTIVATION')
     })
 
     it('maps IN_PROGRESS to PROCESSING', async () => {

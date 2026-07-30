@@ -660,11 +660,14 @@ export class AirHubConnector implements IProviderConnector {
     return iccids
   }
 
-  private normalizeStatus(raw: string): 'PENDING' | 'ACTIVE' | 'PROCESSING' {
+  private normalizeStatus(raw: string): 'PENDING' | 'PENDING_ACTIVATION' | 'ACTIVE' | 'PROCESSING' {
     if (!raw) return 'PENDING'
     const s = raw.toUpperCase()
-    if (s === 'ACTIVE' || s === 'ACTIVATED' || s === 'COMPLETED' || s === 'SUCCESS') return 'ACTIVE'
-    if (s === 'PROCESSING' || s === 'QUEUED' || s === 'PENDING' || s === 'IN_PROGRESS') return 'PROCESSING'
+    // Only ACTIVE from status check (not purchase) means network-active
+    if (s === 'ACTIVE') return 'ACTIVE'
+    // AirHub purchase completion states → provisioned but not device-active
+    if (s === 'COMPLETED' || s === 'SUCCESS' || s === 'ACTIVATED') return 'PENDING_ACTIVATION'
+    if (s === 'PROCESSING' || s === 'QUEUED' || s === 'PENDING' || s === 'IN_PROGRESS' || s === 'INITIATED') return 'PROCESSING'
     return 'PENDING'
   }
 
