@@ -76,7 +76,24 @@ export class PurchaseOrchestrator {
     }
     const pkg = resolution.package
 
-    // Step 4: Validate business wallet
+    // Step 4: Validate pricing availability
+    if (pkg.providerPackageId) {
+      const providerPkg = await prisma.providerPackage.findUnique({
+        where: { id: pkg.providerPackageId },
+        select: { costStatus: true, pricingStatus: true, costSource: true },
+      })
+      if (providerPkg) {
+        if (providerPkg.costStatus === 'MISSING' || providerPkg.costStatus === 'INVALID') {
+          return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', false)
+        }
+        if (providerPkg.pricingStatus === 'COST_UNAVAILABLE' || providerPkg.pricingStatus === 'DISABLED') {
+          return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', false)
+        }
+        console.log(`[COST_CHECK] packageId=${pkg.providerPackageId} costStatus=${providerPkg.costStatus} pricingStatus=${providerPkg.pricingStatus}`)
+      }
+    }
+
+    // Step 5: Validate business wallet
     const unitPrice = parseFloat(pkg.priceUSD.toString())
     const totalAmount = unitPrice * quantity
     if (parseFloat(business.walletBalance.toString()) < totalAmount) {

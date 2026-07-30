@@ -331,7 +331,7 @@ model ProviderPackage {
   autoPickReason       String?
 
   // Phase 5C — Provider Cost Normalization
-  costStatus           String?   @default("VALID")  /// VALID | STALE | MISSING | INVALID | OVERRIDDEN
+  costStatus           String?   @default("MISSING")  /// VALID | STALE | MISSING | INVALID | OVERRIDDEN
   costReceivedAt       DateTime?
   costExpiresAt        DateTime?
   isTaxInclusive       Boolean   @default(false)

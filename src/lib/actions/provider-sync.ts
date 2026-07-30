@@ -194,6 +194,15 @@ export async function syncProviderPlans(providerId: string) {
         existing?.adminCostPrice ? Number(existing.adminCostPrice) : null,
       )
 
+      // Phase 5C — normalize provider cost
+      const normalizedStatus = Number(pkgData.costPrice) > 0 ? 'VALID' :
+        (existing?.adminCostPrice && Number(existing.adminCostPrice) > 0) ? 'OVERRIDDEN' : 'MISSING'
+      const pricingStatus = normalizedStatus === 'VALID' || normalizedStatus === 'OVERRIDDEN' ? 'READY' : 'COST_UNAVAILABLE'
+
+      ;(pkgData as any).costStatus = normalizedStatus
+      ;(pkgData as any).pricingStatus = pricingStatus
+      ;(pkgData as any).costReceivedAt = new Date()
+
       try {
         if (existing) {
           await prisma.providerPackage.update({
