@@ -754,19 +754,25 @@ export class AirHubConnector implements IProviderConnector {
         return { success: false, error: { code: `HTTP_${response.status}`, message: `Wallet fetch failed: HTTP ${response.status}` } }
       }
 
-      const balanceRaw = data.balance ?? data.Balance ?? data.walletBalance
-      const currency = data.currency || data.Currency || 'USD'
+      const balanceRaw = data.balance ?? data.Balance ?? data.walletBalance ?? data.wallet_balance ?? data.availableBalance ?? data.available_balance ?? data.amount ?? data.data?.balance ?? data.data?.walletBalance ?? data.data?.wallet_balance ?? data.data?.availableBalance ?? data.data?.available_balance ?? data.data?.amount
+      const currency = data.currency || data.Currency || data.data?.currency || 'USD'
 
-      if (balanceRaw == null && currency === 'USD') {
-        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: 'Wallet response missing balance field' } }
+      // Safe debug: log keys + value types, never raw values
+      const respKeys = Object.keys(data)
+      const nestedKeys = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
+      const balanceType = balanceRaw != null ? (typeof balanceRaw === 'string' ? 'string' : typeof balanceRaw) : 'null'
+      console.log(`[AIRHUB_WALLET] httpStatus=${response.status} topKeys=${respKeys.join(',')} nestedKeys=${nestedKeys.join(',')} balanceFieldType=${balanceType}`)
+
+      if (balanceRaw == null) {
+        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: `Wallet response missing balance field. Available keys: ${respKeys.join(', ')}${nestedKeys.length > 0 ? '; nested: ' + nestedKeys.join(', ') : ''}` } }
       }
 
-      const balance = parseFloat(String(balanceRaw ?? '0'))
+      const balance = parseFloat(String(balanceRaw))
       if (isNaN(balance)) {
-        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: 'Wallet balance is not a valid number' } }
+        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: `Wallet balance is not a valid number: "${String(balanceRaw).substring(0, 50)}"` } }
       }
 
-      const available = data.available || data.Available || data.availableBalance || null
+      const available = data.available || data.Available || data.availableBalance || data.data?.available || data.data?.availableBalance || null
 
       return { success: true, data: { balance, currency: String(currency), rawAvailable: available } }
     } catch (e: any) {

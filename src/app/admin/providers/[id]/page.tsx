@@ -76,7 +76,9 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   const hasCredentials = !!(safeConfig.username || safeConfig.userName)
 
   const packageCount = await prisma.providerPackage.count({ where: { providerId: provider.id } }).catch(() => 0)
-  const wallet = provider.code === 'AIRHUB' ? await prisma.providerWallet.findUnique({ where: { providerId: provider.id } }).catch(() => null) : null
+  const wallet = (provider.code === 'AIRHUB' || provider.code === 'CHOICE')
+    ? await prisma.providerWallet.findUnique({ where: { providerId: provider.id } }).catch(() => null)
+    : null
   const importedPackages = await prisma.providerPackage.findMany({
     where: { providerId: provider.id },
     orderBy: { createdAt: 'desc' },
@@ -415,11 +417,12 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
         <ProviderBalanceCard providerId={provider.id} />
       </div>
 
-      {/* Airhub Wallet (Phase 5C) */}
-      {provider.code === 'AIRHUB' && (
+      {/* AirHub/Choice Wallet (Phase 5C) */}
+      {(provider.code === 'AIRHUB' || provider.code === 'CHOICE') && (
         <div className="mb-6">
           <ProviderWalletCard
             providerId={provider.id}
+            providerCode={provider.code}
             initialBalance={wallet?.balance ?? null}
             initialCurrency={wallet?.currency ?? null}
             initialStatus={wallet?.syncStatus ?? null}

@@ -5,6 +5,7 @@ import { fetchAirhubWallet } from '@/lib/actions/airhub-wallet'
 
 interface Props {
   providerId: string
+  providerCode: string
   initialBalance: number | null
   initialCurrency: string | null
   initialStatus: string | null
@@ -14,7 +15,7 @@ interface Props {
 }
 
 export default function ProviderWalletCard({
-  providerId,
+  providerId, providerCode,
   initialBalance, initialCurrency, initialStatus,
   initialLastSync, initialError, initialThreshold,
 }: Props) {
@@ -41,9 +42,13 @@ export default function ProviderWalletCard({
         setError(null)
         setFeedback({ type: 'success', msg: `Balance updated: $${result.data.balance.toFixed(2)}` })
       } else {
+        setStatus('ERROR')
+        setError(result.error || 'Sync failed')
         setFeedback({ type: 'error', msg: result.error || 'Sync failed' })
       }
     } catch (e: any) {
+      setStatus('ERROR')
+      setError(e.message || 'Sync failed')
       setFeedback({ type: 'error', msg: e.message || 'Sync failed' })
     } finally {
       setSyncing(false)
@@ -61,9 +66,10 @@ export default function ProviderWalletCard({
               status === 'LOW_BALANCE' ? 'bg-amber-100 text-amber-700' :
               status === 'TIMEOUT' ? 'bg-amber-100 text-amber-700' :
               status === 'UNAUTHORIZED' ? 'bg-red-100 text-red-700' :
-              'bg-red-100 text-red-700'
+              status === 'ERROR' ? 'bg-red-100 text-red-700' :
+              'bg-gray-100 text-gray-500'
             }`}>
-              {status === 'LOW_BALANCE' ? 'Low Balance' : status}
+              {status === 'LOW_BALANCE' ? 'Low Balance' : status === 'ERROR' ? 'Error' : status}
             </span>
           )}
           <button
@@ -84,11 +90,14 @@ export default function ProviderWalletCard({
         )}
 
         {balance == null ? (
-          <p className="text-sm text-gray-400 text-center py-4">Wallet not synced yet. Click Refresh Wallet.</p>
+          <div className="text-center py-6">
+            <p className="text-sm text-gray-400">Balance unavailable</p>
+            {error && <p className="text-xs text-red-500 mt-1 truncate">{error}</p>}
+          </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="rounded-lg bg-gradient-to-r from-emerald-50 to-white border border-emerald-100 p-4">
-              <p className="text-xs text-emerald-600 font-medium uppercase">Balance</p>
+            <div className={`rounded-lg p-4 ${isLowBalance ? 'bg-gradient-to-r from-amber-50 to-white border border-amber-100' : 'bg-gradient-to-r from-emerald-50 to-white border border-emerald-100'}`}>
+              <p className="text-xs text-gray-500 font-medium uppercase">Balance</p>
               <p className={`text-2xl font-bold mt-1 ${isLowBalance ? 'text-amber-600' : 'text-emerald-700'}`}>
                 ${balance.toFixed(2)} <span className="text-sm font-normal text-gray-500">{currency}</span>
               </p>
@@ -105,7 +114,7 @@ export default function ProviderWalletCard({
               <div className="flex justify-between">
                 <span className="text-gray-500">Connection</span>
                 <span className={status === 'OK' ? 'text-emerald-600' : 'text-red-600'}>
-                  {status === 'OK' ? 'Connected' : status}
+                  {status === 'OK' ? 'Connected' : status || 'Unknown'}
                 </span>
               </div>
               {initialThreshold != null && (
@@ -118,7 +127,7 @@ export default function ProviderWalletCard({
           </div>
         )}
 
-        {error && !syncing && (
+        {error && balance == null && (
           <p className="mt-3 text-xs text-red-500 truncate">{error}</p>
         )}
       </div>

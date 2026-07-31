@@ -3,166 +3,116 @@
 import { prisma } from '@/lib/prisma'
 
 /**
- * Fetch Airhub wallet balance. Preserves last valid balance on failure.
- *
- * Contract: GET /api/ESIM/get_wallet_invidual?partnercode=12345
- *           Header: Authorization: Bearer {token}
+ * Generic Provider Wallet — AirHub, Choice, and any provider with getBalance().
+ * Preserves last valid balance on failure.
  */
 export async function fetchAirhubWallet(providerId: string, syncSource: string = 'MANUAL', actorId?: string) {
-  const { AirHubConnector } = await import('@/lib/providers/connectors/airhub-connector')
   const startedAt = new Date()
 
   const provider = await prisma.provider.findUnique({
     where: { id: providerId },
     select: { id: true, code: true, name: true, config: true, apiToken: true, tokenPlacement: true },
   })
-  if (!provider || provider.code !== 'AIRHUB' || !(provider.config as any)?.partnerCode) {
-    return { success: false, error: 'Not a configured AirHub provider' }
-  }
+  if (!provider) return { success: false, error: 'Provider not found' }
 
   const previous = await prisma.providerWallet.findUnique({ where: { providerId } })
 
-  const connector = new AirHubConnector(providerId)
-  await connector.authenticate({ username: (provider.config as any)?.username || '', password: (provider.config as any)?.password || '' })
-  const result = await connector.getWalletBalance()
-
+  let balance: number | null = null
+  let currency: string | null = null
+  let connectSuccess = false
+  let errorMessage: string | null = null
   const finishedAt = new Date()
-  const durationMs = finishedAt.getTime() - startedAt.getTime()
 
-  const auditEntry = {
-    providerId,
-    syncSource,
-    actorId: actorId || null,
-    startedAt, finishedAt, durationMs,
-    success: result.success,
-    statusCode: result.error?.code || 'OK',
-    previousBalance: previous?.balance ?? null,
-    newBalance: result.success ? result.data!.balance : null,
-    currency: result.success ? result.data!.currency : previous?.currency ?? 'USD',
+  // Route to the correct connector
+  try {
+    if (provider.code === 'AIRHUB') {
+      const { AirHubConnector } = await import('@/lib/providers/connectors/airhub-connector')
+      const connector = new AirHubConnector(providerId)
+      await connector.authenticate({ username: (provider.config as any)?.username || '', password: (provider.config as any)?.password || '' })
+      const result = await connector.getWalletBalance()
+      if (result.success && result.data) {
+        balance = result.data.balance
+        currency = result.data.currency
+        connectSuccess = true
+      } else {
+        errorMessage = result.error?.message || 'Wallet fetch failed'
+      }
+    } else {
+      // Generic connector: Choice, Telna, etc.
+      const { getAdapterForProvider } = await import('@/lib/providers/adapter-manager')
+      const adapter = await getAdapterForProvider(providerId)
+      if (typeof (adapter as any).getBalance === 'function') {
+        const result = await (adapter as any).getBalance()
+        if (result.success && result.data) {
+          balance = result.data.balance
+          currency = result.data.currency
+          connectSuccess = true
+        } else {
+          errorMessage = result.error?.message || 'Balance fetch failed'
+        }
+      } else {
+        return { success: false, error: 'Provider does not support balance' }
+      }
+    }
+  } catch (e: any) {
+    errorMessage = e.message?.substring(0, 200) || 'Unknown error'
   }
 
-  if (!result.success) {
-    // Preserve last valid balance — only update status/error metadata
+  const auditEntry = {
+    providerId, syncSource, actorId: actorId || null,
+    startedAt, finishedAt, durationMs: finishedAt.getTime() - startedAt.getTime(),
+    success: connectSuccess,
+    statusCode: connectSuccess ? 'OK' : 'ERROR',
+    previousBalance: previous?.balance ?? null,
+    newBalance: balance,
+    currency: currency || previous?.currency || 'USD',
+  }
+
+  if (!connectSuccess) {
     if (previous) {
       await prisma.providerWallet.update({
         where: { providerId },
-        data: { syncStatus: mapErrorCode(result.error?.code), lastError: sanitizeError(result.error?.message), lastSyncedAt: previous.lastSyncedAt },
-      })
+        data: { syncStatus: 'ERROR', lastError: errorMessage || 'Fetch failed' },
+      }).catch(() => {})
     } else {
       await prisma.providerWallet.upsert({
         where: { providerId },
-        create: { providerId, balance: 0, syncStatus: mapErrorCode(result.error?.code), lastError: sanitizeError(result.error?.message), lastSyncedAt: null },
-        update: { syncStatus: mapErrorCode(result.error?.code), lastError: sanitizeError(result.error?.message) },
-      })
+        create: { providerId, balance: 0, syncStatus: 'ERROR', lastError: errorMessage },
+        update: { syncStatus: 'ERROR', lastError: errorMessage },
+      }).catch(() => {})
     }
-
-    await recordSyncAudit({ ...auditEntry, errorMessage: sanitizeError(result.error?.message) })
-    return { success: false, error: result.error?.message || 'Wallet fetch failed' }
+    return { success: false, error: errorMessage || 'Wallet fetch failed' }
   }
 
-  const { balance, currency, rawAvailable } = result.data!
-
-  // Detect low-balance threshold crossing
   const threshold = previous?.lowBalanceThreshold
-  if (threshold != null && threshold > 0) {
+
+  if (threshold != null && threshold > 0 && balance != null) {
     const wasAbove = previous?.balance != null && previous.balance > threshold
     const nowBelow = balance < threshold
     if (wasAbove && nowBelow) {
-      await createLowBalanceAlert(providerId, provider.name, balance, threshold, currency)
-    } else if (previous?.syncStatus === 'LOW_BALANCE' && balance > threshold) {
-      await createRecoveryAlert(providerId, provider.name, balance, threshold, currency)
+      await prisma.auditLog.create({
+        data: { userId: actorId || 'system', action: 'WALLET_LOW_BALANCE_ALERT', entity: 'ProviderWallet', entityId: providerId,
+          details: JSON.stringify({ providerName: provider.name, balance, threshold, currency, message: `Balance $${balance} is below threshold $${threshold}` }),
+        },
+      }).catch(() => {})
     }
   }
 
   const wallet = await prisma.providerWallet.upsert({
     where: { providerId },
-    create: {
-      providerId, balance, currency,
-      available: JSON.stringify(rawAvailable ?? null),
-      syncStatus: threshold && balance < threshold ? 'LOW_BALANCE' : 'OK',
-      lastSyncedAt: finishedAt, lastError: null,
-    },
-    update: {
-      balance, currency,
-      available: JSON.stringify(rawAvailable ?? null),
-      syncStatus: threshold && balance < threshold ? 'LOW_BALANCE' : 'OK',
-      lastSyncedAt: finishedAt, lastError: null,
-    },
-  })
+    create: { providerId, balance: balance!, currency: currency!, syncStatus: 'OK', lastSyncedAt: finishedAt, lastError: null },
+    update: { balance: balance!, currency: currency!, syncStatus: 'OK', lastSyncedAt: finishedAt, lastError: null },
+  }).catch(() => null)
 
   await prisma.providerWalletSnapshot.create({
-    data: { walletId: wallet.id, balance, currency, available: JSON.stringify(rawAvailable ?? null) },
-  })
-
-  await recordSyncAudit(auditEntry)
-  return { success: true, data: { balance, currency, lastSyncedAt: wallet.lastSyncedAt?.toISOString() } }
-}
-
-function mapErrorCode(code?: string): string {
-  if (code === 'TIMEOUT') return 'TIMEOUT'
-  if (code === 'UNAUTHORIZED' || code === 'NO_TOKEN') return 'UNAUTHORIZED'
-  if (code === 'DNS_ERROR' || code === 'NETWORK_ERROR') return 'ERROR'
-  if (code === 'MALFORMED_RESPONSE') return 'ERROR'
-  return 'ERROR'
-}
-
-function sanitizeError(msg?: string): string | null {
-  if (!msg) return null
-  return msg.replace(/(Bearer\s+[\w.\-]+)/gi, '***').substring(0, 500)
-}
-
-async function recordSyncAudit(entry: {
-  providerId: string; syncSource: string; actorId?: string | null;
-  startedAt: Date; finishedAt: Date; durationMs: number;
-  success: boolean; statusCode: string;
-  previousBalance: number | null; newBalance: number | null; currency: string;
-  errorMessage?: string | null;
-}) {
-  await prisma.auditLog.create({
-    data: {
-      userId: entry.actorId || 'system',
-      action: `WALLET_SYNC_${entry.syncSource}`,
-      entity: 'ProviderWallet',
-      entityId: entry.providerId,
-      details: JSON.stringify({
-        success: entry.success,
-        statusCode: entry.statusCode,
-        previousBalance: entry.previousBalance,
-        newBalance: entry.newBalance,
-        currency: entry.currency,
-        durationMs: entry.durationMs,
-        error: entry.errorMessage || null,
-      }),
-    },
+    data: { walletId: wallet?.id || 'unknown', balance: balance!, currency: currency! },
   }).catch(() => {})
-}
-
-async function createLowBalanceAlert(providerId: string, providerName: string, balance: number, threshold: number, currency: string) {
-  // Idempotency: skip if alert already created since last sync
-  const recentAlert = await prisma.auditLog.findFirst({
-    where: { entity: 'ProviderWallet', entityId: providerId, action: 'WALLET_LOW_BALANCE_ALERT', createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) } },
-  })
-  if (recentAlert) return
 
   await prisma.auditLog.create({
-    data: {
-      userId: 'system',
-      action: 'WALLET_LOW_BALANCE_ALERT',
-      entity: 'ProviderWallet',
-      entityId: providerId,
-      details: JSON.stringify({ providerName, balance, threshold, currency, message: `Balance $${balance} ${currency} is below threshold $${threshold}` }),
+    data: { userId: actorId || 'system', action: `WALLET_SYNC_${syncSource}`, entity: 'ProviderWallet', entityId: providerId,
+      details: JSON.stringify({ ...auditEntry, error: errorMessage }),
     },
   }).catch(() => {})
-}
 
-async function createRecoveryAlert(providerId: string, providerName: string, balance: number, threshold: number, currency: string) {
-  await prisma.auditLog.create({
-    data: {
-      userId: 'system',
-      action: 'WALLET_RECOVERY_ALERT',
-      entity: 'ProviderWallet',
-      entityId: providerId,
-      details: JSON.stringify({ providerName, balance, threshold, currency, message: `Balance recovered: $${balance} ${currency} is now above threshold $${threshold}` }),
-    },
-  }).catch(() => {})
+  return { success: true, data: { balance: balance!, currency: currency!, lastSyncedAt: finishedAt.toISOString() } }
 }
