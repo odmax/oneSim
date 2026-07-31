@@ -132,5 +132,11 @@ export async function fetchAirhubWallet(providerId: string, syncSource: string =
     },
   }).catch(() => {})
 
-  return { success: true, data: { balance: balance!, currency: currency!, lastSyncedAt: finishedAt.toISOString() } }
+  const recentTransactions = balance != null ? await (prisma as any).providerWalletTransaction?.findMany({
+    where: { providerId },
+    orderBy: { occurredAt: 'desc' },
+    take: 50,
+  }).catch(() => []) : []
+
+  return { success: true, data: { balance: balance!, currency: currency!, lastSyncedAt: finishedAt.toISOString(), transactions: recentTransactions } }
 }

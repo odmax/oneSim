@@ -79,6 +79,9 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   const wallet = (provider.code === 'AIRHUB' || provider.code === 'CHOICE')
     ? await prisma.providerWallet.findUnique({ where: { providerId: provider.id } }).catch(() => null)
     : null
+  const walletTransactions = wallet
+    ? await prisma.providerWalletTransaction.findMany({ where: { providerId: provider.id }, orderBy: { occurredAt: 'desc' }, take: 50 }).catch(() => [])
+    : []
   const importedPackages = await prisma.providerPackage.findMany({
     where: { providerId: provider.id },
     orderBy: { createdAt: 'desc' },
@@ -429,6 +432,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
             initialLastSync={wallet?.lastSyncedAt?.toISOString() ?? null}
             initialError={wallet?.lastError ?? null}
             initialThreshold={wallet?.lowBalanceThreshold ?? null}
+            initialTransactions={walletTransactions as any[]}
           />
         </div>
       )}
