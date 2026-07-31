@@ -715,28 +715,33 @@ export class AirHubConnector implements IProviderConnector {
     }
   }
 
-  async getWalletBalance(): Promise<ConnectorResult<{ balance: number; currency: string; rawAvailable?: any }>> {
+  async getWalletBalance(): Promise<ConnectorResult<{ balance: number; currency: string; transactions?: any[]; rawAvailable?: any }>> {
     const tokenCheck = await this.ensureAuthenticated()
     if (!tokenCheck.success) return { success: false, error: tokenCheck.error || { code: 'NO_TOKEN', message: 'No token available' } }
 
     const provider = await prisma.provider.findUnique({ where: { id: this.providerId } })
     if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }
 
-    const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
-    const partnerCode = (provider.config as any)?.partnerCode
+    const cfg = (provider.config as any) || {}
+    const partnerCode = cfg.partnerCode
     if (!partnerCode) return { success: false, error: { code: 'NO_PARTNER_CODE', message: 'Partner code not configured' } }
 
-    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/get_wallet_invidual?partnercode=${encodeURIComponent(String(partnerCode))}`
+    const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
+    const flag = cfg.flag ?? 6
+    const countryCode = cfg.countryCode ?? ''
+    const multiplecountrycode = Array.isArray(cfg.multiplecountrycode) ? cfg.multiplecountrycode : ['UK']
+
+    // Use the documented POST /api/ESIM/GetWallet endpoint
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/GetWallet`
+    const body = { partnerCode: Number(partnerCode), flag, countryCode, multiplecountrycode }
 
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 25000)
       const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': `Bearer ${this.token}`,
-        },
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body),
         signal: controller.signal,
       })
       clearTimeout(timeout)
@@ -747,38 +752,98 @@ export class AirHubConnector implements IProviderConnector {
         return { success: false, error: { code: 'NON_JSON', message: 'Wallet response is not valid JSON' } }
       }
 
-      if (response.status === 401) {
-        return { success: false, error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } }
-      }
-      if (!response.ok) {
-        return { success: false, error: { code: `HTTP_${response.status}`, message: `Wallet fetch failed: HTTP ${response.status}` } }
-      }
+      if (response.status === 401) return { success: false, error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } }
+      if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `Wallet fetch failed: HTTP ${response.status}` } }
+      if (data.isSuccess === false) return { success: false, error: { code: 'PROVIDER_REJECTED', message: data.message || 'Provider rejected wallet request' } }
 
-      const balanceRaw = data.balance ?? data.Balance ?? data.walletBalance ?? data.wallet_balance ?? data.availableBalance ?? data.available_balance ?? data.amount ?? data.data?.balance ?? data.data?.walletBalance ?? data.data?.wallet_balance ?? data.data?.availableBalance ?? data.data?.available_balance ?? data.data?.amount
-      const currency = data.currency || data.Currency || data.data?.currency || 'USD'
+      // Safe diagnostic logging
+      const topKeys = Object.keys(data)
+      const nested = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
+      console.log(`[AIRHUB_WALLET] httpStatus=${response.status} topKeys=${topKeys.join(',')} nestedKeys=${nested.join(',')}`)
 
-      // Safe debug: log keys + value types, never raw values
-      const respKeys = Object.keys(data)
-      const nestedKeys = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
-      const balanceType = balanceRaw != null ? (typeof balanceRaw === 'string' ? 'string' : typeof balanceRaw) : 'null'
-      console.log(`[AIRHUB_WALLET] httpStatus=${response.status} topKeys=${respKeys.join(',')} nestedKeys=${nestedKeys.join(',')} balanceFieldType=${balanceType}`)
+      // Robust balance parsing
+      const balanceFields = ['balance', 'Balance', 'walletBalance', 'wallet_balance', 'currentBalance', 'current_balance',
+        'availableBalance', 'available_balance', 'amount', 'data.balance', 'data.Balance', 'data.walletBalance',
+        'data.wallet_balance', 'data.currentBalance', 'data.current_balance', 'data.availableBalance',
+        'data.available_balance', 'data.amount', 'response.balance', 'response.walletBalance']
+      let balanceRaw: any = null
+      let balanceFieldPath = ''
+      for (const f of balanceFields) {
+        const parts = f.split('.')
+        let v: any = data
+        for (const p of parts) { if (v && typeof v === 'object') v = v[p]; else { v = null; break } }
+        if (v != null) { balanceRaw = v; balanceFieldPath = f; break }
+      }
 
       if (balanceRaw == null) {
-        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: `Wallet response missing balance field. Available keys: ${respKeys.join(', ')}${nestedKeys.length > 0 ? '; nested: ' + nestedKeys.join(', ') : ''}` } }
+        const tryLegacy = async () => {
+          const legUrl = `${baseUrl.replace(/\/$/, '')}/api/ESIM/get_wallet_invidual?partnercode=${encodeURIComponent(String(partnerCode))}`
+          const lr = await fetch(legUrl, { headers: { 'Authorization': `Bearer ${this.token}`, 'Accept': 'application/json' }, signal: AbortSignal.timeout(15000) })
+          const lt = await lr.text(); try { return JSON.parse(lt) } catch { return null }
+        }
+        const legacy = await tryLegacy()
+        if (legacy) {
+          const lb = legacy.balance ?? legacy.Balance ?? legacy.walletBalance ?? legacy.data?.balance
+          if (lb != null) { balanceRaw = lb; balanceFieldPath = 'legacy:get_wallet_invidual.balance' }
+        }
       }
 
-      const balance = parseFloat(String(balanceRaw))
+      if (balanceRaw == null) {
+        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: `No balance field found. Keys: ${topKeys.join(', ')}${nested.length ? '; nested: ' + nested.join(', ') : ''}` } }
+      }
+
+      const rawStr = String(balanceRaw).replace(/,/g, '')
+      const balance = parseFloat(rawStr)
       if (isNaN(balance)) {
-        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: `Wallet balance is not a valid number: "${String(balanceRaw).substring(0, 50)}"` } }
+        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: `Balance "${String(balanceRaw).substring(0, 50)}" is not a valid number` } }
       }
 
-      const available = data.available || data.Available || data.availableBalance || data.data?.available || data.data?.availableBalance || null
+      // Currency parsing
+      const currencyFields = ['currency', 'currencyCode', 'currency_code', 'Currency']
+      let curr: string | null = null
+      for (const f of currencyFields) {
+        if (data[f]) { curr = String(data[f]); break }
+        if (data.data?.[f]) { curr = String(data.data[f]); break }
+      }
+      const currency = curr || cfg.currency || 'USD'
 
-      return { success: true, data: { balance, currency: String(currency), rawAvailable: available } }
+      // Transaction history extraction
+      const txFields = ['transactions', 'transactionHistory', 'transaction_history', 'walletHistory', 'wallet_history',
+        'orders', 'orderHistory', 'order_history']
+      let txArray: any[] | null = null
+      for (const f of txFields) {
+        if (Array.isArray(data[f])) { txArray = data[f]; break }
+        if (Array.isArray(data.data?.[f])) { txArray = data.data[f]; break }
+      }
+
+      const transactions = txArray?.map((t: any, idx: number) => ({
+        providerReference: String(t.reference || t.orderId || t.order_id || t.id || `tx-${idx}`),
+        orderId: t.orderId || t.order_id || t.OrderID || null,
+        occurredAt: t.date || t.transactionDate || t.createdAt || t.created_at || new Date().toISOString(),
+        description: t.description || t.note || t.memo || t.Description || '',
+        transactionType: normalizeTxType(t.type || t.transactionType || t.TransactionType || t.crDr || ''),
+        amount: parseFloat(String(t.amount ?? t.Amount ?? t.value ?? 0)) || 0,
+        currency: t.currency || t.Currency || currency,
+        balanceBefore: t.balanceBefore != null ? parseFloat(String(t.balanceBefore)) : undefined,
+        balanceAfter: t.balanceAfter != null ? parseFloat(String(t.balanceAfter)) : undefined,
+        runningBalance: t.runningBalance != null ? parseFloat(String(t.runningBalance)) : undefined,
+      })) || []
+
+      console.log(`[AIRHUB_WALLET] balancePath=${balanceFieldPath} balanceType=${typeof balanceRaw} txCount=${transactions.length}`)
+
+      return { success: true, data: { balance, currency, transactions, rawAvailable: data.available || data.data?.available || null } }
     } catch (e: any) {
       if (e.name === 'AbortError') return { success: false, error: { code: 'TIMEOUT', message: 'Wallet fetch timed out after 25 seconds' } }
       if (e?.cause?.code === 'ENOTFOUND') return { success: false, error: { code: 'DNS_ERROR', message: 'AirHub host not found' } }
       return { success: false, error: { code: 'NETWORK_ERROR', message: e.message?.substring(0, 100) || 'Network error' } }
     }
   }
+}
+
+function normalizeTxType(raw: string): string {
+  const s = (raw || '').toUpperCase()
+  if (['DEBIT', 'PURCHASE', 'ORDER', 'CHARGE', 'DEDUCTION', 'OUT'].includes(s)) return 'DEBIT'
+  if (['CREDIT', 'REFUND', 'DEPOSIT', 'TOPUP', 'TOP_UP', 'ADD', 'IN'].includes(s)) return 'CREDIT'
+  if (['ADJUSTMENT', 'ADJ', 'CORRECTION'].includes(s)) return 'ADJUSTMENT'
+  return 'UNKNOWN'
 }

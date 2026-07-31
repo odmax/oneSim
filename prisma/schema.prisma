@@ -2685,6 +2685,27 @@ model ProviderWalletSnapshot {
   @@map("provider_wallet_snapshots")
 }
 
+model ProviderWalletTransaction {
+  id                String   @id @default(cuid())
+  providerId        String
+  fingerprint       String   @unique
+  providerReference String?
+  orderId           String?
+  transactionType   String   // CREDIT | DEBIT | PURCHASE | REFUND | ADJUSTMENT | UNKNOWN
+  amount            Float
+  currency          String   @default("USD")
+  balanceBefore     Float?
+  balanceAfter      Float?
+  runningBalance    Float?
+  occurredAt        DateTime
+  description       String?
+  createdAt         DateTime @default(now())
+
+  @@index([providerId, occurredAt])
+  @@index([fingerprint])
+  @@map("provider_wallet_transactions")
+}
+
 // ══════════════════════════════════════════════════════════════════
 // PROVIDER COST NORMALIZATION — Phase 5C
 // ══════════════════════════════════════════════════════════════════

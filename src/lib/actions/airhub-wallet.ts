@@ -34,6 +34,24 @@ export async function fetchAirhubWallet(providerId: string, syncSource: string =
         balance = result.data.balance
         currency = result.data.currency
         connectSuccess = true
+        // Persist transaction history
+        if (result.data?.transactions && result.data.transactions.length > 0) {
+          for (const tx of result.data.transactions) {
+            const fp = `${tx.providerReference || ''}-${tx.orderId || ''}-${tx.occurredAt}-${tx.amount}`
+            await prisma.providerWalletTransaction.upsert({
+              where: { fingerprint: fp },
+              create: {
+                providerId, fingerprint: fp,
+                providerReference: tx.providerReference, orderId: tx.orderId,
+                transactionType: tx.transactionType, amount: tx.amount, currency: tx.currency,
+                balanceBefore: tx.balanceBefore, balanceAfter: tx.balanceAfter,
+                runningBalance: tx.runningBalance, occurredAt: new Date(tx.occurredAt),
+                description: tx.description,
+              },
+              update: {},
+            }).catch(() => {})
+          }
+        }
       } else {
         errorMessage = result.error?.message || 'Wallet fetch failed'
       }
