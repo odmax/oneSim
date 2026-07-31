@@ -9,14 +9,16 @@ import { HeaderTokenRestConnector } from './header-token-rest-connector'
 import { StandardProviderConnector } from './standard-connector'
 import { TelnaConnector } from './telna-connector'
 import { TelnaSeamlessConnector } from './telna-seamless-connector'
+import { IbasisConnector } from './ibasis-connector'
 
-export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB' | 'TELNA' | 'TELNA_SEAMLESS'
+export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB' | 'TELNA' | 'TELNA_SEAMLESS' | 'IBASIS'
 
 export function resolveConnectorType(adapterStrategy: string | null | undefined, providerType: string): ConnectorType {
   if (providerType === 'MOCK') return 'MOCK'
   if (adapterStrategy === 'AIRHUB') return 'AIRHUB'
   if (adapterStrategy === 'TELNA_SEAMLESS') return 'TELNA_SEAMLESS'
   if (adapterStrategy === 'TELNA') return 'TELNA'
+  if (adapterStrategy === 'IBASIS') return 'IBASIS'
   switch (adapterStrategy) {
     case 'STANDARD': return 'STANDARD'
     case 'CHOICE': return 'URL_TOKEN'
@@ -82,6 +84,8 @@ export function createConnector(providerId: string, name: string | undefined, co
       return new HeaderTokenRestConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env })
     case 'TELNA':
       return new TelnaConnector(providerId, name)
+    case 'IBASIS':
+      return new IbasisConnector(providerId)
     case 'REST_CATALOG':
     default:
       return new RestCatalogConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env })

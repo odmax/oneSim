@@ -108,3 +108,64 @@ export function validateTelnaSeamlessConfig(config: TelnaSeamlessConfig): Valida
 
   return errors
 }
+
+export interface IbasisConfig {
+  code?: string
+  adapterStrategy?: string
+  baseUrl?: string
+  apiBaseUrl?: string
+  apiToken?: string
+  requestTimeoutMs?: number
+  environment?: string
+  defaultCurrency?: string
+}
+
+export function validateIbasisConfig(config: IbasisConfig): ValidationError[] {
+  const errors: ValidationError[] = []
+
+  if (!config.code) {
+    errors.push({ field: 'code', message: 'Provider code is required' })
+  } else if (config.code.toUpperCase() !== 'IBASIS') {
+    errors.push({ field: 'code', message: 'Provider code must be IBASIS' })
+  }
+
+  if (!config.adapterStrategy) {
+    errors.push({ field: 'adapterStrategy', message: 'Adapter strategy is required' })
+  } else if (config.adapterStrategy !== 'IBASIS') {
+    errors.push({ field: 'adapterStrategy', message: 'Adapter strategy must be IBASIS' })
+  }
+
+  const baseUrl = config.baseUrl || config.apiBaseUrl
+  if (!baseUrl) {
+    errors.push({ field: 'baseUrl', message: 'Base URL is required' })
+  } else if (!baseUrl.startsWith('https://')) {
+    errors.push({ field: 'baseUrl', message: 'Base URL must use HTTPS' })
+  } else {
+    try {
+      const url = new URL(baseUrl)
+      if (url.username || url.password) {
+        errors.push({ field: 'baseUrl', message: 'Credentials must not be placed in the URL' })
+      }
+    } catch {
+      errors.push({ field: 'baseUrl', message: 'Base URL is not a valid URL' })
+    }
+  }
+
+  if (!config.apiToken) {
+    errors.push({ field: 'apiToken', message: 'API token is required (Authorization: Token <token>)' })
+  }
+
+  if (config.requestTimeoutMs != null && (!Number.isFinite(config.requestTimeoutMs) || config.requestTimeoutMs <= 0)) {
+    errors.push({ field: 'requestTimeoutMs', message: 'Request timeout must be a positive number of milliseconds' })
+  }
+
+  if (config.environment && !['production', 'staging', 'sandbox'].includes(config.environment)) {
+    errors.push({ field: 'environment', message: 'Environment must be one of: production, staging, sandbox' })
+  }
+
+  if (config.defaultCurrency && !/^[A-Z]{3}$/.test(config.defaultCurrency)) {
+    errors.push({ field: 'defaultCurrency', message: 'Default currency must be a 3-letter ISO code (e.g. USD)' })
+  }
+
+  return errors
+}

@@ -1,7 +1,9 @@
 export const ProviderCapability = {
   AUTH: 'AUTH',
   CATALOG_SYNC: 'CATALOG_SYNC',
+  PLAN_SYNC: 'PLAN_SYNC',
   PURCHASE: 'PURCHASE',
+  ESIM: 'ESIM',
   TOP_UP: 'TOP_UP',
   USAGE: 'USAGE',
   STATUS: 'STATUS',
@@ -22,7 +24,9 @@ export type ProviderCapability = (typeof ProviderCapability)[keyof typeof Provid
 export const CAPABILITY_LABELS: Record<ProviderCapability, string> = {
   AUTH: 'Authentication',
   CATALOG_SYNC: 'Catalog Sync',
+  PLAN_SYNC: 'Plan Sync',
   PURCHASE: 'Purchase',
+  ESIM: 'eSIM',
   TOP_UP: 'Top-Up',
   USAGE: 'Usage',
   STATUS: 'Status',
@@ -41,7 +45,9 @@ export const CAPABILITY_LABELS: Record<ProviderCapability, string> = {
 export const CAPABILITY_COLORS: Record<ProviderCapability, string> = {
   AUTH: 'bg-blue-100 text-blue-700',
   CATALOG_SYNC: 'bg-emerald-100 text-emerald-700',
+  PLAN_SYNC: 'bg-indigo-100 text-indigo-700',
   PURCHASE: 'bg-cyan-100 text-cyan-700',
+  ESIM: 'bg-teal-100 text-teal-700',
   TOP_UP: 'bg-purple-100 text-purple-700',
   USAGE: 'bg-amber-100 text-amber-700',
   STATUS: 'bg-teal-100 text-teal-700',
