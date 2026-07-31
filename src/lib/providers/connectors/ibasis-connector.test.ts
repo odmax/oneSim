@@ -610,3 +610,233 @@ describe('connector-factory registration', () => {
     expect(connector.name).toBe('iBASIS')
   })
 })
+
+describe('IbasisConnector Phase 3 — subscribers', () => {
+  let connector: IbasisConnector
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
+    fetchSpy = vi.fn()
+    globalThis.fetch = fetchSpy as any
+    connector = new IbasisConnector('ibasis-1')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('createSubscriber POSTs the provider payload and returns the subscriber id', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ id: 'sub-42' }, 201))
+    const result = await connector.createSubscriber({ username: 'jane.doe', email: 'jane@example.com' })
+    expect(result.success).toBe(true)
+    expect(result.data?.providerSubscriberId).toBe('sub-42')
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/api/v1/subscribers')
+    expect((init as any).method).toBe('POST')
+    expect((init as any).headers['Authorization']).toBe(`Token ${RAW_TOKEN}`)
+    expect(JSON.parse((init as any).body)).toEqual({ username: 'jane.doe', email: 'jane@example.com' })
+  })
+
+  it('createSubscriber fails with VALIDATION_ERROR on HTTP 400', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ detail: 'invalid' }, 400))
+    const result = await connector.createSubscriber({ username: 'u1' })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('VALIDATION_ERROR')
+  })
+
+  it('createSubscriber fails when id is missing from response', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ ok: true }, 201))
+    const result = await connector.createSubscriber({ username: 'u1' })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('PROVIDER_ERROR')
+  })
+
+  it('getSubscriber fetches and maps the subscriber', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ id: 'sub-42', username: 'jane.doe', first_name: 'Jane', email: 'jane@example.com' }, 200))
+    const result = await connector.getSubscriber('sub-42')
+    expect(result.success).toBe(true)
+    expect(result.data?.providerSubscriberId).toBe('sub-42')
+    expect(result.data?.firstName).toBe('Jane')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v1/subscribers/sub-42')
+  })
+
+  it('getSubscriber maps HTTP 404 to NOT_FOUND', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ detail: 'not found' }, 404))
+    const result = await connector.getSubscriber('missing')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_FOUND')
+  })
+
+  it('updateSubscriber PATCHes without username', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ id: 'sub-42', username: 'jane.doe', email: 'new@example.com' }, 200))
+    const result = await connector.updateSubscriber('sub-42', { username: 'jane.doe', email: 'new@example.com' })
+    expect(result.success).toBe(true)
+    const [, init] = fetchSpy.mock.calls[0]
+    expect((init as any).method).toBe('PATCH')
+    expect(JSON.parse((init as any).body)).toEqual({ email: 'new@example.com' })
+  })
+
+  it('searchSubscribers sends filters and parses the results page', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 2, next: null, previous: null, results: ['sub-1', 'sub-2'] }, 200))
+    const result = await connector.searchSubscribers({ username: 'jane' })
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toEqual(['sub-1', 'sub-2'])
+    expect(result.data?.total).toBe(2)
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('/api/v1/subscribers')
+    expect(url).toContain('username=jane')
+  })
+
+  it('searchSubscribers uses provider field names for filters', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 0, next: null, previous: null, results: [] }, 200))
+    await connector.searchSubscribers({ firstName: 'Jane', lastName: 'Doe' })
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('first_name=Jane')
+    expect(url).toContain('last_name=Doe')
+  })
+
+  it('searchSubscribers follows an absolute nextUrl directly', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 0, next: null, previous: null, results: [] }, 200))
+    const next = 'https://api.ibasis.example.com/api/v1/subscribers?limit=50&offset=50'
+    await connector.searchSubscribers({ nextUrl: next })
+    expect(String(fetchSpy.mock.calls[0][0])).toBe(next)
+  })
+
+  it('searchSubscribers fails with normalized error on HTTP 429', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ detail: 'rate limited' }, 429))
+    const result = await connector.searchSubscribers({})
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('RATE_LIMIT')
+  })
+})
+
+describe('IbasisConnector Phase 3 — subscriptions', () => {
+  let connector: IbasisConnector
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
+    fetchSpy = vi.fn()
+    globalThis.fetch = fetchSpy as any
+    connector = new IbasisConnector('ibasis-1')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('createSubscription POSTs subscriber/retail_plan/activation_type/devices', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ id: 'act-1' }, 201))
+    const result = await connector.createSubscription({
+      subscriberId: 'sub-42',
+      retailPlanId: '1GB_TEST_PLAN',
+      devices: [{ device: '89975111967191511974', type: 'iccid' }],
+    })
+    expect(result.success).toBe(true)
+    expect(result.data?.activationId).toBe('act-1')
+    expect(result.data?.status).toBe('PENDING')
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/api/v1/subscriptions/activations')
+    expect((init as any).method).toBe('POST')
+    expect((init as any).headers['Authorization']).toBe(`Token ${RAW_TOKEN}`)
+    expect(JSON.parse((init as any).body)).toEqual({
+      subscriber: 'sub-42',
+      retail_plan: '1GB_TEST_PLAN',
+      activation_type: 'immediate',
+      devices: [{ device: '89975111967191511974', type: 'iccid' }],
+    })
+  })
+
+  it('createSubscription fails with VALIDATION_ERROR when devices are missing', async () => {
+    const result = await connector.createSubscription({ subscriberId: 's1', retailPlanId: 'p1', devices: [] })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('VALIDATION_ERROR')
+  })
+
+  it('createSubscription includes service_address when provided', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ id: 'act-2' }, 201))
+    await connector.createSubscription({
+      subscriberId: 's1',
+      retailPlanId: 'p1',
+      devices: [{ device: 'iccid-x', type: 'imei' }],
+      serviceAddressId: 'addr-9',
+    })
+    const [, init] = fetchSpy.mock.calls[0]
+    expect(JSON.parse((init as any).body).service_address).toBe('addr-9')
+  })
+
+  it('getSubscription maps provider status into the lifecycle', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({
+      id: 'sub-1',
+      subscriber: '42',
+      plan: '1GB_TEST_PLAN',
+      status: 'active',
+      devices: [{ device: '89975111967191511974', type: 'iccid' }],
+    }, 200))
+    const result = await connector.getSubscription('sub-1')
+    expect(result.success).toBe(true)
+    expect(result.data?.providerSubscriptionId).toBe('sub-1')
+    expect(result.data?.status).toBe('ACTIVE')
+    expect(result.data?.iccid).toBe('89975111967191511974')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v1/subscriptions/sub-1')
+  })
+
+  it('getSubscription maps HTTP 404 to NOT_FOUND', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ detail: 'not found' }, 404))
+    const result = await connector.getSubscription('missing')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_FOUND')
+  })
+
+  it('getSubscriptionStatus returns the normalized status plus linkage', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({
+      id: 'sub-1',
+      subscriber: '42',
+      status: 'suspended',
+      devices: [{ device: '89975111967191511974', type: 'iccid' }],
+    }, 200))
+    const result = await connector.getSubscriptionStatus('sub-1')
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('SUSPENDED')
+    expect(result.data?.providerStatus).toBe('suspended')
+    expect(result.data?.iccid).toBe('89975111967191511974')
+    expect(result.data?.subscriberId).toBe('42')
+  })
+
+  it('getActivationStatus polls the activation endpoint and returns the subscription id once complete', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ status: 'completed', subscription_id: 'sub-7' }, 200))
+    const result = await connector.getActivationStatus('act-1')
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('READY_TO_INSTALL')
+    expect(result.data?.providerSubscriptionId).toBe('sub-7')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v1/subscriptions/activations/act-1')
+  })
+
+  it('getActivationStatus leaves subscription id null while processing', async () => {
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ status: 'processing' }, 200))
+    const result = await connector.getActivationStatus('act-2')
+    expect(result.data?.status).toBe('PROVISIONING')
+    expect(result.data?.providerSubscriptionId).toBeNull()
+  })
+
+  it('uses configured subscriber/subscription paths when provided', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({
+      config: {
+        baseUrl: 'https://api.ibasis.example.com',
+        subscribersPath: '/api/v2/subscribers',
+        subscriptionsPath: '/api/v2/subscriptions',
+        subscriptionActivationsPath: '/api/v2/subscriptions/activations',
+        requestTimeoutMs: 15000,
+      },
+    }))
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ id: 'sub-1', status: 'active' }, 200))
+    await connector.getSubscription('sub-1')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v2/subscriptions/sub-1')
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ id: 'sub-1' }, 200))
+    await connector.getSubscriber('sub-1')
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('/api/v2/subscribers/sub-1')
+  })
+})

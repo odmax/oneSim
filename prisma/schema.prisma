@@ -576,6 +576,7 @@ model ESIM {
   deliveredAt            DateTime?
   providerActivationId   String?
   providerSubscriptionId String?
+  providerSubscriberId   String?
   providerStatus         String?
   providerResponse       Json?
   lastSyncAt             DateTime?
@@ -853,20 +854,23 @@ model AuditLog {
 }
 
 model Customer {
-  id         String         @id @default(cuid())
-  businessId String
-  name       String
-  email      String
-  phone      String?
-  country    String
-  status     CustomerStatus @default(ACTIVE)
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
+  id                    String         @id @default(cuid())
+  businessId            String
+  name                  String
+  email                 String
+  phone                 String?
+  country               String
+  status                CustomerStatus @default(ACTIVE)
+  providerSubscriberId  String?
+  providerMetadata      Json?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 
   business   Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
   esims      ESIM[]
   esimTopUps ESIMTopUp[]
 
+  @@index([providerSubscriberId])
   @@map("customers")
 }
 

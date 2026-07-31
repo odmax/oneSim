@@ -3,6 +3,10 @@ import { decryptToken } from '@/lib/encryption'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import type { IbasisInventorySim } from '@/lib/providers/mappers/ibasis-sim-mapper'
 import { maskActivationCode } from '@/lib/providers/mappers/ibasis-sim-mapper'
+import type { IbasisSubscriberInput, MappedIbasisSubscriber } from '@/lib/providers/mappers/ibasis-subscriber-mapper'
+import { toIbasisSubscriberPayload, mapIbasisSubscriber } from '@/lib/providers/mappers/ibasis-subscriber-mapper'
+import type { MappedIbasisSubscription, MappedIbasisActivationStatus } from '@/lib/providers/mappers/ibasis-subscription-mapper'
+import { mapIbasisSubscription, mapIbasisActivationStatus } from '@/lib/providers/mappers/ibasis-subscription-mapper'
 import type {
   IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo,
   ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult,
@@ -37,6 +41,16 @@ interface IbasisConfig {
   retailPlanDetailPath: string
   retailPlansPageSize: number
   syncTimeoutMs: number
+  subscribersPath: string
+  subscriptionsPath: string
+  subscriptionActivationsPath: string
+}
+
+export type NormalizedProviderErrorCode = 'AUTH_ERROR' | 'VALIDATION_ERROR' | 'NOT_FOUND' | 'RATE_LIMIT' | 'PROVIDER_ERROR' | 'NETWORK_ERROR'
+
+export interface NormalizedProviderError {
+  code: NormalizedProviderErrorCode
+  message: string
 }
 
 interface IbasisRequestResult {
@@ -83,6 +97,9 @@ export interface IbasisRetailPlan {
 const DEFAULT_INVENTORY_PATH = '/api/v1/inventory/sims'
 const DEFAULT_RETAIL_PLANS_PATH = '/api/v1/plans'
 const DEFAULT_RETAIL_PLAN_DETAIL_PATH = '/api/v1/plans/{plan id}'
+const DEFAULT_SUBSCRIBERS_PATH = '/api/v1/subscribers'
+const DEFAULT_SUBSCRIPTIONS_PATH = '/api/v1/subscriptions'
+const DEFAULT_SUBSCRIPTION_ACTIVATIONS_PATH = '/api/v1/subscriptions/activations'
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000
 const DEFAULT_PAGE_SIZE = 1
 const DEFAULT_RETAIL_PAGE_SIZE = 50
@@ -99,6 +116,24 @@ export function maskToken(token: string | null | undefined): string {
   if (!token) return ''
   if (token.length <= 8) return '••••'
   return `${token.slice(0, 4)}••••${token.slice(-4)}`
+}
+
+/**
+ * Maps any iBASIS request error into the normalized provider error set:
+ * AUTH_ERROR | VALIDATION_ERROR | NOT_FOUND | RATE_LIMIT | PROVIDER_ERROR | NETWORK_ERROR.
+ */
+export function normalizeProviderError(err: { code?: string; message?: string } | null | undefined): NormalizedProviderError {
+  const code = err?.code || 'PROVIDER_ERROR'
+  const message = err?.message || 'iBASIS provider error'
+
+  if (code === 'AUTH_ERROR') return { code: 'AUTH_ERROR', message }
+  if (code === 'NETWORK_ERROR' || code === 'TIMEOUT') return { code: 'NETWORK_ERROR', message }
+  if (code === 'NON_JSON_RESPONSE') return { code: 'PROVIDER_ERROR', message }
+  if (code === 'HTTP_400' || code === 'HTTP_422' || code === 'VALIDATION_ERROR') return { code: 'VALIDATION_ERROR', message }
+  if (code === 'HTTP_404' || code === 'NOT_FOUND') return { code: 'NOT_FOUND', message }
+  if (code === 'HTTP_429' || code === 'RATE_LIMIT') return { code: 'RATE_LIMIT', message }
+  if (code === 'NOT_CONFIGURED') return { code: 'PROVIDER_ERROR', message }
+  return { code: 'PROVIDER_ERROR', message }
 }
 
 function looksLikeHtml(text: string): boolean {
@@ -151,18 +186,26 @@ export class IbasisConnector implements IProviderConnector {
       retailPlanDetailPath: cfg.retailPlanDetailPath || DEFAULT_RETAIL_PLAN_DETAIL_PATH,
       retailPlansPageSize: Number(cfg.retailPlansPageSize) || DEFAULT_RETAIL_PAGE_SIZE,
       syncTimeoutMs: Number(cfg.syncTimeoutMs) || DEFAULT_SYNC_TIMEOUT_MS,
+      subscribersPath: cfg.subscribersPath || DEFAULT_SUBSCRIBERS_PATH,
+      subscriptionsPath: cfg.subscriptionsPath || DEFAULT_SUBSCRIPTIONS_PATH,
+      subscriptionActivationsPath: cfg.subscriptionActivationsPath || DEFAULT_SUBSCRIPTION_ACTIVATIONS_PATH,
     }
   }
 
   private async request(
     path: string,
-    options: { queryParams?: Record<string, string | number> } = {},
+    options: {
+      queryParams?: Record<string, string | number>
+      method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+      body?: unknown
+    } = {},
   ): Promise<IbasisRequestResult> {
     const config = await this.loadConfig()
     if (!config) {
       return { success: false, error: { code: 'NOT_CONFIGURED', message: 'iBASIS not configured (baseUrl and apiToken required)' } }
     }
 
+    const method = options.method || 'GET'
     // Absolute URLs (e.g. `next`/`previous` pagination links) are fetched directly.
     const absoluteUrl = path.startsWith('http://') || path.startsWith('https://')
     const urlObj = new URL(absoluteUrl ? path : config.baseUrl + path)
@@ -179,11 +222,13 @@ export class IbasisConnector implements IProviderConnector {
       Authorization: `${TOKEN_HEADER_PREFIX}${config.apiToken}`,
       Accept: 'application/json',
     }
+    const body = options.body === undefined ? undefined : JSON.stringify(options.body)
+    if (body !== undefined) headers['Content-Type'] = 'application/json'
 
     try {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs)
-      const response = await fetch(finalUrl, { method: 'GET', headers, signal: controller.signal })
+      const response = await fetch(finalUrl, { method, headers, body, signal: controller.signal })
       clearTimeout(timeout)
       const latencyMs = Date.now() - startMs
       const rawText = await response.text()
@@ -194,7 +239,7 @@ export class IbasisConnector implements IProviderConnector {
         try { data = JSON.parse(rawText) } catch { parseFailed = true }
       }
 
-      console.log(`[IBASIS_REQUEST] correlationId=${correlationId} path=${path} status=${response.status} latencyMs=${latencyMs} parseFailed=${parseFailed} tokenMasked=${maskToken(config.apiToken)}`)
+      console.log(`[IBASIS_REQUEST] correlationId=${correlationId} method=${method} path=${path} status=${response.status} latencyMs=${latencyMs} parseFailed=${parseFailed} tokenMasked=${maskToken(config.apiToken)}`)
 
       if (parseFailed) {
         const html = looksLikeHtml(rawText)
@@ -457,6 +502,175 @@ export class IbasisConnector implements IProviderConnector {
     }
 
     return { success: true, data: plans }
+  }
+
+  // ── Phase 3: Subscriber & Subscription lifecycle ──────────────────────────
+
+  /** Creates a subscriber on iBASIS (`POST {subscribersPath}`). */
+  async createSubscriber(input: IbasisSubscriberInput): Promise<ConnectorResult<{ providerSubscriberId: string }>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    const result = await this.request(config.subscribersPath, { method: 'POST', body: toIbasisSubscriberPayload(input) })
+    if (!result.success) return { success: false, error: normalizeProviderError(result.error) }
+    const id = result.data?.id
+    if (id === undefined || id === null || String(id).trim() === '') {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'iBASIS subscriber create response missing "id"' } }
+    }
+    return { success: true, data: { providerSubscriberId: String(id) } }
+  }
+
+  /** Fetches a subscriber (`GET {subscribersPath}/{id}`). */
+  async getSubscriber(providerSubscriberId: string): Promise<ConnectorResult<MappedIbasisSubscriber>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    const result = await this.request(`${config.subscribersPath}/${encodeURIComponent(providerSubscriberId)}`)
+    if (!result.success) return { success: false, error: normalizeProviderError(result.error) }
+    const mapped = mapIbasisSubscriber(result.data)
+    if (!mapped) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'iBASIS subscriber response missing "id"' } }
+    }
+    return { success: true, data: mapped }
+  }
+
+  /** Updates a subscriber (`PATCH {subscribersPath}/{id}`). */
+  async updateSubscriber(providerSubscriberId: string, patch: IbasisSubscriberInput): Promise<ConnectorResult<MappedIbasisSubscriber>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    const result = await this.request(`${config.subscribersPath}/${encodeURIComponent(providerSubscriberId)}`, {
+      method: 'PATCH',
+      body: toIbasisSubscriberPayload(patch, true),
+    })
+    if (!result.success) return { success: false, error: normalizeProviderError(result.error) }
+    const mapped = mapIbasisSubscriber(result.data)
+    if (!mapped) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'iBASIS subscriber response missing "id"' } }
+    }
+    return { success: true, data: mapped }
+  }
+
+  /** Searches subscribers (`GET {subscribersPath}`) — returns a page of subscriber IDs. */
+  async searchSubscribers(
+    query: { username?: string; email?: string; firstName?: string; lastName?: string; nextUrl?: string; limit?: number } = {},
+  ): Promise<ConnectorResult<{ items: string[]; total: number; next: string | null; previous: string | null }>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    const result = query.nextUrl
+      ? await this.request(query.nextUrl)
+      : await this.request(config.subscribersPath, {
+          queryParams: {
+            limit: query.limit ?? 50,
+            ...(query.username ? { username: query.username } : {}),
+            ...(query.email ? { email: query.email } : {}),
+            ...(query.firstName ? { first_name: query.firstName } : {}),
+            ...(query.lastName ? { last_name: query.lastName } : {}),
+          },
+        })
+    if (!result.success) return { success: false, error: normalizeProviderError(result.error) }
+
+    const rawResults = Array.isArray(result.data?.results) ? result.data.results : null
+    if (!rawResults) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'iBASIS subscriber search response missing "results" array' } }
+    }
+    const items = rawResults
+      .filter((id: any) => id !== null && id !== undefined && String(id).trim() !== '')
+      .map((id: any) => String(id))
+    return {
+      success: true,
+      data: {
+        items,
+        total: typeof result.data?.count === 'number' ? result.data.count : items.length,
+        next: typeof result.data?.next === 'string' && result.data.next ? result.data.next : null,
+        previous: typeof result.data?.previous === 'string' && result.data.previous ? result.data.previous : null,
+      },
+    }
+  }
+
+  /** Creates a subscription (`POST {subscriptionActivationsPath}`). No purchase/payment involved. */
+  async createSubscription(params: {
+    subscriberId: string
+    retailPlanId: string
+    devices: Array<{ device: string; type: 'iccid' | 'imei' }>
+    activationType?: 'immediate' | 'scheduled'
+    serviceAddressId?: string
+  }): Promise<ConnectorResult<{ activationId: string; status: string }>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    if (!params.subscriberId || !params.retailPlanId || !Array.isArray(params.devices) || params.devices.length === 0) {
+      return { success: false, error: { code: 'VALIDATION_ERROR', message: 'createSubscription requires subscriberId, retailPlanId and at least one device' } }
+    }
+
+    const body: Record<string, unknown> = {
+      subscriber: params.subscriberId,
+      retail_plan: params.retailPlanId,
+      activation_type: params.activationType || 'immediate',
+      devices: params.devices.map((d) => ({ device: d.device, type: d.type })),
+    }
+    if (params.serviceAddressId) body.service_address = params.serviceAddressId
+
+    const result = await this.request(config.subscriptionActivationsPath, { method: 'POST', body })
+    if (!result.success) return { success: false, error: normalizeProviderError(result.error) }
+
+    const id = result.data?.id
+    if (id === undefined || id === null || String(id).trim() === '') {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'iBASIS subscription create response missing "id"' } }
+    }
+    // Activation is asynchronous — status starts as PENDING until polled.
+    return { success: true, data: { activationId: String(id), status: 'PENDING' } }
+  }
+
+  /** Fetches a subscription (`GET {subscriptionsPath}/{id}`). */
+  async getSubscription(providerSubscriptionId: string): Promise<ConnectorResult<MappedIbasisSubscription>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    const result = await this.request(`${config.subscriptionsPath}/${encodeURIComponent(providerSubscriptionId)}`)
+    if (!result.success) return { success: false, error: normalizeProviderError(result.error) }
+    const mapped = mapIbasisSubscription(result.data)
+    if (!mapped) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'iBASIS subscription response missing "id"' } }
+    }
+    return { success: true, data: mapped }
+  }
+
+  /** Fetches subscription status only (`GET {subscriptionsPath}/{id}` → normalized status). */
+  async getSubscriptionStatus(providerSubscriptionId: string): Promise<ConnectorResult<{ status: string; providerStatus: string; iccid?: string | null; subscriberId?: string | null }>> {
+    const result = await this.getSubscription(providerSubscriptionId)
+    if (!result.success) return { success: false, error: result.error }
+    return {
+      success: true,
+      data: {
+        status: result.data!.status,
+        providerStatus: result.data!.providerStatus,
+        iccid: result.data!.iccid,
+        subscriberId: result.data!.subscriberId,
+      },
+    }
+  }
+
+  /** Polls an activation (`GET {subscriptionActivationsPath}/{activationId}`) — returns subscription id once completed. */
+  async getActivationStatus(activationId: string): Promise<ConnectorResult<MappedIbasisActivationStatus>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    const result = await this.request(`${config.subscriptionActivationsPath}/${encodeURIComponent(activationId)}`)
+    if (!result.success) return { success: false, error: normalizeProviderError(result.error) }
+    const mapped = mapIbasisActivationStatus(result.data, activationId)
+    if (!mapped) {
+      return { success: false, error: { code: 'PROVIDER_ERROR', message: 'iBASIS activation status response missing "status"' } }
+    }
+    return { success: true, data: mapped }
   }
 
   async validatePurchase(): Promise<{ valid: boolean; reason?: string }> {

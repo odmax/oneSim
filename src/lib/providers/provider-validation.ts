@@ -124,6 +124,9 @@ export interface IbasisConfig {
   retailPlanDetailPath?: string
   retailPlansPageSize?: number
   syncTimeoutMs?: number
+  subscribersPath?: string
+  subscriptionsPath?: string
+  subscriptionActivationsPath?: string
 }
 
 export function validateIbasisConfig(config: IbasisConfig): ValidationError[] {
@@ -199,6 +202,12 @@ export function validateIbasisConfig(config: IbasisConfig): ValidationError[] {
 
   if (config.syncTimeoutMs != null && (!Number.isFinite(config.syncTimeoutMs) || config.syncTimeoutMs <= 0)) {
     errors.push({ field: 'syncTimeoutMs', message: 'Sync timeout must be a positive number of milliseconds' })
+  }
+
+  for (const field of ['subscribersPath', 'subscriptionsPath', 'subscriptionActivationsPath'] as const) {
+    if (config[field] && !config[field]!.startsWith('/')) {
+      errors.push({ field, message: `${field} must be an absolute path (e.g. /api/v1/subscribers)` })
+    }
   }
 
   return errors
