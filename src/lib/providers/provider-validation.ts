@@ -118,6 +118,12 @@ export interface IbasisConfig {
   requestTimeoutMs?: number
   environment?: string
   defaultCurrency?: string
+  inventoryPath?: string
+  inventoryPageSize?: number
+  retailPlansPath?: string
+  retailPlanDetailPath?: string
+  retailPlansPageSize?: number
+  syncTimeoutMs?: number
 }
 
 export function validateIbasisConfig(config: IbasisConfig): ValidationError[] {
@@ -165,6 +171,34 @@ export function validateIbasisConfig(config: IbasisConfig): ValidationError[] {
 
   if (config.defaultCurrency && !/^[A-Z]{3}$/.test(config.defaultCurrency)) {
     errors.push({ field: 'defaultCurrency', message: 'Default currency must be a 3-letter ISO code (e.g. USD)' })
+  }
+
+  if (config.inventoryPath && !config.inventoryPath.startsWith('/')) {
+    errors.push({ field: 'inventoryPath', message: 'Inventory path must be an absolute path (e.g. /api/v1/inventory/sims)' })
+  }
+
+  if (config.inventoryPageSize != null && (!Number.isInteger(config.inventoryPageSize) || config.inventoryPageSize <= 0)) {
+    errors.push({ field: 'inventoryPageSize', message: 'Inventory page size must be a positive integer' })
+  }
+
+  if (config.retailPlansPath && !config.retailPlansPath.startsWith('/')) {
+    errors.push({ field: 'retailPlansPath', message: 'Retail plans path must be an absolute path (e.g. /api/v1/plans)' })
+  }
+
+  if (config.retailPlanDetailPath && !config.retailPlanDetailPath.startsWith('/')) {
+    errors.push({ field: 'retailPlanDetailPath', message: 'Retail plan detail path must be an absolute path (e.g. /api/v1/plans/{plan id})' })
+  }
+
+  if (config.retailPlanDetailPath && !config.retailPlanDetailPath.includes('{plan id}')) {
+    errors.push({ field: 'retailPlanDetailPath', message: 'Retail plan detail path must contain the {plan id} placeholder' })
+  }
+
+  if (config.retailPlansPageSize != null && (!Number.isInteger(config.retailPlansPageSize) || config.retailPlansPageSize <= 0)) {
+    errors.push({ field: 'retailPlansPageSize', message: 'Retail plans page size must be a positive integer' })
+  }
+
+  if (config.syncTimeoutMs != null && (!Number.isFinite(config.syncTimeoutMs) || config.syncTimeoutMs <= 0)) {
+    errors.push({ field: 'syncTimeoutMs', message: 'Sync timeout must be a positive number of milliseconds' })
   }
 
   return errors

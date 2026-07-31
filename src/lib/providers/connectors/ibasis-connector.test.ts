@@ -326,14 +326,23 @@ describe('IbasisConnector', () => {
       expect(result.data?.tokenPlacement).toBe('HEADER')
       expect(result.data?.finalUrl).toContain('/api/v1/inventory/sims')
     })
+
+    it('redacts activation codes from the diagnostic response body', async () => {
+      const activationCode = 'FKE: 0$CUST-111-V4-FAKE-ATL2.GDSB.NET$555'
+      fetchSpy.mockResolvedValue(mockFetchSuccess({
+        count: 1,
+        next: null,
+        previous: null,
+        results: [{ iccid: '89975111967191511974', type: 'esim', carrier: 'AT&T', status: 'Inventory', activation_code: activationCode }],
+      }, 200))
+      const result = await connector.diagnoseConnection()
+      const body = result.data?.responseBody || ''
+      expect(body).not.toContain(activationCode)
+      expect(body).not.toContain('GDSB.NET')
+    })
   })
 
   describe('Phase 2 methods', () => {
-    it('returns NOT_IMPLEMENTED for syncPlans', async () => {
-      const result = await connector.syncPlans()
-      expect(result.error?.code).toBe('NOT_IMPLEMENTED')
-    })
-
     it('returns NOT_IMPLEMENTED for activateESIM', async () => {
       const result = await connector.activateESIM({ planId: 'p1', quantity: 1, subscriber: { email: 'a@b.com' } })
       expect(result.error?.code).toBe('NOT_IMPLEMENTED')
@@ -349,6 +358,217 @@ describe('IbasisConnector', () => {
       const resume = await connector.resumeESIM('s1')
       expect(suspend.error?.code).toBe('NOT_IMPLEMENTED')
       expect(resume.error?.code).toBe('NOT_IMPLEMENTED')
+    })
+  })
+
+  describe('listInventorySims', () => {
+    it('requests the inventory path with limit and Token auth header', async () => {
+      fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 1, next: null, previous: null, results: [] }, 200))
+      const result = await connector.listInventorySims({ limit: 100 })
+      expect(result.success).toBe(true)
+      const [url, init] = fetchSpy.mock.calls[0]
+      expect(String(url)).toContain('/api/v1/inventory/sims')
+      expect(String(url)).toContain('limit=100')
+      expect((init as any).headers['Authorization']).toBe(`Token ${RAW_TOKEN}`)
+    })
+
+    it('applies optional type and status filters', async () => {
+      fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 0, next: null, previous: null, results: [] }, 200))
+      await connector.listInventorySims({ type: 'esim', status: 'inventory' })
+      const url = String(fetchSpy.mock.calls[0][0])
+      expect(url).toContain('type=esim')
+      expect(url).toContain('status=inventory')
+    })
+
+    it('parses count/next/previous/results into a page', async () => {
+      const raw = {
+        count: 3,
+        next: 'https://api.ibasis.example.com/api/v1/inventory/sims?limit=1&offset=1',
+        previous: null,
+        results: [
+          { iccid: '894050371760699199511', type: 'physical', carrier: 'TMO', status: 'Inventory' },
+          { iccid: '89975111967191511974', type: 'esim', carrier: 'AT&T', status: 'Inventory', activation_code: 'FKE: 0$CUST-111-V4-FAKE-ATL2.GDSB.NET$555' },
+        ],
+      }
+      fetchSpy.mockResolvedValue(mockFetchSuccess(raw, 200))
+      const result = await connector.listInventorySims()
+      expect(result.success).toBe(true)
+      expect(result.data?.total).toBe(3)
+      expect(result.data?.next).toBe(raw.next)
+      expect(result.data?.previous).toBeNull()
+      expect(result.data?.items).toHaveLength(2)
+      expect(result.data?.items[0].iccid).toBe('894050371760699199511')
+      expect(result.data?.items[1].activation_code).toContain('GDSB.NET')
+    })
+
+    it('follows an absolute nextUrl directly', async () => {
+      fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 0, next: null, previous: null, results: [] }, 200))
+      const next = 'https://api.ibasis.example.com/api/v1/inventory/sims?limit=1&offset=1'
+      await connector.listInventorySims({ nextUrl: next })
+      expect(String(fetchSpy.mock.calls[0][0])).toBe(next)
+    })
+
+    it('fails with INVALID_RESPONSE when results array is missing', async () => {
+      fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 0 }, 200))
+      const result = await connector.listInventorySims()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('INVALID_RESPONSE')
+    })
+
+    it('propagates upstream errors', async () => {
+      fetchSpy.mockResolvedValue(mockFetchSuccess({ detail: 'Invalid token' }, 401))
+      const result = await connector.listInventorySims()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AUTH_ERROR')
+    })
+
+    it('fails with NOT_CONFIGURED when baseUrl is missing', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiBaseUrl: null, config: { requestTimeoutMs: 15000 } }))
+      const result = await connector.listInventorySims()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_CONFIGURED')
+    })
+  })
+
+  describe('syncPlans', () => {
+    const PLAN_DETAIL = {
+      id: '1GB_TEST_PLAN',
+      name: '1GB data-only test plan',
+      quota: { messages: 0, 'unlimited messages': false, voice: 0, 'unlimited minutes': false, credit: 0.0, data: 1073741824 },
+      currency: 'GBP',
+      duration: 30,
+      duration_type: 0,
+    }
+
+    it('fetches the retail plan list then each plan detail', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['1GB_TEST_PLAN'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess(PLAN_DETAIL, 200))
+      const result = await connector.syncPlans()
+      expect(result.success).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+      expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v1/plans?limit=50')
+      expect(String(fetchSpy.mock.calls[1][0])).toContain('/api/v1/plans/1GB_TEST_PLAN')
+      const plan = result.data?.[0]
+      expect(plan?.id).toBe('1GB_TEST_PLAN')
+      expect(plan?.name).toBe('1GB data-only test plan')
+      expect(plan?.data_gb).toBe(1)
+      expect(plan?.validity_days).toBe(30)
+      expect(plan?.currency).toBe('GBP')
+      expect(plan?.sku).toBe('1GB_TEST_PLAN')
+    })
+
+    it('normalizes quota data bytes into whole GB', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['p1'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ id: 'p1', name: 'Big', quota: { data: '5368709120' }, currency: 'USD', duration: 7, duration_type: 0 }, 200))
+      const result = await connector.syncPlans()
+      expect(result.data?.[0].data_gb).toBe(5)
+      expect(result.data?.[0].validity_days).toBe(7)
+    })
+
+    it('defaults validity to 30 days for monthly duration types', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['p1'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ id: 'p1', name: 'Monthly', quota: { data: 1073741824 }, currency: 'USD', duration: 1, duration_type: 1 }, 200))
+      const result = await connector.syncPlans()
+      expect(result.data?.[0].validity_days).toBe(30)
+    })
+
+    it('leaves price_usd at 0 so costStatus stays MISSING', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['p1'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ id: 'p1', name: 'No Price', quota: { data: 1073741824 }, currency: 'EUR', duration: 10, duration_type: 0 }, 200))
+      const result = await connector.syncPlans()
+      expect(result.data?.[0].price_usd).toBe(0)
+      expect(result.data?.[0].currency).toBe('EUR')
+    })
+
+    it('falls back to defaultCurrency when plan currency is missing or invalid', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['p1', 'p2'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ id: 'p1', name: 'A', quota: { data: 1073741824 }, duration: 3, duration_type: 0 }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ id: 'p2', name: 'B', quota: { data: 1073741824 }, currency: 'not-a-currency', duration: 3, duration_type: 0 }, 200))
+      const result = await connector.syncPlans()
+      expect(result.data?.[0].currency).toBe('USD')
+      expect(result.data?.[1].currency).toBe('USD')
+    })
+
+    it('skips plans without a usable id or name', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['p1'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ name: 'no id' }, 200))
+      const result = await connector.syncPlans()
+      expect(result.success).toBe(true)
+      expect(result.data).toHaveLength(0)
+    })
+
+    it('fails with INVALID_RESPONSE when the plans array is missing', async () => {
+      fetchSpy.mockResolvedValue(mockFetchSuccess({ detail: 'nope' }, 200))
+      const result = await connector.syncPlans()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('INVALID_RESPONSE')
+    })
+
+    it('returns partial success when some plan details fail', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['good', 'bad'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess(PLAN_DETAIL, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ detail: 'Not found' }, 404))
+      const result = await connector.syncPlans()
+      expect(result.success).toBe(true)
+      expect(result.data).toHaveLength(1)
+      expect(result.data?.[0].id).toBe('1GB_TEST_PLAN')
+    })
+
+    it('fails with PARTIAL_FAILURE when every plan detail fails', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['a', 'b'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ detail: 'Not found' }, 404))
+        .mockResolvedValueOnce(mockFetchSuccess({ detail: 'Not found' }, 404))
+      const result = await connector.syncPlans()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('PARTIAL_FAILURE')
+    })
+
+    it('uses configured retail plan paths when provided', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({
+        config: {
+          baseUrl: 'https://api.ibasis.example.com',
+          retailPlansPath: '/api/v2/catalog/plans',
+          retailPlanDetailPath: '/api/v2/catalog/plans/{plan id}',
+          retailPlansPageSize: 100,
+          requestTimeoutMs: 15000,
+        },
+      }))
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['p1'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ id: 'p1', name: 'Custom', quota: { data: 1073741824 }, currency: 'USD', duration: 1, duration_type: 0 }, 200))
+      const result = await connector.syncPlans()
+      expect(result.success).toBe(true)
+      expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v2/catalog/plans?limit=100')
+      expect(String(fetchSpy.mock.calls[1][0])).toContain('/api/v2/catalog/plans/p1')
+    })
+
+    it('fails with NOT_CONFIGURED when baseUrl is missing', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiBaseUrl: null, config: { requestTimeoutMs: 15000 } }))
+      const result = await connector.syncPlans()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_CONFIGURED')
+    })
+
+    it('never logs raw plan details or tokens', async () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ plans: ['p1'] }, 200))
+        .mockResolvedValueOnce(mockFetchSuccess({ id: 'p1', name: 'No Price', quota: { data: 1073741824 }, currency: 'USD', duration: 1, duration_type: 0 }, 200))
+      await connector.syncPlans()
+      for (const [args] of logSpy.mock.calls as Array<[string]>) {
+        const line = String(args)
+        expect(line).not.toContain(RAW_TOKEN)
+        expect(line).not.toContain('1GB_TEST_PLAN')
+      }
+      logSpy.mockRestore()
     })
   })
 

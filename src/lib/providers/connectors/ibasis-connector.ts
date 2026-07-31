@@ -1,6 +1,8 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
+import type { IbasisInventorySim } from '@/lib/providers/mappers/ibasis-sim-mapper'
+import { maskActivationCode } from '@/lib/providers/mappers/ibasis-sim-mapper'
 import type {
   IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo,
   ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult,
@@ -31,6 +33,10 @@ interface IbasisConfig {
   defaultCurrency: string
   inventoryPath: string
   inventoryPageSize: number
+  retailPlansPath: string
+  retailPlanDetailPath: string
+  retailPlansPageSize: number
+  syncTimeoutMs: number
 }
 
 interface IbasisRequestResult {
@@ -41,9 +47,47 @@ interface IbasisRequestResult {
   latencyMs?: number
 }
 
+/** A page of the iBASIS SIM inventory (`GET {inventoryPath}`). */
+export interface IbasisInventoryPage {
+  items: IbasisInventorySim[]
+  total: number
+  next: string | null
+  previous: string | null
+}
+
+export interface IbasisInventoryQuery {
+  type?: string
+  status?: string
+  after?: string
+  limit?: number
+  /** When provided, fetches this absolute pagination URL directly (from a previous `next`/`previous`). */
+  nextUrl?: string
+}
+
+export interface IbasisRetailPlan {
+  id?: string
+  name?: string
+  quota?: {
+    data?: number | string
+    voice?: number | string
+    messages?: number | string
+    credit?: number | string
+    'unlimited minutes'?: boolean
+    'unlimited messages'?: boolean
+  }
+  currency?: string
+  duration?: number | string
+  duration_type?: number | string
+}
+
 const DEFAULT_INVENTORY_PATH = '/api/v1/inventory/sims'
+const DEFAULT_RETAIL_PLANS_PATH = '/api/v1/plans'
+const DEFAULT_RETAIL_PLAN_DETAIL_PATH = '/api/v1/plans/{plan id}'
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000
 const DEFAULT_PAGE_SIZE = 1
+const DEFAULT_RETAIL_PAGE_SIZE = 50
+const DEFAULT_SYNC_TIMEOUT_MS = 30000
+const MAX_RETAIL_PLANS = 500
 const TOKEN_HEADER_PREFIX = 'Token '
 
 function generateCorrelationId(): string {
@@ -60,6 +104,23 @@ export function maskToken(token: string | null | undefined): string {
 function looksLikeHtml(text: string): boolean {
   const trimmed = text.trimStart().toLowerCase()
   return trimmed.startsWith('<!doctype') || trimmed.startsWith('<html') || trimmed.startsWith('<head')
+}
+
+/** Recursively redacts eSIM activation codes before surfacing responses in diagnostics. */
+function redactResponseForDiagnostics(data: any): any {
+  if (!data || typeof data !== 'object') return data
+  if (Array.isArray(data)) return data.map(redactResponseForDiagnostics)
+  const out: Record<string, any> = {}
+  for (const [k, v] of Object.entries(data)) {
+    if (k === 'activation_code' && typeof v === 'string') {
+      out[k] = maskActivationCode(v)
+    } else if (v && typeof v === 'object') {
+      out[k] = redactResponseForDiagnostics(v)
+    } else {
+      out[k] = v
+    }
+  }
+  return out
 }
 
 export class IbasisConnector implements IProviderConnector {
@@ -86,6 +147,10 @@ export class IbasisConnector implements IProviderConnector {
       defaultCurrency: cfg.defaultCurrency || 'USD',
       inventoryPath: cfg.inventoryPath || DEFAULT_INVENTORY_PATH,
       inventoryPageSize: Number(cfg.inventoryPageSize) || DEFAULT_PAGE_SIZE,
+      retailPlansPath: cfg.retailPlansPath || DEFAULT_RETAIL_PLANS_PATH,
+      retailPlanDetailPath: cfg.retailPlanDetailPath || DEFAULT_RETAIL_PLAN_DETAIL_PATH,
+      retailPlansPageSize: Number(cfg.retailPlansPageSize) || DEFAULT_RETAIL_PAGE_SIZE,
+      syncTimeoutMs: Number(cfg.syncTimeoutMs) || DEFAULT_SYNC_TIMEOUT_MS,
     }
   }
 
@@ -98,7 +163,9 @@ export class IbasisConnector implements IProviderConnector {
       return { success: false, error: { code: 'NOT_CONFIGURED', message: 'iBASIS not configured (baseUrl and apiToken required)' } }
     }
 
-    const urlObj = new URL(config.baseUrl + path)
+    // Absolute URLs (e.g. `next`/`previous` pagination links) are fetched directly.
+    const absoluteUrl = path.startsWith('http://') || path.startsWith('https://')
+    const urlObj = new URL(absoluteUrl ? path : config.baseUrl + path)
     if (options.queryParams) {
       for (const [k, v] of Object.entries(options.queryParams)) {
         if (v !== undefined && v !== null && v !== '') urlObj.searchParams.set(k, String(v))
@@ -246,7 +313,7 @@ export class IbasisConnector implements IProviderConnector {
         tokenPlacement: 'HEADER', authType: 'API_TOKEN', authHeaderPresent: true, tokenReplaced: false,
         responseStatus: result.status ?? null,
         responseContentType: result.status ? 'application/json' : null,
-        responseBody: result.data ? JSON.stringify(result.data).substring(0, 300) : null,
+        responseBody: result.data ? JSON.stringify(redactResponseForDiagnostics(result.data)).substring(0, 300) : null,
         latencyMs: result.latencyMs ?? null,
         warnings: [],
         requestTimeoutMs: config.requestTimeoutMs,
@@ -255,8 +322,141 @@ export class IbasisConnector implements IProviderConnector {
     }
   }
 
+  /**
+   * Fetches one page of the SIM inventory (`GET {inventoryPath}`).
+   * Pagination is driven by the `next`/`previous` URLs returned by iBASIS;
+   * pass a URL back in via `query.nextUrl` to walk pages.
+   */
+  async listInventorySims(query: IbasisInventoryQuery = {}): Promise<ConnectorResult<IbasisInventoryPage>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+
+    const result = query.nextUrl
+      ? await this.request(query.nextUrl)
+      : await this.request(config.inventoryPath, {
+          queryParams: {
+            limit: query.limit ?? config.inventoryPageSize,
+            ...(query.type ? { type: query.type } : {}),
+            ...(query.status ? { status: query.status } : {}),
+            ...(query.after ? { after: query.after } : {}),
+          },
+        })
+
+    if (!result.success) return { success: false, error: result.error }
+
+    const data = result.data
+    const rawResults = Array.isArray(data?.results) ? data.results : null
+    if (!rawResults) {
+      return {
+        success: false,
+        error: { code: 'INVALID_RESPONSE', message: 'iBASIS inventory response missing "results" array' },
+      }
+    }
+
+    const items: IbasisInventorySim[] = rawResults.map((r: any) => ({
+      iccid: typeof r?.iccid === 'string' ? r.iccid : '',
+      type: typeof r?.type === 'string' ? r.type : undefined,
+      carrier: typeof r?.carrier === 'string' ? r.carrier : undefined,
+      status: typeof r?.status === 'string' ? r.status : undefined,
+      activation_code: typeof r?.activation_code === 'string' ? r.activation_code : undefined,
+    }))
+
+    return {
+      success: true,
+      data: {
+        items,
+        total: typeof data?.count === 'number' ? data.count : items.length,
+        next: typeof data?.next === 'string' && data.next ? data.next : null,
+        previous: typeof data?.previous === 'string' && data.previous ? data.previous : null,
+      },
+    }
+  }
+
+  private normalizeRetailPlan(raw: any, defaultCurrency: string): ConnectorPlan | null {
+    if (!raw || typeof raw !== 'object') return null
+    const id = raw.id
+    const name = raw.name
+    if (id === undefined || id === null || String(id).trim() === '' || !name) return null
+
+    const quota = raw.quota && typeof raw.quota === 'object' ? raw.quota : {}
+    const dataBytes = typeof quota.data === 'string' ? parseFloat(quota.data) : typeof quota.data === 'number' ? quota.data : 0
+    const dataGB = Math.max(1, Math.round((isFinite(dataBytes) ? dataBytes : 0) / 1024 ** 3))
+
+    const rawDuration = typeof raw.duration === 'string' ? parseInt(raw.duration, 10) : typeof raw.duration === 'number' ? raw.duration : 0
+    const durationType = typeof raw.duration_type === 'string' ? parseInt(raw.duration_type, 10) : typeof raw.duration_type === 'number' ? raw.duration_type : 0
+    // duration_type 0 = fixed days; monthly types (1, 2) ignore duration — default to 30 days.
+    const validityDays = durationType === 0 && isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 30
+
+    const currency = typeof raw.currency === 'string' && /^[A-Z]{3}$/.test(raw.currency) ? raw.currency : defaultCurrency
+
+    return {
+      id: String(id),
+      name: String(name),
+      data_gb: dataGB,
+      validity_days: validityDays,
+      // iBASIS retail plans do not expose a price — leave 0 so costStatus stays MISSING.
+      price_usd: 0,
+      currency,
+      description: String(name),
+      sku: String(id),
+      raw_data: raw,
+    }
+  }
+
   async syncPlans(): Promise<ConnectorResult<ConnectorPlan[]>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Plan sync implementation pending (Phase 2)' } }
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+
+    const listResult = await this.request(config.retailPlansPath, { queryParams: { limit: config.retailPlansPageSize } })
+    if (!listResult.success) return { success: false, error: listResult.error }
+
+    const rawIds = listResult.data?.plans
+    if (!Array.isArray(rawIds)) {
+      return {
+        success: false,
+        error: { code: 'INVALID_RESPONSE', message: 'iBASIS retail plans response missing "plans" array' },
+      }
+    }
+
+    const planIds = rawIds
+      .filter((id: any) => id !== null && id !== undefined && String(id).trim() !== '')
+      .slice(0, MAX_RETAIL_PLANS)
+      .map((id: any) => String(id))
+
+    const plans: ConnectorPlan[] = []
+    const failures: string[] = []
+
+    for (const planId of planIds) {
+      const detailResult = await this.request(
+        config.retailPlanDetailPath.replace('{plan id}', encodeURIComponent(planId)),
+      )
+      if (!detailResult.success) {
+        failures.push(planId)
+        continue
+      }
+      const normalized = this.normalizeRetailPlan(detailResult.data, config.defaultCurrency)
+      if (normalized) plans.push(normalized)
+    }
+
+    if (failures.length > 0) {
+      console.log(`[IBASIS_PLAN_SYNC] planIds=${planIds.length} fetched=${plans.length} failed=${failures.length} failedIds=${failures.join(',')}`)
+    }
+
+    if (planIds.length > 0 && plans.length === 0 && failures.length === planIds.length) {
+      return {
+        success: false,
+        error: {
+          code: 'PARTIAL_FAILURE',
+          message: `Failed to fetch any of ${planIds.length} retail plan details`,
+        },
+      }
+    }
+
+    return { success: true, data: plans }
   }
 
   async validatePurchase(): Promise<{ valid: boolean; reason?: string }> {
