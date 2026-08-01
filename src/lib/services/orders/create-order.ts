@@ -17,6 +17,7 @@ export interface CreateOrderParams {
   quantity: number
   customer?: CreateOrderCustomer
   callbackUrl?: string
+  idempotencyKey?: string
 }
 
 export interface CreateOrderResult {
@@ -58,6 +59,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
       externalId: params.customer.externalId,
     } : undefined,
     callbackUrl: params.callbackUrl,
+    idempotencyKey: params.idempotencyKey,
   })
 
   // Fire webhooks (fire-and-forget)

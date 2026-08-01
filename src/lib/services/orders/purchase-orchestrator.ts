@@ -26,6 +26,7 @@ export interface PurchaseRequest {
     externalId?: string
   }
   callbackUrl?: string
+  idempotencyKey?: string
 }
 
 export interface PurchaseResult {
@@ -59,7 +60,8 @@ export interface PurchaseResult {
 
 export class PurchaseOrchestrator {
   async executePurchase(request: PurchaseRequest): Promise<PurchaseResult> {
-    const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl } = request
+    const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl, idempotencyKey } = request
+    const purchaseKey = idempotencyKey ? `${businessId}:${idempotencyKey}` : undefined
 
     // Step 1: Validate business
     const business = await prisma.business.findUnique({ where: { id: businessId } })
@@ -137,6 +139,26 @@ export class PurchaseOrchestrator {
       return { success: true, orderId: recent.id, status: recent.status, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD' }
     }
 
+    // Service-layer idempotency: guard for concurrent/non-route callers (keyed by providerPurchaseKey).
+    if (purchaseKey) {
+      const existing = await prisma.eSIMPurchase.findUnique({
+        where: { providerPurchaseKey: purchaseKey },
+        include: { esims: { select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } } },
+      })
+      if (existing) {
+        return {
+          success: existing.status === 'FULFILLED',
+          orderId: existing.id,
+          status: existing.status,
+          unitCost: unitPrice,
+          totalCost: totalAmount,
+          quantity,
+          currency: pkg.currency || 'USD',
+          esims: existing.esims.map((e) => ({ id: e.id, iccid: e.iccid, imsi: e.imsi ?? null, activationCode: e.activationCode ?? null, status: e.status, qrCodeUrl: e.qrCodeUrl ?? null })),
+        }
+      }
+    }
+
     // Step 9: Find or create customer
     let customerId: string | undefined
     if (customer) {
@@ -155,9 +177,26 @@ export class PurchaseOrchestrator {
     // Step 10: Create order
     let orderId: string
     try {
-      const order = await prisma.eSIMPurchase.create({ data: { businessId, userId, packageId: pkg.id, quantity, totalAmount, status: 'CREATED', callbackUrl: callbackUrl || null, packageSnapshot: packageSnapshot as any, packageName: displayName, packageDataGB: pkg.dataGB, packageValidityDays: pkg.validityDays, packageUnitPrice: unitPrice, packageCurrency: pkg.currency || 'USD' } })
+      const order = await prisma.eSIMPurchase.create({ data: { businessId, userId, packageId: pkg.id, quantity, totalAmount, status: 'CREATED', callbackUrl: callbackUrl || null, packageSnapshot: packageSnapshot as any, packageName: displayName, packageDataGB: pkg.dataGB, packageValidityDays: pkg.validityDays, packageUnitPrice: unitPrice, packageCurrency: pkg.currency || 'USD', providerPurchaseKey: purchaseKey || null } })
       orderId = order.id
-    } catch (e: any) { return this.fail('ORDER_CREATE_FAILED', `Failed to create order: ${e.message}`, false) }
+    } catch (e: any) {
+      if (purchaseKey && (e.code === 'P2002' || /providerPurchaseKey/i.test(e.message || ''))) {
+        const existing = await prisma.eSIMPurchase.findUnique({ where: { providerPurchaseKey: purchaseKey }, include: { esims: { select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } } } })
+        if (existing) {
+          return {
+            success: existing.status === 'FULFILLED',
+            orderId: existing.id,
+            status: existing.status,
+            unitCost: unitPrice,
+            totalCost: totalAmount,
+            quantity,
+            currency: pkg.currency || 'USD',
+            esims: existing.esims.map((e) => ({ id: e.id, iccid: e.iccid, imsi: e.imsi ?? null, activationCode: e.activationCode ?? null, status: e.status, qrCodeUrl: e.qrCodeUrl ?? null })),
+          }
+        }
+      }
+      return this.fail('ORDER_CREATE_FAILED', `Failed to create order: ${e.message}`, false)
+    }
 
     await createTimelineEvent(orderId, { eventType: 'ORDER_CREATED', message: `Purchase started: ${quantity}x ${displayName} via ${provider.name}` })
     await transitionOrder(orderId, 'CREATED')

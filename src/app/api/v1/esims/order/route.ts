@@ -97,6 +97,7 @@ export async function POST(request: NextRequest) {
       packageCode,
       quantity,
       callbackUrl,
+      idempotencyKey: idempotencyKey || undefined,
       customer: { name: customerName, email: customerEmail, phone: customerPhone, country, externalId: externalCustomerId },
     })
 

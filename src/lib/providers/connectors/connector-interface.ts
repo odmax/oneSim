@@ -22,6 +22,9 @@ export interface ActivateESIMParams {
   quantity: number
   subscriber: { email: string; first_name?: string; last_name?: string }
   externalId?: string
+  /** OneSim purchase/order id — used to bind a reserved SIM at purchase time. */
+  orderId?: string
+  packageId?: string
 }
 
 export interface ActivateESIMResult {

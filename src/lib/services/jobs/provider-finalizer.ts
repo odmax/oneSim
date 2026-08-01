@@ -24,8 +24,8 @@ export async function completeProviderOperation(params: {
   if (order.status === 'FULFILLED') return { success: true, alreadyDone: true }
 
   // Provision eSIMs
+  const pkg = order.packageId ? await prisma.eSIMPackage.findUnique({ where: { id: order.packageId } }) : null
   if (order.esims.length === 0 && iccids.length > 0) {
-    const pkg = order.packageId ? await prisma.eSIMPackage.findUnique({ where: { id: order.packageId } }) : null
     for (const iccid of iccids) {
       await prisma.eSIM.create({
         data: {
@@ -38,6 +38,37 @@ export async function completeProviderOperation(params: {
           packageValidityDays: packageValidityDays ?? order.packageValidityDays ?? validityDays,
         },
       }).catch(() => {})
+    }
+  } else if (order.esims.length > 0 && iccids.length > 0) {
+    // eSIMs were reserved at purchase (e.g. iBASIS allocation) — flip them to ACTIVE.
+    for (const iccid of iccids) {
+      const existing = await prisma.eSIM.findFirst({ where: { purchaseId: orderId, iccid: String(iccid) } })
+      if (existing) {
+        await prisma.eSIM
+          .update({
+            where: { id: existing.id },
+            data: {
+              status: 'ACTIVE',
+              providerStatus: 'ACTIVE',
+              providerActivationId: providerRef || existing.providerActivationId || '',
+              activatedAt: new Date(),
+              lastStatusSyncAt: new Date(),
+            },
+          })
+          .catch(() => {})
+      } else {
+        await prisma.eSIM.create({
+          data: {
+            purchaseId: orderId, iccid: String(iccid), imsi: null, status: 'ACTIVE',
+            providerActivationId: providerRef || '', providerStatus: 'ACTIVE',
+            expiresAt: new Date(Date.now() + (pkg?.validityDays || validityDays) * 86400000),
+            packageSnapshot: (packageSnapshot ?? (order.packageSnapshot as any)) ?? undefined,
+            packageName: packageName || order.packageName || '',
+            packageDataGB: packageDataGB ?? order.packageDataGB ?? 0,
+            packageValidityDays: packageValidityDays ?? order.packageValidityDays ?? validityDays,
+          },
+        }).catch(() => {})
+      }
     }
   }
 

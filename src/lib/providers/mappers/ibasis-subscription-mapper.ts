@@ -147,6 +147,19 @@ export interface MappedIbasisActivationStatus {
   status: string
   providerStatus: string
   providerSubscriptionId: string | null
+  iccids: string[]
+}
+
+function extractIccids(raw: any): string[] {
+  const out: string[] = []
+  const devices = raw?.devices
+  if (Array.isArray(devices)) {
+    for (const d of devices) {
+      if (d && (d.type === 'iccid' || d.type === 'ICC_ID') && typeof d.device === 'string' && d.device.trim() !== '') out.push(d.device.trim())
+    }
+  }
+  if (typeof raw?.iccid === 'string' && raw.iccid.trim() !== '' && !out.includes(raw.iccid.trim())) out.push(raw.iccid.trim())
+  return out
 }
 
 export function mapIbasisActivationStatus(raw: any, activationId: string): MappedIbasisActivationStatus | null {
@@ -158,6 +171,7 @@ export function mapIbasisActivationStatus(raw: any, activationId: string): Mappe
     status: normalizeSubscriptionStatus(providerStatus),
     providerStatus,
     providerSubscriptionId: subscriptionId,
+    iccids: extractIccids(raw),
   }
 }
 

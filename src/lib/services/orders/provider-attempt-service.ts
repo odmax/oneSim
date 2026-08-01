@@ -82,7 +82,7 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
 
   // Dispatch
   try {
-    const result = await adapter.activateESIM({ planId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: businessId })
+    const result = await adapter.activateESIM({ planId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: businessId, orderId })
     const latencyMs = Date.now() - startedAt.getTime()
 
     if (!result.success || !result.data) {
@@ -97,7 +97,14 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
 
     const data = result.data
     const providerOrderId = data.activationId || (data as any).providerOrderId || undefined
-    const isAsync = !(data.iccids && data.iccids.length > 0) && (data.status === 'PENDING' || data.status === 'PROCESSING' || data.status === 'QUEUED' || data.status === 'PENDING_ACTIVATION')
+    // An operation is asynchronous when the provider reports a non-terminal waiting
+    // status OR has not yet delivered a final ICCID. Broadened from the original
+    // rule so providers (e.g. iBASIS) that pre-allocate an ICCID but return a
+    // PENDING/PROCESSING status are correctly polled instead of finalized early.
+    const AWAITING_STATUSES = ['PENDING', 'PROCESSING', 'QUEUED', 'PENDING_ACTIVATION', 'RESERVED', 'PROVISIONING']
+    const isAwaitingActivation = data.status && AWAITING_STATUSES.includes(String(data.status).toUpperCase())
+    const hasIccids = data.iccids && data.iccids.length > 0
+    const isAsync = Boolean(isAwaitingActivation) || !hasIccids
 
     if (isAsync && providerOrderId) {
       await prisma.providerAttempt.update({

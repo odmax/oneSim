@@ -23,6 +23,8 @@ export interface ActivateESIMParams {
   subscriber: { email: string; first_name?: string; last_name?: string }
   activationType?: string
   externalId?: string
+  orderId?: string
+  packageId?: string
 }
 
 export interface ActivateESIMResult {

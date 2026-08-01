@@ -2,7 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import type { IbasisInventorySim } from '@/lib/providers/mappers/ibasis-sim-mapper'
-import { maskActivationCode } from '@/lib/providers/mappers/ibasis-sim-mapper'
+import { maskActivationCode, maskIccid } from '@/lib/providers/mappers/ibasis-sim-mapper'
 import type { IbasisSubscriberInput, MappedIbasisSubscriber } from '@/lib/providers/mappers/ibasis-subscriber-mapper'
 import { toIbasisSubscriberPayload, mapIbasisSubscriber } from '@/lib/providers/mappers/ibasis-subscriber-mapper'
 import type { MappedIbasisSubscription, MappedIbasisActivationStatus } from '@/lib/providers/mappers/ibasis-subscription-mapper'
@@ -265,7 +265,7 @@ export class IbasisConnector implements IProviderConnector {
       }
 
       return {
-        success: false, status: response.status, latencyMs,
+        success: false, status: response.status, latencyMs, data,
         error: { code: `HTTP_${response.status}`, message: `iBASIS returned HTTP ${response.status}` },
       }
     } catch (e: any) {
@@ -513,7 +513,14 @@ export class IbasisConnector implements IProviderConnector {
       return { success: false, error: { code: 'PROVIDER_ERROR', message: 'Provider not configured (baseUrl and apiToken required)' } }
     }
     const result = await this.request(config.subscribersPath, { method: 'POST', body: toIbasisSubscriberPayload(input) })
-    if (!result.success) return { success: false, error: normalizeProviderError(result.error) }
+    if (!result.success) {
+      const normalized = normalizeProviderError(result.error)
+      const detail = result.data && ((result.data as any).detail || (result.data as any).message || (result.data as any).error)
+      return {
+        success: false,
+        error: { code: normalized.code, message: detail ? `iBASIS: ${String(detail)}` : normalized.message },
+      }
+    }
     const id = result.data?.id
     if (id === undefined || id === null || String(id).trim() === '') {
       return { success: false, error: { code: 'PROVIDER_ERROR', message: 'iBASIS subscriber create response missing "id"' } }
@@ -679,12 +686,323 @@ export class IbasisConnector implements IProviderConnector {
     return { valid: true }
   }
 
-  async activateESIM(_params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Purchase implementation pending (Phase 2)' } }
+  /** SIM inventory statuses that are eligible to be allocated for a new activation. */
+  private static readonly ALLOCATABLE_SIM_STATUSES = ['inventory', 'available', 'ready', 'new']
+
+  /** Fetches one page of assignable SIMs from iBASIS inventory. */
+  private async listAssignableSims(limit?: number): Promise<ConnectorResult<{ iccid: string; activationCode: string | null; carrier: string | null }[]>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+
+    const page = await this.listInventorySims({ limit: limit ?? config.inventoryPageSize })
+    if (!page.success || !page.data) {
+      return { success: false, error: page.error || { code: 'PROVIDER_ERROR', message: 'Failed to fetch iBASIS inventory during allocation' } }
+    }
+
+    const items = (page.data.items || [])
+      .filter((s) => !s.status || IbasisConnector.ALLOCATABLE_SIM_STATUSES.includes(String(s.status).toLowerCase()))
+      .filter((s) => !!s.iccid)
+      .map((s) => ({ iccid: String(s.iccid), activationCode: s.activation_code || null, carrier: s.carrier || null }))
+
+    return { success: true, data: items }
   }
 
-  async getStatus(_subscriptionId: string): Promise<ConnectorResult<StatusResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Status implementation pending (Phase 2)' } }
+  /**
+   * Selects a single assignable SIM from inventory (no persistence). Used for
+   * validation/admin checks. See `reserveSim` for the reservation-with-retry flow.
+   */
+  async allocateSim(): Promise<ConnectorResult<{ iccid: string; activationCode: string | null; carrier: string | null }>> {
+    const listed = await this.listAssignableSims()
+    if (!listed.success || !listed.data) return { success: false, error: listed.error || { code: 'PROVIDER_ERROR', message: 'Failed to fetch iBASIS inventory during allocation' } }
+    const chosen = listed.data[0]
+    if (!chosen) return { success: false, error: { code: 'NO_AVAILABLE_SIMS', message: 'No allocatable SIMs available in iBASIS inventory' } }
+    return { success: true, data: chosen }
+  }
+
+  /**
+   * Reserves a SIM locally against a purchase, retrying on `@unique` ICCID
+   * conflicts (P2002) so a duplicate ICCID can never be double-allocated.
+   * Allocation is a provider inventory read; the local eSIM insert is the lock.
+   */
+  private async reserveSim(orderId: string | undefined, packageSnapshot: { packageName?: string; packageDataGB?: number; packageValidityDays?: number } | undefined, maxAttempts = 8): Promise<ConnectorResult<{ iccid: string; activationCode: string | null; carrier: string | null }>> {
+    const validityDays = Number((packageSnapshot as any)?.validityDays) || 30
+    const triedIccids = new Set<string>()
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const listed = await this.listAssignableSims()
+      if (!listed.success || !listed.data) return { success: false, error: listed.error || { code: 'PROVIDER_ERROR', message: 'Failed to fetch iBASIS inventory during reservation' } }
+
+      const next = listed.data.find((s) => !triedIccids.has(s.iccid))
+      if (!next) {
+        // Inventory page exhausted without a free ICCID to try — stop.
+        return { success: false, error: { code: 'NO_AVAILABLE_SIMS', message: 'No allocatable SIMs available in iBASIS inventory' } }
+      }
+      triedIccids.add(next.iccid)
+
+      try {
+        const reservation: any = {
+          purchaseId: orderId || '',
+          iccid: next.iccid,
+          imsi: null,
+          status: 'PROCESSING',
+          providerStatus: 'RESERVED',
+          providerActivationId: '',
+          activationCode: next.activationCode || null,
+          qrCodeUrl: null,
+          providerSubscriberId: null,
+          providerSubscriptionId: null,
+          packageName: packageSnapshot?.packageName || '',
+          packageDataGB: packageSnapshot?.packageDataGB ?? 0,
+          packageValidityDays: packageSnapshot?.packageValidityDays ?? validityDays,
+          packageSnapshot: (packageSnapshot as any) ?? undefined,
+          expiresAt: new Date(Date.now() + validityDays * 86400000),
+        }
+        if (!orderId) delete reservation.purchaseId
+        await prisma.eSIM.create({ data: reservation })
+        return { success: true, data: { iccid: next.iccid, activationCode: next.activationCode, carrier: next.carrier } }
+      } catch (e: any) {
+        const code = String(e?.code || '').toUpperCase()
+        const msg = String(e?.message || '').toLowerCase()
+        // Duplicate ICCID — another concurrent allocation won; try the next assignable SIM.
+        if (code === 'P2002' || msg.includes('unique') || msg.includes('already')) continue
+        console.log(`[IBASIS] reserveSim local create failed for iccid=${next.iccid.slice(-8)}: ${e?.message || e}`)
+        return { success: false, error: { code: 'PROVIDER_ERROR', message: 'Failed to reserve SIM locally' } }
+      }
+    }
+
+    return { success: false, error: { code: 'NO_AVAILABLE_SIMS', message: 'No allocatable SIMs available after retries' } }
+  }
+
+  /** Validates that a specific SIM (by ICCID) is eligible for activation. */
+  async validateDevice(iccid: string): Promise<{ valid: boolean; reason?: string }> {
+    const config = await this.loadConfig()
+    if (!config) return { valid: false, reason: 'Provider not configured (baseUrl and apiToken required)' }
+    if (!iccid || String(iccid).trim() === '') return { valid: false, reason: 'ICCID is required' }
+
+    const page = await this.listInventorySims({})
+    if (!page.success || !page.data) return { valid: false, reason: page.error?.message || 'Failed to query iBASIS inventory' }
+
+    const match = (page.data.items || []).find((s) => s.iccid === iccid)
+    if (!match) return { valid: false, reason: 'SIM not found in inventory' }
+    if (match.status && !IbasisConnector.ALLOCATABLE_SIM_STATUSES.includes(String(match.status).toLowerCase())) {
+      return { valid: false, reason: `SIM is ${match.status} and not available for activation` }
+    }
+    return { valid: true }
+  }
+
+  /**
+   * Creates a subscription (provider activation) via `POST {subscriptionActivationsPath}`.
+   * The create-subscription call is idempotent-safe at the provider via an external id reference
+   * where supported; the OneSim orchestrator never silently retries this call on failure.
+   */
+  async activateSubscription(params: {
+    subscriberId: string
+    retailPlanId: string
+    devices: Array<{ device: string; type: 'iccid' | 'imei' }>
+    activationType?: 'immediate' | 'scheduled'
+    serviceAddressId?: string
+  }): Promise<ConnectorResult<{ activationId: string; status: string }>> {
+    return this.createSubscription(params)
+  }
+
+  /** Cancels a pending provider activation (`DELETE {subscriptionActivationsPath}/{id}`). */
+  async cancelActivation(activationId: string): Promise<ConnectorResult<void>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    if (!activationId) return { success: false, error: { code: 'VALIDATION_ERROR', message: 'activationId is required' } }
+
+    const result = await this.request(`${config.subscriptionActivationsPath}/${encodeURIComponent(activationId)}`, { method: 'DELETE' })
+    if (!result.success) {
+      // A 404 means the activation no longer exists — treat as success.
+      if (result.status === 404) return { success: true }
+      return { success: false, error: normalizeProviderError(result.error) }
+    }
+    return { success: true }
+  }
+
+  /**
+   * Reserves a SIM against the OneSim purchase, then activates on the provider.
+   *
+   * Flow:
+   *   1. reserveSim — allocate an assignable ICCID from inventory and persist an
+   *      ESIM row (PROCESSING/RESERVED). Retries on `@unique` ICCID conflicts so a
+   *      duplicate ICCID can never be double-allocated; the ICCID @unique constraint
+   *      is the allocation lock.
+   *   2. createSubscriber — ensure the iBASIS subscriber exists (reuse on conflict).
+   *   3. createSubscription — provider activation. A DEFINITE failure reverts the
+   *      local reservation (freeing the ICCID for reallocation); a NETWORK_ERROR is
+   *      uncertain (the provider may have accepted it) so the ESIM is flagged for
+   *      reconciliation instead of being deleted.
+   *
+   * The result is asynchronous (status PENDING): the provider-operation job polls
+   * getStatus and finalizes via completeProviderOperation, which flips the reserved
+   * ESIM to ACTIVE once the provider confirms network activation.
+   */
+  async activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+
+    // Resolve package context for the reserved eSIM (best-effort; completion is idempotent).
+    let pkgForReservation: { packageName?: string; packageDataGB?: number; packageValidityDays?: number } | undefined
+    if (params.orderId) {
+      const order = await prisma.eSIMPurchase.findUnique({
+        where: { id: params.orderId },
+        select: { packageName: true, packageDataGB: true, packageValidityDays: true, packageSnapshot: true },
+      })
+      const validityDays = (order?.packageSnapshot as any)?.validityDays ?? order?.packageValidityDays ?? 30
+      pkgForReservation = {
+        packageName: order?.packageName || undefined,
+        packageDataGB: order?.packageDataGB ?? undefined,
+        packageValidityDays: order?.packageValidityDays ?? Number(validityDays ?? 30),
+      }
+    }
+
+    // 1. Reserve a SIM locally (allocation + persistence, with P2002 retry).
+    const reservation = await this.reserveSim(params.orderId, pkgForReservation)
+    if (!reservation.success || !reservation.data) {
+      return { success: false, error: reservation.error }
+    }
+    const { iccid, activationCode, carrier } = reservation.data
+
+    const releaseReservation = async () => {
+      if (!params.orderId) return
+      await prisma.eSIM.deleteMany({ where: { purchaseId: params.orderId, iccid } }).catch(() => {})
+    }
+    const flagReconciliation = async () => {
+      if (!params.orderId) return
+      await prisma.eSIM
+        .updateMany({ where: { purchaseId: params.orderId, iccid }, data: { providerStatus: 'RECONCILIATION_REQUIRED' } })
+        .catch(() => {})
+    }
+
+    // 2. Ensure the subscriber exists (reuse an existing one on conflict).
+    const username = params.externalId || params.subscriber.email
+    let providerSubscriberId: string | null = null
+    const created = await this.createSubscriber({
+      username,
+      email: params.subscriber.email,
+      firstName: params.subscriber.first_name,
+      lastName: params.subscriber.last_name,
+    })
+    if (created.success && created.data) {
+      providerSubscriberId = created.data.providerSubscriberId
+    } else if (params.subscriber.email) {
+      const msg = (created.error?.message || '').toLowerCase()
+      const isConflict = ['VALIDATION_ERROR', 'HTTP_400', 'HTTP_409', 'PROVIDER_ERROR'].includes(created.error?.code || '')
+      if (isConflict && (msg.includes('exist') || msg.includes('duplicate'))) {
+        const search = await this.searchSubscribers({ email: params.subscriber.email })
+        if (search.success && search.data && search.data.items.length > 0) {
+          providerSubscriberId = search.data.items[0]
+        } else {
+          await releaseReservation()
+          return { success: false, error: created.error }
+        }
+      } else if (created.error?.code === 'NETWORK_ERROR') {
+        // Subscriber creation uncertain — keep the SIM reserved for reconciliation.
+        await flagReconciliation()
+        return { success: false, error: created.error }
+      } else {
+        await releaseReservation()
+        return { success: false, error: created.error }
+      }
+    } else {
+      await releaseReservation()
+      return { success: false, error: created.error }
+    }
+
+    // 3. Create the subscription (provider activation). Never silently retried on failure.
+    const subscription = await this.createSubscription({
+      subscriberId: providerSubscriberId,
+      retailPlanId: params.planId,
+      devices: [{ device: iccid, type: 'iccid' }],
+      activationType: 'immediate',
+    })
+    if (!subscription.success || !subscription.data) {
+      if (subscription.error?.code === 'NETWORK_ERROR') {
+        // Uncertain: provider may have created the activation. Keep SIM reserved + reconciled.
+        await flagReconciliation()
+        return { success: false, error: subscription.error }
+      }
+      // Definite failure — release the ICCID for reallocation.
+      await releaseReservation()
+      return { success: false, error: subscription.error }
+    }
+
+    const activationId = subscription.data.activationId
+
+    // 4. Attach the provider activation reference + subscriber to the reserved eSIM.
+    if (params.orderId) {
+      await prisma.eSIM
+        .updateMany({
+          where: { purchaseId: params.orderId, iccid },
+          data: {
+            providerActivationId: activationId,
+            providerSubscriberId: providerSubscriberId || undefined,
+            providerStatus: 'PROCESSING',
+            providerResponse: { carrier: carrier || null, activationStatus: 'PENDING', allocationAt: new Date().toISOString() } as any,
+            lastStatusSyncAt: new Date(),
+          },
+        })
+        .catch((e: any) => console.log(`[IBASIS] attach ref failed for iccid=${maskIccid(iccid)}: ${e?.message || e}`))
+    }
+
+    return {
+      success: true,
+      data: {
+        activationId,
+        iccids: [iccid],
+        imsis: [],
+        activationCodes: activationCode ? [activationCode] : [],
+        qrCodeUrl: undefined,
+        status: 'PENDING',
+      },
+    }
+  }
+
+  /**
+   * Polls an activation and resolves to the normalized lifecycle status + ICCID.
+   * Used by the provider-operation job to decide completion. While the provider
+   * reports PENDING/PROVISIONING no ICCID is returned yet.
+   */
+  async getStatus(activationId: string): Promise<ConnectorResult<StatusResult>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+
+    const activation = await this.getActivationStatus(activationId)
+    if (!activation.success || !activation.data) {
+      return { success: false, error: activation.error }
+    }
+
+    const activationIccids = activation.data.iccids || []
+
+    // Once the provider returns a subscription id, fetch full detail for the ICCID + terminal status.
+    if (activation.data.providerSubscriptionId) {
+      const sub = await this.getSubscription(activation.data.providerSubscriptionId)
+      if (sub.success && sub.data) {
+        return {
+          success: true,
+          data: {
+            status: sub.data.status,
+            iccids: sub.data.iccid ? [sub.data.iccid] : activationIccids,
+            iccid: sub.data.iccid || undefined,
+          },
+        }
+      }
+      // Fall through and report based on the activation status.
+    }
+
+    return {
+      success: true,
+      data: { status: activation.data.status, iccids: activationIccids },
+    }
   }
 
   async getUsage(_iccid: string): Promise<ConnectorResult<UsageResult>> {

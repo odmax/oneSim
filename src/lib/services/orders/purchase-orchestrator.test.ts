@@ -292,4 +292,61 @@ describe('PurchaseOrchestrator', () => {
     expect(result.success).toBe(false)
     expect(result.errorCode).toBe('ALL_PROVIDERS_EXHAUSTED')
   })
+
+  it('deduplicates a repeated idempotency key (service-layer guard, no double create)', async () => {
+    setupBusiness()
+    setupPackage()
+    setupProvider()
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null) // Step 8 (30s window) miss
+    // Service-layer keyed guard hit: an order already exists for this idempotencyKey.
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({
+      id: 'order-1',
+      businessId: 'biz-1',
+      userId: 'user-1',
+      status: 'FULFILLED',
+      totalAmount: { toString: () => '5' },
+      esims: [{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'ACTIVE', qrCodeUrl: 'https://qr' }],
+      packageId: 'pkg-1',
+      packageSnapshot: {},
+      packageName: 'Test',
+      packageDataGB: 1,
+      packageValidityDays: 7,
+    } as any)
+
+    const result = await orchestrator.executePurchase({ ...validRequest, idempotencyKey: 'client-key-1' })
+
+    expect(result.success).toBe(true)
+    expect(result.orderId).toBe('order-1')
+    expect(result.status).toBe('FULFILLED')
+    expect(result.esims?.[0].iccid).toBe('89012345678901234567')
+    expect(mockPrisma.eSIMPurchase.create).not.toHaveBeenCalled()
+    expect(mockReserve).not.toHaveBeenCalled()
+  })
+
+  it('treats a FAILED pre-existing keyed order as a successful resume (idempotent replay)', async () => {
+    setupBusiness()
+    setupPackage()
+    setupProvider()
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({
+      id: 'order-1',
+      businessId: 'biz-1',
+      userId: 'user-1',
+      status: 'FAILED',
+      totalAmount: { toString: () => '5' },
+      esims: [],
+      packageId: 'pkg-1',
+      packageSnapshot: {},
+      packageName: 'Test',
+      packageDataGB: 1,
+      packageValidityDays: 7,
+    } as any)
+
+    const result = await orchestrator.executePurchase({ ...validRequest, idempotencyKey: 'client-key-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.orderId).toBe('order-1')
+    expect(result.status).toBe('FAILED')
+    expect(mockPrisma.eSIMPurchase.create).not.toHaveBeenCalled()
+  })
 })
