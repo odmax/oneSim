@@ -18,6 +18,29 @@ function isTokenExpired(expiry: unknown, bufferMs = 5 * 60 * 1000): boolean {
   return Date.now() >= expiryMs - bufferMs
 }
 
+export function urlHostname(baseUrl: string): string {
+  try { return new URL(baseUrl).hostname } catch { return baseUrl }
+}
+
+/**
+ * Guards against sending credentials/tokens to the wrong environment.
+ * Only an explicit `config.upstreamEnvironment` counts as intent; a provider
+ * label (environment) alone is too ambiguous to block on.
+ */
+export function environmentMismatchMessage(baseUrl: string, cfg: Record<string, any>): string | null {
+  const intended = typeof cfg.upstreamEnvironment === 'string' ? cfg.upstreamEnvironment.toLowerCase() : null
+  if (!intended) return null
+  const host = urlHostname(baseUrl).toLowerCase()
+  const looksStaging = /staging|stg[-.]/.test(host)
+  if (intended === 'production' && looksStaging) {
+    return `AirHub environment mismatch: config.upstreamEnvironment=production but base URL host "${host}" looks like staging. Refusing to send production credentials to a staging host.`
+  }
+  if (intended === 'staging' && !looksStaging && host === 'api.airhubapp.com') {
+    return `AirHub environment mismatch: config.upstreamEnvironment=staging but base URL host "${host}" is the production host. Refusing to send staging credentials to production.`
+  }
+  return null
+}
+
 export class AirHubConnector implements IProviderConnector {
   readonly providerId: string
   readonly name: string = 'AirHub'
@@ -44,13 +67,20 @@ export class AirHubConnector implements IProviderConnector {
   }
 
   async getTokenState(): Promise<TokenState> {
-    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiToken: true, config: true } })
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiToken: true, config: true, environment: true } })
     if (!provider) return { tokenPresent: false, expiryPresent: false, expired: false, expiresSoon: false, tokenExpiry: null }
     const cfg = (provider.config as any) || {}
     const tokenExpiry = cfg.tokenExpiry || null
     const tokenPresent = !!this.token || !!provider.apiToken
     let expired = false
     let expiresSoon = false
+
+    // A token minted under a different environment than the one currently
+    // configured must not be reused against the new endpoint.
+    const authEnv = cfg.authEnvironmentAtAuth
+    const currentEnv = cfg.upstreamEnvironment || provider.environment || 'production'
+    const envChanged = typeof authEnv === 'string' && typeof currentEnv === 'string' && authEnv !== currentEnv
+
     if (tokenExpiry) {
       if (typeof tokenExpiry === 'number') {
         expired = Date.now() >= tokenExpiry * 1000
@@ -62,6 +92,10 @@ export class AirHubConnector implements IProviderConnector {
           expiresSoon = !expired && Date.now() >= parsed - 5 * 60 * 1000
         }
       }
+    }
+    if (envChanged) {
+      expired = true
+      expiresSoon = false
     }
     return { tokenPresent, expiryPresent: !!tokenExpiry, expired, expiresSoon, tokenExpiry }
   }
@@ -86,8 +120,10 @@ export class AirHubConnector implements IProviderConnector {
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
     const authPath = provider.authUrl || '/api/Authentication/UserLogin'
     const url = `${baseUrl.replace(/\/$/, '')}/${authPath.replace(/^\//, '')}`
+    const cfg = (provider.config as any) || {}
+    const authEnv = cfg.upstreamEnvironment || provider.environment || 'production'
 
-    console.log(`[AIRHUB_AUTH_START] providerId=${this.providerId} baseUrl=${baseUrl} resolvedUrl=${url}`)
+    console.log(`[AIRHUB_AUTH_START] providerId=${this.providerId} baseHost=${urlHostname(baseUrl)} resolvedUrl=${url} authEnvironment=${authEnv}`)
     console.log(`[AIRHUB_AUTH_REQUEST] method=POST bodyFields=userName,password`)
 
     // Validate credentials before making HTTP request
@@ -99,6 +135,10 @@ export class AirHubConnector implements IProviderConnector {
         error: { code: 'AIRHUB_CREDENTIALS_MISSING', message: 'Username and password are required. Add them to provider.config.' },
       }
     }
+
+    // Never send credentials to the wrong environment
+    const mismatch = environmentMismatchMessage(baseUrl, cfg)
+    if (mismatch) return { success: false, error: { code: 'AIRHUB_ENV_MISMATCH', message: mismatch } }
 
     try {
       const controller = new AbortController()
@@ -112,8 +152,30 @@ export class AirHubConnector implements IProviderConnector {
       clearTimeout(timeout)
 
       const text = await response.text()
+      const contentType = response.headers?.get?.('content-type') || ''
+
+      // Handle 401 (invalid login) before attempting JSON parsing — the body
+      // is frequently not JSON.
+      if (response.status === 401) {
+        let safeKeys: string[] = []
+        try {
+          const parsed = JSON.parse(text)
+          if (parsed && typeof parsed === 'object') safeKeys = Object.keys(parsed)
+        } catch { /* non-JSON — safeKeys stays empty */ }
+        console.log(`[AIRHUB_AUTH_UNAUTHORIZED] httpStatus=401 contentType=${contentType} endpoint=${authPath} topKeys=${safeKeys.join(',')}`)
+        return {
+          success: false,
+          error: {
+            code: 'AIRHUB_AUTH_UNAUTHORIZED',
+            message: 'AirHub login rejected credentials (HTTP 401)',
+            details: { authStage: 'login', providerStatus: 401, retryable: false },
+          },
+        }
+      }
+
       let data: any
       try { data = JSON.parse(text) } catch {
+        console.log(`[AIRHUB_AUTH_RESPONSE] httpStatus=${response.status} contentType=${contentType} parse=NON_JSON`)
         return { success: false, error: { code: 'NON_JSON', message: 'AirHub returned non-JSON response' } }
       }
 
@@ -124,7 +186,7 @@ export class AirHubConnector implements IProviderConnector {
       if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `AirHub auth failed: HTTP ${response.status}` } }
       if (data.isSuccess === false) return { success: false, error: { code: 'AUTH_REJECTED', message: `AirHub rejected: ${data.message || 'unknown'}` } }
 
-      const token = data.token || data.accessToken || data.access_token || data.data?.token || ''
+      const token = data.token || data.accessToken || data.access_token || data.data?.token || data.data?.accessToken || ''
       if (!token || token.length < 8) return { success: false, error: { code: 'NO_TOKEN', message: 'No valid token returned' } }
 
       const cleanToken = token.startsWith('Bearer ') ? token.slice(7) : token.trim()
@@ -150,7 +212,7 @@ export class AirHubConnector implements IProviderConnector {
 
       await recordHealthEvent(this.providerId, { eventType: 'CONNECTION_TEST', success: true, message: 'AirHub authenticated' })
 
-      console.log(`[AIRHUB_AUTH_RESULT] success=true tokenPersisted=true tokenExpiryPresent=${!!tokenExpiry} partnerCode=${partnerCode}`)
+      console.log(`[AIRHUB_AUTH_RESULT] success=true tokenPersisted=true tokenExpiryPresent=${!!tokenExpiry} partnerCode=${partnerCode} authEnvironment=${authEnv}`)
       this.token = cleanToken
       return { success: true, data: { token: cleanToken, accountInfo: { partnerCode, tokenExpiry } } }
     } catch (e: any) {
@@ -392,12 +454,14 @@ export class AirHubConnector implements IProviderConnector {
   }
 
   async validatePurchase(_params: { planId: string; quantity: number; subscriber: { email: string } }): Promise<{ valid: boolean; reason?: string }> {
-    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiBaseUrl: true, config: true } })
+    const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiBaseUrl: true, config: true, apiToken: true } })
     if (!provider) return { valid: false, reason: 'Provider not found' }
     if (!provider.apiBaseUrl) return { valid: false, reason: 'API base URL not configured' }
     const cfg = (provider.config as any) || {}
     if (!cfg.partnerCode && cfg.partnerCode !== 0) return { valid: false, reason: 'partnerCode not configured in provider config' }
-    if (!cfg.username || !cfg.password) return { valid: false, reason: 'Credentials (username/password) not configured' }
+    const hasCredentials = (!!cfg.username || !!cfg.userName) && (!!cfg.password || !!cfg.pass)
+    const hasToken = !!provider.apiToken
+    if (!hasCredentials && !hasToken) return { valid: false, reason: 'Credentials (username/password) or an API token are required in provider.config' }
     return { valid: true }
   }
 
@@ -411,11 +475,16 @@ export class AirHubConnector implements IProviderConnector {
     const cfg = (provider.config as any) || {}
     const partnerCode = cfg.partnerCode || 200652387
 
+    const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/PurhaseSim`
+
+    // Never authenticate or purchase against the wrong environment
+    const mismatch = environmentMismatchMessage(baseUrl, cfg)
+    if (mismatch) return { success: false, error: { code: 'AIRHUB_ENV_MISMATCH', message: mismatch } }
+
     const tokenResult = await this.ensureAuthenticated()
     if (!tokenResult.success) return { success: false, error: tokenResult.error }
 
-    const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
-    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/PurhaseSim`
     const body: Record<string, any> = {
       partnerCode,
       planCode: params.planId,
@@ -428,7 +497,7 @@ export class AirHubConnector implements IProviderConnector {
     const travelDate = (params as any).travelDate || (params.subscriber as any)?.travelDate
     if (travelDate) body.travelDate = travelDate
 
-    console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} orderId=${params.externalId || 'unknown'} endpoint=POST ${url} planCode=${params.planId} quantity=${params.quantity} partnerCode=${partnerCode}`)
+    console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} orderId=${params.externalId || 'unknown'} endpoint=POST /api/ESIM/PurhaseSim baseHost=${urlHostname(baseUrl)} planCode=${params.planId} quantity=${params.quantity} partnerCode=${partnerCode}`)
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
@@ -443,22 +512,46 @@ export class AirHubConnector implements IProviderConnector {
         clearTimeout(timeout)
 
         const text = await response.text()
+        const contentType = response.headers?.get?.('content-type') || ''
         const durationMs = Date.now() - startMs
+
+        // Handle 401 (rejected/expired purchase token) before attempting JSON
+        // parsing — AirHub frequently returns a non-JSON body on 401.
+        if (response.status === 401) {
+          const hadToken = !!this.token
+          let safeKeys: string[] = []
+          try {
+            const parsed = JSON.parse(text)
+            if (parsed && typeof parsed === 'object') safeKeys = Object.keys(parsed)
+          } catch { /* non-JSON — safeKeys stays empty */ }
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=401 contentType=${contentType} endpoint=/api/ESIM/PurhaseSim topKeys=${safeKeys.join(',')} durationMs=${durationMs}`)
+
+          if (attempt === 1) {
+            const refreshed = await this.refreshTokenFromConfig()
+            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} reason=401 refreshSuccess=${refreshed}`)
+            if (refreshed) continue
+          }
+
+          return {
+            success: false,
+            error: {
+              code: 'AIRHUB_AUTH_UNAUTHORIZED',
+              message: hadToken
+                ? 'AirHub purchase rejected the token (HTTP 401) and reauthentication failed'
+                : 'AirHub purchase requires authentication (HTTP 401)',
+              details: { authStage: hadToken ? 'purchase_token_rejected' : 'login_required', retryable: false, providerStatus: 401 },
+            },
+          }
+        }
+
         let data: any
         try { data = JSON.parse(text) } catch {
-          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} durationMs=${durationMs} error=NON_JSON bodyPreview=${text.substring(0, 200)}`)
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} contentType=${contentType} durationMs=${durationMs} error=NON_JSON`)
           return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: `AirHub returned non-JSON response (HTTP ${response.status})` } }
         }
 
         const dataKeys = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
         console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess} durationMs=${durationMs} topKeys=${Object.keys(data).join(',')} dataKeys=${dataKeys.join(',')}`)
-
-        if (response.status === 401 && attempt === 1) {
-          const refreshed = await this.refreshTokenFromConfig()
-          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} reason=401 refreshSuccess=${refreshed}`)
-          if (refreshed) continue
-          return { success: false, error: { code: 'AUTH_ERROR', message: 'AirHub returned 401 and reauthentication failed', details: { retryable: false, providerStatus: 401 } } }
-        }
 
         if (!response.ok) {
           const code = this.classifyHttpError(response.status, data)

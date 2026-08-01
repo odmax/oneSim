@@ -313,7 +313,7 @@ describe('AirHubConnector', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1)
     })
 
-    it('returns AUTH_ERROR on 401 with failed refresh', async () => {
+    it('returns AIRHUB_AUTH_UNAUTHORIZED on purchase 401 with failed refresh', async () => {
       mockFetchFailure(401, { message: 'Unauthorized' })
 
       mockPrisma.provider.findUnique.mockResolvedValue(
@@ -324,7 +324,26 @@ describe('AirHubConnector', () => {
       const result = await connector.activateESIM(ACTIVATE_PARAMS)
 
       expect(result.success).toBe(false)
-      expect(result.error?.code).toBe('AUTH_ERROR')
+      expect(result.error?.code).toBe('AIRHUB_AUTH_UNAUTHORIZED')
+      expect(result.error?.message).toContain('401')
+      expect(result.error?.details?.authStage).toBe('purchase_token_rejected')
+    })
+
+    it('returns AIRHUB_AUTH_UNAUTHORIZED on purchase 401 with non-JSON body', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: false, status: 401, text: () => Promise.resolve('<html>Unauthorized</html>'),
+        headers: { get: () => 'text/html' },
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(
+        makeProvider({ config: { partnerCode: 200652387 } })
+      )
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AIRHUB_AUTH_UNAUTHORIZED')
       expect(result.error?.message).toContain('401')
     })
 
@@ -609,6 +628,209 @@ describe('AirHubConnector', () => {
       expect(result.error?.details).toBeDefined()
       expect(result.error?.details?.retryable).toBe(true)
       expect(result.error?.details?.providerStatus).toBe(503)
+    })
+  })
+
+  describe('activateESIM environment guard', () => {
+    it('refuses purchase when upstreamEnvironment=production but host looks staging', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(
+        makeProvider({
+          apiBaseUrl: 'https://staging.airhubapp.com',
+          config: { partnerCode: 200652387, username: 'testuser', password: 'testpass', upstreamEnvironment: 'production' },
+        })
+      )
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AIRHUB_ENV_MISMATCH')
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it('refuses purchase when upstreamEnvironment=staging but host is production api.airhubapp.com', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(
+        makeProvider({
+          apiBaseUrl: 'https://api.airhubapp.com',
+          config: { partnerCode: 200652387, username: 'testuser', password: 'testpass', upstreamEnvironment: 'staging' },
+        })
+      )
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AIRHUB_ENV_MISMATCH')
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it('allows purchase when upstreamEnvironment matches the host', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        data: { orderId: 'AH-OK', iccids: ['8901234567890123456'], qrCodeUrl: 'https://qr.airhub.com/ok', status: 'ACTIVATED' },
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(
+        makeProvider({
+          config: { partnerCode: 200652387, username: 'testuser', password: 'testpass', upstreamEnvironment: 'production' },
+        })
+      )
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('authenticate', () => {
+    it('returns AIRHUB_AUTH_UNAUTHORIZED on login 401', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: false, status: 401, text: () => Promise.resolve('<html>Invalid login</html>'),
+        headers: { get: () => 'text/html' },
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const result = await connector.authenticate({ username: 'baduser', password: 'badpass' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AIRHUB_AUTH_UNAUTHORIZED')
+      expect(result.error?.details?.authStage).toBe('login')
+      expect(fetchSpy.mock.calls[0][0]).toContain('/api/Authentication/UserLogin')
+    })
+
+    it('returns AIRHUB_CREDENTIALS_MISSING without making an HTTP request', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const result = await connector.authenticate({ username: '', password: '' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AIRHUB_CREDENTIALS_MISSING')
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it('refuses login when upstreamEnvironment=production but host looks staging', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(
+        makeProvider({
+          apiBaseUrl: 'https://staging.airhubapp.com',
+          config: { upstreamEnvironment: 'production' },
+        })
+      )
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const result = await connector.authenticate({ username: 'testuser', password: 'testpass' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AIRHUB_ENV_MISMATCH')
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it('logs safe response metadata without leaking the token', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        token: 'super-secret-token-abc123',
+        partnerCode: 200652387,
+      })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
+      mockPrisma.provider.update.mockResolvedValue(makeProvider())
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const result = await connector.authenticate({ username: 'testuser', password: 'testpass' })
+
+      expect(result.success).toBe(true)
+      const logs = logSpy.mock.calls.map(c => String(c[0])).join('\n')
+      expect(logs).not.toContain('super-secret-token-abc123')
+      expect(logs).not.toContain('testpass')
+      expect(logs).toContain('[AIRHUB_AUTH_RESULT]')
+      logSpy.mockRestore()
+    })
+
+    it('persists the token and updates config after successful login', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        token: 'fresh-token-abcdef',
+        partnerCode: 200652387,
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiToken: null }))
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const result = await connector.authenticate({ username: 'testuser', password: 'testpass' })
+
+      expect(result.success).toBe(true)
+      expect(result.data?.token).toBe('fresh-token-abcdef')
+      expect(mockPrisma.provider.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'airhub-1' },
+          data: expect.objectContaining({
+            apiToken: 'enc:fresh-token-abcdef',
+            tokenPlacement: 'BEARER_HEADER',
+          }),
+        })
+      )
+    })
+  })
+
+  describe('validatePurchase', () => {
+    it('passes when token is present even without credentials', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(
+        makeProvider({ apiToken: 'enc:existing-token', config: { partnerCode: 200652387 } })
+      )
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const result = await connector.validatePurchase(ACTIVATE_PARAMS)
+
+      expect(result.valid).toBe(true)
+    })
+
+    it('fails when neither credentials nor token are present', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(
+        makeProvider({ apiToken: null, config: { partnerCode: 200652387 } })
+      )
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const result = await connector.validatePurchase(ACTIVATE_PARAMS)
+
+      expect(result.valid).toBe(false)
+      expect(result.reason).toContain('Credentials')
+    })
+  })
+
+  describe('getTokenState', () => {
+    it('invalidates a token minted under a different environment', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(
+        makeProvider({
+          apiToken: 'enc:old-env-token',
+          config: { tokenExpiry: Math.floor(Date.now() / 1000) + 3600, authEnvironmentAtAuth: 'staging', upstreamEnvironment: 'production' },
+        })
+      )
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const state = await connector.getTokenState()
+
+      expect(state.tokenPresent).toBe(true)
+      expect(state.expired).toBe(true)
+    })
+
+    it('keeps a token valid when environment is unchanged', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(
+        makeProvider({
+          config: { tokenExpiry: Math.floor(Date.now() / 1000) + 3600, authEnvironmentAtAuth: 'production', upstreamEnvironment: 'production' },
+        })
+      )
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const state = await connector.getTokenState()
+
+      expect(state.tokenPresent).toBe(true)
+      expect(state.expired).toBe(false)
+      expect(state.expiresSoon).toBe(false)
     })
   })
 

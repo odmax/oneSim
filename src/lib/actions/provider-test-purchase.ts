@@ -4,6 +4,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { getAdapterForType, isProviderOperational } from '@/lib/providers/adapter-manager'
+import { resolveConnectorType } from '@/lib/providers/connectors/connector-factory'
 
 export interface TestPurchaseResult {
   success: boolean
@@ -64,7 +65,7 @@ export async function testProviderPurchase(providerId: string, providerPackageId
     environment: provider.environment,
     authUrl: provider.authUrl,
   })
-  addTimeline('ADAPTER_RESOLVED', `Adapter resolved for ${provider.name} (type: ${provider.type})`)
+  addTimeline('ADAPTER_RESOLVED', `Adapter resolved for ${provider.name} (type: ${resolveConnectorType(provider.adapterStrategy, provider.type, provider.code)})`)
 
   // 5. Validate provider purchase configuration before dispatch
   if (adapter.validatePurchase) {

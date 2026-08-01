@@ -10,26 +10,13 @@ import { StandardProviderConnector } from './standard-connector'
 import { TelnaConnector } from './telna-connector'
 import { TelnaSeamlessConnector } from './telna-seamless-connector'
 import { IbasisConnector } from './ibasis-connector'
+import { resolveConnectorType } from './connector-type'
+import type { ConnectorType as ConnectorTypeAlias } from './connector-type'
 
-export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB' | 'TELNA' | 'TELNA_SEAMLESS' | 'IBASIS'
+export { resolveConnectorType } from './connector-type'
+export type { ConnectorType } from './connector-type'
 
-export function resolveConnectorType(adapterStrategy: string | null | undefined, providerType: string): ConnectorType {
-  if (providerType === 'MOCK') return 'MOCK'
-  if (adapterStrategy === 'AIRHUB') return 'AIRHUB'
-  if (adapterStrategy === 'TELNA_SEAMLESS') return 'TELNA_SEAMLESS'
-  if (adapterStrategy === 'TELNA') return 'TELNA'
-  if (adapterStrategy === 'IBASIS') return 'IBASIS'
-  switch (adapterStrategy) {
-    case 'STANDARD': return 'STANDARD'
-    case 'CHOICE': return 'URL_TOKEN'
-    case 'URL_TOKEN': return 'URL_TOKEN'
-    case 'HEADER_TOKEN': return 'HEADER_TOKEN'
-    case 'REST_CATALOG': return 'REST_CATALOG'
-    default: return 'REST_CATALOG'
-  }
-}
-
-export function createConnector(providerId: string, name: string | undefined, connectorType: ConnectorType, config: {
+export function createConnector(providerId: string, name: string | undefined, connectorType: ConnectorTypeAlias, config: {
   apiBaseUrl?: string | null
   apiToken?: string | null
   authUrl?: string | null
@@ -96,7 +83,7 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) return null
 
-  const connectorType = resolveConnectorType(provider.adapterStrategy, provider.type)
+  const connectorType = resolveConnectorType(provider.adapterStrategy, provider.type, provider.code)
   console.log(`[TRACE_SYNC] step=buildConnectorFromProvider code=${provider.code} strategy=${provider.adapterStrategy} type=${provider.type} resolvedConnector=${connectorType}`)
   console.log(`[buildConnector] provider=${provider.name}(${provider.id}) type=${provider.type} strategy=${provider.adapterStrategy} connectorType=${connectorType}`)
 
