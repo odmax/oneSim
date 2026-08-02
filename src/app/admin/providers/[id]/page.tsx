@@ -628,6 +628,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
             endpointMappings={provider.endpointMappings as Record<string, string> | null}
             requestMappings={provider.requestMappings as Record<string, any> | null}
             responseMappings={provider.responseMappings as Record<string, any> | null}
+            forceTravelDateRequired={provider.adapterStrategy === 'AIRHUB' || provider.code === 'AIRHUB'}
           />
         </div>
       )}

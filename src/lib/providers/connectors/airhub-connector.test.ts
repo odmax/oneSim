@@ -396,6 +396,95 @@ describe('AirHubConnector', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(3)
     })
 
+    it('authenticates before the first purchase call when no token exists and sends the fresh token directly', async () => {
+      const authBody = {
+        isSuccess: true,
+        token: 'fresh-token-abcdef',
+        partnerCode: 200652387,
+      }
+      const purchaseBody = {
+        isSuccess: true,
+        data: { orderId: 'AH-FRESH', iccids: ['8901234567890777777'], qrCodeUrl: 'https://qr.airhub.com/fresh', status: 'ACTIVATED' },
+      }
+
+      fetchSpy
+        .mockResolvedValueOnce({
+          ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(authBody)),
+          headers: { get: () => 'application/json' },
+        })
+        .mockResolvedValueOnce({
+          ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(purchaseBody)),
+          headers: { get: () => 'application/json' },
+        })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiToken: null }))
+      mockPrisma.provider.update.mockResolvedValue(makeProvider({ apiToken: 'enc:fresh-token-abcdef' }))
+
+      const connector = new AirHubConnector('airhub-1')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+      expect(fetchSpy.mock.calls[0][0]).toContain('/api/Authentication/UserLogin')
+      const loginBody = JSON.parse(fetchSpy.mock.calls[0][1].body)
+      expect(loginBody).toEqual({ userName: 'testuser', password: 'testpass' })
+      const [purchaseUrl, purchaseOpts] = fetchSpy.mock.calls[1]
+      expect(purchaseUrl).toContain('/api/ESIM/PurhaseSim')
+      expect(purchaseOpts.headers['Authorization']).toBe('Bearer fresh-token-abcdef')
+      expect(mockPrisma.provider.update).toHaveBeenCalled()
+    })
+
+    it('reuses a valid persisted token from the DB without re-authenticating', async () => {
+      mockPrisma.provider.update.mockClear()
+      mockFetchSuccess({
+        isSuccess: true,
+        data: { orderId: 'AH-PERSIST', iccids: ['8901234567890888888'], qrCodeUrl: 'https://qr.airhub.com/persist', status: 'ACTIVATED' },
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiToken: 'enc:persisted-token-xyz' }))
+
+      const connector = new AirHubConnector('airhub-1')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const [url, opts] = fetchSpy.mock.calls[0]
+      expect(url).toContain('/api/ESIM/PurhaseSim')
+      expect(opts.headers['Authorization']).toBe('Bearer persisted-token-xyz')
+      expect(mockPrisma.provider.update).not.toHaveBeenCalled()
+    })
+
+    it('logs sanitized validation field names and messages on HTTP 400', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: () => Promise.resolve(JSON.stringify({
+          type: 'https://tools.ietf.org/html/rfc7231#section-6.5.1',
+          title: 'One or more validation errors occurred.',
+          status: 400,
+          traceId: '00-abc-def-00',
+          errors: { TravelDate: ['The TravelDate field is required.'] },
+        })),
+        headers: { get: () => 'application/json' },
+      })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+      const logs = logSpy.mock.calls.map(c => String(c[0])).join('\n')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('VALIDATION_ERROR')
+      expect(result.error?.message).toBe('AirHub validation failed: TravelDate — The TravelDate field is required.')
+      expect(logs).toContain('[AIRHUB_PURCHASE_VALIDATION]')
+      expect(logs).toContain('fields=TravelDate')
+      expect(logs).toContain('messages=The TravelDate field is required.')
+      expect(logs).not.toContain('00-abc-def-00')
+      expect(logs).not.toContain('test-token')
+      logSpy.mockRestore()
+    })
+
     it('returns INSUFFICIENT_BALANCE on 402', async () => {
       mockFetchFailure(402, { message: 'Insufficient wallet balance' })
 
@@ -533,7 +622,7 @@ describe('AirHubConnector', () => {
       expect(result.error?.code).toBe('NOT_FOUND')
     })
 
-    it('returns error when token is missing', async () => {
+    it('returns AIRHUB_CREDENTIALS_MISSING when no token and no stored credentials', async () => {
       mockPrisma.provider.findUnique.mockResolvedValue(
         makeProvider({ apiToken: null, config: { partnerCode: 200652387 } })
       )
@@ -542,7 +631,8 @@ describe('AirHubConnector', () => {
       const result = await connector.activateESIM(ACTIVATE_PARAMS)
 
       expect(result.success).toBe(false)
-      expect(result.error?.code).toBe('NO_TOKEN')
+      expect(result.error?.code).toBe('AIRHUB_CREDENTIALS_MISSING')
+      expect(fetchSpy).not.toHaveBeenCalled()
     })
 
     it('extracts activation code and smdpAddress from response', async () => {
@@ -652,6 +742,25 @@ describe('AirHubConnector', () => {
       expect(Object.keys(body).sort()).toEqual(['partnerCode', 'planCode', 'travelDate', 'unique_order_id'])
     })
 
+    it('sends travelDate: "2026-08-05" in the final AirHub payload when received', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        data: { orderId: 'AH-DATE2', iccids: ['8901234567890123456'], status: 'ACTIVATED' },
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM({ ...ACTIVATE_PARAMS, travelDate: '2026-08-05' } as ActivateESIMParams & { travelDate: string })
+
+      expect(result.success).toBe(true)
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+      expect(body.travelDate).toBe('2026-08-05')
+      expect(Object.keys(body).sort()).toEqual(['partnerCode', 'planCode', 'travelDate', 'unique_order_id'])
+      expect(body.TravelDate).toBeUndefined()
+      expect(body.travel_date).toBeUndefined()
+      expect(body.quantity).toBeUndefined()
+      expect(body.email).toBeUndefined()
+    })
+
     it('omits travelDate entirely when it is undefined', async () => {
       mockFetchSuccess({
         isSuccess: true,
@@ -750,7 +859,7 @@ describe('AirHubConnector', () => {
 
       expect(result.success).toBe(false)
       expect(result.error?.code).toBe('VALIDATION_ERROR')
-      expect(result.error?.message).toBe('AirHub validation failed: planCode The planCode field is required.')
+      expect(result.error?.message).toBe('AirHub validation failed: planCode — The planCode field is required.')
       expect(result.error?.details?.retryable).toBe(false)
       expect(result.error?.details?.providerStatus).toBe(400)
       expect(result.error?.details?.fields).toEqual({

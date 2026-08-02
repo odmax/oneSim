@@ -30,6 +30,7 @@ const mockPrisma = vi.mocked(prisma)
 const mockAdapter = vi.mocked(getAdapterForType)
 
 const PROVIDER = { id: 'prov-1', name: 'AirHub', type: 'CUSTOM', status: 'ACTIVE', adapterStrategy: 'CUSTOM', code: 'AIRHUB' }
+const NON_AIRHUB_PROVIDER = { id: 'prov-1', name: 'Choice', type: 'CUSTOM', status: 'ACTIVE', adapterStrategy: 'CUSTOM', code: 'CHOICE' }
 const PACKAGE_BASE = { id: 'pp-1', providerId: 'prov-1', providerPlanId: 'US-5GB-30D', providerPlanCode: 'US-5GB-30D', name: 'US 5GB' }
 const ACTIVATE_RESULT = {
   success: true,
@@ -52,6 +53,7 @@ beforeEach(() => {
 
 describe('testProviderPurchase travel-date handling', () => {
   it('fails fast before any dispatch when a required travel date is missing', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(NON_AIRHUB_PROVIDER as any)
     mockPrisma.providerPackage.findFirst.mockResolvedValue({
       ...PACKAGE_BASE,
       providerRawData: { planCode: 'US-5GB-30D', __requiresTravelDate: true },
@@ -98,7 +100,55 @@ describe('testProviderPurchase travel-date handling', () => {
     expect(activateESIM.mock.calls[0][0].travelDate).toBe('2026-08-02')
   })
 
+  it('blocks an AirHub admin test purchase when no travel date is provided, even for plans without metadata', async () => {
+    mockPrisma.providerPackage.findFirst.mockResolvedValue({
+      ...PACKAGE_BASE,
+      providerRawData: { planCode: 'US-5GB-30D', __requiresTravelDate: false },
+    } as any)
+    const activateESIM = vi.fn().mockResolvedValue(ACTIVATE_RESULT)
+    setupAdapter({ activateESIM })
+
+    const result = await testProviderPurchase('prov-1', 'pp-1', 1)
+
+    expect(result.success).toBe(false)
+    expect(result.errorStep).toBe('travel_date')
+    expect(result.error).toBe('Travel date is required for this AirHub test purchase.')
+    expect(activateESIM).not.toHaveBeenCalled()
+  })
+
+  it('does not require a travel date for non-AirHub test purchases', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(NON_AIRHUB_PROVIDER as any)
+    mockPrisma.providerPackage.findFirst.mockResolvedValue({
+      ...PACKAGE_BASE,
+      providerRawData: { planCode: 'UK-3GB-7D', __requiresTravelDate: false },
+    } as any)
+    const activateESIM = vi.fn().mockResolvedValue(ACTIVATE_RESULT)
+    setupAdapter({ activateESIM })
+
+    const result = await testProviderPurchase('prov-1', 'pp-1', 1)
+
+    expect(result.success).toBe(true)
+    expect(activateESIM).toHaveBeenCalledTimes(1)
+    expect(activateESIM.mock.calls[0][0].travelDate).toBeUndefined()
+  })
+
+  it('forwards the entered date for an AirHub admin test purchase', async () => {
+    mockPrisma.providerPackage.findFirst.mockResolvedValue({
+      ...PACKAGE_BASE,
+      providerRawData: { planCode: 'US-5GB-30D' },
+    } as any)
+    const activateESIM = vi.fn().mockResolvedValue(ACTIVATE_RESULT)
+    setupAdapter({ activateESIM })
+
+    const result = await testProviderPurchase('prov-1', 'pp-1', 1, '2026-08-05')
+
+    expect(result.success).toBe(true)
+    expect(activateESIM).toHaveBeenCalledTimes(1)
+    expect(activateESIM.mock.calls[0][0].travelDate).toBe('2026-08-05')
+  })
+
   it('does not require a travel date for optional plans and omits it when absent', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(NON_AIRHUB_PROVIDER as any)
     mockPrisma.providerPackage.findFirst.mockResolvedValue({
       ...PACKAGE_BASE,
       providerRawData: { planCode: 'UK-3GB-7D', __requiresTravelDate: false },
@@ -114,6 +164,7 @@ describe('testProviderPurchase travel-date handling', () => {
   })
 
   it('still forwards an optional travel date when provided', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(NON_AIRHUB_PROVIDER as any)
     mockPrisma.providerPackage.findFirst.mockResolvedValue({
       ...PACKAGE_BASE,
       providerRawData: { planCode: 'UK-3GB-7D' },

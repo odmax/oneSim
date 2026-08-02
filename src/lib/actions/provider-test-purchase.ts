@@ -68,10 +68,16 @@ export async function testProviderPurchase(providerId: string, providerPackageId
       diagnostics: { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity, travelDate: normalizedTravelDate, requiresTravelDate },
     }
   }
-  if (requiresTravelDate && !normalizedTravelDate) {
+  // 3b. AirHub admin test purchases always require a travel date, even when
+  // synced plan metadata does not yet mark the plan as requiring one.
+  const isAirHub = provider.code === 'AIRHUB' || provider.adapterStrategy === 'AIRHUB'
+  const dateRequired = requiresTravelDate || isAirHub
+  if (dateRequired && !normalizedTravelDate) {
     return {
       success: false,
-      error: 'This package requires a Travel Date before purchase. Provide a valid date in YYYY-MM-DD format.',
+      error: isAirHub
+        ? 'Travel date is required for this AirHub test purchase.'
+        : 'This package requires a Travel Date before purchase. Provide a valid date in YYYY-MM-DD format.',
       errorStep: 'travel_date',
       diagnostics: { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity, requiresTravelDate },
     }

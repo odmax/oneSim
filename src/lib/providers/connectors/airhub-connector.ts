@@ -484,8 +484,31 @@ export class AirHubConnector implements IProviderConnector {
     const mismatch = environmentMismatchMessage(baseUrl, cfg)
     if (mismatch) return { success: false, error: { code: 'AIRHUB_ENV_MISMATCH', message: mismatch } }
 
-    const tokenResult = await this.ensureAuthenticated()
-    if (!tokenResult.success) return { success: false, error: tokenResult.error }
+    // Resolve a valid token before the first purchase call. A persisted valid
+    // token is decrypted into memory and reused. A missing, expired, or
+    // environment-mismatched token triggers a fresh login whose returned token
+    // is used immediately — never reloaded from the DB after authenticate().
+    const tokenState = await this.getTokenState()
+    if (!this.token && tokenState.tokenPresent && !tokenState.expired && !tokenState.expiresSoon) {
+      try {
+        this.token = provider.apiToken ? decryptToken(provider.apiToken) || null : null
+      } catch {
+        this.token = null
+      }
+    }
+    if (!this.token) {
+      const username = String(cfg.username || '').trim()
+      const password = String(cfg.password || '').trim()
+      if (!username || !password) {
+        return { success: false, error: { code: 'AIRHUB_CREDENTIALS_MISSING', message: 'Username and password are required. Add them to provider.config.' } }
+      }
+      const auth = await this.authenticate({ username, password })
+      if (!auth.success) return { success: false, error: auth.error }
+      if (!this.token) this.token = auth.data?.token || null
+    }
+    if (!this.token) {
+      return { success: false, error: { code: 'NO_TOKEN', message: 'No token. Authenticate first.' } }
+    }
 
     // --- Build the exact documented payload. quantity/email/orderId/packageId
     // are OneSIM-internal and MUST NOT be serialized to AirHub. ---
@@ -568,7 +591,8 @@ export class AirHubConnector implements IProviderConnector {
         // instead of dumping the raw RFC 7231 body.
         if (response.status === 400) {
           const parsed = this.parsePurchaseValidationError(data)
-          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=400 durationMs=${durationMs} fieldCount=${Object.keys(parsed.fields).length}`)
+          const fieldEntries = Object.entries(parsed.fields)
+          console.log(`[AIRHUB_PURCHASE_VALIDATION] fields=${fieldEntries.map(([f]) => f).join(',')} messages=${fieldEntries.map(([, msgs]) => msgs.join(', ')).join(' | ')}`)
           return {
             success: false,
             error: {
@@ -827,7 +851,7 @@ export class AirHubConnector implements IProviderConnector {
     }
     if (Object.keys(fields).length > 0) {
       const [field, msgs] = Object.entries(fields)[0]
-      return { message: `AirHub validation failed: ${field} ${msgs[0]}`, fields }
+      return { message: `AirHub validation failed: ${field} — ${msgs[0]}`, fields }
     }
     const title = typeof data?.title === 'string' ? data.title : 'One or more validation errors occurred.'
     return { message: `AirHub validation failed: ${title}`, fields }
