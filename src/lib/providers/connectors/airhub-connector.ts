@@ -1,8 +1,89 @@
+import crypto from 'crypto'
 import { encryptToken, decryptToken } from '@/lib/encryption'
 import { prisma } from '@/lib/prisma'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import { normalizeTravelDateRequirement, isValidTravelDate, withTravelDateMarker } from '@/lib/providers/travel-date-utils'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState } from './connector-interface'
+
+/**
+ * Short, non-reversible fingerprint so two call sites can be compared without
+ * leaking token characters: SHA-256, first 10 hex chars, 'none' when absent.
+ */
+export function tokenFingerprint(token: string | null | undefined): string {
+  if (!token) return 'none'
+  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 10)
+}
+
+/** Guarded balance diagnostics: OFF unless AIRHUB_BALANCE_DIAGNOSTICS_ENABLED=true. */
+function balanceDiagnosticsEnabled(): boolean {
+  return process.env.AIRHUB_BALANCE_DIAGNOSTICS_ENABLED === 'true'
+}
+
+/** Process-scoped tag so one wallet refresh and one purchase share a correlation. */
+const airhubDiagCorrelationId = `airhub-diag-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+/** Keys whose values are masked case-insensitively in diagnostics (structure is kept). */
+const DIAG_SENSITIVE_KEY_TERMS = [
+  'token', 'authorization', 'password', 'secret', 'apikey', 'x-api-key', 'keyhash',
+  'activationcode', 'lpa', 'iccid', 'email', 'phone', 'mobile', 'msisdn',
+  'traceid', 'cookie', 'header',
+]
+
+function sanitizeDiagnostic(obj: any): any {
+  if (!obj || typeof obj !== 'object') return obj
+  if (Array.isArray(obj)) return obj.map((v) => (v && typeof v === 'object' ? sanitizeDiagnostic(v) : v))
+  const out: Record<string, any> = {}
+  for (const [k, v] of Object.entries(obj)) {
+    const sensitive = DIAG_SENSITIVE_KEY_TERMS.some((term) => k.toLowerCase().includes(term))
+    if (sensitive) { out[k] = '[REDACTED]'; continue }
+    out[k] = v && typeof v === 'object' ? sanitizeDiagnostic(v) : v
+  }
+  return out
+}
+
+const BALANCE_FIELD_ALIASES: Record<string, string> = {
+  balance: 'balance',
+  currentbalance: 'balance',
+  walletbalance: 'balance',
+  wallet: 'wallet',
+  availablebalance: 'availableBalance',
+  available: 'availableBalance',
+  accountid: 'accountId',
+  account: 'accountId',
+  customerid: 'accountId',
+  partnercode: 'partnerCode',
+}
+
+/** Collects only balance/wallet/availableBalance/accountId/partnerCode at any depth. */
+function probeBalanceFields(data: any): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const walk = (node: any): void => {
+    if (!node || typeof node !== 'object') return
+    for (const [k, v] of Object.entries(node)) {
+      const label = BALANCE_FIELD_ALIASES[k.toLowerCase()]
+      if (label && !(label in out)) out[label] = v
+      walk(v)
+    }
+  }
+  walk(data)
+  return out
+}
+
+function safeDiagValue(v: unknown): string {
+  if (v === null || v === undefined) return 'undefined'
+  return String(v)
+}
+
+/** The single structured diagnostic entry per call site; emits nothing when disabled. */
+function logBalanceDiagnostics(
+  scope: 'purchase' | 'wallet',
+  ctx: { httpStatus: number; data: any; partnerCode: unknown; token: string | null | undefined },
+): void {
+  if (!balanceDiagnosticsEnabled()) return
+  const sanitized = sanitizeDiagnostic(ctx.data)
+  const tag = scope === 'purchase' ? '[AIRHUB_PURCHASE_RESPONSE]' : '[AIRHUB_WALLET_RESPONSE]'
+  console.log(`${tag} diagCorrelation=${airhubDiagCorrelationId} httpStatus=${ctx.httpStatus} isSuccess=${ctx.data?.isSuccess} message=${String(sanitized?.message ?? '').substring(0, 500)} partnerCode=${safeDiagValue(ctx.partnerCode)} tokenFingerprint=${tokenFingerprint(ctx.token)} topKeys=${Object.keys(ctx.data ?? {}).join(',')} balanceFields=${JSON.stringify(probeBalanceFields(ctx.data))} full=${JSON.stringify(sanitized)}`)
+}
 
 function isTokenExpired(expiry: unknown, bufferMs = 5 * 60 * 1000): boolean {
   if (!expiry) return false
@@ -587,6 +668,9 @@ export class AirHubConnector implements IProviderConnector {
         const dataKeys = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
         console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess} durationMs=${durationMs} topKeys=${Object.keys(data).join(',')} dataKeys=${dataKeys.join(',')}`)
 
+        // Guarded full-response diagnostics (off by default). No business logic.
+        logBalanceDiagnostics('purchase', { httpStatus: response.status, data, partnerCode, token: this.token })
+
         // HTTP 400 — ASP.NET ModelState validation. Surface the failing fields
         // instead of dumping the raw RFC 7231 body.
         if (response.status === 400) {
@@ -957,6 +1041,9 @@ export class AirHubConnector implements IProviderConnector {
       try { data = JSON.parse(text) } catch {
         return { success: false, error: { code: 'NON_JSON', message: 'Wallet response is not valid JSON' } }
       }
+
+      // Guarded full-response diagnostics (off by default). No business logic.
+      logBalanceDiagnostics('wallet', { httpStatus: response.status, data, partnerCode, token: this.token })
 
       if (response.status === 401) return { success: false, error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } }
       if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `Wallet fetch failed: HTTP ${response.status}` } }

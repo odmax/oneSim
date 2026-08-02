@@ -33,7 +33,7 @@ vi.mock('@/lib/services/providers/health-monitor', () => ({
 }))
 
 import { prisma } from '@/lib/prisma'
-import { AirHubConnector } from './airhub-connector'
+import { AirHubConnector, tokenFingerprint } from './airhub-connector'
 
 const mockPrisma = vi.mocked(prisma)
 
@@ -1599,6 +1599,140 @@ describe('AirHubConnector', () => {
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.activateESIM(ACTIVATE_PARAMS)
       expect(result.error?.code).toBe('VALIDATION_ERROR')
+    })
+  })
+
+  describe('guarded balance diagnostics', () => {
+    afterEach(() => {
+      delete process.env.AIRHUB_BALANCE_DIAGNOSTICS_ENABLED
+    })
+
+    it('token fingerprint is non-reversible, stable and 10 hex chars', () => {
+      const fp1 = tokenFingerprint('test-token')
+      const fp2 = tokenFingerprint('test-token')
+      expect(fp1).toBe(fp2)
+      expect(fp1).toMatch(/^[0-9a-f]{10}$/)
+      expect(fp1).not.toContain('test')
+      expect(tokenFingerprint('test-token-2')).not.toBe(fp1)
+      expect(tokenFingerprint(null)).toBe('none')
+      expect(tokenFingerprint(undefined)).toBe('none')
+      expect(tokenFingerprint('')).toBe('none')
+    })
+
+    it('is disabled by default: no structured response logs, concise logs unchanged', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        data: { orderId: 'AH-DIAG', iccids: ['8901234567890123456'], status: 'ACTIVATED' },
+      })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      const logs = logSpy.mock.calls.map(c => String(c[0])).join('\n')
+      expect(logs).not.toContain('[AIRHUB_PURCHASE_RESPONSE]')
+      expect(logs).not.toContain('[AIRHUB_WALLET_RESPONSE]')
+      expect(logs).toContain('[AIRHUB_PURCHASE]')
+      logSpy.mockRestore()
+    })
+
+    it('logs the structured purchase response with masked secrets when enabled', async () => {
+      process.env.AIRHUB_BALANCE_DIAGNOSTICS_ENABLED = 'true'
+      mockFetchSuccess({
+        isSuccess: false,
+        message: 'Balance is NA',
+        data: {
+          balance: 'NA',
+          availableBalance: 12.5,
+          partnerCode: '200652387',
+          accountId: 'acct-9001',
+          token: 'super-secret-token-abc123',
+          iccid: '8901234567890123456',
+          customerEmail: 'bob@example.com',
+          phone: '+15551234567',
+          traceId: '00-abc-def-00',
+          headers: { authorization: 'Bearer super-secret-token-abc123' },
+        },
+      })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(false)
+      const logs = logSpy.mock.calls.map(c => String(c[0])).join('\n')
+      expect(logs).toContain('[AIRHUB_PURCHASE_RESPONSE]')
+      expect(logs).toContain('httpStatus=200')
+      expect(logs).toContain('isSuccess=false')
+      expect(logs).toContain('message=Balance is NA')
+      expect(logs).toContain(`tokenFingerprint=${tokenFingerprint('test-token')}`)
+      expect(logs).toContain('"balance":"NA"')
+      expect(logs).toContain('"availableBalance":12.5')
+      expect(logs).toContain('"partnerCode":"200652387"')
+      expect(logs).toContain('"accountId":"acct-9001"')
+      expect(logs).not.toContain('super-secret-token-abc123')
+      expect(logs).not.toContain('8901234567890123456')
+      expect(logs).not.toContain('bob@example.com')
+      expect(logs).not.toContain('+15551234567')
+      expect(logs).not.toContain('00-abc-def-00')
+      expect(logs).toContain('[REDACTED]')
+      expect(logs).toContain('[AIRHUB_PURCHASE]')
+      logSpy.mockRestore()
+    })
+
+    it('keeps wallet diagnostics off by default while the concise wallet log remains', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        balance: 120.5,
+        currency: 'USD',
+        data: { balance: 120.5, availableBalance: 90.0 },
+      })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getWalletBalance()
+
+      expect(result.success).toBe(true)
+      const logs = logSpy.mock.calls.map(c => String(c[0])).join('\n')
+      expect(logs).not.toContain('[AIRHUB_WALLET_RESPONSE]')
+      expect(logs).toContain('[AIRHUB_WALLET]')
+      logSpy.mockRestore()
+    })
+
+    it('logs the structured wallet response and reuses the same fingerprint format', async () => {
+      process.env.AIRHUB_BALANCE_DIAGNOSTICS_ENABLED = 'true'
+      mockFetchSuccess({
+        isSuccess: true,
+        balance: 250,
+        currency: 'USD',
+        data: { balance: 250, availableBalance: 240 },
+      })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const walletResult = await connector.getWalletBalance()
+      expect(walletResult.success).toBe(true)
+
+      const expectedFp = tokenFingerprint('test-token')
+      const walletLogs = logSpy.mock.calls.map(c => String(c[0])).join('\n')
+      expect(walletLogs).toContain('[AIRHUB_WALLET_RESPONSE]')
+      expect(walletLogs).toContain('httpStatus=200')
+      expect(walletLogs).toContain(`tokenFingerprint=${expectedFp}`)
+      expect(walletLogs).toContain('"balance":250')
+      expect(walletLogs).toContain('"availableBalance":240')
+
+      mockFetchSuccess({
+        isSuccess: true,
+        data: { orderId: 'AH-FP', iccids: ['8901234567890123456'], status: 'ACTIVATED' },
+      })
+      await connector.activateESIM(ACTIVATE_PARAMS)
+
+      const allLogs = logSpy.mock.calls.map(c => String(c[0])).join('\n')
+      const purchaseEntry = allLogs.split('\n').find(l => l.includes('[AIRHUB_PURCHASE_RESPONSE]'))
+      expect(purchaseEntry).toBeTruthy()
+      expect(purchaseEntry).toContain(`tokenFingerprint=${expectedFp}`)
+      logSpy.mockRestore()
     })
   })
 })
