@@ -36,6 +36,10 @@ export interface ActivateESIMResult {
   matchingId?: string
   smdpAddress?: string
   status?: string
+  /** Upstream SIM/ICCID identifier when the provider returns simID instead of iccids. */
+  iccidOrSimId?: string
+  /** Sanitized upstream purchase metadata (no secrets). */
+  rawMetadata?: Record<string, any>
 }
 
 export interface UsageResult {

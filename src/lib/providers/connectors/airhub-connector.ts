@@ -485,19 +485,24 @@ export class AirHubConnector implements IProviderConnector {
     const tokenResult = await this.ensureAuthenticated()
     if (!tokenResult.success) return { success: false, error: tokenResult.error }
 
-    const body: Record<string, any> = {
-      partnerCode,
-      planCode: params.planId,
-      quantity: params.quantity,
-      unique_order_id: params.externalId || `onesim-${Date.now()}`,
-    }
-    // email: historically sent, not in Swagger but kept for backward compat
-    if (params.subscriber?.email) body.email = params.subscriber.email
-    // travelDate: include when available
-    const travelDate = (params as any).travelDate || (params.subscriber as any)?.travelDate
-    if (travelDate) body.travelDate = travelDate
+    // --- Build the exact documented payload. quantity/email/orderId/packageId
+    // are OneSIM-internal and MUST NOT be serialized to AirHub. ---
+    const planCode = params.planId
+    const uniqueOrderId = params.externalId || `onesim-${Date.now()}`
+    const rawTravelDate = (params as any).travelDate || (params.subscriber as any)?.travelDate || undefined
 
-    console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} orderId=${params.externalId || 'unknown'} endpoint=POST /api/ESIM/PurhaseSim baseHost=${urlHostname(baseUrl)} planCode=${params.planId} quantity=${params.quantity} partnerCode=${partnerCode}`)
+    const validation = this.validatePurchasePayload({ partnerCode, planCode, uniqueOrderId, travelDate: rawTravelDate })
+    if (!validation.valid) return { success: false, error: validation.error! }
+
+    const payload: Record<string, string> = {
+      partnerCode: String(partnerCode),
+      planCode: String(planCode),
+      unique_order_id: String(uniqueOrderId),
+    }
+    if (validation.travelDate) payload.travelDate = validation.travelDate
+
+    // Sanitized pre-flight diagnostics — never logs the token, password, or payload values.
+    console.log(`[AIRHUB_PURCHASE_REQUEST] correlationId=${correlationId} endpoint=/api/ESIM/PurhaseSim bodyKeys=${Object.keys(payload).join(',')} partnerCodeType=${typeof payload.partnerCode} planCodeType=${typeof payload.planCode} travelDatePresent=${'travelDate' in payload} uniqueOrderIdPresent=${'unique_order_id' in payload} authorizationPresent=${!!this.token}`)
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
@@ -506,7 +511,7 @@ export class AirHubConnector implements IProviderConnector {
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify(payload),
           signal: controller.signal,
         })
         clearTimeout(timeout)
@@ -546,12 +551,31 @@ export class AirHubConnector implements IProviderConnector {
 
         let data: any
         try { data = JSON.parse(text) } catch {
+          if (response.status === 400) {
+            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=400 contentType=${contentType} durationMs=${durationMs} error=NON_JSON_VALIDATION`)
+            return { success: false, error: { code: 'VALIDATION_ERROR', message: 'AirHub validation failed: the request was rejected (HTTP 400) with a non-JSON response.', details: { retryable: false, providerStatus: 400 } } }
+          }
           console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} contentType=${contentType} durationMs=${durationMs} error=NON_JSON`)
           return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: `AirHub returned non-JSON response (HTTP ${response.status})` } }
         }
 
         const dataKeys = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
         console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess} durationMs=${durationMs} topKeys=${Object.keys(data).join(',')} dataKeys=${dataKeys.join(',')}`)
+
+        // HTTP 400 — ASP.NET ModelState validation. Surface the failing fields
+        // instead of dumping the raw RFC 7231 body.
+        if (response.status === 400) {
+          const parsed = this.parsePurchaseValidationError(data)
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=400 durationMs=${durationMs} fieldCount=${Object.keys(parsed.fields).length}`)
+          return {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: parsed.message,
+              details: { retryable: false, providerStatus: 400, fields: parsed.fields },
+            },
+          }
+        }
 
         if (!response.ok) {
           const code = this.classifyHttpError(response.status, data)
@@ -565,7 +589,8 @@ export class AirHubConnector implements IProviderConnector {
 
         const d = data.data || data
         const iccids = this.extractIccids(d, params.quantity)
-        const orderId = d.orderId || d.order_id || d.transactionId || d.id || data.orderId || data.order_id || ''
+        const simId = d.simID || d.simId || d.sim_id || d.data?.simID || d.data?.simId || undefined
+        const orderId = d.orderId || d.order_id || d.transactionId || d.id || data.orderId || data.order_id || simId || ''
 
         if (!iccids.length) {
           console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} warning=NO_ICCIDS orderId=${orderId} dataKeys=${Object.keys(d).join(',')}`)
@@ -577,12 +602,22 @@ export class AirHubConnector implements IProviderConnector {
           return { success: false, error: { code: 'NO_ICCIDS', message: 'AirHub returned no ICCIDs in response', details: { retryable: false, providerStatus: response.status } } }
         }
 
-        const activationCode = d.activationCode || d.data?.activationCode || d.lpa || d.data?.lpa || undefined
+        const activationCode = d.activationCode || d.data?.activationCode || d.lpa || d.data?.lpa || d.lpaProfile || undefined
         const qrCodeUrl = d.qrCodeUrl || d.qr_code_url || d.data?.qrCodeUrl || d.data?.qr_code_url || undefined
         const matchingId = d.matchingId || d.matching_id || d.data?.matchingId || undefined
         const smdpAddress = d.smdpAddress || d.smdp_address || d.data?.smdpAddress || undefined
         const imsis = d.imsis || (d.imsi ? [d.imsi] : undefined)
         const activationCodes = activationCode ? [activationCode] : d.activationCodes || undefined
+
+        // Purchase completion never implies the eSIM is network-active.
+        const status = this.normalizePurchaseStatus(d)
+        const rawMetadata: Record<string, any> = {
+          orderId,
+          ...(simId ? { simId } : {}),
+          ...(activationCode ? { activationCode } : {}),
+          ...(d.apn ? { apn: d.apn } : {}),
+          ...(d.message ? { message: d.message } : {}),
+        }
 
         if (!qrCodeUrl) {
           try {
@@ -595,7 +630,7 @@ export class AirHubConnector implements IProviderConnector {
                 data: {
                   activationId: orderId, iccids, imsis: imsis as string[] | undefined,
                   activationCodes, qrCodeUrl: qrResult.data.qrCodeUrl, matchingId, smdpAddress,
-                  status: this.normalizeStatus(d.status || d.orderStatus || 'ACTIVATED'),
+                  iccidOrSimId: simId || iccids[0], rawMetadata, status,
                 },
               }
             }
@@ -605,14 +640,14 @@ export class AirHubConnector implements IProviderConnector {
           }
         }
 
-        const status = this.normalizeStatus(d.status || d.orderStatus || 'ACTIVATED')
         console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} result=SUCCESS orderId=${orderId} iccidCount=${iccids.length} status=${status} durationMs=${durationMs}`)
 
         return {
           success: true,
           data: {
             activationId: orderId, iccids, imsis: imsis as string[] | undefined,
-            activationCodes, qrCodeUrl, matchingId, smdpAddress, status,
+            activationCodes, qrCodeUrl, matchingId, smdpAddress,
+            iccidOrSimId: simId || iccids[0], rawMetadata, status,
           },
         }
       } catch (e: any) {
@@ -741,16 +776,68 @@ export class AirHubConnector implements IProviderConnector {
     const candidates = [
       d.iccids, d.iccid_list, d.data?.iccids, d.data?.iccid_list,
       d.esim?.iccids, d.order?.iccids, d.result?.iccids,
+      d.simID, d.simId, d.sim_id, d.data?.simID, d.data?.simId,
     ]
     for (const c of candidates) {
       if (Array.isArray(c) && c.length >= minCount) return c.map(String)
       if (Array.isArray(c) && c.length > 0 && !iccids.length) iccids.push(...c.map(String))
+      if (typeof c === 'string' && c.length >= 10 && !iccids.includes(c)) iccids.push(c)
     }
     const singles = [d.iccid, d.data?.iccid, d.esim?.iccid, d.result?.iccid, d.sim?.iccid, d.sims?.[0]?.iccid]
     for (const s of singles) {
       if (s && typeof s === 'string' && s.length >= 10 && !iccids.includes(s)) { iccids.push(s); break }
     }
     return iccids
+  }
+
+  /** Local validation of the documented purchase payload. Rejects before any HTTP call. */
+  private validatePurchasePayload(args: { partnerCode: unknown; planCode: unknown; uniqueOrderId: unknown; travelDate?: unknown }): { valid: boolean; error?: { code: string; message: string }; travelDate?: string } {
+    if (args.partnerCode === undefined || args.partnerCode === null || String(args.partnerCode).trim() === '') {
+      return { valid: false, error: { code: 'AIRHUB_PARTNER_CODE_MISSING', message: 'partnerCode is required' } }
+    }
+    if (args.planCode === undefined || args.planCode === null || String(args.planCode).trim() === '') {
+      return { valid: false, error: { code: 'AIRHUB_PLAN_CODE_MISSING', message: 'planCode is required' } }
+    }
+    if (args.uniqueOrderId === undefined || args.uniqueOrderId === null || String(args.uniqueOrderId).trim() === '') {
+      return { valid: false, error: { code: 'AIRHUB_ORDER_ID_MISSING', message: 'unique_order_id is required' } }
+    }
+    const raw = args.travelDate
+    if (raw === undefined || raw === null || raw === '') return { valid: true }
+    const s = String(raw)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      return { valid: false, error: { code: 'AIRHUB_TRAVEL_DATE_INVALID', message: `travelDate must be YYYY-MM-DD, got "${s}"` } }
+    }
+    return { valid: true, travelDate: s }
+  }
+
+  /**
+   * Parses ASP.NET ModelState validation bodies:
+   * { type, title: "One or more validation errors occurred.", status: 400, traceId, errors: { field: [msg] } }
+   * Returns a readable message + field map. Never surfaces the raw body or traceId as the user error.
+   */
+  private parsePurchaseValidationError(data: any): { message: string; fields: Record<string, string[]> } {
+    const fields: Record<string, string[]> = {}
+    const errors = data?.errors
+    if (errors && typeof errors === 'object') {
+      for (const [field, msgs] of Object.entries(errors)) {
+        fields[field] = Array.isArray(msgs) ? msgs.map(String) : [String(msgs)]
+      }
+    }
+    if (Object.keys(fields).length > 0) {
+      const [field, msgs] = Object.entries(fields)[0]
+      return { message: `AirHub validation failed: ${field} ${msgs[0]}`, fields }
+    }
+    const title = typeof data?.title === 'string' ? data.title : 'One or more validation errors occurred.'
+    return { message: `AirHub validation failed: ${title}`, fields }
+  }
+
+  /** Purchase-completion status normalization — never reports ACTIVE from a purchase. */
+  private normalizePurchaseStatus(d: any): 'PENDING' | 'PENDING_ACTIVATION' | 'PROCESSING' {
+    const raw = (d.status || d.orderStatus || '').toString().toUpperCase()
+    if (raw === 'ACTIVE' || raw === 'ACTIVATED' || raw === 'SUCCESS' || raw === 'COMPLETED') return 'PENDING_ACTIVATION'
+    if (raw === 'PROCESSING' || raw === 'QUEUED' || raw === 'IN_PROGRESS') return 'PROCESSING'
+    if (raw === 'PENDING' || raw === 'INITIATED') return 'PENDING'
+    return 'PENDING_ACTIVATION'
   }
 
   private normalizeStatus(raw: string): 'PENDING' | 'PENDING_ACTIVATION' | 'ACTIVE' | 'PROCESSING' {
