@@ -7,6 +7,7 @@ import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResp
 import { createOrder } from '@/lib/services/orders/create-order'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import { getActivationInstructions } from '@/lib/esim/activation-instructions'
+import { isValidTravelDate } from '@/lib/providers/travel-date-utils'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -51,11 +52,14 @@ export async function POST(request: NextRequest) {
     let body: any
     try { body = await request.json() } catch { return respond(request, makeError('INVALID_JSON', 'Invalid JSON body'), 400, startTime, businessId, { errorMessage: 'Invalid JSON', rateLimit }) }
 
-    const { externalCustomerId, customerName, customerEmail, customerPhone, country, packageId, sku, packageCode, quantity = 1, callbackUrl } = body
+    const { externalCustomerId, customerName, customerEmail, customerPhone, country, packageId, sku, packageCode, quantity = 1, callbackUrl, travelDate } = body
 
     if (!customerName || !customerEmail) return respond(request, makeError('MISSING_FIELDS', 'customerName and customerEmail are required'), 400, startTime, businessId, { errorMessage: 'Missing fields', rateLimit })
     if (!packageId && !sku && !packageCode) return respond(request, makeError('MISSING_PACKAGE_ID', 'One of packageId, sku, or packageCode is required'), 400, startTime, businessId, { errorMessage: 'Missing package identifier', rateLimit })
     if (quantity < 1 || quantity > 100) return respond(request, makeError('INVALID_QUANTITY', 'quantity must be between 1 and 100'), 400, startTime, businessId, { errorMessage: 'Invalid quantity', rateLimit })
+    if (travelDate !== undefined && travelDate !== null && travelDate !== '' && !isValidTravelDate(travelDate)) {
+      return respond(request, makeError('INVALID_TRAVEL_DATE', 'travelDate must be a valid date in YYYY-MM-DD format'), 400, startTime, businessId, { errorMessage: 'Invalid travelDate', rateLimit })
+    }
 
     // Resolve package for preview
     const { resolvePackageIdentifier } = await import('@/lib/packages/resolve-package')
@@ -99,6 +103,7 @@ export async function POST(request: NextRequest) {
       callbackUrl,
       idempotencyKey: idempotencyKey || undefined,
       customer: { name: customerName, email: customerEmail, phone: customerPhone, country, externalId: externalCustomerId },
+      travelDate: travelDate || undefined,
     })
 
     if (!result.success) {

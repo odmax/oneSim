@@ -15,6 +15,8 @@ export interface ConnectorPlan {
   sku?: string
   templateVersion?: string
   raw_data?: any
+  /** Whether the plan requires a travel date in the purchase payload. */
+  requiresTravelDate?: boolean
 }
 
 export interface ActivateESIMParams {

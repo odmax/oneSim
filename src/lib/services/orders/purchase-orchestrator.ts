@@ -7,6 +7,7 @@ import { getProviderBalance } from '@/lib/services/providers/provider-balance'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { executeProviderAttempt, tryFailoverAfterAttempt } from './provider-attempt-service'
 import { ProviderRoutingEngine } from '@/lib/services/routing/provider-routing-engine'
+import { requiresTravelDateForPackage, isValidTravelDate } from '@/lib/providers/travel-date-utils'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 
 const DUP_WINDOW_MS = 30_000
@@ -27,6 +28,8 @@ export interface PurchaseRequest {
   }
   callbackUrl?: string
   idempotencyKey?: string
+  /** Travel date (YYYY-MM-DD) required by plans that mandate it. */
+  travelDate?: string
 }
 
 export interface PurchaseResult {
@@ -60,7 +63,7 @@ export interface PurchaseResult {
 
 export class PurchaseOrchestrator {
   async executePurchase(request: PurchaseRequest): Promise<PurchaseResult> {
-    const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl, idempotencyKey } = request
+    const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl, idempotencyKey, travelDate } = request
     const purchaseKey = idempotencyKey ? `${businessId}:${idempotencyKey}` : undefined
 
     // Step 1: Validate business
@@ -92,6 +95,23 @@ export class PurchaseOrchestrator {
           return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', false)
         }
         console.log(`[COST_CHECK] packageId=${pkg.providerPackageId} costStatus=${providerPkg.costStatus} pricingStatus=${providerPkg.pricingStatus}`)
+      }
+    }
+
+    // Step 4b: Validate travel date requirement before any wallet hold. A
+    // required travel date is never invented here — the purchase fails fast
+    // with a clear message instead of letting the provider reject it later.
+    const normalizedTravelDate = travelDate !== undefined && travelDate !== null && travelDate.trim() !== '' ? travelDate.trim() : undefined
+    if (normalizedTravelDate !== undefined && !isValidTravelDate(normalizedTravelDate)) {
+      return this.fail('TRAVEL_DATE_INVALID', `travelDate must be a valid date in YYYY-MM-DD format, got "${normalizedTravelDate}"`, false)
+    }
+    if (pkg.providerPackageId) {
+      const travelPkg = await prisma.providerPackage.findUnique({
+        where: { id: pkg.providerPackageId },
+        select: { providerRawData: true },
+      })
+      if (requiresTravelDateForPackage(travelPkg) && !normalizedTravelDate) {
+        return this.fail('TRAVEL_DATE_REQUIRED', 'This package requires a travel date (YYYY-MM-DD) before purchase.', false)
       }
     }
 
@@ -229,6 +249,7 @@ export class PurchaseOrchestrator {
         orderId, businessId, providerId: currentProviderId, providerName: currentProviderName,
         planId, quantity, subscriber, totalAmount, displayName, packageId: pkg.id,
         packageSnapshot, pkg, customerId, rankedProviders, policy: 'PREFERRED',
+        travelDate: normalizedTravelDate,
       })
 
       if (result.success && (result.status === 'SUCCEEDED' || result.status === 'ALREADY_COMPLETE')) {
@@ -252,7 +273,7 @@ export class PurchaseOrchestrator {
       // Try failover
       const next = await tryFailoverAfterAttempt({
         ...(await this.buildActivationInput(orderId, businessId, currentProviderId, provider, planId, quantity, subscriber, totalAmount, displayName, pkg, packageSnapshot, customerId, rankedProviders)),
-        currentProviderId, attemptedIds,
+        currentProviderId, attemptedIds, travelDate: normalizedTravelDate,
       })
 
       if (!next?.shouldContinue) break

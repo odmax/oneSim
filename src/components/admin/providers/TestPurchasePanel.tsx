@@ -10,6 +10,7 @@ interface Package {
   validityDays: number
   priceUSD: { toString(): string }
   providerPlanId?: string | null
+  requiresTravelDate?: boolean
 }
 
 export function TestPurchasePanel({ providerId, packages, endpointMappings, requestMappings, responseMappings }: {
@@ -21,21 +22,37 @@ export function TestPurchasePanel({ providerId, packages, endpointMappings, requ
 }) {
   const [providerPackageId, setProviderPackageId] = useState(packages[0]?.id || '')
   const [quantity, setQuantity] = useState(1)
+  const [travelDate, setTravelDate] = useState('')
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
 
   const selectedPackage = packages.find(p => p.id === providerPackageId)
   const hasValidPlanId = !!selectedPackage?.providerPlanId
+  const requiresTravelDate = !!selectedPackage?.requiresTravelDate
 
   async function runTest() {
     if (!providerPackageId) return
+
+    // Client-side guard: never dispatch without a travel date when the plan
+    // requires one. Mirrors the server-side check in testProviderPurchase.
+    if (requiresTravelDate && !travelDate) {
+      setError('This package requires a Travel Date (YYYY-MM-DD). Enter one before running the test purchase.')
+      setResult(null)
+      return
+    }
+    if (travelDate && !/^\d{4}-\d{2}-\d{2}$/.test(travelDate)) {
+      setError('Travel Date must be in YYYY-MM-DD format.')
+      setResult(null)
+      return
+    }
+
     setRunning(true)
     setError('')
     setResult(null)
 
     try {
-      const res = await testProviderPurchase(providerId, providerPackageId, quantity)
+      const res = await testProviderPurchase(providerId, providerPackageId, quantity, travelDate || undefined)
       if (res.success) {
         setResult(res)
       } else {
@@ -83,19 +100,35 @@ export function TestPurchasePanel({ providerId, packages, endpointMappings, requ
           {selectedPackage?.providerPlanId && (
             <p className="text-[10px] text-gray-400 mt-1">Provider plan ID: {selectedPackage.providerPlanId}</p>
           )}
+          {requiresTravelDate && (
+            <p className="text-[10px] text-amber-600 mt-1">This plan requires a Travel Date before purchase</p>
+          )}
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-500 mb-1">Quantity</label>
           <input type="number" min={1} max={10} value={quantity} onChange={e => setQuantity(Math.min(10, Math.max(1, parseInt(e.target.value) || 1)))}
             className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
         </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">
+            Travel Date {requiresTravelDate ? <span className="text-amber-600">(required)</span> : <span className="text-gray-400">(optional)</span>}
+          </label>
+          <input
+            type="date"
+            value={travelDate}
+            required={requiresTravelDate}
+            onChange={e => setTravelDate(e.target.value)}
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none"
+          />
+          <p className="text-[10px] text-gray-400 mt-1">Format YYYY-MM-DD. Leave empty for plans that do not require it.</p>
+        </div>
       </div>
 
-      <button type="button" onClick={runTest} disabled={running || !providerPackageId || !hasValidPlanId}
+      <button type="button" onClick={runTest} disabled={running || !providerPackageId || !hasValidPlanId || (requiresTravelDate && !travelDate)}
         className="w-full rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
         {running ? (
           <><svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg> Running...</>
-        ) : !hasValidPlanId ? 'Missing Provider Plan ID' : 'Run Test Purchase'}
+        ) : !hasValidPlanId ? 'Missing Provider Plan ID' : (requiresTravelDate && !travelDate) ? 'Travel Date Required' : 'Run Test Purchase'}
       </button>
 
       {/* Result display */}

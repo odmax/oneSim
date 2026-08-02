@@ -18,6 +18,8 @@ export interface CreateOrderParams {
   customer?: CreateOrderCustomer
   callbackUrl?: string
   idempotencyKey?: string
+  /** Travel date (YYYY-MM-DD) required by plans that mandate it. */
+  travelDate?: string
 }
 
 export interface CreateOrderResult {
@@ -60,6 +62,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     } : undefined,
     callbackUrl: params.callbackUrl,
     idempotencyKey: params.idempotencyKey,
+    travelDate: params.travelDate,
   })
 
   // Fire webhooks (fire-and-forget)

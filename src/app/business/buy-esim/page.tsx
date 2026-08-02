@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
+import { requiresTravelDateForPackage } from '@/lib/providers/travel-date-utils'
 import { PackageBuyCard } from './PackageBuyCard'
 import { SearchablePackageGrid } from './SearchablePackageGrid'
 
@@ -21,6 +22,19 @@ export default async function BuyESIMPage({
     where: { isActive: true, hiddenFromCatalog: false, archivedAt: null, source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } },
     orderBy: { priceUSD: 'asc' }
   })
+
+  const providerPackageIds = [...new Set(packages.map(p => p.providerPackageId).filter((id): id is string => !!id))]
+  const providerPackages = providerPackageIds.length
+    ? await prisma.providerPackage.findMany({
+        where: { id: { in: providerPackageIds } },
+        select: { id: true, providerRawData: true },
+      })
+    : []
+  const requiresTravelDateByPackage = new Map(providerPackages.map(pp => [pp.id, requiresTravelDateForPackage(pp)]))
+  const packagesWithRequirement = packages.map(pkg => ({
+    ...stripPackageProviderFields(pkg),
+    requiresTravelDate: pkg.providerPackageId ? (requiresTravelDateByPackage.get(pkg.providerPackageId) ?? false) : false,
+  }))
 
   const business = await prisma.business.findUnique({
     where: { id: session.user.businessId! },
@@ -42,6 +56,8 @@ export default async function BuyESIMPage({
           {searchParams.error === 'package_not_found' && 'This package is no longer available.'}
           {searchParams.error === 'insufficient_balance' && 'Insufficient wallet balance. Please request credit before buying.'}
           {searchParams.error === 'business_suspended' && 'Your business account is suspended. Please contact support.'}
+          {searchParams.error === 'travel_date_required' && 'This package requires a Travel Date. Please enter a valid date in YYYY-MM-DD format.'}
+          {searchParams.error === 'invalid_travel_date' && 'Travel Date must be a valid date in YYYY-MM-DD format.'}
           {searchParams.error === 'provider_failed' && 'Provider could not provision this eSIM right now. Please contact support or try again later.'}
           {searchParams.error === 'purchase_failed' && 'Purchase failed. Please try again.'}
         </div>
@@ -61,7 +77,7 @@ export default async function BuyESIMPage({
       </div>
 
       {/* Package grid */}
-      <SearchablePackageGrid packages={packages.map(pkg => stripPackageProviderFields(pkg))} walletBalance={walletBalance} />
+      <SearchablePackageGrid packages={packagesWithRequirement} walletBalance={walletBalance} />
     </div>
   )
 }

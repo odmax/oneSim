@@ -23,6 +23,7 @@ import { getProviderCapabilities, CAPABILITY_LABELS, CAPABILITY_COLORS, provider
 import { ProviderActionButton, ActionForm } from '@/components/admin/providers/ActionButtons'
 import { MappingValidator } from '@/components/admin/providers/MappingValidator'
 import { TestPurchasePanel } from '@/components/admin/providers/TestPurchasePanel'
+import { requiresTravelDateForPackage } from '@/lib/providers/travel-date-utils'
 import { TelnaDiscoveryPanel } from '@/components/admin/providers/telna/TelnaDiscoveryPanel'
 import { ProviderBalanceCard } from '@/components/admin/providers/ProviderBalanceCell'
 import { ProviderRoamingProfilesCard } from '@/components/admin/providers/ProviderRoamingProfilesCard'
@@ -622,6 +623,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
               validityDays: p.validityDays,
               priceUSD: p.sellingPrice || 0,
               providerPlanId: p.providerPlanId,
+              requiresTravelDate: requiresTravelDateForPackage(p),
             }))}
             endpointMappings={provider.endpointMappings as Record<string, string> | null}
             requestMappings={provider.requestMappings as Record<string, any> | null}

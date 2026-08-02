@@ -9,8 +9,8 @@ vi.mock('@/lib/prisma', () => ({
     provider: { findUnique: vi.fn(), findMany: vi.fn() },
     providerAttempt: { create: vi.fn(), count: vi.fn(), update: vi.fn(), findMany: vi.fn() },
     eSIMPackage: { findUnique: vi.fn() },
-    providerPackage: { findMany: vi.fn().mockResolvedValue([]) },
-    auditLog: { create: vi.fn() },
+    providerPackage: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn() },
+    auditLog: { create: vi.fn().mockResolvedValue({}) },
     orderTimelineEvent: { create: vi.fn() },
     walletTransaction: { create: vi.fn() },
   },
@@ -348,5 +348,98 @@ describe('PurchaseOrchestrator', () => {
     expect(result.orderId).toBe('order-1')
     expect(result.status).toBe('FAILED')
     expect(mockPrisma.eSIMPurchase.create).not.toHaveBeenCalled()
+  })
+
+  function setupTravelPackage(providerPackageId = 'pp-1') {
+    mockResolve.mockResolvedValue({
+      package: {
+        id: 'pkg-1', displayName: 'Test Plan', dataGB: 1, validityDays: 7,
+        priceUSD: { toString: () => '5' }, localPrice: { toString: () => '5' }, currency: 'USD',
+        source: 'CATALOG', providerId: 'prov-1', providerPlanId: 'pl-1', providerName: 'AIRHUB',
+        sku: 'SKU1', packageCode: 'PC1', customerDescription: null, providerPackageId,
+      } as any,
+      source: 'PACKAGE',
+    } as any)
+  }
+
+  it('fails with TRAVEL_DATE_REQUIRED before any wallet hold when the plan requires a travel date', async () => {
+    setupBusiness()
+    setupTravelPackage()
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      costStatus: 'VALID', pricingStatus: 'READY', costSource: 'PROVIDER',
+      providerRawData: { planCode: 'pl-1', __requiresTravelDate: true },
+    } as any)
+    setupProvider()
+
+    const result = await orchestrator.executePurchase(validRequest)
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('TRAVEL_DATE_REQUIRED')
+    expect(mockReserve).not.toHaveBeenCalled()
+    expect(mockPrisma.eSIMPurchase.create).not.toHaveBeenCalled()
+  })
+
+  it('fails with TRAVEL_DATE_INVALID when a malformed travel date is supplied', async () => {
+    setupBusiness()
+    setupTravelPackage()
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      costStatus: 'VALID', pricingStatus: 'READY', costSource: 'PROVIDER',
+      providerRawData: { planCode: 'pl-1', __requiresTravelDate: true },
+    } as any)
+    setupProvider()
+
+    const result = await orchestrator.executePurchase({ ...validRequest, travelDate: '02/08/2026' })
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('TRAVEL_DATE_INVALID')
+    expect(mockReserve).not.toHaveBeenCalled()
+  })
+
+  it('forwards a valid travel date to the provider attempt when required', async () => {
+    setupBusiness()
+    setupTravelPackage()
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      costStatus: 'VALID', pricingStatus: 'READY', costSource: 'PROVIDER',
+      providerRawData: { planCode: 'pl-1', isTravelDateRequired: 'Mandatory' },
+    } as any)
+    setupProvider()
+    setupSuccessAdapter()
+    const activateESIM = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'act-1', iccids: ['89012345678901234567'], status: 'ACTIVE', qrCodeUrl: 'https://qr', activationCodes: ['CODE'] } })
+    mockAdapter.mockResolvedValue({ activateESIM, validatePurchase: vi.fn().mockResolvedValue({ valid: true }) } as any)
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
+    mockPrisma.eSIMPurchase.create.mockResolvedValue({ id: 'order-1' } as any)
+    mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
+    mockCapture.mockResolvedValue({ success: true })
+    mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
+
+    const result = await orchestrator.executePurchase({ ...validRequest, travelDate: '2026-08-02' })
+
+    expect(result.success).toBe(true)
+    expect(activateESIM).toHaveBeenCalled()
+    expect(activateESIM.mock.calls[0][0].travelDate).toBe('2026-08-02')
+  })
+
+  it('does not require a travel date for packages that do not mandate it', async () => {
+    setupBusiness()
+    setupTravelPackage()
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      costStatus: 'VALID', pricingStatus: 'READY', costSource: 'PROVIDER',
+      providerRawData: { planCode: 'pl-1', __requiresTravelDate: false },
+    } as any)
+    setupProvider()
+    setupSuccessAdapter()
+    const activateESIM = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'act-1', iccids: ['89012345678901234567'], status: 'ACTIVE', qrCodeUrl: 'https://qr', activationCodes: ['CODE'] } })
+    mockAdapter.mockResolvedValue({ activateESIM, validatePurchase: vi.fn().mockResolvedValue({ valid: true }) } as any)
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
+    mockPrisma.eSIMPurchase.create.mockResolvedValue({ id: 'order-1' } as any)
+    mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
+    mockCapture.mockResolvedValue({ success: true })
+    mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
+
+    const result = await orchestrator.executePurchase(validRequest)
+
+    expect(result.success).toBe(true)
+    expect(activateESIM).toHaveBeenCalled()
+    expect(activateESIM.mock.calls[0][0].travelDate).toBeUndefined()
   })
 })

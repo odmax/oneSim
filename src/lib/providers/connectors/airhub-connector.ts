@@ -1,6 +1,7 @@
 import { encryptToken, decryptToken } from '@/lib/encryption'
 import { prisma } from '@/lib/prisma'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
+import { normalizeTravelDateRequirement, isValidTravelDate, withTravelDateMarker } from '@/lib/providers/travel-date-utils'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState } from './connector-interface'
 
 function isTokenExpired(expiry: unknown, bufferMs = 5 * 60 * 1000): boolean {
@@ -419,7 +420,7 @@ export class AirHubConnector implements IProviderConnector {
               region: plan.countryName || null,
               planType: plan.planType || null,
               providerPlanCode: planCode,
-              providerRawData: plan,
+              providerRawData: withTravelDateMarker(plan, normalizeTravelDateRequirement(plan)),
               isAvailable: true,
             }
             const existing = await prisma.providerPackage.findFirst({ where: { providerId: this.providerId, providerPlanId: planCode } })
@@ -443,6 +444,7 @@ export class AirHubConnector implements IProviderConnector {
           data: resultPlans.map(p => ({
             id: p.providerPlanCode || p.id, name: p.name, data_gb: p.dataGB, validity_days: p.validityDays,
             price_usd: Number(p.costPrice), currency: p.currency, sku: p.providerPlanCode || '', raw_data: p.providerRawData || undefined,
+            requiresTravelDate: normalizeTravelDateRequirement(p.providerRawData),
           })),
         }
       } catch (e: any) {
@@ -804,7 +806,7 @@ export class AirHubConnector implements IProviderConnector {
     const raw = args.travelDate
     if (raw === undefined || raw === null || raw === '') return { valid: true }
     const s = String(raw)
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    if (!isValidTravelDate(s)) {
       return { valid: false, error: { code: 'AIRHUB_TRAVEL_DATE_INVALID', message: `travelDate must be YYYY-MM-DD, got "${s}"` } }
     }
     return { valid: true, travelDate: s }

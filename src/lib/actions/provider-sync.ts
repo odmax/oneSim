@@ -13,6 +13,7 @@ import { buildComparableKey, computeEffectiveCost, recalculateCheapestPlans } fr
 import { inferProviderCapabilities, getPersistableCapabilities } from '@/lib/providers/capabilities'
 import { advanceCertificationTo } from '@/lib/providers/certification-machine'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
+import { normalizeTravelDateRequirement, withTravelDateMarker } from '@/lib/providers/travel-date-utils'
 
 export type { ProviderPlan }
 
@@ -181,7 +182,7 @@ export async function syncProviderPlans(providerId: string) {
         region: raw.region || null,
         planType: (raw.planType || raw.type || 'STANDARD') as string,
         isAvailable: true,
-        providerRawData: raw,
+        providerRawData: withTravelDateMarker(raw, normalizeTravelDateRequirement(raw)),
       }
 
       // Compute comparable key and effective cost

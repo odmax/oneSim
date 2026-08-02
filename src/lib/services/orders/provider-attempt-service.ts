@@ -25,10 +25,12 @@ interface ActivationInput {
   customerId?: string
   rankedProviders?: ProviderScore[]
   policy?: ProviderPolicy
+  /** Travel date (YYYY-MM-DD) to forward to providers that require it. */
+  travelDate?: string
 }
 
 export async function executeProviderAttempt(input: ActivationInput): Promise<{ success: boolean; status: string; errorCode?: string; errorMessage?: string; providerReference?: string; iccids?: string[]; qrCode?: string }> {
-  const { orderId, businessId, providerId, providerName, planId, quantity, subscriber, totalAmount, displayName, packageId, packageSnapshot, pkg, customerId, rankedProviders, policy } = input
+  const { orderId, businessId, providerId, providerName, planId, quantity, subscriber, totalAmount, displayName, packageId, packageSnapshot, pkg, customerId, rankedProviders, policy, travelDate } = input
 
   // Verify order not already terminal
   const order = await prisma.eSIMPurchase.findUnique({ where: { id: orderId }, include: { esims: true } })
@@ -82,7 +84,7 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
 
   // Dispatch
   try {
-    const result = await adapter.activateESIM({ planId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: businessId, orderId })
+    const result = await adapter.activateESIM({ planId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: businessId, orderId, ...(travelDate ? { travelDate } : {}) } as any)
     const latencyMs = Date.now() - startedAt.getTime()
 
     if (!result.success || !result.data) {

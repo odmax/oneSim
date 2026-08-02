@@ -988,9 +988,73 @@ describe('AirHubConnector', () => {
     })
   })
 
+  describe('syncPlans travel-date metadata', () => {
+    it('persists __requiresTravelDate=true when the plan mandates a travel date', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        getInformation: [
+          { planCode: 'US-5GB-30D', planName: 'US 5GB', capacity: '5', capacityUnit: 'GB', validity: '30', price: 10, currency: 'USD', countryName: 'United States', isTravelDateRequired: 'Mandatory' },
+        ],
+      })
+      mockPrisma.providerPackage.findFirst.mockResolvedValue(null)
+      mockPrisma.providerPackage.findMany.mockResolvedValue([
+        { id: 'pp-1', name: 'US 5GB', dataGB: 5, validityDays: 30, costPrice: 10, currency: 'USD', providerPlanCode: 'US-5GB-30D', providerRawData: { planCode: 'US-5GB-30D', isTravelDateRequired: 'Mandatory', __requiresTravelDate: true } },
+      ] as any)
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.syncPlans()
+
+      expect(result.success).toBe(true)
+      const created = mockPrisma.providerPackage.create.mock.calls.at(-1)![0].data
+      expect(created.providerRawData.__requiresTravelDate).toBe(true)
+      expect(result.data?.[0].requiresTravelDate).toBe(true)
+    })
+
+    it('persists __requiresTravelDate=false when the plan does not require a travel date', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        getInformation: [
+          { planCode: 'UK-3GB-7D', planName: 'UK 3GB', capacity: '3', capacityUnit: 'GB', validity: '7', price: 8, currency: 'USD', countryName: 'United Kingdom', isTravelDateRequired: 'No Need' },
+        ],
+      })
+      mockPrisma.providerPackage.findFirst.mockResolvedValue(null)
+      mockPrisma.providerPackage.findMany.mockResolvedValue([
+        { id: 'pp-2', name: 'UK 3GB', dataGB: 3, validityDays: 7, costPrice: 8, currency: 'USD', providerPlanCode: 'UK-3GB-7D', providerRawData: { planCode: 'UK-3GB-7D', isTravelDateRequired: 'No Need', __requiresTravelDate: false } },
+      ] as any)
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.syncPlans()
+
+      expect(result.success).toBe(true)
+      const created = mockPrisma.providerPackage.create.mock.calls.at(-1)![0].data
+      expect(created.providerRawData.__requiresTravelDate).toBe(false)
+      expect(result.data?.[0].requiresTravelDate).toBe(false)
+    })
+
+    it('defaults to false when the plan has no travel-date indicator (never invents a requirement)', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        getInformation: [
+          { planCode: 'GB-1GB-7D', planName: 'GB 1GB', capacity: '1', capacityUnit: 'GB', validity: '7', price: 5, currency: 'USD', countryName: 'UK' },
+        ],
+      })
+      mockPrisma.providerPackage.findFirst.mockResolvedValue(null)
+      mockPrisma.providerPackage.findMany.mockResolvedValue([
+        { id: 'pp-3', name: 'GB 1GB', dataGB: 1, validityDays: 7, costPrice: 5, currency: 'USD', providerPlanCode: 'GB-1GB-7D', providerRawData: { planCode: 'GB-1GB-7D', __requiresTravelDate: false } },
+      ] as any)
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.syncPlans()
+
+      expect(result.success).toBe(true)
+      const created = mockPrisma.providerPackage.create.mock.calls.at(-1)![0].data
+      expect(created.providerRawData.__requiresTravelDate).toBe(false)
+      expect(result.data?.[0].requiresTravelDate).toBe(false)
+    })
+  })
+
   describe('validatePurchase', () => {
-    it('passes when token is present even without credentials', async () => {
-      mockPrisma.provider.findUnique.mockResolvedValue(
+    it('passes when token is present even without credentials', async () => {      mockPrisma.provider.findUnique.mockResolvedValue(
         makeProvider({ apiToken: 'enc:existing-token', config: { partnerCode: 200652387 } })
       )
 

@@ -13,6 +13,7 @@ interface PackageBuyCardProps {
     dataGB: number
     validityDays: number
     priceUSD: { toString(): string }
+    requiresTravelDate?: boolean
   }
   walletBalance: number
 }
@@ -71,6 +72,23 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
             disabled={submitting}
           />
         </div>
+        {pkg.requiresTravelDate && (
+          <div>
+            <label htmlFor={`travel-date-${pkg.id}`} className="block text-xs font-medium text-gray-500 mb-1">
+              Travel Date <span className="text-amber-600">(required)</span>
+            </label>
+            <input
+              id={`travel-date-${pkg.id}`}
+              name="travelDate"
+              type="date"
+              min={new Date().toISOString().split('T')[0]}
+              className="mt-1 block w-full rounded-lg border border-gray-200 px-4 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-50"
+              required
+              disabled={submitting}
+            />
+            <p className="mt-1 text-[10px] text-gray-400">This plan requires a travel date to activate.</p>
+          </div>
+        )}
         <div className="flex items-center justify-between pt-1">
           <span className="text-sm font-semibold text-gray-900">Total: ${total.toFixed(2)}</span>
           <button

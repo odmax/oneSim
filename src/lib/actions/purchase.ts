@@ -13,6 +13,8 @@ const ERROR_MAP: Record<string, string> = {
   'Insufficient wallet balance': 'insufficient_balance',
   'Business account is suspended': 'business_suspended',
   'quantity must be between 1 and 100': 'invalid_input',
+  'This package requires a travel date': 'travel_date_required',
+  'travelDate must be a valid date': 'invalid_travel_date',
   'No provider adapter available': 'provider_failed',
   'Provider activation failed': 'provider_failed',
   'Provider returned fewer ICCIDs': 'provider_failed',
@@ -25,17 +27,20 @@ export async function purchaseESIMs(formData: FormData) {
     redirect('/login')
   }
 
+  const rawTravelDate = (formData.get('travelDate') as string) || undefined
+
   const validatedFields = purchaseESIMSchema.safeParse({
     packageId: formData.get('packageId'),
     quantity: parseInt(formData.get('quantity') as string),
     idempotencyKey: formData.get('idempotencyKey') as string,
+    travelDate: rawTravelDate,
   })
 
   if (!validatedFields.success) {
     redirect('/business/buy-esim?error=invalid_input')
   }
 
-  const { packageId, quantity } = validatedFields.data
+  const { packageId, quantity, travelDate } = validatedFields.data
   const businessId = session.user.businessId!
 
   const result = await createOrder({
@@ -43,6 +48,7 @@ export async function purchaseESIMs(formData: FormData) {
     userId: session.user.id,
     packageId,
     quantity,
+    travelDate: travelDate || undefined,
   })
 
   if (!result.success) {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isValidTravelDate } from '@/lib/providers/travel-date-utils';
 
 export const updateProfileSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -17,4 +18,11 @@ export const addTeamMemberSchema = z.object({
 export const purchaseESIMSchema = z.object({
   packageId: z.string().min(1, 'Package is required'),
   quantity: z.number().min(1, 'Quantity must be at least 1').max(100, 'Maximum 100 eSIMs per purchase'),
+  travelDate: z
+    .string()
+    .trim()
+    .optional()
+    .refine((v) => v === undefined || v === '' || isValidTravelDate(v), {
+      message: 'travelDate must be a valid date in YYYY-MM-DD format',
+    }),
 });

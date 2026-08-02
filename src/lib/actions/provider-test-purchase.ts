@@ -5,6 +5,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { getAdapterForType, isProviderOperational } from '@/lib/providers/adapter-manager'
 import { resolveConnectorType } from '@/lib/providers/connectors/connector-factory'
+import { requiresTravelDateForPackage, isValidTravelDate } from '@/lib/providers/travel-date-utils'
 
 export interface TestPurchaseResult {
   success: boolean
@@ -19,10 +20,12 @@ export interface TestPurchaseResult {
     providerPackageName: string
     providerId: string
     quantity: number
+    travelDate?: string
+    requiresTravelDate?: boolean
   }
 }
 
-export async function testProviderPurchase(providerId: string, providerPackageId: string, quantity: number): Promise<TestPurchaseResult> {
+export async function testProviderPurchase(providerId: string, providerPackageId: string, quantity: number, travelDate?: string): Promise<TestPurchaseResult> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     return { success: false, error: 'Unauthorized' }
@@ -54,8 +57,30 @@ export async function testProviderPurchase(providerId: string, providerPackageId
     return { success: false, error: 'Provider package has no provider-facing plan identifier (providerPlanId). Cannot dispatch.', errorStep: 'package_lookup' }
   }
 
+  // 3a. Validate travel date requirement before any provider dispatch.
+  const requiresTravelDate = requiresTravelDateForPackage(pkg)
+  const normalizedTravelDate = travelDate !== undefined && travelDate !== null && travelDate.trim() !== '' ? travelDate.trim() : undefined
+  if (normalizedTravelDate !== undefined && !isValidTravelDate(normalizedTravelDate)) {
+    return {
+      success: false,
+      error: `travelDate must be a valid date in YYYY-MM-DD format, got "${normalizedTravelDate}"`,
+      errorStep: 'travel_date',
+      diagnostics: { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity, travelDate: normalizedTravelDate, requiresTravelDate },
+    }
+  }
+  if (requiresTravelDate && !normalizedTravelDate) {
+    return {
+      success: false,
+      error: 'This package requires a Travel Date before purchase. Provide a valid date in YYYY-MM-DD format.',
+      errorStep: 'travel_date',
+      diagnostics: { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity, requiresTravelDate },
+    }
+  }
+
   const timeline: Array<{ eventType: string; message?: string; createdAt: Date }> = []
   const addTimeline = (eventType: string, message?: string) => timeline.push({ eventType, message, createdAt: new Date() })
+
+  const diag = { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity, ...(normalizedTravelDate ? { travelDate: normalizedTravelDate } : {}), ...(requiresTravelDate ? { requiresTravelDate } : {}) }
 
   // 4. Resolve adapter
   const adapter = await getAdapterForType(provider.type, {
@@ -75,14 +100,14 @@ export async function testProviderPurchase(providerId: string, providerPackageId
       return {
         success: false, error: `Provider configuration error: ${validation.reason}`,
         errorStep: 'config_validation', timeline,
-        diagnostics: { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity },
+        diagnostics: diag,
       }
     }
     addTimeline('CONFIG_VALIDATION_PASSED', 'Provider configuration is valid for purchase')
   }
 
   // 6. Dispatch to provider — direct connector call, no wallet or order
-  addTimeline('PROVIDER_DISPATCH', `Dispatching to ${provider.name} — plan: ${planId}, quantity: ${quantity}`)
+  addTimeline('PROVIDER_DISPATCH', `Dispatching to ${provider.name} — plan: ${planId}, quantity: ${quantity}${requiresTravelDate ? ', travel date required' : ''}`)
 
   let providerResponse: any
   try {
@@ -92,7 +117,8 @@ export async function testProviderPurchase(providerId: string, providerPackageId
       subscriber: { email: 'test@onetelecom.cloud', first_name: 'Test', last_name: 'User' },
       activationType: 'ACTIVATE_NOW',
       externalId: `admin-test-${Date.now()}`,
-    })
+      ...(normalizedTravelDate ? { travelDate: normalizedTravelDate } : {}),
+    } as any)
 
     if (!result.success || !result.data) {
       addTimeline('PROVIDER_FAILED', result.error?.message || 'Activation failed')
@@ -100,7 +126,7 @@ export async function testProviderPurchase(providerId: string, providerPackageId
         success: false, error: result.error?.message || 'Provider activation failed',
         errorStep: 'provider_dispatch', timeline,
         providerResponse: { error: result.error },
-        diagnostics: { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity },
+        diagnostics: diag,
       }
     }
 
@@ -110,7 +136,7 @@ export async function testProviderPurchase(providerId: string, providerPackageId
     addTimeline('PROVIDER_FAILED', e.message)
     return {
       success: false, error: `Provider error: ${e.message}`, errorStep: 'provider_dispatch', timeline,
-      diagnostics: { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity },
+      diagnostics: diag,
     }
   }
 
@@ -139,7 +165,7 @@ export async function testProviderPurchase(providerId: string, providerPackageId
     return {
       success: false, error: 'Provider returned incomplete ICCID data', errorStep: 'map_response',
       providerResponse, timeline,
-      diagnostics: { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity },
+      diagnostics: diag,
     }
   }
 
@@ -150,7 +176,7 @@ export async function testProviderPurchase(providerId: string, providerPackageId
     esims,
     providerResponse,
     timeline,
-    diagnostics: { providerPackageId, providerPlanId: planId, providerPackageName: pkg.name, providerId, quantity },
+    diagnostics: diag,
   }
 }
 

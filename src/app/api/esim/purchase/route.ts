@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { createOrder } from '@/lib/services/orders/create-order'
+import { isValidTravelDate } from '@/lib/providers/travel-date-utils'
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,7 +14,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { packageId, quantity = 1 } = body
+    const { packageId, quantity = 1, travelDate } = body
     const busId = session.user.businessId
 
     if (!busId) {
@@ -24,11 +25,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Package ID required' }, { status: 400 })
     }
 
+    if (travelDate !== undefined && travelDate !== null && travelDate !== '' && !isValidTravelDate(travelDate)) {
+      return NextResponse.json({ error: 'travelDate must be a valid date in YYYY-MM-DD format' }, { status: 400 })
+    }
+
     const result = await createOrder({
       businessId: busId,
       userId: session.user.id,
       packageId,
       quantity,
+      travelDate: travelDate || undefined,
     })
 
     if (!result.success) {
