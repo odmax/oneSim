@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import { requiresTravelDateForPackage } from '@/lib/providers/travel-date-utils'
-import { SearchablePackageGrid } from './SearchablePackageGrid'
+import { CountrySearchPage } from './CountrySearchPage'
 import { buildPackageSearchText } from '@/lib/packages/search-text'
 
 export default async function BuyESIMPage({
@@ -73,7 +73,7 @@ export default async function BuyESIMPage({
       </div>
 
       {/* Package grid */}
-      <SearchablePackageGrid packages={packagesWithRequirement} walletBalance={walletBalance} />
+      <CountrySearchPage packages={packagesWithRequirement} walletBalance={walletBalance} />
     </div>
   )
 }
