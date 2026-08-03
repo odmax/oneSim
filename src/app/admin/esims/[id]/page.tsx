@@ -3,11 +3,13 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { syncEsimStatus, syncEsimUsage, getQrCode } from '@/lib/actions/esim-sync'
+import { getQrCode } from '@/lib/actions/esim-sync'
 import { refreshEsimStatusAction, refreshEsimUsageAction, suspendEsimAction, resumeEsimAction } from '@/lib/actions/esim-lifecycle'
 import { getPackageDisplayName, getPackageDataGB, getPackageValidityDays } from '@/lib/packages/snapshot-utils'
-import { UsageBar, UsageSummary } from '@/components/admin/esims/UsageBar'
-import { EsimLifecycleActions } from '@/components/admin/esims/EsimLifecycleActions'
+import { UsageSummary } from '@/components/admin/esims/UsageBar'
+import { EsimActionsBar } from '@/components/admin/esims/EsimActionsBar'
+import { getEsimActionAvailability, getUsagePanelState, getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { providerSupports } from '@/lib/providers/capabilities/registry'
 
 async function loadPCRProfile(iccid: string, providerId: string) {
   try {
@@ -57,7 +59,7 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
     : null
 
   const isTelnaProvider = provider?.adapterStrategy === 'TELNA' || provider?.code === 'TELNA'
-  const isChoiceProvider = provider?.code?.toUpperCase() === 'CHOICE'
+  const availability = getEsimActionAvailability({ provider, esim })
   const pcrProfile = isTelnaProvider && esim.iccid && provider
     ? await loadPCRProfile(esim.iccid, provider.id)
     : null
@@ -84,7 +86,13 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             <div className="flex justify-between"><dt className="text-gray-500">ICCID</dt><dd className="font-mono font-medium text-gray-900">{esim.iccid}</dd></div>
             {esim.imsi && <div className="flex justify-between"><dt className="text-gray-500">IMSI</dt><dd className="font-mono font-medium text-gray-900">{esim.imsi}</dd></div>}
             {esim.activationCode && <div className="flex justify-between"><dt className="text-gray-500">Activation Code</dt><dd className="font-mono font-medium text-gray-900 break-all">{esim.activationCode}</dd></div>}
-            <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${esim.status === 'ACTIVE' ? 'bg-green-100 text-green-800' : esim.status === 'SUSPENDED' ? 'bg-orange-100 text-orange-800' : esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>{esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' : esim.status === 'ACTIVE' ? 'Activated on device' : esim.status === 'EXPIRED' ? 'Expired' : esim.status === 'SUSPENDED' ? 'Suspended' : esim.status === 'FAILED' ? 'Provisioning failed' : esim.status}</span></dd></div>
+            {(() => {
+              const { label, tone } = getEsimStatusLabel(esim.status)
+              const toneClasses = tone === 'success' ? 'bg-green-100 text-green-800' : tone === 'warn' ? 'bg-yellow-100 text-yellow-800' : tone === 'danger' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'
+              return (
+                <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${toneClasses}`}>{label}</span></dd></div>
+              )
+            })()}
             {esim.providerStatus && <div className="flex justify-between"><dt className="text-gray-500">Provider Status</dt><dd className="font-medium text-gray-900">{esim.providerStatus}</dd></div>}
             {esim.providerActivationId && <div className="flex justify-between"><dt className="text-gray-500">Provider Activation ID</dt><dd className="font-mono text-xs text-gray-600">{esim.providerActivationId}</dd></div>}
             <div className="flex justify-between"><dt className="text-gray-500">Package</dt><dd className="font-medium text-gray-900">{getPackageDisplayName(esim)}</dd></div>
@@ -111,19 +119,28 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             <p className="mb-4 text-sm text-gray-500">No QR code available.</p>
           )}
 
-          <div className="mb-4 rounded-lg bg-gray-50 p-4">
-            <UsageSummary
-              dataUsedMB={esim.dataUsedMB}
-              dataTotalMB={esim.dataTotalMB}
-              dataRemainingMB={esim.dataRemainingMB}
-              lastUsageAt={esim.lastUsageAt}
-              lastUsageSyncAt={esim.lastUsageSyncAt}
-              expiresAt={esim.expiresAt}
-              status={esim.status}
-            />
-          </div>
+          {(() => {
+            const { mode } = getUsagePanelState(provider, esim)
+            if (mode === 'hidden') return null
+            return (
+              <div className="mb-4 rounded-lg bg-gray-50 p-4">
+                {mode === 'historic' && (
+                  <p className="mb-2 text-xs font-medium text-gray-400">Last synced usage</p>
+                )}
+                <UsageSummary
+                  dataUsedMB={esim.dataUsedMB}
+                  dataTotalMB={esim.dataTotalMB}
+                  dataRemainingMB={esim.dataRemainingMB}
+                  lastUsageAt={esim.lastUsageAt}
+                  lastUsageSyncAt={esim.lastUsageSyncAt}
+                  expiresAt={esim.expiresAt}
+                  status={esim.status}
+                />
+              </div>
+            )
+          })()}
 
-          {esim.usageRecords.length > 0 && (
+          {esim.usageRecords.length > 0 && providerSupports(provider, 'USAGE') && (
             <div>
               <p className="mb-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Usage History</p>
               <div className="max-h-40 space-y-1 overflow-y-auto">
@@ -139,33 +156,20 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
         </div>
       </div>
 
-      {/* Capabilities & Actions */}
+      {/* Provider Actions */}
       {provider && (
         <div className="mb-6 rounded-lg border bg-white p-6 shadow-sm">
           <h3 className="mb-4 text-lg font-semibold text-gray-900">Provider Actions</h3>
-          <div className="flex flex-wrap gap-3">
-            <form action={async () => { 'use server'; const { refreshEsimStatusAction } = await import('@/lib/actions/esim-lifecycle'); const r = await refreshEsimStatusAction(esim.id); if (r.success) { const msg = r.activated ? 'Activation+detected' : 'Status+synced'; redirect(`/admin/esims/${esim.id}?success=${msg}`) } else { redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Failed')}`) } }}>
-              <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Refresh Status</button>
-            </form>
-            <form action={async () => { 'use server'; const { refreshEsimUsageAction } = await import('@/lib/actions/esim-lifecycle'); const r = await refreshEsimUsageAction(esim.id); if (r.success) redirect(`/admin/esims/${esim.id}?success=Usage+synced`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Failed')}`) }}>
-              <button type="submit" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Refresh Usage</button>
-            </form>
-            <form action={async () => { 'use server'; const r = await getQrCode(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=QR+code+retrieved`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}>
-              <button type="submit" className="rounded-lg border border-purple-300 px-4 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50">Get QR Code</button>
-            </form>
-            <EsimLifecycleActions
-              status={esim.status}
-              isChoiceProvider={isChoiceProvider}
-              suspendAction={async () => { 'use server'; const r = await suspendEsimAction(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=eSIM+suspended`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}
-              resumeAction={async () => { 'use server'; const r = await resumeEsimAction(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=eSIM+resumed`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}
-            />
-            {esim.iccid && ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && (
-              <Link href={`/admin/esims/${esim.id}/top-up`} className="inline-block rounded-lg border border-emerald-300 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50">
-                Top Up
-              </Link>
-            )}
-          </div>
-          {provider && <p className="mt-3 text-xs text-gray-400">Powered by: {provider.name}</p>}
+          <EsimActionsBar
+            availability={availability}
+            topUpHref={`/admin/esims/${esim.id}/top-up`}
+            refreshStatusAction={async () => { 'use server'; const r = await refreshEsimStatusAction(esim.id); if (r.success) { const msg = r.activated ? 'Activation+detected' : 'Status+synced'; redirect(`/admin/esims/${esim.id}?success=${msg}`) } else { redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Failed')}`) } }}
+            refreshUsageAction={async () => { 'use server'; const r = await refreshEsimUsageAction(esim.id); if (r.success) redirect(`/admin/esims/${esim.id}?success=Usage+synced`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(r.error || 'Failed')}`) }}
+            qrCodeAction={async () => { 'use server'; const r = await getQrCode(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=QR+code+retrieved`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}
+            suspendAction={async () => { 'use server'; const r = await suspendEsimAction(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=eSIM+suspended`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}
+            resumeAction={async () => { 'use server'; const r = await resumeEsimAction(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=eSIM+resumed`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}
+          />
+          <p className="mt-3 text-xs text-gray-400">Powered by: {provider.name}</p>
         </div>
       )}
 
