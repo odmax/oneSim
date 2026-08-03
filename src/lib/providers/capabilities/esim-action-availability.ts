@@ -74,22 +74,27 @@ export interface EsimStatusLabel {
 
 /**
  * Human label for eSIM lifecycle status. PENDING_ACTIVATION is never labelled
- * as ACTIVE — it maps to its own "ready to install" state. Unknown statuses are
- * returned verbatim so provider-specific states stay visible.
+ * as ACTIVE — it maps to its own "ready to install" state.
+ * ACTIVE means "Active" (not "Activated on device" — device activation requires
+ * explicit evidence per deriveEsimLifecycleStatus).
  */
 export function getEsimStatusLabel(status: string | null | undefined): EsimStatusLabel {
   const s = status || ''
   switch (s.toUpperCase()) {
     case 'ACTIVE':
-      return { label: 'Activated on device', tone: 'success' }
+      return { label: 'Active', tone: 'success' }
     case 'PENDING_ACTIVATION':
       return { label: 'Ready to install', tone: 'warn' }
+    case 'INSTALLED':
+      return { label: 'Installed on device', tone: 'success' }
+    case 'PENDING':
+      return { label: 'Provisioning', tone: 'warn' }
     case 'SUSPENDED':
       return { label: 'Suspended', tone: 'warn' }
     case 'EXPIRED':
       return { label: 'Expired', tone: 'danger' }
     case 'FAILED':
-      return { label: 'Provisioning failed', tone: 'danger' }
+      return { label: 'Failed', tone: 'danger' }
     case 'CANCELLED':
       return { label: 'Cancelled', tone: 'danger' }
     case 'REFUNDED':

@@ -9,8 +9,8 @@ describe('business eSIM status labels (via centralized helper)', () => {
     expect(label.label).not.toBe('Activated on device')
   })
 
-  it('label ACTIVE as "Activated on device"', () => {
-    expect(getEsimStatusLabel('ACTIVE').label).toBe('Activated on device')
+  it('label ACTIVE as "Active"', () => {
+    expect(getEsimStatusLabel('ACTIVE').label).toBe('Active')
   })
 
   it('labels EXPIRED as "Expired"', () => {
@@ -21,8 +21,8 @@ describe('business eSIM status labels (via centralized helper)', () => {
     expect(getEsimStatusLabel('SUSPENDED').label).toBe('Suspended')
   })
 
-  it('labels FAILED as "Provisioning failed"', () => {
-    expect(getEsimStatusLabel('FAILED').label).toBe('Provisioning failed')
+  it('labels FAILED as "Failed"', () => {
+    expect(getEsimStatusLabel('FAILED').label).toBe('Failed')
   })
 
   it('labels INSTALLED (covered by default verbatim)', () => {

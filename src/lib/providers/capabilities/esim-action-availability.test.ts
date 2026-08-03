@@ -254,8 +254,14 @@ describe('getUsagePanelState', () => {
 describe('getEsimStatusLabel', () => {
   it('never maps PENDING_ACTIVATION to ACTIVE', () => {
     expect(getEsimStatusLabel('PENDING_ACTIVATION').label).toBe('Ready to install')
-    expect(getEsimStatusLabel('ACTIVE').label).toBe('Activated on device')
+    expect(getEsimStatusLabel('ACTIVE').label).toBe('Active')
     expect(getEsimStatusLabel('PENDING_ACTIVATION').label).not.toBe(getEsimStatusLabel('ACTIVE').label)
+  })
+
+  it('distinguishes ACTIVE from INSTALLED', () => {
+    expect(getEsimStatusLabel('ACTIVE').label).toBe('Active')
+    expect(getEsimStatusLabel('INSTALLED').label).toBe('Installed on device')
+    expect(getEsimStatusLabel('ACTIVE').label).not.toBe(getEsimStatusLabel('INSTALLED').label)
   })
 
   it('keeps unknown provider statuses visible verbatim', () => {
@@ -266,6 +272,6 @@ describe('getEsimStatusLabel', () => {
   it('labels terminal lifecycle statuses distinctly', () => {
     expect(getEsimStatusLabel('EXPIRED').label).toBe('Expired')
     expect(getEsimStatusLabel('SUSPENDED').label).toBe('Suspended')
-    expect(getEsimStatusLabel('FAILED').label).toBe('Provisioning failed')
+    expect(getEsimStatusLabel('FAILED').label).toBe('Failed')
   })
 })

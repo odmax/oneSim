@@ -4,6 +4,7 @@ import { createTimelineEvent } from '@/lib/services/orders/order-state-machine'
 import { captureReservedFunds, releaseReservedFunds, reserveWalletFunds } from '@/lib/services/orders/wallet-actions'
 import type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
 import { buildChoiceStatusLookup, hasChoiceIdentifier, extractChoiceImsiVersion } from './choice-lookup'
+import { deriveEsimLifecycleStatus } from './lifecycle-status'
 
 export { buildChoiceStatusLookup, extractChoiceImsiVersion } from './choice-lookup'
 export type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
@@ -65,8 +66,17 @@ export async function refreshEsimStatus(esimId: string): Promise<RefreshStatusRe
   if (!result.success) return { success: false, error: result.error?.message || 'Provider status check failed' }
 
   const providerStatus = result.data?.rawStatus || result.data?.status || 'UNKNOWN'
-  const oneSimStatus = mapProviderStatus(result.data?.status || providerStatus)
-  const wasActivated = oneSimStatus === 'ACTIVE' && esim.status !== 'ACTIVE'
+  const connectorStatus = result.data?.status || providerStatus
+
+  const lifecycle = deriveEsimLifecycleStatus({
+    providerNormalizedStatus: connectorStatus,
+    currentStatus: esim.status,
+    dataUsedMB: esim.dataUsedMB || 0,
+    activatedAt: esim.activatedAt,
+  })
+
+  const oneSimStatus = lifecycle.status
+  const shouldSetActivatedAt = lifecycle.setActivatedAt
 
   await prisma.eSIM.update({
     where: { id: esimId },
@@ -76,17 +86,17 @@ export async function refreshEsimStatus(esimId: string): Promise<RefreshStatusRe
       lastStatusSyncAt: new Date(),
       lastSyncAt: new Date(),
       ...(result.data?.rawMetadata ? { providerResponse: result.data.rawMetadata as any } : {}),
-      ...(wasActivated ? { activatedAt: new Date(), activationDetectedAt: new Date() } : {}),
+      ...(shouldSetActivatedAt ? { activatedAt: new Date() } : {}),
     },
   })
 
   // Timeline event for status change
-  if (wasActivated) {
-    await createTimelineEvent(esim.purchaseId, { eventType: 'ESIM_ACTIVATED', message: `eSIM ${esim.iccid.slice(-8)} activated on device` })
+  if (shouldSetActivatedAt) {
+    await createTimelineEvent(esim.purchaseId, { eventType: 'ESIM_ACTIVATED', message: `eSIM ${esim.iccid.slice(-8)} activated — ${lifecycle.reason}` })
   }
   await createTimelineEvent(esim.purchaseId, { eventType: 'STATUS_REFRESHED', message: `eSIM ${esim.iccid.slice(-8)}: ${oneSimStatus}` })
 
-  return { success: true, activated: wasActivated, status: oneSimStatus, providerStatus }
+  return { success: true, activated: shouldSetActivatedAt, status: oneSimStatus, providerStatus }
 }
 
 export async function refreshEsimUsage(esimId: string): Promise<{ success: boolean; data?: UsageData; error?: string }> {
@@ -145,7 +155,12 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
     },
   })
 
-  // Update eSIM usage snapshot
+  // Update eSIM usage snapshot — detect first positive usage as device activation
+  const hadNoUsage = (esim.dataUsedMB || 0) <= 0
+  const nowHasUsage = persistedUsedMB > 0
+  const firstActivation = hadNoUsage && nowHasUsage && !esim.activatedAt
+  const shouldPromoteToActive = hadNoUsage && nowHasUsage && (esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING')
+
   await prisma.eSIM.update({
     where: { id: esimId },
     data: {
@@ -157,16 +172,21 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
       lastUsageAt: new Date(),
       lastUsageSyncAt: new Date(),
       lastSyncAt: new Date(),
+      ...(firstActivation ? { activatedAt: new Date() } : {}),
+      ...(shouldPromoteToActive ? { status: 'ACTIVE' } : {}),
     },
   })
 
+  if (firstActivation) {
+    await createTimelineEvent(esim.purchaseId, { eventType: 'ESIM_ACTIVATED', message: `eSIM ${esim.iccid.slice(-8)} activated — first usage detected (${persistedUsedMB}MB)` })
+  }
   await createTimelineEvent(esim.purchaseId, { eventType: 'USAGE_REFRESHED', message: `Usage synced: ${dataUsedMB}MB used` })
 
   const percentageUsed = usageData.percentageUsed ?? (dataTotalMB !== undefined && dataTotalMB > 0 ? Math.round((dataUsedMB / dataTotalMB) * 100) : undefined)
 
   return {
     success: true,
-    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: expiresAt || esim.expiresAt || undefined, status: esim.status },
+    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: expiresAt || esim.expiresAt || undefined, status: shouldPromoteToActive ? 'ACTIVE' : esim.status },
   }
 }
 
@@ -388,15 +408,4 @@ export async function refreshAllUsage(): Promise<{ refreshed: number; errors: nu
   }
 
   return { refreshed, errors }
-}
-
-function mapProviderStatus(providerStatus: string): string {
-  const upper = providerStatus.toUpperCase()
-  if (['ACTIVE', 'ENABLED', 'INSTALLED', 'ACTIVATED'].includes(upper)) return 'ACTIVE'
-  if (['PENDING', 'PENDING_ACTIVATION'].includes(upper)) return 'PENDING_ACTIVATION'
-  if (['EXPIRED', 'EXPIRING'].includes(upper)) return 'EXPIRED'
-  if (['FAILED', 'ERROR', 'REJECTED'].includes(upper)) return 'FAILED'
-  if (['CANCELLED', 'CANCELED', 'CANCELLED_BY_USER', 'DELETED'].includes(upper)) return 'CANCELLED'
-  if (['SUSPENDED', 'DISABLED'].includes(upper)) return 'SUSPENDED'
-  return 'PENDING_ACTIVATION'
 }

@@ -207,7 +207,7 @@ export default async function AdminESIMsPage({
                     'bg-gray-100 text-gray-800'
                   }`}>
                     {esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' :
-                     esim.status === 'ACTIVE' ? 'Activated on device' :
+                     esim.status === 'ACTIVE' ? 'Active' :
                      esim.status === 'EXPIRED' ? 'Expired' :
                      esim.status === 'SUSPENDED' ? 'Suspended' :
                      esim.status === 'FAILED' ? 'Provisioning failed' :

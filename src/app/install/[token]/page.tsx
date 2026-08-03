@@ -40,7 +40,7 @@ export default async function InstallPage({ params }: { params: { token: string 
     imsi: esim.imsi || null,
     status: esim.status,
     statusLabel: esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' :
-                 esim.status === 'ACTIVE' ? 'Activated on device' :
+                  esim.status === 'ACTIVE' ? 'Active' :
                  esim.status === 'EXPIRED' ? 'Expired' :
                  esim.status === 'SUSPENDED' ? 'Suspended' :
                  esim.status === 'FAILED' ? 'Provisioning failed' : esim.status,

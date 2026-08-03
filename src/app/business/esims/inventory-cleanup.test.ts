@@ -174,8 +174,8 @@ describe('status labels remain consistent after customer removal', () => {
     expect(getEsimStatusLabel('PENDING_ACTIVATION').label).toBe('Ready to install')
   })
 
-  it('ACTIVE stays "Activated on device"', () => {
-    expect(getEsimStatusLabel('ACTIVE').label).toBe('Activated on device')
+  it('ACTIVE stays "Active" (device activation requires evidence)', () => {
+    expect(getEsimStatusLabel('ACTIVE').label).toBe('Active')
   })
 
   it('SUSPENDED stays "Suspended"', () => {

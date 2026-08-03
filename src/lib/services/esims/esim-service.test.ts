@@ -55,7 +55,7 @@ describe('refreshEsimStatus (Choice)', () => {
     mockCreateTimeline.mockResolvedValue(undefined as any)
   })
 
-  it('uses the Choice iccid identifier (never a local id) and persists providerStatus + timestamps + sanitized providerResponse', async () => {
+  it('uses the Choice iccid identifier (never a local id) and maps to PENDING_ACTIVATION when no usage evidence exists', async () => {
     mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim())
     const getActivationStatus = vi.fn().mockResolvedValue({
       success: true,
@@ -72,7 +72,7 @@ describe('refreshEsimStatus (Choice)', () => {
     const result = await refreshEsimStatus('esim-1')
 
     expect(result.success).toBe(true)
-    expect(result.status).toBe('ACTIVE')
+    expect(result.status).toBe('PENDING_ACTIVATION')
     expect(result.providerStatus).toBe('active')
 
     const lookup = getActivationStatus.mock.calls[0][0]
@@ -83,13 +83,26 @@ describe('refreshEsimStatus (Choice)', () => {
     const updateData = mockPrisma.eSIM.update.mock.calls[0][0].data
     expect(updateData).toMatchObject({
       providerStatus: 'active',
-      status: 'ACTIVE',
+      status: 'PENDING_ACTIVATION',
       providerResponse: { success: true, package: { iccid: '[REDACTED]', imsi_version: 70 } },
-      activatedAt: expect.any(Date),
-      activationDetectedAt: expect.any(Date),
     })
+    expect(updateData.activatedAt).toBeUndefined()
     expect(updateData.lastStatusSyncAt).toBeInstanceOf(Date)
     expect(updateData.lastSyncAt).toBeInstanceOf(Date)
+  })
+
+  it('promotes to ACTIVE when Choice returns active AND usage evidence exists', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ dataUsedMB: 512, activatedAt: null }))
+    const getActivationStatus = vi.fn().mockResolvedValue({
+      success: true,
+      data: { status: 'ACTIVE', rawStatus: 'active' },
+    })
+    mockGetAdapter.mockResolvedValue({ getActivationStatus } as any)
+
+    const result = await refreshEsimStatus('esim-1')
+    expect(result.status).toBe('ACTIVE')
+    expect(result.activated).toBe(true)
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data.activatedAt).toBeInstanceOf(Date)
   })
 
   it('prioritizes ICCID over IMSI', async () => {
@@ -149,17 +162,17 @@ describe('refreshEsimStatus (Choice)', () => {
     expect(updateData.providerStatus).toBe('weird_unknown')
   })
 
-  it('persists ACTIVE when Choice reports status=active with package_status=New', async () => {
+  it('stays PENDING_ACTIVATION when Choice reports status=active with package_status=New and no usage evidence', async () => {
     mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim())
     const getActivationStatus = vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', rawStatus: 'active' } })
     mockGetAdapter.mockResolvedValue({ getActivationStatus } as any)
 
     const result = await refreshEsimStatus('esim-1')
-    expect(result.status).toBe('ACTIVE')
+    expect(result.status).toBe('PENDING_ACTIVATION')
     expect(result.providerStatus).toBe('active')
     const updateData = mockPrisma.eSIM.update.mock.calls[0][0].data
-    expect(updateData.status).toBe('ACTIVE')
-    expect(updateData.providerStatus).toBe('active')
+    expect(updateData.status).toBe('PENDING_ACTIVATION')
+    expect(updateData.activatedAt).toBeUndefined()
   })
 
   it('does not persist anything on provider failure (preserves current status and prior sync timestamp)', async () => {
