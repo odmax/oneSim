@@ -84,6 +84,14 @@ describe('ProviderWalletCard — single balance card', () => {
     expect(html).toContain('Connected')
   })
 
+  it('rounds a high-precision Choice balance to $972.65 USD for presentation', () => {
+    const html = renderCard({ providerCode: 'CHOICE', initialBalance: 972.6487339312149, initialCurrency: 'USD', initialStatus: 'OK', initialLastSync: new Date().toISOString() })
+    expect(html).toContain('$972.65')
+    expect(html).toContain('USD')
+    expect(html).toContain('Connected')
+    expect(html).not.toContain('$972.6487339312149')
+  })
+
   it('renders the error text exactly once when parsing fails', () => {
     const errMsg = 'AirHub wallet balance unavailable: getwallet is array but no numeric balance field was found'
     const html = renderCard({ initialBalance: 0, initialStatus: 'ERROR', initialError: errMsg })

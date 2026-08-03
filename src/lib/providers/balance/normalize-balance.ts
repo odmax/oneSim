@@ -28,6 +28,7 @@ export interface BalanceNormalizeOptions {
 /** Field names probed recursively at any depth, in priority order. */
 export const DEFAULT_BALANCE_KEYS = [
   'balance', 'Balance', 'prepaid_balance', 'prepaidBalance', 'PrepaidBalance',
+  'current_prepaid_balance', 'currentPrepaidBalance',
   'availableBalance', 'available_balance', 'available',
   'wallet', 'walletBalance', 'wallet_balance',
   'credit', 'amount',
@@ -67,6 +68,8 @@ const BALANCE_FIELD_ALIASES: Record<string, string> = {
   walletbalance: 'balance',
   prepaidbalance: 'prepaidBalance',
   prepaid_balance: 'prepaidBalance',
+  current_prepaid_balance: 'current_prepaid_balance',
+  currentprepaidbalance: 'current_prepaid_balance',
   wallet: 'wallet',
   availablebalance: 'availableBalance',
   available: 'availableBalance',

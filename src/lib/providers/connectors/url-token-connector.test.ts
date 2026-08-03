@@ -1084,4 +1084,66 @@ describe('UrlTokenConnector', () => {
       vi.unstubAllGlobals()
     })
   })
+
+  describe('getBalance — current_prepaid_balance live shape', () => {
+    const live = {
+      account_id: '217',
+      current_prepaid_balance: 972.6487339312149,
+    }
+
+    it('maps the live Choice response without rounding the stored balance', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson(live))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(972.6487339312149)
+      expect(result.data?.currency).toBe('USD')
+      expect(result.data?.accountId).toBe('217')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('uses the configured Choice currency', async () => {
+      const c = makeConnector({ currency: 'EUR' })
+      const mockFetch = vi.fn().mockResolvedValue(okJson(live))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(972.6487339312149)
+      expect(result.data?.currency).toBe('EUR')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('does not mistake account_id alone for a balance', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ account_id: '217' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_BALANCE_FIELD_MISSING')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('reports the live field in diagnostics under its own key', async () => {
+      process.env.CHOICE_BALANCE_DIAGNOSTICS_ENABLED = 'true'
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const mockFetch = vi.fn().mockResolvedValue(okJson(live))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getBalance!()
+
+      const diagLine = spy.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('[CHOICE_BALANCE_RESPONSE]'))
+      expect(diagLine).toBeDefined()
+      expect(diagLine).toContain('topKeys=account_id,current_prepaid_balance')
+      expect(diagLine).toContain('"current_prepaid_balance":972.6487339312149')
+
+      spy.mockRestore()
+      delete process.env.CHOICE_BALANCE_DIAGNOSTICS_ENABLED
+      vi.unstubAllGlobals()
+    })
+  })
 })
