@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ConnectorResult, ConnectorPlan, ActivateESIMResult, StatusResult, TopUpESIMResult } from './connector-interface'
-import { resolveConnectorType } from './connector-factory'
+import { resolveConnectorType, createConnector } from './connector-factory'
 import { DEFAULT_PROVIDER_CAPABILITIES } from '../capabilities/defaults'
 
 import { UrlTokenConnector } from './url-token-connector'
@@ -12,6 +12,9 @@ function makeChoiceConfig(overrides: any = {}) {
     authUrl: overrides.authUrl ?? 'https://psa.virtuolink.org/WebService/accounts/getaccounts',
     environment: overrides.environment ?? 'staging',
     fieldMappings: overrides.fieldMappings ?? {},
+    balancePath: overrides.balancePath,
+    currency: overrides.currency,
+    timeoutMs: overrides.timeoutMs,
   }
 }
 
@@ -91,6 +94,27 @@ describe('UrlTokenConnector', () => {
       expect(caps).toContain('CATALOG_SYNC')
       expect(caps).toContain('PURCHASE')
       expect(caps).toContain('STATUS')
+      expect(caps).toContain('BALANCE')
+    })
+
+    it('plumbs balancePath, currency, and timeoutMs from provider config into the connector', async () => {
+      const c = createConnector('p1', 'Choice', 'URL_TOKEN', {
+        apiBaseUrl: 'https://example.com',
+        apiToken: 'tok-1',
+        config: { balancePath: '/custom/balance', currency: 'GBP', timeoutMs: 9000 },
+      }) as unknown as UrlTokenConnector
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: '5.00' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(5)
+      expect(result.data?.currency).toBe('GBP')
+
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://example.com/custom/balance/tok-1')
+
+      vi.unstubAllGlobals()
     })
   })
 
@@ -738,7 +762,7 @@ describe('UrlTokenConnector', () => {
 
   describe('getBalance', () => {
     it('returns balance from prepaid_balance endpoint', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ balance: 1250.50, currency: 'USD' })) })
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: 1250.50, currency: 'USD' }))
       vi.stubGlobal('fetch', mockFetch)
 
       const result = await connector.getBalance!()
@@ -746,34 +770,82 @@ describe('UrlTokenConnector', () => {
       expect(result.data?.balance).toBe(1250.50)
       expect(result.data?.currency).toBe('USD')
 
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/prepaid_balance/test-token-abc123')
+      expect((options.method ?? 'GET').toUpperCase()).toBe('GET')
+      expect(options.headers.Accept).toBe('application/json')
+
       vi.unstubAllGlobals()
     })
 
-    it('handles balance without currency', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ balance: 500 })) })
+    it('puts the token in the URL path, not an Authorization header', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: 10 }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getBalance!()
+
+      const [, options] = mockFetch.mock.calls[0]
+      expect(options.headers.Authorization).toBeUndefined()
+      expect(options.headers.Accept).toBe('application/json')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('URL-encodes the token in the path', async () => {
+      const c = makeConnector({ apiToken: 'a b+c/d=e&f#g%h' })
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: 10 }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await c.getBalance!()
+
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/prepaid_balance/a%20b%2Bc%2Fd%3De%26f%23g%25h')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('uses a configurable balancePath when provided', async () => {
+      const c = makeConnector({ balancePath: '/account/v03_09/wallet_balance' })
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: 10 }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await c.getBalance!()
+
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/wallet_balance/test-token-abc123')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('never logs the raw token or the full token-bearing URL', async () => {
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: 10, apiToken: 'test-token-abc123' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getBalance!()
+
+      const logs = spy.mock.calls.map((c) => String(c[0]))
+      expect(logs.some((l) => l.includes('test-token-abc123'))).toBe(false)
+      expect(logs.some((l) => l.includes('/account/v03_09/prepaid_balance/test-token-abc123'))).toBe(false)
+
+      spy.mockRestore()
+      vi.unstubAllGlobals()
+    })
+
+    it('handles balance without currency by falling back to USD', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: 500 }))
       vi.stubGlobal('fetch', mockFetch)
 
       const result = await connector.getBalance!()
       expect(result.success).toBe(true)
       expect(result.data?.balance).toBe(500)
-      expect(result.data?.currency).toBeNull()
-
-      vi.unstubAllGlobals()
-    })
-
-    it('returns null for non-numeric balance', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ balance: 'N/A' })) })
-      vi.stubGlobal('fetch', mockFetch)
-
-      const result = await connector.getBalance!()
-      expect(result.success).toBe(true)
-      expect(result.data?.balance).toBeNull()
+      expect(result.data?.currency).toBe('USD')
 
       vi.unstubAllGlobals()
     })
 
     it('reads prepaid_balance field', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ prepaid_balance: '999.99', currency: 'EUR' })) })
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ prepaid_balance: '999.99', currency: 'EUR' }))
       vi.stubGlobal('fetch', mockFetch)
 
       const result = await connector.getBalance!()
@@ -783,8 +855,183 @@ describe('UrlTokenConnector', () => {
       vi.unstubAllGlobals()
     })
 
-    it('returns error when no API token', async () => {
+    it('treats zero as a valid balance', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: 0 }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(0)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('parses a currency-formatted balance string', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: '$5.00' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(5)
+      expect(result.data?.currency).toBe('USD')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('finds a numeric balance nested under data or response', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { balance: 42 } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(42)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('finds a balance in a single-item array response', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson([{ balance: 7 }]))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(7)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('parses a JSON-encoded balance string', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ wallet: JSON.stringify({ balance: '12.50' }) }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(12.5)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('prefers the response-returned currency over a symbol in the balance', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ currency: 'EUR', balance: '$5.00' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(5)
+      expect(result.data?.currency).toBe('EUR')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('uses the configured default currency when none is returned', async () => {
+      const c = makeConnector({ currency: 'GBP' })
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: '5.00' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.getBalance!()
+      expect(result.success).toBe(true)
+      expect(result.data?.balance).toBe(5)
+      expect(result.data?.currency).toBe('GBP')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_BALANCE_FIELD_MISSING for NA/N-A balances', async () => {
+      for (const bad of ['NA', 'N/A']) {
+        const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: bad }))
+        vi.stubGlobal('fetch', mockFetch)
+        const result = await connector.getBalance!()
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('CHOICE_BALANCE_FIELD_MISSING')
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('returns CHOICE_BALANCE_FIELD_MISSING for non-numeric responses', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ status: 'ok', message: 'no balance here' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_BALANCE_FIELD_MISSING')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('maps 401 to CHOICE_AUTH_UNAUTHORIZED', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(errorResponse(401, 'Unauthorized'))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_AUTH_UNAUTHORIZED')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('maps 403 to CHOICE_AUTH_UNAUTHORIZED', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(errorResponse(403, 'Forbidden'))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_AUTH_UNAUTHORIZED')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('maps 404 to CHOICE_BALANCE_ENDPOINT_NOT_FOUND', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(errorResponse(404, 'Not Found'))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_BALANCE_ENDPOINT_NOT_FOUND')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_BALANCE_NON_JSON when the response is not JSON', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true, status: 200,
+        headers: { get: () => 'text/html' },
+        text: () => Promise.resolve('<html>not json</html>'),
+      })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_BALANCE_NON_JSON')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('normalizes network errors', async () => {
+      const mockFetch = vi.fn().mockRejectedValueOnce(new Error('fetch failed'))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getBalance!()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NETWORK_ERROR')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns error when no API token, without calling the API', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', { apiBaseUrl: 'https://api.example.com', apiToken: '' })
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.getBalance!()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_CREDENTIALS_MISSING')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns error when no API base URL', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', { apiBaseUrl: '', apiToken: 'tok' })
       const result = await c.getBalance!()
       expect(result.success).toBe(false)
       expect(result.error?.code).toBe('NOT_CONFIGURED')
@@ -796,7 +1043,44 @@ describe('UrlTokenConnector', () => {
 
       const result = await connector.getBalance!()
       expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('HTTP_500')
 
+      vi.unstubAllGlobals()
+    })
+
+    it('logs sanitized diagnostics when CHOICE_BALANCE_DIAGNOSTICS_ENABLED is set', async () => {
+      process.env.CHOICE_BALANCE_DIAGNOSTICS_ENABLED = 'true'
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: 10, apiToken: 'test-token-abc123' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getBalance!()
+
+      const diagLine = spy.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('[CHOICE_BALANCE_RESPONSE]'))
+      expect(diagLine).toBeDefined()
+      expect(diagLine).toContain('httpStatus=200')
+      expect(diagLine).toContain('topKeys=')
+      expect(diagLine).toContain('balanceFields=')
+      expect(diagLine).not.toContain('test-token-abc123')
+      expect(diagLine).toContain('[REDACTED]')
+
+      spy.mockRestore()
+      delete process.env.CHOICE_BALANCE_DIAGNOSTICS_ENABLED
+      vi.unstubAllGlobals()
+    })
+
+    it('does not emit CHOICE_BALANCE_RESPONSE diagnostics when disabled', async () => {
+      delete process.env.CHOICE_BALANCE_DIAGNOSTICS_ENABLED
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ balance: 10 }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getBalance!()
+
+      const lines = spy.mock.calls.map((c) => String(c[0]))
+      expect(lines.some((l) => l.startsWith('[CHOICE_BALANCE_RESPONSE]'))).toBe(false)
+
+      spy.mockRestore()
       vi.unstubAllGlobals()
     })
   })

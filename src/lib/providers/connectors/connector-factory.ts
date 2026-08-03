@@ -66,7 +66,13 @@ export function createConnector(providerId: string, name: string | undefined, co
         authType: config.authType || undefined,
       })
     case 'URL_TOKEN':
-      return new UrlTokenConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env, fieldMappings: config.fieldMappings })
+      return new UrlTokenConnector(providerId, name, {
+        apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env,
+        fieldMappings: config.fieldMappings,
+        balancePath: config.config?.balancePath,
+        currency: config.config?.currency,
+        timeoutMs: config.config?.timeoutMs,
+      })
     case 'HEADER_TOKEN':
       return new HeaderTokenRestConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env })
     case 'TELNA':

@@ -1,7 +1,7 @@
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState } from './connector-interface'
 import { classifyError } from './connector-interface'
 
-interface RestCatalogConfig {
+export interface RestCatalogConfig {
   apiBaseUrl: string
   apiToken?: string
   authUrl?: string

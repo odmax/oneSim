@@ -1,15 +1,15 @@
-import { RestCatalogConnector } from './rest-catalog-connector'
+import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
 import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo } from './connector-interface'
+import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
-interface UrlTokenConfig {
-  apiBaseUrl: string
-  apiToken?: string
-  authUrl?: string
-  environment?: string
+interface UrlTokenConfig extends RestCatalogConfig {
   fieldMappings?: Record<string, any>
+  balancePath?: string
+  currency?: string
+  timeoutMs?: number
 }
 
-async function fetchText(url: string, opts?: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }): Promise<{ text?: string; error?: { code: string; message: string }; status?: number }> {
+async function fetchText(url: string, opts?: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }): Promise<{ text?: string; error?: { code: string; message: string }; status?: number; contentType?: string }> {
   const timeout = opts?.timeoutMs || 15000
   try {
     const controller = new AbortController()
@@ -22,9 +22,10 @@ async function fetchText(url: string, opts?: { method?: string; headers?: Record
     })
     clearTimeout(timeoutId)
     const status = response.status
+    const contentType = response.headers?.get?.('content-type') || ''
     const text = await response.text()
-    if (!response.ok) return { error: { code: `HTTP_${status}`, message: text.substring(0, 300) }, status }
-    return { text, status }
+    if (!response.ok) return { error: { code: `HTTP_${status}`, message: text.substring(0, 300) }, status, contentType }
+    return { text, status, contentType }
   } catch (e: any) {
     if (e.name === 'AbortError') return { error: { code: 'TIMEOUT', message: 'Request timed out' } }
     return { error: { code: 'NETWORK_ERROR', message: e.message } }
@@ -36,6 +37,15 @@ function maskToken(token: string): string {
   return token.slice(0, 4) + '••••' + token.slice(-4)
 }
 
+function urlHostname(raw: string): string {
+  try { return new URL(raw).hostname } catch { return raw }
+}
+
+/** Guarded Choice balance diagnostics: OFF unless CHOICE_BALANCE_DIAGNOSTICS_ENABLED=true. */
+function choiceBalanceDiagnosticsEnabled(): boolean {
+  return process.env.CHOICE_BALANCE_DIAGNOSTICS_ENABLED === 'true'
+}
+
 interface AuthAccount {
   account: string
   accountName: string
@@ -45,8 +55,11 @@ interface AuthAccount {
 }
 
 export class UrlTokenConnector extends RestCatalogConnector {
+  protected override config: UrlTokenConfig
+
   constructor(providerId: string, name: string | undefined, config: UrlTokenConfig) {
     super(providerId, name, config)
+    this.config = config
   }
 
   private get fieldMappings(): Record<string, any> {
@@ -60,37 +73,71 @@ export class UrlTokenConnector extends RestCatalogConnector {
   async getBalance(): Promise<ConnectorResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>> {
     if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'API base URL not configured' } }
     const token = this.config.apiToken || ''
-    if (!token) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'No API token configured' } }
+    if (!token) return { success: false, error: { code: 'CHOICE_CREDENTIALS_MISSING', message: 'No Choice API token configured' } }
 
-    const path = `/account/v03_09/prepaid_balance/${token}`
-    console.log(`[PROVIDER_BALANCE_REQUEST] providerCode=CHOICE endpoint=/account/v03_09/prepaid_balance/[REDACTED]`)
+    const balancePath = this.config.balancePath || '/account/v03_09/prepaid_balance'
+    const url = this.baseUrl(`${balancePath}/${encodeURIComponent(token)}`)
+    const host = urlHostname(url)
 
-    const { text, error, status } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    console.log(`[PROVIDER_BALANCE_REQUEST] providerCode=CHOICE hostname=${host} endpoint=${balancePath}`)
+
+    const start = Date.now()
+    const { text, error, status, contentType } = await fetchText(url, {
+      headers: { Accept: 'application/json' },
+      timeoutMs: this.config.timeoutMs,
+    })
+    const durationMs = Date.now() - start
+
     if (error) {
-      console.log(`[PROVIDER_BALANCE_RESULT] providerCode=CHOICE success=false error=${error.code}`)
-      return { success: false, error }
+      let code = error.code
+      let message = error.message
+      if (status === 401 || status === 403) {
+        code = 'CHOICE_AUTH_UNAUTHORIZED'
+        message = 'Choice balance endpoint returned unauthorized'
+      }
+      if (status === 404) {
+        code = 'CHOICE_BALANCE_ENDPOINT_NOT_FOUND'
+        message = 'Choice balance endpoint not found (404)'
+      }
+      console.log(`[PROVIDER_BALANCE_RESULT] providerCode=CHOICE success=false error=${code} httpStatus=${status ?? 'unknown'} hostname=${host} endpoint=${balancePath} durationMs=${durationMs}`)
+      return { success: false, error: { code, message } }
     }
     if (!text) return { success: false, error: { code: 'EMPTY', message: 'Empty balance response' } }
 
+    let json: any
     try {
-      const json = JSON.parse(text)
-      const rawBalance = json.balance ?? json.prepaid_balance ?? json.amount ?? null
-      const balance = rawBalance != null ? parseFloat(String(rawBalance)) : null
-      const currency = json.currency || null
-
-      console.log(`[PROVIDER_BALANCE_RESULT] providerCode=CHOICE success=true hasBalance=${balance != null} currency=${currency || 'null'}`)
-      return {
-        success: true,
-        data: {
-          balance: balance != null && !isNaN(balance) ? balance : null,
-          currency: currency || null,
-          accountId: json.account_id || json.accountId || null,
-          accountName: json.account_name || json.accountName || null,
-        },
-      }
+      json = JSON.parse(text)
     } catch {
-      return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse balance response' } }
+      console.log(`[PROVIDER_BALANCE_RESULT] providerCode=CHOICE success=false error=CHOICE_BALANCE_NON_JSON httpStatus=${status ?? 'unknown'} contentType=${contentType || 'unknown'} hostname=${host} endpoint=${balancePath}`)
+      return { success: false, error: { code: 'CHOICE_BALANCE_NON_JSON', message: 'Choice balance response is not valid JSON' } }
     }
+
+    this.logBalanceDiagnostics(status, contentType, json, token)
+
+    const normalized = normalizeBalanceResponse(json, { fallbackCurrency: this.config.currency })
+    if (!normalized.success) {
+      console.log(`[PROVIDER_BALANCE_RESULT] providerCode=CHOICE success=false error=CHOICE_BALANCE_FIELD_MISSING reason=${normalized.reason} httpStatus=${status ?? 'unknown'} hostname=${host} endpoint=${balancePath} durationMs=${durationMs}`)
+      return { success: false, error: { code: 'CHOICE_BALANCE_FIELD_MISSING', message: 'No numeric balance field found in Choice balance response' } }
+    }
+
+    console.log(`[PROVIDER_BALANCE_RESULT] providerCode=CHOICE success=true balance=${normalized.balance} currency=${normalized.currency} path=${normalized.balancePath} httpStatus=${status ?? 'unknown'} hostname=${host} endpoint=${balancePath} durationMs=${durationMs}`)
+    return {
+      success: true,
+      data: {
+        balance: normalized.balance,
+        currency: normalized.currency,
+        accountId: json.account_id || json.accountId || json.data?.account_id || json.data?.accountId || null,
+        accountName: json.account_name || json.accountName || json.data?.account_name || json.data?.accountName || null,
+      },
+    }
+  }
+
+  private logBalanceDiagnostics(httpStatus: number | undefined, contentType: string | undefined, json: any, token: string): void {
+    if (!choiceBalanceDiagnosticsEnabled()) return
+    const sanitized = sanitizeDiagnosticSensitive(json)
+    let safeJson = JSON.stringify(sanitized)
+    if (token) safeJson = safeJson.split(token).join('[REDACTED]')
+    console.log(`[CHOICE_BALANCE_RESPONSE] httpStatus=${httpStatus ?? 'unknown'} contentType=${contentType || 'unknown'} topKeys=${Object.keys(json ?? {}).join(',')} balanceFields=${JSON.stringify(probeBalanceFields(json))} full=${safeJson}`)
   }
 
   async getRoamingProfiles(): Promise<ConnectorResult<Array<{ id: string; code: string; name: string; description?: string; isDefault?: boolean }>>> {
