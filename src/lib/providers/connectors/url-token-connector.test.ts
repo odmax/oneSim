@@ -531,24 +531,235 @@ describe('UrlTokenConnector', () => {
   })
 
   describe('getStatus', () => {
-    it('returns status and ICCID', async () => {
+    it('calls the exact Choice package_detail endpoint with an iccid query', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', status: 'active' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      const [url, init] = mockFetch.mock.calls[0]
+      expect(init.method).toBe('GET')
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/package_detail/test-token-abc123?iccid=89012345678901234567')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('prioritizes ICCID over IMSI and imsi_version', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', status: 'active' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getStatus({ iccid: '89012345678901234567', imsi: '310410123456789', imsiVersion: 70 })
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toContain('?iccid=89012345678901234567')
+      expect(url).not.toContain('imsi=')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('falls back to IMSI when no ICCID is available', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', status: 'active' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getStatus({ imsi: '310410123456789', imsiVersion: 70 })
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/package_detail/test-token-abc123?imsi=310410123456789')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('falls back to imsi_version when neither ICCID nor IMSI is available', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', status: 'active' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getStatus({ imsiVersion: 70 })
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/package_detail/test-token-abc123?imsi_version=70')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('rejects before HTTP when no Choice identifier is present', async () => {
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({})
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_STATUS_IDENTIFIER_MISSING')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('rejects a local-style identifier object before HTTP (never sends a local DB id)', async () => {
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ id: 'esim-cuid-123' } as any)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_STATUS_IDENTIFIER_MISSING')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('keeps the token path-based, URL-encoded, and out of logs', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', status: 'active' } }))
+      vi.stubGlobal('fetch', mockFetch)
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const c = makeConnector({ apiToken: 'tok/&+?=xyz' })
+
+      await c.getStatus({ iccid: '89012345678901234567' })
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toContain('/account/v03_09/package_detail/tok%2F%26%2B%3F%3Dxyz?iccid=89012345678901234567')
+      for (const call of logSpy.mock.calls) {
+        const line = String(call[0] || '')
+        expect(line).not.toContain('tok/&+?=xyz')
+        expect(line).not.toContain('package_detail/tok')
+      }
+      logSpy.mockRestore()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('parses a top-level package object', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: '', package: { iccid: '89012345678901234567', status: 'active', package_status: 'New', imsi_version: 70 } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.iccid).toBe('89012345678901234567')
+      expect(result.data?.imsiVersion).toBe(70)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('tolerates data.package as a nested variant', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, data: { package: { iccid: '89012345678901234567', status: 'active' } } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('maps status=active with package_status=New to ACTIVE (raw providerStatus active)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: 'active', package_status: 'New' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.rawStatus).toBe('active')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('maps package_status=New with empty status to PENDING_ACTIVATION (raw New)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: '', package_status: 'New' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.data?.status).toBe('PENDING_ACTIVATION')
+      expect(result.data?.rawStatus).toBe('New')
+
+      vi.unstubAllGlobals()
+    })
+
+    it.each([
+      ['suspended', 'SUSPENDED'],
+      ['suspend', 'SUSPENDED'],
+      ['blocked', 'SUSPENDED'],
+      ['disabled', 'SUSPENDED'],
+    ])('maps suspended variant %s to SUSPENDED', async (variant, expected) => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: variant } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.data?.status).toBe(expected)
+
+      vi.unstubAllGlobals()
+    })
+
+    it.each([['expired'], ['closed']])('maps %s to EXPIRED', async (variant) => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: variant } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.data?.status).toBe('EXPIRED')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('surfaces Choice success=false with errmsg as a normalized provider error', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: false, errmsg: 'Bundle is expired. No changes allowed' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_STATUS_REJECTED')
+      expect(result.error?.message).toBe('Bundle is expired. No changes allowed')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_STATUS_PACKAGE_MISSING when the package object is absent', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, data: {} }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_STATUS_PACKAGE_MISSING')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('preserves an existing ACTIVE status when Choice returns an unknown value', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: 'weird_unknown', package_status: '' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567', currentStatus: 'ACTIVE' })
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.rawStatus).toBe('weird_unknown')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns sanitized provider metadata (iccid masked, imsi_version kept)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        success: true,
+        package: {
+          iccid: '89012345678901234567',
+          imsi_version: 70,
+          package_status: 'New',
+          status: 'active',
+          package_name: 'Test package',
+          rate_groups: [{ rate_group_allowance: 1, rate_group_allow_qtyp: 'GB', rate_group_usage: 0.5, rate_group_expire: '2026-01-01' }],
+        },
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      const meta = result.data?.rawMetadata
+      expect(meta?.package?.iccid).toBe('[REDACTED]')
+      expect(meta?.package?.imsi_version).toBe(70)
+      expect(meta?.package?.package_name).toBe('Test package')
+      expect(meta?.package?.status).toBe('active')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('keeps the legacy string path for non-Choice URL_TOKEN providers unchanged', async () => {
       const mockFetch = vi.fn().mockResolvedValue(okJson({ status: 'ACTIVE', iccid: '89012345678901234567' }))
       vi.stubGlobal('fetch', mockFetch)
 
       const result = await connector.getStatus('sub-123')
       expect(result.success).toBe(true)
       expect(result.data?.status).toBe('ACTIVE')
-      expect(result.data?.iccid).toBe('89012345678901234567')
-
-      vi.unstubAllGlobals()
-    })
-
-    it('falls back to package_status field', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(okJson({ package_status: 'EXPIRED' }))
-      vi.stubGlobal('fetch', mockFetch)
-
-      const result = await connector.getStatus('sub-123')
-      expect(result.data?.status).toBe('EXPIRED')
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/template/v03_09/package_detail/test-token-abc123/sub-123')
 
       vi.unstubAllGlobals()
     })
@@ -557,7 +768,7 @@ describe('UrlTokenConnector', () => {
       const mockFetch = vi.fn().mockResolvedValue(errorResponse(404))
       vi.stubGlobal('fetch', mockFetch)
 
-      const result = await connector.getStatus('nonexistent')
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
       expect(result.success).toBe(false)
       expect(result.error?.code).toBe('HTTP_404')
 

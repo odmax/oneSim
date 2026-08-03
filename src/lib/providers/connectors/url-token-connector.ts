@@ -1,10 +1,12 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier } from './connector-interface'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
 interface UrlTokenConfig extends RestCatalogConfig {
   fieldMappings?: Record<string, any>
   balancePath?: string
+  /** Choice package_detail path override. Default: /account/v03_09/package_detail */
+  packageDetailPath?: string
   currency?: string
   timeoutMs?: number
 }
@@ -52,6 +54,83 @@ interface AuthAccount {
   token: string
   uaid?: string
   userId?: string
+}
+
+/** Choice lifecycle value groups (case/underscore-insensitive). */
+const CHOICE_STATUS_GROUPS: Record<string, string[]> = {
+  ACTIVE: ['active', 'in use', 'in_use', 'enabled'],
+  PENDING_ACTIVATION: ['new', 'pending', 'ready', 'ready to install', 'ready_to_install', 'provisioned'],
+  SUSPENDED: ['suspended', 'suspend', 'disabled', 'blocked'],
+  EXPIRED: ['expired', 'closed'],
+  FAILED: ['failed', 'error', 'rejected'],
+  CANCELLED: ['cancelled', 'canceled', 'deleted'],
+}
+
+const MEANINGFUL_INTERNAL_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED']
+
+function normalizeChoiceToken(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_]+/g, ' ')
+}
+
+/**
+ * Normalize raw Choice lifecycle values into OneSIM internal statuses.
+ *
+ * Priority:
+ * 1. package.status when it contains a recognized lifecycle value.
+ * 2. package.package_status when recognized.
+ * 3. Existing stored internal status as a safe fallback.
+ * 4. PENDING_ACTIVATION only when no safer status exists.
+ *
+ * Never downgrades an existing meaningful status merely because Choice returns
+ * an unknown value. Returns both the normalized internal status and the raw
+ * provider status.
+ */
+export function normalizeChoiceStatus(
+  rawStatus: string | null | undefined,
+  packageStatus: string | null | undefined,
+  currentStatus?: string | null,
+): { status: string; providerStatus: string } {
+  const statusToken = normalizeChoiceToken(rawStatus || '')
+  const packageStatusToken = normalizeChoiceToken(packageStatus || '')
+  const rawProviderStatus = (rawStatus && rawStatus.trim()) ? String(rawStatus).trim() : (packageStatus && packageStatus.trim()) ? String(packageStatus).trim() : ''
+
+  const resolveGroup = (value: string): string | undefined => {
+    if (!value) return undefined
+    for (const [group, variants] of Object.entries(CHOICE_STATUS_GROUPS)) {
+      if (variants.includes(value)) return group
+    }
+    return undefined
+  }
+
+  const recognized = resolveGroup(statusToken) || resolveGroup(packageStatusToken)
+  if (recognized) return { status: recognized, providerStatus: rawProviderStatus }
+
+  if (currentStatus && MEANINGFUL_INTERNAL_STATUSES.includes(String(currentStatus).toUpperCase())) {
+    return { status: String(currentStatus).toUpperCase(), providerStatus: rawProviderStatus }
+  }
+
+  return { status: 'PENDING_ACTIVATION', providerStatus: rawProviderStatus }
+}
+
+/** Resolve the query identifier per Choice priority: ICCID → IMSI → imsi_version. */
+function resolveChoiceStatusIdentifier(lookup: StatusLookupIdentifier): { key: 'iccid' | 'imsi' | 'imsi_version'; value: string | number } | null {
+  if (lookup.iccid && String(lookup.iccid).trim()) return { key: 'iccid', value: String(lookup.iccid).trim() }
+  if (lookup.imsi && String(lookup.imsi).trim()) return { key: 'imsi', value: String(lookup.imsi).trim() }
+  if (lookup.imsiVersion != null && String(lookup.imsiVersion).trim() !== '') return { key: 'imsi_version', value: lookup.imsiVersion }
+  return null
+}
+
+/**
+ * Sanitized package metadata for persistence: structure preserved, sensitive
+ * values masked, `imsi_version` kept (needed for later status lookups).
+ */
+function sanitizeChoiceStatusMetadata(json: any): Record<string, any> {
+  const pkg = json?.package || json?.data?.package || json?.response?.package
+  const sanitized = sanitizeDiagnosticSensitive({ success: json?.success, errmsg: json?.errmsg || '', package: pkg })
+  if (sanitized?.package && pkg && pkg.imsi_version != null) {
+    sanitized.package.imsi_version = pkg.imsi_version
+  }
+  return sanitized as Record<string, any>
 }
 
 export class UrlTokenConnector extends RestCatalogConnector {
@@ -499,7 +578,94 @@ export class UrlTokenConnector extends RestCatalogConnector {
     }
   }
 
-  async getStatus(subscriptionId: string): Promise<ConnectorResult<StatusResult>> {
+  async getStatus(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
+    if (identifier && typeof identifier === 'object') {
+      return this.getChoicePackageDetailStatus(identifier)
+    }
+    return this.getLegacyUrlTokenStatus(String(identifier || ''))
+  }
+
+  /**
+   * Choice package_detail status lookup:
+   * GET {baseUrl}/account/v03_09/package_detail/{token}?iccid=...|imsi=...|imsi_version=...
+   * Token is path-based and URL-encoded; never logged in full.
+   */
+  private async getChoicePackageDetailStatus(lookup: StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'API base URL not configured' } }
+    const token = this.config.apiToken || ''
+    if (!token) return { success: false, error: { code: 'CHOICE_CREDENTIALS_MISSING', message: 'No Choice API token configured' } }
+
+    const resolved = resolveChoiceStatusIdentifier(lookup)
+    if (!resolved) {
+      return { success: false, error: { code: 'CHOICE_STATUS_IDENTIFIER_MISSING', message: 'No Choice status identifier (ICCID/IMSI/imsi_version) provided' } }
+    }
+
+    const path = (this.config.packageDetailPath || '/account/v03_09/package_detail').replace(/\/$/, '')
+    const url = `${this.baseUrl(`${path}/${encodeURIComponent(token)}`)}?${resolved.key}=${encodeURIComponent(String(resolved.value))}`
+    const host = urlHostname(url)
+
+    console.log(`[CHOICE_STATUS_REQUEST] providerCode=CHOICE hostname=${host} endpoint=${path} identifier=${resolved.key}=[REDACTED]`)
+
+    const start = Date.now()
+    const { text, error, status } = await fetchText(url, {
+      headers: { Accept: 'application/json' },
+      timeoutMs: this.config.timeoutMs,
+    })
+    const durationMs = Date.now() - start
+
+    if (error) {
+      console.log(`[CHOICE_STATUS_RESULT] providerCode=CHOICE success=false error=${error.code} httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+      return { success: false, error }
+    }
+    if (!text) return { success: false, error: { code: 'EMPTY', message: 'Empty Choice status response' } }
+
+    let json: any
+    try {
+      json = JSON.parse(text)
+    } catch {
+      console.log(`[CHOICE_STATUS_RESULT] providerCode=CHOICE success=false error=CHOICE_STATUS_NON_JSON httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+      return { success: false, error: { code: 'CHOICE_STATUS_NON_JSON', message: 'Choice status response is not valid JSON' } }
+    }
+
+    if (json.success === false) {
+      const errmsg = String(json.errmsg || json.error_message || json.message || 'Choice reported a failure').slice(0, 300)
+      console.log(`[CHOICE_STATUS_RESULT] providerCode=CHOICE success=false error=CHOICE_STATUS_REJECTED errmsg=${errmsg.slice(0, 120)} httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+      return { success: false, error: { code: 'CHOICE_STATUS_REJECTED', message: errmsg } }
+    }
+
+    const pkg = json?.package || json?.data?.package || json?.response?.package
+    if (!pkg || typeof pkg !== 'object') {
+      return { success: false, error: { code: 'CHOICE_STATUS_PACKAGE_MISSING', message: 'Choice status response is missing the package object' } }
+    }
+
+    const rawStatus = typeof pkg.status === 'string' ? pkg.status : ''
+    const packageStatus = typeof pkg.package_status === 'string' ? pkg.package_status : ''
+    const normalized = normalizeChoiceStatus(rawStatus, packageStatus, lookup.currentStatus)
+
+    const rateGroups = Array.isArray(pkg.rate_groups) ? pkg.rate_groups : []
+    const firstExpiry = rateGroups.length > 0 ? String(rateGroups[0]?.rate_group_expire || '') : ''
+
+    console.log(`[CHOICE_STATUS_RESULT] providerCode=CHOICE success=true status=${normalized.status} raw=${normalized.providerStatus || '(empty)'} durationMs=${durationMs}`)
+
+    return {
+      success: true,
+      data: {
+        status: normalized.status,
+        rawStatus: normalized.providerStatus,
+        iccid: pkg.iccid != null ? String(pkg.iccid) : undefined,
+        iccids: pkg.iccid != null ? [String(pkg.iccid)] : undefined,
+        imsiVersion: pkg.imsi_version != null ? pkg.imsi_version : undefined,
+        packageName: pkg.package_name || undefined,
+        rateGroupStarttime: pkg.rate_group_starttime || undefined,
+        rateGroupExpire: pkg.rate_group_expire || undefined,
+        expiresAt: pkg.rate_group_expire || firstExpiry || undefined,
+        rawMetadata: sanitizeChoiceStatusMetadata(json),
+      },
+    }
+  }
+
+  /** Legacy path kept for non-Choice URL_TOKEN providers that pass a string identifier. */
+  private async getLegacyUrlTokenStatus(subscriptionId: string): Promise<ConnectorResult<StatusResult>> {
     const token = this.config.apiToken || ''
     const path = `/template/v03_09/package_detail/${token}/${subscriptionId}`
     const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })

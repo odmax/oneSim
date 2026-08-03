@@ -70,6 +70,7 @@ export function createConnector(providerId: string, name: string | undefined, co
         apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env,
         fieldMappings: config.fieldMappings,
         balancePath: config.config?.balancePath,
+        packageDetailPath: config.config?.packageDetailPath,
         currency: config.config?.currency,
         timeoutMs: config.config?.timeoutMs,
       })

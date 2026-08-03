@@ -134,7 +134,16 @@ export interface ProviderAdapter {
   validatePurchase?(params: { planId: string; quantity: number; subscriber: { email: string } }): Promise<{ valid: boolean; reason?: string }>
   getBalance?(): Promise<ProviderResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>>
 
-  getActivationStatus(activationId: string): Promise<ProviderResult<{ status: string; iccids?: string[] }>>
+  getActivationStatus(activationId: string | import('./connectors/connector-interface').StatusLookupIdentifier): Promise<ProviderResult<{
+    status: string
+    iccids?: string[]
+    rawStatus?: string
+    iccid?: string
+    imsiVersion?: string | number
+    packageName?: string
+    expiresAt?: string
+    rawMetadata?: Record<string, any>
+  }>>
 
   suspendESIM(subscriptionId: string): Promise<ProviderResult<void>>
 

@@ -54,6 +54,29 @@ export interface StatusResult {
   status: string
   iccids?: string[]
   iccid?: string
+  /** Raw provider lifecycle value that produced `status`. */
+  rawStatus?: string
+  /** Choice `imsi_version` returned by package_detail. */
+  imsiVersion?: string | number
+  packageName?: string
+  rateGroupStarttime?: string
+  rateGroupExpire?: string
+  expiresAt?: string
+  /** Sanitized provider metadata safe to persist. */
+  rawMetadata?: Record<string, any>
+}
+
+/**
+ * Provider identifier used for status lookups that accept structured identifiers.
+ * Choice package_detail supports lookup by ICCID, IMSI, or imsi_version.
+ * `currentStatus` is only used as a safe fallback when the provider returns an
+ * unrecognized lifecycle value.
+ */
+export interface StatusLookupIdentifier {
+  iccid?: string
+  imsi?: string
+  imsiVersion?: string | number
+  currentStatus?: string
 }
 
 export interface TopUpESIMParams {
@@ -171,7 +194,7 @@ export interface IProviderConnector {
   diagnoseConnection(): Promise<ConnectorResult<DiagnosticInfo>>
   syncPlans(): Promise<ConnectorResult<ConnectorPlan[]>>
   activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>>
-  getStatus(subscriptionId: string): Promise<ConnectorResult<StatusResult>>
+  getStatus(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>>
   getUsage(iccid: string): Promise<ConnectorResult<UsageResult>>
   suspendESIM(subscriptionId: string): Promise<ConnectorResult<void>>
   resumeESIM(subscriptionId: string): Promise<ConnectorResult<void>>

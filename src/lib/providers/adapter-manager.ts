@@ -58,7 +58,21 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
     getActivationStatus: async (id) => {
       const r = await connector.getStatus(id)
       if (!r.success) return { success: false, error: r.error }
-      return { success: true, data: { status: r.data?.status || 'UNKNOWN', iccids: r.data?.iccids } }
+      return {
+        success: true,
+        data: {
+          status: r.data?.status || 'UNKNOWN',
+          iccids: r.data?.iccids,
+          ...(r.data ? {
+            rawStatus: r.data.rawStatus,
+            iccid: r.data.iccid,
+            imsiVersion: r.data.imsiVersion,
+            packageName: r.data.packageName,
+            expiresAt: r.data.expiresAt,
+            rawMetadata: r.data.rawMetadata,
+          } : {}),
+        },
+      }
     },
     suspendESIM: async (id) => {
       const r = await connector.suspendESIM(id)
