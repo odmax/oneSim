@@ -66,3 +66,156 @@ export async function consumePurchaseQuote(quoteRef: string, idempotencyKey?: st
   if (result.count === 0) return { success: false, error: 'Quote not found, already consumed, or expired' }
   return { success: true }
 }
+
+export interface QuoteOrderInput {
+  quoteReference: string
+  businessId: string
+  userId: string
+  packageId: string
+  quantity: number
+  idempotencyKey?: string
+  callbackUrl?: string
+  packageName?: string
+  packageDataGB?: number
+  packageValidityDays?: number
+}
+
+export interface QuoteOrderResult {
+  success: boolean
+  orderId?: string
+  order?: any
+  error?: string
+  errorCode?: string
+  alreadyConsumed?: boolean
+  existingOrderId?: string
+}
+
+/**
+ * Atomically consume a quote and create an order in one Prisma transaction.
+ *
+ * Transaction sequence:
+ *  1. Load & validate quote (ACTIVE, not expired, correct business, quantity matches)
+ *  2. Guarded update: ACTIVE → CONSUMED (affected rows === 1)
+ *  3. Create ESIMPurchase linked to quote + price snapshot with immutable pricing
+ *  4. Create timeline event
+ *
+ * Concurrency safety: guarded updateMany WHERE status='ACTIVE' ensures only one
+ * request succeeds. The second request sees affected rows === 0 → already consumed.
+ */
+export async function consumeQuoteAndCreateOrder(input: QuoteOrderInput): Promise<QuoteOrderResult> {
+  const { quoteReference, businessId, userId, packageId, quantity, idempotencyKey, callbackUrl, packageName, packageDataGB, packageValidityDays } = input
+
+  // 0. Check for existing order by idempotency key
+  if (idempotencyKey) {
+    const providerPurchaseKey = `${businessId}:${idempotencyKey}`
+    const existing = await prisma.eSIMPurchase.findUnique({
+      where: { providerPurchaseKey },
+    })
+    if (existing) {
+      return { success: true, orderId: existing.id, order: existing, alreadyConsumed: true, existingOrderId: existing.id }
+    }
+  }
+
+  return prisma.$transaction(async (tx) => {
+    // 1. Load quote
+    const quote = await tx.purchaseQuote.findUnique({
+      where: { quoteReference },
+      select: {
+        id: true, status: true, expiresAt: true, businessId: true,
+        quantity: true, unitPrice: true, totalAmount: true, currency: true,
+        packagePriceSnapshotId: true, pricingEngineVersion: true,
+        providerPackageId: true,
+      },
+    })
+
+    if (!quote) return { success: false, error: 'Quote not found', errorCode: 'QUOTE_NOT_FOUND' }
+    if (quote.businessId !== businessId) return { success: false, error: 'Quote does not belong to this business', errorCode: 'QUOTE_TENANT_MISMATCH' }
+    if (quote.status !== 'ACTIVE') {
+      if (quote.status === 'CONSUMED') {
+        const linkedOrder = await tx.eSIMPurchase.findFirst({
+          where: { purchaseQuoteId: quote.id, businessId },
+          orderBy: { createdAt: 'desc' },
+        })
+        if (linkedOrder) return { success: true, orderId: linkedOrder.id, alreadyConsumed: true, existingOrderId: linkedOrder.id }
+      }
+      return { success: false, error: `Quote is already ${quote.status}`, errorCode: quote.status === 'CONSUMED' ? 'QUOTE_ALREADY_CONSUMED' : 'QUOTE_INVALID' }
+    }
+    if (new Date() > quote.expiresAt) return { success: false, error: 'Quote has expired', errorCode: 'QUOTE_EXPIRED' }
+    if (quote.quantity !== quantity) return { success: false, error: `Quote quantity ${quote.quantity} does not match requested ${quantity}`, errorCode: 'QUOTE_QUANTITY_MISMATCH' }
+
+    // 2. Verify price snapshot still exists
+    const snapshot = await tx.packagePriceSnapshot.findUnique({ where: { id: quote.packagePriceSnapshotId }, select: { id: true, status: true } })
+    if (!snapshot || snapshot.status !== 'ACTIVE') return { success: false, error: 'Price snapshot is no longer active', errorCode: 'QUOTE_SNAPSHOT_MISSING' }
+
+    // 3. Guarded consume — only one request succeeds
+    const consumeResult = await tx.purchaseQuote.updateMany({
+      where: { id: quote.id, status: 'ACTIVE', expiresAt: { gt: new Date() } },
+      data: { status: 'CONSUMED', consumedAt: new Date(), idempotencyKey: idempotencyKey || null },
+    })
+    if (consumeResult.count === 0) {
+      // Check if already consumed (by another concurrent request)
+      const consumedCheck = await tx.purchaseQuote.findUnique({ where: { id: quote.id }, select: { status: true } })
+      if (consumedCheck?.status === 'CONSUMED') {
+        // Try to find the linked order
+        const linkedOrder = await tx.eSIMPurchase.findFirst({
+          where: { purchaseQuoteId: quote.id, businessId },
+          orderBy: { createdAt: 'desc' },
+        })
+        if (linkedOrder) return { success: true, orderId: linkedOrder.id, alreadyConsumed: true, existingOrderId: linkedOrder.id }
+        return { success: false, error: 'Quote already consumed', errorCode: 'QUOTE_ALREADY_CONSUMED' }
+      }
+      return { success: false, error: 'Quote not found, already consumed, or expired', errorCode: 'QUOTE_ALREADY_CONSUMED' }
+    }
+
+    // 4. Create order with immutable pricing
+    const purchaseKey = idempotencyKey ? `${businessId}:${idempotencyKey}` : undefined
+    const order = await tx.eSIMPurchase.create({
+      data: {
+        businessId, userId, packageId, quantity,
+        totalAmount: quote.totalAmount,
+        status: 'CREATED',
+        purchaseQuoteId: quote.id,
+        packagePriceSnapshotId: quote.packagePriceSnapshotId,
+        quotedUnitPrice: quote.unitPrice,
+        quotedTotalAmount: quote.totalAmount,
+        quotedCurrency: quote.currency,
+        quotedQuantity: quote.quantity,
+        pricingEngineVersion: quote.pricingEngineVersion,
+        callbackUrl: callbackUrl || null,
+        packageSnapshot: {
+          packageId, quantity,
+          unitPrice: Number(quote.unitPrice), totalAmount: Number(quote.totalAmount),
+          currency: quote.currency,
+          packageName, packageDataGB, packageValidityDays,
+          pricingEngineVersion: quote.pricingEngineVersion,
+        } as any,
+        packageName: packageName || null,
+        packageDataGB: packageDataGB || null,
+        packageValidityDays: packageValidityDays || null,
+        packageUnitPrice: Number(quote.unitPrice),
+        packageCurrency: quote.currency,
+        providerPurchaseKey: purchaseKey || null,
+      },
+    })
+
+    // 5. Timeline
+    await tx.orderTimelineEvent.create({
+      data: {
+        orderId: order.id,
+        eventType: 'ORDER_CREATED_FROM_QUOTE',
+        message: `Order created from quote ${quoteReference.slice(-8)} — ${quantity}x @ ${quote.currency} ${Number(quote.unitPrice).toFixed(2)}`,
+      },
+    })
+
+    return { success: true, orderId: order.id, order }
+  }).catch((e: any) => {
+    // Handle unique constraint violations
+    if (e.code === 'P2002' && (e.message || '').includes('providerPurchaseKey')) {
+      return { success: false, error: 'Duplicate purchase key', errorCode: 'DUPLICATE_IDEMPOTENCY' }
+    }
+    if (e.code === 'P2002' && (e.message || '').includes('purchaseQuoteId')) {
+      return { success: false, error: 'Quote already consumed by another order', errorCode: 'QUOTE_ALREADY_CONSUMED' }
+    }
+    return { success: false, error: e.message || 'Transaction failed', errorCode: 'TRANSACTION_FAILED' }
+  })
+}

@@ -499,6 +499,15 @@ model ESIMPurchase {
   packageId             String
   quantity              Int
   totalAmount           Decimal
+  /// Immutable pricing copied from quote/price snapshot at creation.
+  /// These are the financial source of truth for all order operations.
+  purchaseQuoteId        String?   @unique
+  packagePriceSnapshotId String?
+  quotedUnitPrice        Decimal?
+  quotedTotalAmount      Decimal?
+  quotedCurrency         String?
+  quotedQuantity         Int?
+  pricingEngineVersion   String?
   status                String    @default("PENDING")
   providerStatus        String?
   providerResponse      Json?
@@ -539,6 +548,8 @@ model ESIMPurchase {
   provider           Provider?            @relation(fields: [providerId], references: [id], onDelete: SetNull)
   walletTransactions WalletTransaction[]
   billingRecords     BillingRecord[]      @relation("BillingRecordOrder")
+  purchaseQuote      PurchaseQuote?       @relation(fields: [purchaseQuoteId], references: [id], onDelete: SetNull)
+  packagePriceSnapshot PackagePriceSnapshot? @relation(fields: [packagePriceSnapshotId], references: [id], onDelete: SetNull)
 
   @@map("esim_purchases")
 }
@@ -2835,6 +2846,7 @@ model PackagePriceSnapshot {
 
   // Reverse relation: packages using this as active snapshot
   activeForPackage ProviderPackage? @relation("ActivePriceSnapshot")
+  orders           ESIMPurchase[]
 
   @@index([providerPackageId, createdAt])
   @@index([status])
@@ -2881,7 +2893,8 @@ model PurchaseQuote {
   @@index([businessId, status])
   @@index([providerPackageId])
   @@index([expiresAt])
-  @@map("purchase_quotes")
+
+  order ESIMPurchase?
 }
 
 model SystemJobLock {

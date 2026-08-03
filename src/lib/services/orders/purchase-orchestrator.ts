@@ -8,6 +8,7 @@ import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { executeProviderAttempt, tryFailoverAfterAttempt } from './provider-attempt-service'
 import { ProviderRoutingEngine } from '@/lib/services/routing/provider-routing-engine'
 import { requiresTravelDateForPackage, isValidTravelDate } from '@/lib/providers/travel-date-utils'
+import { consumeQuoteAndCreateOrder } from '@/lib/pricing/purchase-quote-service'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 
 const DUP_WINDOW_MS = 30_000
@@ -19,6 +20,8 @@ export interface PurchaseRequest {
   sku?: string
   packageCode?: string
   quantity: number
+  /** Optional quote reference for atomic quote consumption + order creation. */
+  quoteReference?: string
   customer?: {
     name: string
     email: string
@@ -64,7 +67,6 @@ export interface PurchaseResult {
 export class PurchaseOrchestrator {
   async executePurchase(request: PurchaseRequest): Promise<PurchaseResult> {
     const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl, idempotencyKey, travelDate } = request
-    const purchaseKey = idempotencyKey ? `${businessId}:${idempotencyKey}` : undefined
 
     // Step 1: Validate business
     const business = await prisma.business.findUnique({ where: { id: businessId } })
@@ -116,8 +118,8 @@ export class PurchaseOrchestrator {
     }
 
     // Step 5: Validate business wallet
-    const unitPrice = parseFloat(pkg.priceUSD.toString())
-    const totalAmount = unitPrice * quantity
+    let unitPrice = parseFloat(pkg.priceUSD.toString())
+    let totalAmount = unitPrice * quantity
     if (parseFloat(business.walletBalance.toString()) < totalAmount) {
       return this.fail('INSUFFICIENT_WALLET', `Wallet balance $${business.walletBalance} is insufficient for $${totalAmount}`, false)
     }
@@ -160,6 +162,7 @@ export class PurchaseOrchestrator {
     }
 
     // Service-layer idempotency: guard for concurrent/non-route callers (keyed by providerPurchaseKey).
+    const purchaseKey = idempotencyKey ? `${businessId}:${idempotencyKey}` : undefined
     if (purchaseKey) {
       const existing = await prisma.eSIMPurchase.findUnique({
         where: { providerPurchaseKey: purchaseKey },
@@ -194,28 +197,66 @@ export class PurchaseOrchestrator {
     const displayName = pkg.displayName || pkg.name
     const packageSnapshot = { packageId: pkg.id, sku: pkg.sku, packageCode: pkg.packageCode, displayName, customerDescription: pkg.customerDescription || null, dataGB: pkg.dataGB, validityDays: pkg.validityDays, priceUSD: unitPrice, localPrice: parseFloat(pkg.localPrice.toString()), currency: pkg.currency || 'USD', source: pkg.source, providerId: pkg.providerId, providerPlanId: pkg.providerPlanId || null, providerName: pkg.providerName || null, purchasedAt: new Date().toISOString() }
 
-    // Step 10: Create order
+    // Step 10: Create order — use quote atomic flow when quoteReference provided
+    const quotesRequired = process.env.PRICING_QUOTES_REQUIRED === 'true'
     let orderId: string
-    try {
-      const order = await prisma.eSIMPurchase.create({ data: { businessId, userId, packageId: pkg.id, quantity, totalAmount, status: 'CREATED', callbackUrl: callbackUrl || null, packageSnapshot: packageSnapshot as any, packageName: displayName, packageDataGB: pkg.dataGB, packageValidityDays: pkg.validityDays, packageUnitPrice: unitPrice, packageCurrency: pkg.currency || 'USD', providerPurchaseKey: purchaseKey || null } })
-      orderId = order.id
-    } catch (e: any) {
-      if (purchaseKey && (e.code === 'P2002' || /providerPurchaseKey/i.test(e.message || ''))) {
-        const existing = await prisma.eSIMPurchase.findUnique({ where: { providerPurchaseKey: purchaseKey }, include: { esims: { select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } } } })
-        if (existing) {
-          return {
-            success: existing.status === 'FULFILLED',
-            orderId: existing.id,
-            status: existing.status,
-            unitCost: unitPrice,
-            totalCost: totalAmount,
-            quantity,
-            currency: pkg.currency || 'USD',
-            esims: existing.esims.map((e) => ({ id: e.id, iccid: e.iccid, imsi: e.imsi ?? null, activationCode: e.activationCode ?? null, status: e.status, qrCodeUrl: e.qrCodeUrl ?? null })),
+
+    if (request.quoteReference) {
+      // Atomic quote consumption + order creation
+      const qtResult = await consumeQuoteAndCreateOrder({
+        quoteReference: request.quoteReference, businessId, userId: userId,
+        packageId: pkg.id, quantity,
+        idempotencyKey,
+        callbackUrl: callbackUrl || undefined,
+        packageName: displayName, packageDataGB: pkg.dataGB, packageValidityDays: pkg.validityDays,
+      })
+      if (!qtResult.success) {
+        if (qtResult.alreadyConsumed && qtResult.existingOrderId) {
+          const ex = await prisma.eSIMPurchase.findUnique({ where: { id: qtResult.existingOrderId }, include: { esims: { select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } } } })
+          if (ex) {
+            return { success: ex.status === 'FULFILLED', orderId: ex.id, status: ex.status, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD', esims: ex.esims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi ?? null, activationCode: e.activationCode ?? null, status: e.status, qrCodeUrl: e.qrCodeUrl ?? null })) }
           }
         }
+        return this.fail(qtResult.errorCode || 'QUOTE_FAILED', qtResult.error || 'Quote consumption failed', false)
       }
-      return this.fail('ORDER_CREATE_FAILED', `Failed to create order: ${e.message}`, false)
+      orderId = qtResult.orderId!
+      // Use immutable quote pricing for wallet operations
+      const qOrder = qtResult.order!
+      unitPrice = Number(qOrder.quotedUnitPrice || qOrder.packageUnitPrice || unitPrice)
+      totalAmount = Number(qOrder.quotedTotalAmount || qOrder.totalAmount || totalAmount)
+    } else if (quotesRequired) {
+      return this.fail('QUOTE_REQUIRED', 'A valid purchase quote is required for checkout', false)
+    } else {
+      // Legacy flow — create order directly
+      const purchaseKey = idempotencyKey ? `${businessId}:${idempotencyKey}` : undefined
+      try {
+        const order = await prisma.eSIMPurchase.create({
+          data: {
+            businessId, userId, packageId: pkg.id, quantity, totalAmount, status: 'CREATED',
+            callbackUrl: callbackUrl || null,
+            packageSnapshot: packageSnapshot as any,
+            packageName: displayName, packageDataGB: pkg.dataGB, packageValidityDays: pkg.validityDays,
+            packageUnitPrice: unitPrice, packageCurrency: pkg.currency || 'USD',
+            providerPurchaseKey: purchaseKey || null,
+            quotedUnitPrice: unitPrice, quotedTotalAmount: totalAmount, quotedCurrency: pkg.currency || 'USD',
+            quotedQuantity: quantity, pricingEngineVersion: 'LEGACY_DIRECT',
+          },
+        })
+        orderId = order.id
+        await createTimelineEvent(orderId, { eventType: 'ORDER_CREATED_WITHOUT_QUOTE', message: `Order created directly — ${quantity}x ${displayName}` })
+      } catch (e: any) {
+        if (purchaseKey && (e.code === 'P2002' || /providerPurchaseKey/i.test(e.message || ''))) {
+          const existing = await prisma.eSIMPurchase.findUnique({ where: { providerPurchaseKey: purchaseKey }, include: { esims: { select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } } } })
+          if (existing) {
+            return {
+              success: existing.status === 'FULFILLED', orderId: existing.id, status: existing.status,
+              unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD',
+              esims: existing.esims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi ?? null, activationCode: e.activationCode ?? null, status: e.status, qrCodeUrl: e.qrCodeUrl ?? null })),
+            }
+          }
+        }
+        return this.fail('ORDER_CREATE_FAILED', `Failed to create order: ${e.message}`, false)
+      }
     }
 
     await createTimelineEvent(orderId, { eventType: 'ORDER_CREATED', message: `Purchase started: ${quantity}x ${displayName} via ${provider.name}` })
