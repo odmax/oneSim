@@ -146,6 +146,7 @@ model Business {
 
   salesAgent     InternalAdmin?  @relation("SalesAssignment", fields: [assignedSalesUserId], references: [id])
   billingRecords BillingRecord[] @relation("BillingRecordBusiness")
+  callbackDeliveries OrderCallbackDelivery[]
 
   @@map("businesses")
 }
@@ -559,6 +560,7 @@ model ESIMPurchase {
   purchaseQuote      PurchaseQuote?       @relation(fields: [purchaseQuoteId], references: [id], onDelete: SetNull)
   packagePriceSnapshot PackagePriceSnapshot? @relation(fields: [packagePriceSnapshotId], references: [id], onDelete: SetNull)
   inventoryReservations ProviderInventoryReservation[]
+  callbackDeliveries    OrderCallbackDelivery[]
 
   @@map("esim_purchases")
 }
@@ -2946,4 +2948,36 @@ model ProviderInventoryReservation {
   @@index([expiresAt])
   @@index([reservationKey])
   @@map("provider_inventory_reservations")
+}
+
+model OrderCallbackDelivery {
+  id                String   @id @default(cuid())
+  orderId           String
+  businessId        String
+  eventType         String
+  eventId           String   @unique
+  callbackUrl       String
+  payload           Json
+  payloadHash       String?
+  status            String   @default("PENDING")
+  attemptCount      Int      @default(0)
+  maxAttempts       Int      @default(7)
+  nextAttemptAt     DateTime?
+  lastAttemptAt     DateTime?
+  deliveredAt       DateTime?
+  lastHttpStatus    Int?
+  lastErrorCode     String?
+  lastErrorMessage  String?
+  signatureVersion  String   @default("v1")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  order    ESIMPurchase @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  business Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([nextAttemptAt])
+  @@index([orderId])
+  @@index([businessId])
+  @@map("order_callback_deliveries")
 }
