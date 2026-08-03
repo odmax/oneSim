@@ -406,3 +406,131 @@ export async function resumeProviderFinalization(orderId: string): Promise<Final
 
   return { success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true }
 }
+
+// ─────────────────────────────────────────────
+// Task 3: Quantity derivation
+// ─────────────────────────────────────────────
+
+export interface FulfillmentQuantities {
+  requestedQuantity: number
+  fulfilledQuantity: number
+  remainingQuantity: number
+  failedQuantity: number
+  capturedAmount: number
+  unitPrice: number
+}
+
+/**
+ * Derive authoritative fulfillment quantities for an order.
+ * Uses immutable pricing where available; falls back to legacy fields safely.
+ */
+export async function deriveOrderFulfillmentQuantities(orderId: string): Promise<FulfillmentQuantities> {
+  const order = await prisma.eSIMPurchase.findUnique({
+    where: { id: orderId },
+    include: { esims: { select: { id: true, iccid: true } }, business: { select: { id: true } } },
+  })
+  if (!order) return { requestedQuantity: 0, fulfilledQuantity: 0, remainingQuantity: 0, failedQuantity: 0, capturedAmount: 0, unitPrice: 0 }
+
+  const requestedQuantity = order.quotedQuantity ?? order.quantity ?? 1
+  const unitPrice = Number(order.quotedUnitPrice ?? order.packageUnitPrice ?? 0)
+
+  const uniqueIccids = new Set(order.esims.map(e => e.iccid).filter(Boolean))
+  const fulfilledQuantity = Math.min(uniqueIccids.size, requestedQuantity)
+  const failedQuantity = order.failedQuantity ?? 0
+  const remainingQuantity = Math.max(0, requestedQuantity - fulfilledQuantity - failedQuantity)
+
+  const captures = await prisma.walletTransaction.findMany({
+    where: { orderId, type: 'WALLET_CAPTURE' },
+    select: { amount: true },
+  })
+  const capturedAmount = captures.reduce((sum, c) => sum + Math.abs(Number(c.amount || 0)), 0)
+
+  return { requestedQuantity, fulfilledQuantity, remainingQuantity, failedQuantity, capturedAmount, unitPrice }
+}
+
+// ─────────────────────────────────────────────
+// Task 7: Partial fulfillment flow
+// ─────────────────────────────────────────────
+
+export async function processPartialFulfillment(input: {
+  orderId: string
+  businessId: string
+  providerId: string
+  providerRef: string
+  providerName: string
+  totalAmount: number
+  providerResult: ProviderFulfillmentResult
+  userId?: string
+  packageSnapshot?: any
+  packageName?: string
+  packageDataGB?: number
+  packageValidityDays?: number
+  validityDays?: number
+}): Promise<FinalizeOutput> {
+  const { orderId, businessId, providerId, providerRef, providerName, totalAmount, providerResult, userId, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays } = input
+
+  const order = await prisma.eSIMPurchase.findUnique({
+    where: { id: orderId },
+    include: { business: { select: { id: true } } },
+  })
+  if (!order) return { success: false, orderStatus: 'UNKNOWN', walletCaptured: false, eSIMsPersisted: false, error: 'Order not found' }
+  if (order.status === 'FULFILLED') return { success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true }
+
+  await prisma.eSIMPurchase.update({
+    where: { id: orderId },
+    data: { providerId, providerFulfillId: providerRef || providerResult.providerFulfillId || undefined, providerReservationId: providerResult.providerReservationId || undefined, lastRetryAt: new Date() },
+  })
+
+  const persistResult = await persistProviderFulfillment({
+    orderId, businessId, providerResult, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays, userId,
+  })
+
+  await createTimelineEvent(orderId, { eventType: 'FULFILLMENT_BATCH_RECEIVED', message: `${persistResult.persistedQuantity}/${persistResult.requestedQuantity} eSIMs in batch` })
+
+  const qtys = await deriveOrderFulfillmentQuantities(orderId)
+  const newlyFulfilled = Math.max(0, qtys.fulfilledQuantity - (order.fulfilledQuantity ?? 0))
+  const unitPrice = Number(order.quotedUnitPrice ?? order.packageUnitPrice ?? 0)
+  const captureAmount = unitPrice * newlyFulfilled
+
+  await prisma.eSIMPurchase.update({
+    where: { id: orderId },
+    data: { fulfilledQuantity: qtys.fulfilledQuantity, failedQuantity: qtys.failedQuantity },
+  })
+
+  let walletCaptured = false
+  if (newlyFulfilled > 0 && captureAmount > 0) {
+    const existingCaptures = await prisma.walletTransaction.findMany({
+      where: { orderId, type: 'WALLET_CAPTURE' },
+    })
+    const alreadyCaptured = existingCaptures.reduce((s, c) => s + Math.abs(Number(c.amount || 0)), 0)
+    const remainingToCapture = qtys.capturedAmount - alreadyCaptured
+
+    if (remainingToCapture > 0) {
+      const captureResult = await captureReservedFunds(orderId, businessId, remainingToCapture)
+      if (captureResult.success) {
+        walletCaptured = true
+        await createTimelineEvent(orderId, { eventType: 'PARTIAL_WALLET_CAPTURED', message: `Captured ${remainingToCapture} for ${newlyFulfilled} new eSIMs` })
+      }
+    }
+  }
+
+  const caps = await prisma.walletTransaction.findMany({ where: { orderId, type: 'WALLET_CAPTURE' }, select: { amount: true } })
+  const totalCaptured = caps.reduce((s, c) => s + Math.abs(Number(c.amount || 0)), 0)
+  await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { capturedAmount: totalCaptured } })
+
+  if (qtys.remainingQuantity === 0 && qtys.fulfilledQuantity > 0) {
+    await transitionOrder(orderId, 'FULFILLED')
+    await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { fulfillmentCompletedAt: new Date() } })
+    await createTimelineEvent(orderId, { eventType: 'ORDER_FULFILLED', message: `All ${qtys.fulfilledQuantity} eSIMs fulfilled` })
+    return { success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true }
+  }
+
+  if (qtys.fulfilledQuantity > 0 && qtys.remainingQuantity > 0) {
+    await transitionOrder(orderId, 'PARTIALLY_FULFILLED')
+    await createTimelineEvent(orderId, { eventType: 'PARTIAL_FULFILLMENT_RECORDED', message: `${qtys.fulfilledQuantity} of ${qtys.requestedQuantity} eSIMs fulfilled` })
+    await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { nextRetryAt: new Date(Date.now() + 5 * 60_000), retryReason: `Waiting for ${qtys.remainingQuantity} remaining eSIMs` } })
+    return { success: true, orderStatus: 'PARTIALLY_FULFILLED', walletCaptured: walletCaptured, eSIMsPersisted: true }
+  }
+
+  return { success: false, orderStatus: order.status, walletCaptured: false, eSIMsPersisted: false, error: 'No valid eSIMs in provider response' }
+}

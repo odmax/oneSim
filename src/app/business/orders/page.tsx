@@ -20,6 +20,7 @@ const STATUS_CONFIG: Record<string, { label: string; dot: string; bg: string }> 
   FAILED: { label: 'Failed', dot: 'bg-red-400', bg: 'bg-red-50 text-red-600' },
   REFUNDED: { label: 'Refunded', dot: 'bg-rose-400', bg: 'bg-rose-50 text-rose-600' },
   PROVIDER_RECONCILIATION: { label: 'Reconciling', dot: 'bg-purple-400', bg: 'bg-purple-50 text-purple-700' },
+  PARTIALLY_FULFILLED: { label: 'Partial', dot: 'bg-amber-400', bg: 'bg-amber-50 text-amber-700' },
 }
 
 function StatusBadge({ status }: { status: string }) {

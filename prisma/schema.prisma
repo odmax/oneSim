@@ -508,6 +508,13 @@ model ESIMPurchase {
   quotedCurrency         String?
   quotedQuantity         Int?
   pricingEngineVersion   String?
+  /// Partial-fulfillment quantity accounting
+  fulfilledQuantity      Int          @default(0)
+  failedQuantity         Int          @default(0)
+  fulfillmentCompletedAt DateTime?
+  capturedAmount         Decimal?
+  releasedAmount         Decimal?
+  refundedAmount         Decimal?
   status                String    @default("PENDING")
   providerStatus        String?
   providerResponse      Json?

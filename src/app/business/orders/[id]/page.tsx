@@ -15,6 +15,7 @@ const STATUS_COLORS: Record<string, string> = {
   EXPIRED: 'bg-gray-100 text-gray-700', CANCELLED: 'bg-orange-100 text-orange-700',
   FAILED: 'bg-red-100 text-red-700', REFUNDED: 'bg-rose-100 text-rose-700',
   PROVIDER_RECONCILIATION: 'bg-purple-100 text-purple-800',
+  PARTIALLY_FULFILLED: 'bg-amber-100 text-amber-800',
 }
 
 export default async function BusinessOrderDetailPage({ params }: { params: { id: string } }) {
