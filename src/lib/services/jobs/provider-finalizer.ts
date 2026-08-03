@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
-import { captureReservedFunds, releaseReservedFunds } from '@/lib/services/orders/wallet-actions'
+import { releaseReservedFunds } from '@/lib/services/orders/wallet-actions'
 import { failOrder, createTimelineEvent } from '@/lib/services/orders/order-state-machine'
+import { completeProviderFinalization, type ProviderFulfillmentResult } from '@/lib/services/orders/fulfillment'
 
 export async function completeProviderOperation(params: {
   orderId: string
@@ -17,75 +18,26 @@ export async function completeProviderOperation(params: {
   packageDataGB?: number
   packageValidityDays?: number
 }) {
-  const { orderId, businessId, providerId, providerRef, providerName, totalAmount, iccids, userId, validityDays = 30, packageSnapshot, packageName, packageDataGB, packageValidityDays } = params
+  const { orderId, businessId, providerId, providerRef, providerName, totalAmount, iccids, userId, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays } = params
 
-  const order = await prisma.eSIMPurchase.findUnique({ where: { id: orderId }, include: { esims: true } })
+  const order = await prisma.eSIMPurchase.findUnique({ where: { id: orderId } })
   if (!order) return { success: false, error: 'Order not found' }
   if (order.status === 'FULFILLED') return { success: true, alreadyDone: true }
 
-  // Provision eSIMs
-  const pkg = order.packageId ? await prisma.eSIMPackage.findUnique({ where: { id: order.packageId } }) : null
-  if (order.esims.length === 0 && iccids.length > 0) {
-    for (const iccid of iccids) {
-      await prisma.eSIM.create({
-        data: {
-          purchaseId: orderId, iccid: String(iccid), imsi: null, status: 'ACTIVE',
-          providerActivationId: providerRef || '', providerStatus: 'ACTIVE',
-          expiresAt: new Date(Date.now() + (pkg?.validityDays || validityDays) * 86400000),
-          packageSnapshot: (packageSnapshot ?? (order.packageSnapshot as any)) ?? undefined,
-          packageName: packageName || order.packageName || '',
-          packageDataGB: packageDataGB ?? order.packageDataGB ?? 0,
-          packageValidityDays: packageValidityDays ?? order.packageValidityDays ?? validityDays,
-        },
-      }).catch(() => {})
-    }
-  } else if (order.esims.length > 0 && iccids.length > 0) {
-    // eSIMs were reserved at purchase (e.g. iBASIS allocation) — flip them to ACTIVE.
-    for (const iccid of iccids) {
-      const existing = await prisma.eSIM.findFirst({ where: { purchaseId: orderId, iccid: String(iccid) } })
-      if (existing) {
-        await prisma.eSIM
-          .update({
-            where: { id: existing.id },
-            data: {
-              status: 'ACTIVE',
-              providerStatus: 'ACTIVE',
-              providerActivationId: providerRef || existing.providerActivationId || '',
-              activatedAt: new Date(),
-              lastStatusSyncAt: new Date(),
-            },
-          })
-          .catch(() => {})
-      } else {
-        await prisma.eSIM.create({
-          data: {
-            purchaseId: orderId, iccid: String(iccid), imsi: null, status: 'ACTIVE',
-            providerActivationId: providerRef || '', providerStatus: 'ACTIVE',
-            expiresAt: new Date(Date.now() + (pkg?.validityDays || validityDays) * 86400000),
-            packageSnapshot: (packageSnapshot ?? (order.packageSnapshot as any)) ?? undefined,
-            packageName: packageName || order.packageName || '',
-            packageDataGB: packageDataGB ?? order.packageDataGB ?? 0,
-            packageValidityDays: packageValidityDays ?? order.packageValidityDays ?? validityDays,
-          },
-        }).catch(() => {})
-      }
-    }
+  const providerResult: ProviderFulfillmentResult = {
+    iccids,
+    providerFulfillId: providerRef,
+    providerStatus: 'ACTIVE',
   }
 
-  // Capture wallet
-  await captureReservedFunds(orderId, businessId || order.businessId, totalAmount || Number(order.totalAmount))
-  await prisma.eSIMPurchase.update({
-    where: { id: orderId },
-    data: { status: 'FULFILLED', providerFulfillId: providerRef || undefined, providerStatus: 'ACTIVE' },
+  const result = await completeProviderFinalization({
+    orderId, businessId, providerId, providerRef, providerName, totalAmount,
+    providerResult, userId, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays,
   })
-  await createTimelineEvent(orderId, { eventType: 'PROVIDER_FULFILLED', message: `Job completed — ${providerName}` })
 
-  // Audit
-  await prisma.auditLog.create({
-    data: { userId: userId || order.userId || '', action: 'PROVIDER_JOB_COMPLETED', entity: 'Purchase', entityId: orderId, details: JSON.stringify({ providerId, providerRef, via: 'job' }) },
-  }).catch(() => {})
-
-  return { success: true }
+  if (result.success) return { success: true }
+  if (result.recoveryRequired) return { success: false, error: result.error || 'Recovery required', recoveryRequired: true }
+  return { success: false, error: result.error || 'Finalization failed' }
 }
 
 export async function failProviderOperation(params: {
@@ -103,7 +55,21 @@ export async function failProviderOperation(params: {
   if (!order) return { success: false, error: 'Order not found' }
   if (order.status === 'FULFILLED') return { success: true, alreadyDone: true }
 
-  await releaseReservedFunds(orderId, businessId || order.businessId, totalAmount || Number(order.totalAmount))
+  // Check if provider fulfillment evidence exists — if so, do NOT release
+  if (order.providerFulfillId || order.providerReservationId) {
+    await createTimelineEvent(orderId, { eventType: 'LOCAL_FINALIZATION_FAILED', message: `Cannot fail — provider fulfilled (${order.providerFulfillId || order.providerReservationId})` })
+    return { success: false, error: 'Provider already fulfilled — manual reconciliation required', blockedByFulfillment: true }
+  }
+
+  const releaseResult = await releaseReservedFunds(orderId, businessId || order.businessId, totalAmount || Number(order.totalAmount))
+  if (!releaseResult.success && !releaseResult.blocked) {
+    return { success: false, error: releaseResult.error }
+  }
+  if (releaseResult.blocked) {
+    await createTimelineEvent(orderId, { eventType: 'LOCAL_FINALIZATION_FAILED', message: `Cannot release funds — ${releaseResult.error}` })
+    return { success: false, error: releaseResult.error, blockedByFulfillment: true }
+  }
+
   await failOrder(orderId, reason)
   await prisma.auditLog.create({
     data: { userId: userId || order.userId || '', action: 'PROVIDER_JOB_FAILED', entity: 'Purchase', entityId: orderId, details: JSON.stringify({ providerId, providerRef, reason }) },

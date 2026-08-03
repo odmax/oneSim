@@ -40,8 +40,9 @@ export async function reserveWalletFunds(orderId: string, businessId: string, am
 /**
  * Capture reserved funds (confirm the charge after provider success).
  * Creates a CAPTURE entry. Only allowed if RESERVE exists.
+ * Idempotent — returns success if already captured.
  */
-export async function captureReservedFunds(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string }> {
+export async function captureReservedFunds(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; alreadyCaptured?: boolean }> {
   try {
     const existing = await prisma.walletTransaction.findFirst({
       where: { orderId, type: 'WALLET_RESERVE' },
@@ -51,7 +52,7 @@ export async function captureReservedFunds(orderId: string, businessId: string, 
     const captured = await prisma.walletTransaction.findFirst({
       where: { orderId, type: 'WALLET_CAPTURE' },
     })
-    if (captured) return { success: true } // Already captured
+    if (captured) return { success: true, alreadyCaptured: true }
 
     await prisma.walletTransaction.create({
       data: { businessId, orderId, amount, type: 'WALLET_CAPTURE', description: `Captured ${amount} for order ${orderId}` },
@@ -65,20 +66,48 @@ export async function captureReservedFunds(orderId: string, businessId: string, 
 }
 
 /**
- * Release reserved funds (on provider failure).
+ * Release reserved funds (on provider rejection/failure).
  * Refunds the reserved amount back to wallet balance.
+ *
+ * Guards (Task 7):
+ * - Does NOT release if WALLET_CAPTURE already exists (funds already collected)
+ * - Does NOT release if WALLET_REFUND exists
+ * - Does NOT release if WALLET_RELEASE already exists (idempotent)
+ * - Does NOT release if provider fulfillment evidence exists on the order
  */
-export async function releaseReservedFunds(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string }> {
+export async function releaseReservedFunds(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; blocked?: boolean }> {
   try {
+    // Guard: already released
+    const released = await prisma.walletTransaction.findFirst({
+      where: { orderId, type: 'WALLET_RELEASE' },
+    })
+    if (released) return { success: true }
+
+    // Guard: funds already captured — cannot release
+    const captured = await prisma.walletTransaction.findFirst({
+      where: { orderId, type: 'WALLET_CAPTURE' },
+    })
+    if (captured) return { success: false, error: 'Funds already captured — cannot release', blocked: true }
+
+    // Guard: refund already processed
+    const refunded = await prisma.walletTransaction.findFirst({
+      where: { orderId, type: 'WALLET_REFUND' },
+    })
+    if (refunded) return { success: false, error: 'Funds already refunded — cannot release', blocked: true }
+
+    // Guard: provider fulfillment evidence exists — do not auto-release
+    const order = await prisma.eSIMPurchase.findUnique({
+      where: { id: orderId },
+      select: { providerFulfillId: true, providerReservationId: true },
+    })
+    if (order?.providerFulfillId || order?.providerReservationId) {
+      return { success: false, error: 'Provider fulfillment evidence exists — manual reconciliation required before release', blocked: true }
+    }
+
     const reserve = await prisma.walletTransaction.findFirst({
       where: { orderId, type: 'WALLET_RESERVE' },
     })
     if (!reserve) return { success: true } // No reservation to release
-
-    const released = await prisma.walletTransaction.findFirst({
-      where: { orderId, type: 'WALLET_RELEASE' },
-    })
-    if (released) return { success: true } // Already released
 
     await prisma.$transaction([
       prisma.business.update({

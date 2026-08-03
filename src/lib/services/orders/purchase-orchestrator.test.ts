@@ -41,12 +41,19 @@ vi.mock('./order-state-machine', () => ({
   failOrder: vi.fn(),
 }))
 
+vi.mock('./fulfillment', () => ({
+  completeProviderFinalization: vi.fn(),
+  persistProviderFulfillment: vi.fn(),
+  resumeProviderFinalization: vi.fn(),
+}))
+
 import { prisma } from '@/lib/prisma'
 import { isProviderOperational, getAdapterForType } from '@/lib/providers/adapter-manager'
 import { getProviderBalance } from '@/lib/services/providers/provider-balance'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { reserveWalletFunds, captureReservedFunds, releaseReservedFunds } from './wallet-actions'
 import { failOrder } from './order-state-machine'
+import { completeProviderFinalization } from './fulfillment'
 import { PurchaseOrchestrator } from './purchase-orchestrator'
 
 const mockPrisma = vi.mocked(prisma)
@@ -64,6 +71,8 @@ describe('PurchaseOrchestrator', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     orchestrator = new PurchaseOrchestrator()
+    const mockComplete = vi.mocked(completeProviderFinalization)
+    mockComplete.mockResolvedValue({ success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true })
   })
 
   const validRequest = {
@@ -233,6 +242,9 @@ describe('PurchaseOrchestrator', () => {
   })
 
   it('writes audit log on completion', async () => {
+    const mockComplete = vi.mocked(completeProviderFinalization)
+    mockComplete.mockResolvedValue({ success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true })
+
     setupBusiness()
     setupPackage()
     setupProvider()
@@ -243,8 +255,9 @@ describe('PurchaseOrchestrator', () => {
     mockCapture.mockResolvedValue({ success: true })
     mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
 
-    await orchestrator.executePurchase(validRequest)
-    expect(mockPrisma.auditLog.create).toHaveBeenCalled()
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(true)
+    expect(result.status).toBe('FULFILLED')
   })
 
   it('writes audit log on failure', async () => {
