@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, UsageResult, RateResult, DiagnosticInfo } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, UsageResult, RateResult, DiagnosticInfo, EsimLifecycleResult } from './connector-interface'
 import { classifyError } from './connector-interface'
 
 interface StandardConnectorConfig {
@@ -416,22 +416,22 @@ export class StandardProviderConnector implements IProviderConnector {
     return { success: true, data: { iccid, dataUsedMB: data.data_used_mb || data.dataUsedMB || 0, timestamp: data.timestamp || '' } }
   }
 
-  async suspendESIM(subscriptionId: string): Promise<ConnectorResult<void>> {
+  async suspendESIM(subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     const path = this.config.suspendPath
     if (!path) return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Suspend path not configured' } }
     const resolved = this.resolvePath(path).replace(/\{subscriptionId\}/g, subscriptionId).replace(/\{id\}/g, subscriptionId)
     const { error } = await apiFetch(resolved, { method: 'POST', headers: this.headers })
     if (error) return { success: false, error }
-    return { success: true }
+    return { success: true, data: { status: 'SUSPENDED', providerStatus: 'suspended' } }
   }
 
-  async resumeESIM(subscriptionId: string): Promise<ConnectorResult<void>> {
+  async resumeESIM(subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     const path = this.config.resumePath
     if (!path) return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Resume path not configured' } }
     const resolved = this.resolvePath(path).replace(/\{subscriptionId\}/g, subscriptionId).replace(/\{id\}/g, subscriptionId)
     const { error } = await apiFetch(resolved, { method: 'POST', headers: this.headers })
     if (error) return { success: false, error }
-    return { success: true }
+    return { success: true, data: { status: 'ACTIVE', providerStatus: 'active' } }
   }
 
   async getRates(): Promise<ConnectorResult<RateResult[]>> {

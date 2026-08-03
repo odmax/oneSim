@@ -157,9 +157,9 @@ export interface ProviderAdapter {
     rawMetadata?: Record<string, any>
   }>>
 
-  suspendESIM(subscriptionId: string): Promise<ProviderResult<void>>
+  suspendESIM(subscriptionId: string | import('./connectors/connector-interface').StatusLookupIdentifier): Promise<ProviderResult<import('./connectors/connector-interface').EsimLifecycleResult>>
 
-  resumeESIM(subscriptionId: string): Promise<ProviderResult<void>>
+  resumeESIM(subscriptionId: string | import('./connectors/connector-interface').StatusLookupIdentifier): Promise<ProviderResult<import('./connectors/connector-interface').EsimLifecycleResult>>
 
   getUsage(identifier: string | import('./connectors/connector-interface').StatusLookupIdentifier): Promise<ProviderResult<UsageResult>>
 

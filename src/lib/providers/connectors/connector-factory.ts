@@ -71,6 +71,8 @@ export function createConnector(providerId: string, name: string | undefined, co
         fieldMappings: config.fieldMappings,
         balancePath: config.config?.balancePath,
         packageDetailPath: config.config?.packageDetailPath,
+        suspendPath: config.suspendPath || undefined,
+        resumePath: config.resumePath || undefined,
         currency: config.config?.currency,
         timeoutMs: config.config?.timeoutMs,
       })

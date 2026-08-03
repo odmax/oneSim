@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
-import { refreshEsimStatus, refreshEsimUsage, topUpEsimWithWallet } from '@/lib/services/esims/esim-service'
+import { refreshEsimStatus, refreshEsimUsage, topUpEsimWithWallet, suspendEsim, resumeEsim } from '@/lib/services/esims/esim-service'
 import { prisma } from '@/lib/prisma'
 
 export async function refreshEsimStatusAction(esimId: string) {
@@ -65,6 +65,30 @@ export async function adminTopUpEsim(esimId: string, packageId: string, business
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
 
   return await topUpEsimWithWallet(esimId, businessId, userId, packageId)
+}
+
+export async function suspendEsimAction(esimId: string) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+
+  const result = await suspendEsim(esimId)
+
+  revalidatePath(`/admin/esims/${esimId}`)
+  revalidatePath('/admin/esims')
+
+  return result
+}
+
+export async function resumeEsimAction(esimId: string) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+
+  const result = await resumeEsim(esimId)
+
+  revalidatePath(`/admin/esims/${esimId}`)
+  revalidatePath('/admin/esims')
+
+  return result
 }
 
 export async function getEsimForAdmin(esimId: string) {

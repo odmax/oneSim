@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption } from './telna-endpoints'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult } from './connector-interface'
 
 interface TelnaRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
@@ -216,11 +216,11 @@ export class TelnaConnector implements IProviderConnector {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Usage not implemented for Telna connector' } }
   }
 
-  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
+  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Suspend not implemented for Telna connector' } }
   }
 
-  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
+  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Resume not implemented for Telna connector' } }
   }
 

@@ -111,6 +111,20 @@ export interface TopUpESIMResult {
   newDataRemainingMB?: number
 }
 
+/**
+ * Result of a successful provider suspend/resume call.
+ * `status` is the internal lifecycle value to persist (SUSPENDED / ACTIVE);
+ * `providerStatus` is the provider-facing value (e.g. Choice 'suspended'/'active');
+ * `message` carries the provider confirmation text (e.g. the Choice errmsg);
+ * `rawMetadata` is the sanitized response safe to persist.
+ */
+export interface EsimLifecycleResult {
+  status: 'SUSPENDED' | 'ACTIVE'
+  providerStatus: string
+  message?: string
+  rawMetadata?: Record<string, any>
+}
+
 export interface RateResult {
   country?: string
   operator?: string
@@ -208,8 +222,8 @@ export interface IProviderConnector {
   activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>>
   getStatus(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>>
   getUsage(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>>
-  suspendESIM(subscriptionId: string): Promise<ConnectorResult<void>>
-  resumeESIM(subscriptionId: string): Promise<ConnectorResult<void>>
+  suspendESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>>
+  resumeESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>>
   getRates(): Promise<ConnectorResult<RateResult[]>>
   getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>>
   topUpESIM(params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>>

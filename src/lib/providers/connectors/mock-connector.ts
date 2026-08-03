@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, EsimLifecycleResult } from './connector-interface'
 
 export class MockConnector implements IProviderConnector {
   readonly providerId: string
@@ -77,12 +77,12 @@ export class MockConnector implements IProviderConnector {
     return { success: true, data: { iccid: '89000000000000000000', dataUsedMB: 0 } }
   }
 
-  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
-    return { success: true }
+  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
+    return { success: true, data: { status: 'SUSPENDED', providerStatus: 'suspended' } }
   }
 
-  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
-    return { success: true }
+  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
+    return { success: true, data: { status: 'ACTIVE', providerStatus: 'active' } }
   }
 
   async getRates(): Promise<ConnectorResult<RateResult[]>> {

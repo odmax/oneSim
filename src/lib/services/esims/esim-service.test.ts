@@ -25,7 +25,7 @@ vi.mock('@/lib/services/orders/wallet-actions', () => ({
 const { prisma } = await import('@/lib/prisma')
 const { getAdapterForProvider } = await import('@/lib/providers/adapter-manager')
 const { createTimelineEvent } = await import('@/lib/services/orders/order-state-machine')
-const { refreshEsimStatus, refreshEsimUsage, buildChoiceStatusLookup } = await import('./esim-service')
+const { refreshEsimStatus, refreshEsimUsage, buildChoiceStatusLookup, suspendEsim, resumeEsim } = await import('./esim-service')
 
 const mockPrisma = vi.mocked(prisma)
 const mockGetAdapter = vi.mocked(getAdapterForProvider)
@@ -346,6 +346,146 @@ describe('refreshEsimUsage (Choice)', () => {
     expect(result.success).toBe(false)
     expect(result.error).toBe('eSIM has no ICCID')
     expect(getUsage).not.toHaveBeenCalled()
+  })
+})
+
+describe('suspendEsim / resumeEsim (Choice lifecycle)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue({ code: 'CHOICE' })
+    mockPrisma.eSIM.update.mockResolvedValue({} as any)
+    mockCreateTimeline.mockResolvedValue(undefined as any)
+  })
+
+  it('suspends a Choice eSIM using the iccid identifier (never a local id) and persists SUSPENDED + provider status', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ purchaseId: 'order-1' }))
+    const suspendESIM = vi.fn().mockResolvedValue({
+      success: true,
+      data: { status: 'SUSPENDED', providerStatus: 'suspended', message: 'IMSI: 310410123456789 suspended', rawMetadata: { success: true, package: { iccid: '[REDACTED]' } } },
+    })
+    mockGetAdapter.mockResolvedValue({ suspendESIM } as any)
+
+    const result = await suspendEsim('esim-1')
+
+    expect(result.success).toBe(true)
+    expect(result.status).toBe('SUSPENDED')
+    expect(result.providerStatus).toBe('suspended')
+
+    const lookup = suspendESIM.mock.calls[0][0]
+    expect(lookup).toMatchObject({ iccid: CHOICE_ICCID })
+    expect(lookup).not.toHaveProperty('id')
+    expect(lookup).not.toHaveProperty('purchaseId')
+
+    const updateData = mockPrisma.eSIM.update.mock.calls[0][0].data
+    expect(updateData).toMatchObject({
+      status: 'SUSPENDED',
+      providerStatus: 'suspended',
+      providerResponse: { success: true, package: { iccid: '[REDACTED]' } },
+    })
+    expect(updateData.lastStatusSyncAt).toBeInstanceOf(Date)
+    expect(updateData.lastSyncAt).toBeInstanceOf(Date)
+
+    expect(mockCreateTimeline).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'ESIM_SUSPENDED' }))
+  })
+
+  it('resumes a Choice eSIM and persists ACTIVE + provider status', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ purchaseId: 'order-1' }))
+    const resumeESIM = vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', providerStatus: 'active' } })
+    mockGetAdapter.mockResolvedValue({ resumeESIM } as any)
+
+    const result = await resumeEsim('esim-1')
+
+    expect(result.success).toBe(true)
+    expect(result.status).toBe('ACTIVE')
+    expect(result.providerStatus).toBe('active')
+
+    const updateData = mockPrisma.eSIM.update.mock.calls[0][0].data
+    expect(updateData).toMatchObject({ status: 'ACTIVE', providerStatus: 'active' })
+    expect(updateData).not.toHaveProperty('providerResponse')
+
+    expect(mockCreateTimeline).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'ESIM_RESUMED' }))
+  })
+
+  it('does not persist anything when the provider rejects a suspend (preserves current status)', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'ACTIVE', purchaseId: 'order-1' }))
+    const suspendESIM = vi.fn().mockResolvedValue({ success: false, error: { code: 'CHOICE_SUSPEND_REJECTED', message: 'SIM already suspended' } })
+    mockGetAdapter.mockResolvedValue({ suspendESIM } as any)
+
+    const result = await suspendEsim('esim-1')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('SIM already suspended')
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+    expect(mockCreateTimeline).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'ESIM_SUSPEND_FAILED' }))
+  })
+
+  it('forwards the raw ICCID for non-Choice providers', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue({ code: 'AIRHUB' })
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'ACTIVE' }))
+    const suspendESIM = vi.fn().mockResolvedValue({ success: true, data: { status: 'SUSPENDED', providerStatus: 'suspended' } })
+    mockGetAdapter.mockResolvedValue({ suspendESIM } as any)
+
+    const result = await suspendEsim('esim-1')
+
+    expect(result.success).toBe(true)
+    expect(suspendESIM).toHaveBeenCalledWith(CHOICE_ICCID)
+  })
+
+  it('returns an error when a non-Choice eSIM has no ICCID', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue({ code: 'AIRHUB' })
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ iccid: '' }))
+    const suspendESIM = vi.fn()
+    mockGetAdapter.mockResolvedValue({ suspendESIM } as any)
+
+    const result = await suspendEsim('esim-1')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('eSIM has no ICCID')
+    expect(suspendESIM).not.toHaveBeenCalled()
+  })
+
+  it('returns an error without calling the provider when no Choice identifier exists (never sends esim.id)', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ iccid: '', imsi: null, providerResponse: {} }))
+    const suspendESIM = vi.fn()
+    mockGetAdapter.mockResolvedValue({ suspendESIM } as any)
+
+    const result = await suspendEsim('esim-1')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('No Choice suspend identifier (ICCID/IMSI/imsi_version) available')
+    expect(suspendESIM).not.toHaveBeenCalled()
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+  })
+
+  it('returns an error when the eSIM is not found', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(null)
+
+    const result = await resumeEsim('esim-1')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('eSIM not found')
+  })
+
+  it('returns an error when no provider adapter is available', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim())
+    mockGetAdapter.mockResolvedValue(null)
+
+    const result = await suspendEsim('esim-1')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('Provider adapter unavailable')
+  })
+
+  it('falls back to a persisted IMSI identifier for Choice lifecycle', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ iccid: '', imsi: '310410123456789' }))
+    const resumeESIM = vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', providerStatus: 'active' } })
+    mockGetAdapter.mockResolvedValue({ resumeESIM } as any)
+
+    await resumeEsim('esim-1')
+
+    const lookup = resumeESIM.mock.calls[0][0]
+    expect(lookup.imsi).toBe('310410123456789')
+    expect(lookup.iccid).toBeUndefined()
   })
 })
 

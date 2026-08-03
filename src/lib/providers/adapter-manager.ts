@@ -77,12 +77,12 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
     suspendESIM: async (id) => {
       const r = await connector.suspendESIM(id)
       if (!r.success) return { success: false, error: r.error }
-      return { success: true }
+      return { success: true, data: r.data }
     },
     resumeESIM: async (id) => {
       const r = await connector.resumeESIM(id)
       if (!r.success) return { success: false, error: r.error }
-      return { success: true }
+      return { success: true, data: r.data }
     },
     getUsage: async (identifier) => {
       const r = await connector.getUsage(identifier)

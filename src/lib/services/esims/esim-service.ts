@@ -21,6 +21,13 @@ export interface RefreshStatusResult {
   error?: string
 }
 
+export interface SuspendResumeResult {
+  success: boolean
+  status?: string
+  providerStatus?: string
+  error?: string
+}
+
 /** Best-effort extraction of the Choice `imsi_version` from persisted provider metadata. */
 export function extractChoiceImsiVersion(providerResponse: any): string | number | undefined {
   if (!providerResponse || typeof providerResponse !== 'object') return undefined
@@ -206,6 +213,83 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
     success: true,
     data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: expiresAt || esim.expiresAt || undefined, status: esim.status },
   }
+}
+
+/**
+ * Shared suspend/resume flow. For Choice the identifier is resolved via
+ * `buildChoiceStatusLookup` (ICCID → IMSI → imsi_version, never a local id) and
+ * the provider is called through the adapter; for other providers the raw ICCID
+ * is forwarded. Success persists the new status + provider status + sync
+ * timestamps and sanitized metadata; failure preserves the stored status,
+ * providerStatus, and success-sync timestamps.
+ */
+async function runEsimLifecycle(action: 'SUSPEND' | 'RESUME', esimId: string): Promise<SuspendResumeResult> {
+  const esim = await prisma.eSIM.findUnique({
+    where: { id: esimId },
+    include: { purchase: { include: { package: true } } },
+  })
+  if (!esim) return { success: false, error: 'eSIM not found' }
+
+  const providerId = esim.purchase.package.providerId
+  if (!providerId) return { success: false, error: 'No linked provider' }
+
+  const adapter = await getAdapterForProvider(providerId)
+  if (!adapter) return { success: false, error: 'Provider adapter unavailable' }
+
+  const provider = await prisma.provider.findUnique({
+    where: { id: providerId },
+    select: { code: true },
+  })
+  const isChoice = provider?.code?.toUpperCase() === 'CHOICE'
+
+  let identifier: string | StatusLookupIdentifier
+  if (isChoice) {
+    identifier = buildChoiceStatusLookup(esim)
+    if (!hasChoiceIdentifier(identifier)) {
+      return { success: false, error: `No Choice ${action.toLowerCase()} identifier (ICCID/IMSI/imsi_version) available` }
+    }
+  } else {
+    if (!esim.iccid) return { success: false, error: 'eSIM has no ICCID' }
+    identifier = esim.iccid
+  }
+
+  const result = action === 'SUSPEND' ? await adapter.suspendESIM(identifier) : await adapter.resumeESIM(identifier)
+  if (!result.success) {
+    await createTimelineEvent(esim.purchaseId, {
+      eventType: action === 'SUSPEND' ? 'ESIM_SUSPEND_FAILED' : 'ESIM_RESUME_FAILED',
+      message: result.error?.message || `Provider ${action.toLowerCase()} failed`,
+    })
+    return { success: false, error: result.error?.message || `${action === 'SUSPEND' ? 'Suspend' : 'Resume'} failed` }
+  }
+
+  const desiredStatus = action === 'SUSPEND' ? 'SUSPENDED' : 'ACTIVE'
+  const providerStatus = result.data?.providerStatus || (action === 'SUSPEND' ? 'suspended' : 'active')
+
+  await prisma.eSIM.update({
+    where: { id: esimId },
+    data: {
+      status: desiredStatus,
+      providerStatus,
+      lastStatusSyncAt: new Date(),
+      lastSyncAt: new Date(),
+      ...(result.data?.rawMetadata ? { providerResponse: result.data.rawMetadata as any } : {}),
+    },
+  })
+
+  await createTimelineEvent(esim.purchaseId, {
+    eventType: action === 'SUSPEND' ? 'ESIM_SUSPENDED' : 'ESIM_RESUMED',
+    message: `eSIM ${esim.iccid ? esim.iccid.slice(-8) : esim.id} ${action === 'SUSPEND' ? 'suspended' : 'resumed'}`,
+  })
+
+  return { success: true, status: desiredStatus, providerStatus }
+}
+
+export async function suspendEsim(esimId: string): Promise<SuspendResumeResult> {
+  return runEsimLifecycle('SUSPEND', esimId)
+}
+
+export async function resumeEsim(esimId: string): Promise<SuspendResumeResult> {
+  return runEsimLifecycle('RESUME', esimId)
 }
 
 export async function topUpEsimWithWallet(esimId: string, businessId: string, userId: string, topUpPackageId: string, quantity: number = 1): Promise<{ success: boolean; topUpId?: string; error?: string }> {

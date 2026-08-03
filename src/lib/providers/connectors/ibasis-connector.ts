@@ -10,7 +10,7 @@ import { mapIbasisSubscription, mapIbasisActivationStatus } from '@/lib/provider
 import type {
   IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo,
   ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult,
-  RateResult, TopUpESIMParams, TopUpESIMResult, TokenState,
+  RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult,
 } from './connector-interface'
 
 /**
@@ -1009,11 +1009,11 @@ export class IbasisConnector implements IProviderConnector {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Usage implementation pending (Phase 2)' } }
   }
 
-  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
+  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Suspend implementation pending (Phase 2)' } }
   }
 
-  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
+  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Resume implementation pending (Phase 2)' } }
   }
 

@@ -1,5 +1,5 @@
 import { RestCatalogConnector } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, StatusResult, UsageResult, DiagnosticInfo } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, StatusResult, UsageResult, DiagnosticInfo, EsimLifecycleResult } from './connector-interface'
 
 interface HeaderTokenConfig {
   apiBaseUrl: string
@@ -155,20 +155,20 @@ export class HeaderTokenRestConnector extends RestCatalogConnector {
     }
   }
 
-  async suspendESIM(subscriptionId: string): Promise<ConnectorResult<void>> {
+  async suspendESIM(subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     const { error } = await fetchJson(this.baseUrl(`/api/v1/subscriptions/${subscriptionId}/suspend`), {
       method: 'POST', headers: this.headers,
     })
     if (error) return { success: false, error }
-    return { success: true }
+    return { success: true, data: { status: 'SUSPENDED', providerStatus: 'suspended' } }
   }
 
-  async resumeESIM(subscriptionId: string): Promise<ConnectorResult<void>> {
+  async resumeESIM(subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     const { error } = await fetchJson(this.baseUrl(`/api/v1/subscriptions/${subscriptionId}/resume`), {
       method: 'POST', headers: this.headers,
     })
     if (error) return { success: false, error }
-    return { success: true }
+    return { success: true, data: { status: 'ACTIVE', providerStatus: 'active' } }
   }
 
   async getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>> {

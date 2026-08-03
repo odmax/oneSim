@@ -14,6 +14,8 @@ function makeChoiceConfig(overrides: any = {}) {
     environment: overrides.environment ?? 'staging',
     fieldMappings: overrides.fieldMappings ?? {},
     balancePath: overrides.balancePath,
+    suspendPath: overrides.suspendPath,
+    resumePath: overrides.resumePath,
     currency: overrides.currency,
     timeoutMs: overrides.timeoutMs,
   }
@@ -97,8 +99,8 @@ describe('UrlTokenConnector', () => {
       expect(caps).toContain('STATUS')
       expect(caps).toContain('USAGE')
       expect(caps).toContain('BALANCE')
-      expect(caps).not.toContain('SUSPEND')
-      expect(caps).not.toContain('RESUME')
+      expect(caps).toContain('SUSPEND')
+      expect(caps).toContain('RESUME')
       expect(caps).not.toContain('TOP_UP')
     })
 
@@ -1199,45 +1201,342 @@ describe('UrlTokenConnector', () => {
     })
   })
 
-  describe('suspendESIM', () => {
-    it('sends POST and returns success', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') })
+  describe('suspendESIM (Choice lifecycle endpoint)', () => {
+    it('posts a single-key iccid body to the suspend_imsi endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: 'IMSI: 310410123456789 suspended' }))
       vi.stubGlobal('fetch', mockFetch)
 
-      const result = await connector.suspendESIM('sub-123')
+      const result = await connector.suspendESIM({ iccid: '89012345678901234567' })
       expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('SUSPENDED')
+      expect(result.data?.providerStatus).toBe('suspended')
+      expect(result.data?.message).toBe('IMSI: 310410123456789 suspended')
+
+      const [url, init] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/suspend_imsi/test-token-abc123')
+      expect(init.method).toBe('POST')
+      expect(init.headers.Accept).toBe('application/json')
+      expect(JSON.parse(init.body)).toEqual({ iccid: '89012345678901234567' })
 
       vi.unstubAllGlobals()
     })
 
-    it('returns error on failure', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(errorResponse(500))
+    it('prioritizes ICCID over IMSI and imsi_version in the body', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: '' }))
       vi.stubGlobal('fetch', mockFetch)
 
-      const result = await connector.suspendESIM('sub-123')
+      await connector.suspendESIM({ iccid: '89012345678901234567', imsi: '310410123456789', imsiVersion: 70 })
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body)
+      expect(body).toEqual({ iccid: '89012345678901234567' })
+
+      vi.unstubAllGlobals()
+    })
+
+    it('falls back to a numeric imsi_version body when ICCID and IMSI are absent', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: '' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.suspendESIM({ imsiVersion: 70 })
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body)
+      expect(body).toEqual({ imsi_version: 70 })
+
+      vi.unstubAllGlobals()
+    })
+
+    it('URL-encodes the token in the path', async () => {
+      const c = makeConnector({ apiToken: 'tok/&+?=xyz' })
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: '' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await c.suspendESIM({ iccid: '89012345678901234567' })
+
+      const url = mockFetch.mock.calls[0][0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/suspend_imsi/tok%2F%26%2B%3F%3Dxyz')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('uses a configured suspendPath and trims trailing slashes', async () => {
+      const c = makeConnector({ suspendPath: '/custom/suspend/' })
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: '' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await c.suspendESIM({ iccid: '89012345678901234567' })
+
+      const url = mockFetch.mock.calls[0][0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/custom/suspend/test-token-abc123')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('logs a safe lifecycle request without the token or full URL', async () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: '' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.suspendESIM({ iccid: '89012345678901234567' })
+
+      const logs = logSpy.mock.calls.map(c => c.join(' '))
+      expect(logs.some(l => l.includes('[CHOICE_LIFECYCLE_REQUEST]') && l.includes('endpoint=/account/v03_09/suspend_imsi') && l.includes('hostname=lpaasapi.psasoft.com'))).toBe(true)
+      for (const l of logs) {
+        expect(l).not.toContain('test-token-abc123')
+        expect(l).not.toContain('lpaasapi.psasoft.com:443/account')
+      }
+
+      logSpy.mockRestore()
+      vi.unstubAllGlobals()
+    })
+
+    it('fails before any HTTP call when no identifier is resolvable', async () => {
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.suspendESIM({})
+
       expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_SUSPEND_IDENTIFIER_MISSING')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_CREDENTIALS_MISSING without calling the network', async () => {
+      const c = makeConnector({ apiToken: '' })
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.suspendESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_CREDENTIALS_MISSING')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns NOT_CONFIGURED when no api base url is set', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', { apiBaseUrl: '', apiToken: 'tok' })
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.suspendESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_CONFIGURED')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_SUSPEND_REJECTED with the errmsg when success is false', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: false, errmsg: 'SIM already suspended' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.suspendESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_SUSPEND_REJECTED')
+      expect(result.error?.message).toBe('SIM already suspended')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('maps 401/403 to CHOICE_AUTH_UNAUTHORIZED', async () => {
+      for (const status of [401, 403]) {
+        const mockFetch = vi.fn().mockResolvedValue(errorResponse(status))
+        vi.stubGlobal('fetch', mockFetch)
+
+        const result = await connector.suspendESIM({ iccid: '89012345678901234567' })
+
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('CHOICE_AUTH_UNAUTHORIZED')
+
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('maps 404 to CHOICE_SUSPEND_ENDPOINT_NOT_FOUND', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(errorResponse(404))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.suspendESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_SUSPEND_ENDPOINT_NOT_FOUND')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_SUSPEND_NON_JSON for non-JSON success bodies', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => 'text/plain' }, text: () => Promise.resolve('OK') })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.suspendESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_SUSPEND_NON_JSON')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns EMPTY for empty success bodies', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => 'application/json' }, text: () => Promise.resolve('') })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.suspendESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('EMPTY')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns a network error when fetch rejects', async () => {
+      const mockFetch = vi.fn().mockImplementation(() => networkError())
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.suspendESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NETWORK_ERROR')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('sanitizes rawMetadata (sensitive values masked)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: '', package: { iccid: '89012345678901234567', imsi_version: 70 } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.suspendESIM({ iccid: '89012345678901234567' })
+
+      expect(result.data?.rawMetadata?.package?.iccid).toBe('[REDACTED]')
+      expect(result.data?.rawMetadata?.package?.imsi_version).toBe(70)
 
       vi.unstubAllGlobals()
     })
   })
 
-  describe('resumeESIM', () => {
-    it('sends POST and returns success', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('OK') })
+  describe('resumeESIM (Choice lifecycle endpoint)', () => {
+    it('posts a single-key body to the resume_imsi endpoint and returns ACTIVE', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: 'IMSI: 310410123456789 resumed' }))
       vi.stubGlobal('fetch', mockFetch)
 
-      const result = await connector.resumeESIM('sub-123')
+      const result = await connector.resumeESIM({ imsi: '310410123456789' })
+
       expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.providerStatus).toBe('active')
+      expect(result.data?.message).toBe('IMSI: 310410123456789 resumed')
+
+      const [url, init] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/resume_imsi/test-token-abc123')
+      expect(init.method).toBe('POST')
+      expect(JSON.parse(init.body)).toEqual({ imsi: '310410123456789' })
 
       vi.unstubAllGlobals()
     })
 
-    it('returns error on failure', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(errorResponse(500))
+    it('uses a configured resumePath', async () => {
+      const c = makeConnector({ resumePath: '/custom/resume' })
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: '' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await c.resumeESIM({ iccid: '89012345678901234567' })
+
+      expect(mockFetch.mock.calls[0][0]).toBe('https://lpaasapi.psasoft.com:443/custom/resume/test-token-abc123')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('fails with CHOICE_RESUME_IDENTIFIER_MISSING when nothing is resolvable', async () => {
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.resumeESIM({})
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_RESUME_IDENTIFIER_MISSING')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('maps 404 to CHOICE_RESUME_ENDPOINT_NOT_FOUND', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(errorResponse(404))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.resumeESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_RESUME_ENDPOINT_NOT_FOUND')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('maps success:false to CHOICE_RESUME_REJECTED', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: false, errmsg: 'Cannot resume' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.resumeESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_RESUME_REJECTED')
+      expect(result.error?.message).toBe('Cannot resume')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_RESUME_NON_JSON for non-JSON success bodies', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => 'text/plain' }, text: () => Promise.resolve('OK') })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.resumeESIM({ iccid: '89012345678901234567' })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_RESUME_NON_JSON')
+
+      vi.unstubAllGlobals()
+    })
+  })
+
+  describe('suspendESIM/resumeESIM (legacy template route for string callers)', () => {
+    it('posts to the template suspend route with a string identifier', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => 'text/plain' }, text: () => Promise.resolve('OK') })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.suspendESIM('sub-123')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('SUSPENDED')
+      expect(mockFetch.mock.calls[0][0]).toBe('https://lpaasapi.psasoft.com:443/template/v03_09/suspend/test-token-abc123/sub-123')
+      expect(mockFetch.mock.calls[0][1].method).toBe('POST')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('posts to the template resume route with a string identifier', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => 'text/plain' }, text: () => Promise.resolve('OK') })
       vi.stubGlobal('fetch', mockFetch)
 
       const result = await connector.resumeESIM('sub-123')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(mockFetch.mock.calls[0][0]).toBe('https://lpaasapi.psasoft.com:443/template/v03_09/resume/test-token-abc123/sub-123')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns the HTTP error for string callers when the request fails', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(errorResponse(500))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.suspendESIM('sub-123')
+
       expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('HTTP_500')
 
       vi.unstubAllGlobals()
     })

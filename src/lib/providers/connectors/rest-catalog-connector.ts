@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState, EsimLifecycleResult } from './connector-interface'
 import { classifyError } from './connector-interface'
 
 export interface RestCatalogConfig {
@@ -336,11 +336,11 @@ export class RestCatalogConnector implements IProviderConnector {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Usage not supported' } }
   }
 
-  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
+  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Suspend not supported' } }
   }
 
-  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
+  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Resume not supported' } }
   }
 

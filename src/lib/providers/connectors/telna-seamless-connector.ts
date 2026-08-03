@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult } from './connector-interface'
 import { SEAMLESS_ENDPOINTS, buildSeamlessUrl, type SeamlessEndpoint } from './telna-seamless-endpoints'
 import type { SeamlessProductOffering, SeamlessOrder, SeamlessSubscription, SeamlessQRCode, SeamlessUsage, SeamlessOSApiResponse, SeamlessOrderState, SeamlessSubscriptionState } from './telna-seamless-types'
 
@@ -544,11 +544,11 @@ export class TelnaSeamlessConnector implements IProviderConnector {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Usage implementation pending (Phase P2D-2)' } }
   }
 
-  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
+  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Suspend implementation pending (Phase P2D-2)' } }
   }
 
-  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<void>> {
+  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Resume implementation pending (Phase P2D-2)' } }
   }
 

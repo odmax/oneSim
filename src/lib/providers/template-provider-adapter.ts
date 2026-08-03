@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import type { ProviderAdapter, ProviderPlan, ProviderResult } from './adapter-types'
-import type { IProviderConnector, ConnectorPlan } from './connectors/connector-interface'
+import type { IProviderConnector, ConnectorPlan, EsimLifecycleResult } from './connectors/connector-interface'
 
 interface EndpointConfig {
   method: string
@@ -896,11 +896,11 @@ private async callCapabilityWithDetail(capKey: string, body?: any): Promise<{ da
     }
   }
 
-  async suspendESIM(_subscriptionId: string): Promise<ProviderResult<void>> {
+  async suspendESIM(_subscriptionId: string): Promise<ProviderResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Suspend not supported by template provider' } }
   }
 
-  async resumeESIM(_subscriptionId: string): Promise<ProviderResult<void>> {
+  async resumeESIM(_subscriptionId: string): Promise<ProviderResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Resume not supported by template provider' } }
   }
 

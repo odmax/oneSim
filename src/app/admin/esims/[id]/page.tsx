@@ -3,10 +3,11 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { syncEsimStatus, syncEsimUsage, getQrCode, suspendEsim, resumeEsim } from '@/lib/actions/esim-sync'
-import { refreshEsimStatusAction, refreshEsimUsageAction } from '@/lib/actions/esim-lifecycle'
+import { syncEsimStatus, syncEsimUsage, getQrCode } from '@/lib/actions/esim-sync'
+import { refreshEsimStatusAction, refreshEsimUsageAction, suspendEsimAction, resumeEsimAction } from '@/lib/actions/esim-lifecycle'
 import { getPackageDisplayName, getPackageDataGB, getPackageValidityDays } from '@/lib/packages/snapshot-utils'
 import { UsageBar, UsageSummary } from '@/components/admin/esims/UsageBar'
+import { EsimLifecycleActions } from '@/components/admin/esims/EsimLifecycleActions'
 
 async function loadPCRProfile(iccid: string, providerId: string) {
   try {
@@ -56,6 +57,7 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
     : null
 
   const isTelnaProvider = provider?.adapterStrategy === 'TELNA' || provider?.code === 'TELNA'
+  const isChoiceProvider = provider?.code?.toUpperCase() === 'CHOICE'
   const pcrProfile = isTelnaProvider && esim.iccid && provider
     ? await loadPCRProfile(esim.iccid, provider.id)
     : null
@@ -151,12 +153,12 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             <form action={async () => { 'use server'; const r = await getQrCode(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=QR+code+retrieved`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}>
               <button type="submit" className="rounded-lg border border-purple-300 px-4 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50">Get QR Code</button>
             </form>
-            <form action={async () => { 'use server'; const r = await suspendEsim(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=eSIM+suspended`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}>
-              <button type="submit" className="rounded-lg border border-orange-300 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-50">Suspend eSIM</button>
-            </form>
-            <form action={async () => { 'use server'; const r = await resumeEsim(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=eSIM+resumed`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}>
-              <button type="submit" className="rounded-lg border border-green-300 px-4 py-2 text-sm font-medium text-green-700 hover:bg-green-50">Resume eSIM</button>
-            </form>
+            <EsimLifecycleActions
+              status={esim.status}
+              isChoiceProvider={isChoiceProvider}
+              suspendAction={async () => { 'use server'; const r = await suspendEsimAction(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=eSIM+suspended`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}
+              resumeAction={async () => { 'use server'; const r = await resumeEsimAction(esim.id); const err = String(r.error || 'Failed'); if (r.success) redirect(`/admin/esims/${esim.id}?success=eSIM+resumed`); else redirect(`/admin/esims/${esim.id}?error=${encodeURIComponent(err)}`) }}
+            />
             {esim.iccid && ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && (
               <Link href={`/admin/esims/${esim.id}/top-up`} className="inline-block rounded-lg border border-emerald-300 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50">
                 Top Up

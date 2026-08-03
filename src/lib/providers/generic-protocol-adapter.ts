@@ -7,6 +7,7 @@ import type {
   CredentialField, ProviderCapability, AuthResult,
   WebhookPayload,
 } from './adapter-types'
+import type { EsimLifecycleResult } from './connectors/connector-interface'
 
 interface ProviderRecord {
   id: string
@@ -389,11 +390,11 @@ export class GenericProtocolAdapter implements ProviderAdapter {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Not implemented for generic adapter' } }
   }
 
-  async suspendESIM(_subscriptionId: string): Promise<ProviderResult<void>> {
+  async suspendESIM(_subscriptionId: string): Promise<ProviderResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Suspend not supported by this provider' } }
   }
 
-  async resumeESIM(_subscriptionId: string): Promise<ProviderResult<void>> {
+  async resumeESIM(_subscriptionId: string): Promise<ProviderResult<EsimLifecycleResult>> {
     return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Resume not supported by this provider' } }
   }
 

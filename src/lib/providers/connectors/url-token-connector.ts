@@ -1,5 +1,5 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, UsageResult } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, UsageResult, EsimLifecycleResult } from './connector-interface'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
 interface UrlTokenConfig extends RestCatalogConfig {
@@ -7,6 +7,10 @@ interface UrlTokenConfig extends RestCatalogConfig {
   balancePath?: string
   /** Choice package_detail path override. Default: /account/v03_09/package_detail */
   packageDetailPath?: string
+  /** Choice suspend_imsi path override. Default: /account/v03_09/suspend_imsi */
+  suspendPath?: string
+  /** Choice resume_imsi path override. Default: /account/v03_09/resume_imsi */
+  resumePath?: string
   currency?: string
   timeoutMs?: number
 }
@@ -938,20 +942,122 @@ export class UrlTokenConnector extends RestCatalogConnector {
     }
   }
 
-  async suspendESIM(subscriptionId: string): Promise<ConnectorResult<void>> {
-    const token = this.config.apiToken || ''
-    const path = `/template/v03_09/suspend/${token}/${subscriptionId}`
-    const { error } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers })
-    if (error) return { success: false, error }
-    return { success: true }
+  /**
+   * Suspend a Choice eSIM via `POST {baseUrl}/account/v03_09/suspend_imsi/{token}`
+   * with exactly one identifier in the JSON body (iccid / imsi / imsi_version).
+   * Object identifiers use the shared Choice resolution; a raw string keeps the
+   * legacy template route for non-Choice URL_TOKEN providers.
+   */
+  async suspendESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>> {
+    if (subscriptionId && typeof subscriptionId === 'object') {
+      return this.performChoiceLifecycleAction('SUSPEND', subscriptionId)
+    }
+    return this.performLegacyUrlTokenLifecycle('SUSPEND', String(subscriptionId || ''))
   }
 
-  async resumeESIM(subscriptionId: string): Promise<ConnectorResult<void>> {
+  /**
+   * Resume a Choice eSIM via `POST {baseUrl}/account/v03_09/resume_imsi/{token}`
+   * with exactly one identifier in the JSON body (iccid / imsi / imsi_version).
+   * Object identifiers use the shared Choice resolution; a raw string keeps the
+   * legacy template route for non-Choice URL_TOKEN providers.
+   */
+  async resumeESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>> {
+    if (subscriptionId && typeof subscriptionId === 'object') {
+      return this.performChoiceLifecycleAction('RESUME', subscriptionId)
+    }
+    return this.performLegacyUrlTokenLifecycle('RESUME', String(subscriptionId || ''))
+  }
+
+  /**
+   * Choice suspend/resume against the account lifecycle endpoints. Token is
+   * path-based and URL-encoded; never logged in full. Error codes are
+   * parameterized so suspend and resume surface their own
+   * (CHOICE_SUSPEND_* / CHOICE_RESUME_*).
+   */
+  private async performChoiceLifecycleAction(
+    action: 'SUSPEND' | 'RESUME',
+    lookup: StatusLookupIdentifier,
+  ): Promise<ConnectorResult<EsimLifecycleResult>> {
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'API base URL not configured' } }
     const token = this.config.apiToken || ''
-    const path = `/template/v03_09/resume/${token}/${subscriptionId}`
+    if (!token) return { success: false, error: { code: 'CHOICE_CREDENTIALS_MISSING', message: 'No Choice API token configured' } }
+
+    const resolved = resolveChoiceStatusIdentifier(lookup)
+    if (!resolved) {
+      return {
+        success: false,
+        error: { code: `CHOICE_${action}_IDENTIFIER_MISSING`, message: `No Choice ${action.toLowerCase()} identifier (ICCID/IMSI/imsi_version) provided` },
+      }
+    }
+
+    const path = (action === 'SUSPEND'
+      ? (this.config.suspendPath || '/account/v03_09/suspend_imsi')
+      : (this.config.resumePath || '/account/v03_09/resume_imsi')).replace(/\/$/, '')
+    const url = `${this.baseUrl(`${path}/${encodeURIComponent(token)}`)}`
+    const host = urlHostname(url)
+
+    console.log(`[CHOICE_LIFECYCLE_REQUEST] providerCode=CHOICE action=${action} hostname=${host} endpoint=${path} identifier=${resolved.key} identifierPresent=true`)
+
+    const start = Date.now()
+    const { text, error, status } = await fetchText(url, {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+      body: JSON.stringify({ [resolved.key]: resolved.value }),
+      timeoutMs: this.config.timeoutMs,
+    })
+    const durationMs = Date.now() - start
+
+    if (error) {
+      let code = error.code
+      let message = error.message
+      if (status === 401 || status === 403) {
+        code = 'CHOICE_AUTH_UNAUTHORIZED'
+        message = 'Choice lifecycle endpoint returned unauthorized'
+      }
+      if (status === 404) {
+        code = `CHOICE_${action}_ENDPOINT_NOT_FOUND`
+        message = `Choice ${action.toLowerCase()} endpoint not found (404)`
+      }
+      console.log(`[CHOICE_LIFECYCLE_RESULT] providerCode=CHOICE action=${action} success=false error=${code} httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+      return { success: false, error: { code, message } }
+    }
+    if (!text) return { success: false, error: { code: 'EMPTY', message: `Empty Choice ${action.toLowerCase()} response` } }
+
+    let json: any
+    try {
+      json = JSON.parse(text)
+    } catch {
+      console.log(`[CHOICE_LIFECYCLE_RESULT] providerCode=CHOICE action=${action} success=false error=CHOICE_${action}_NON_JSON httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+      return { success: false, error: { code: `CHOICE_${action}_NON_JSON`, message: `Choice ${action.toLowerCase()} response is not valid JSON` } }
+    }
+
+    const errmsg = String(json.errmsg || json.message || json.error_message || '')
+    if (json.success === false) {
+      const message = errmsg || `Choice ${action.toLowerCase()} was rejected`
+      console.log(`[CHOICE_LIFECYCLE_RESULT] providerCode=CHOICE action=${action} success=false error=CHOICE_${action}_REJECTED messagePresent=${!!errmsg} httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+      return { success: false, error: { code: `CHOICE_${action}_REJECTED`, message } }
+    }
+
+    console.log(`[CHOICE_LIFECYCLE_RESULT] providerCode=CHOICE action=${action} success=true messagePresent=${!!errmsg} httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+
+    return {
+      success: true,
+      data: {
+        status: action === 'SUSPEND' ? 'SUSPENDED' : 'ACTIVE',
+        providerStatus: action === 'SUSPEND' ? 'suspended' : 'active',
+        ...(errmsg ? { message: errmsg } : {}),
+        rawMetadata: sanitizeChoiceStatusMetadata(json),
+      },
+    }
+  }
+
+  /** Legacy template-route suspend/resume kept for non-Choice URL_TOKEN providers that pass a string identifier. */
+  private async performLegacyUrlTokenLifecycle(action: 'SUSPEND' | 'RESUME', subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
+    const token = this.config.apiToken || ''
+    const path = `/template/v03_09/${action.toLowerCase()}/${token}/${subscriptionId}`
     const { error } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers })
     if (error) return { success: false, error }
-    return { success: true }
+    return { success: true, data: { status: action === 'SUSPEND' ? 'SUSPENDED' : 'ACTIVE', providerStatus: action === 'SUSPEND' ? 'suspended' : 'active' } }
   }
 
   async topUpESIM(params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {

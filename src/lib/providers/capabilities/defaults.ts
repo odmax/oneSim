@@ -12,6 +12,8 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.PURCHASE,
     ProviderCapability.STATUS,
     ProviderCapability.USAGE,
+    ProviderCapability.SUSPEND,
+    ProviderCapability.RESUME,
     ProviderCapability.BALANCE,
   ],
 
