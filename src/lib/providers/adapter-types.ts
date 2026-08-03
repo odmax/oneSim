@@ -42,6 +42,18 @@ export interface UsageResult {
   iccid: string
   dataUsedMB: number
   timestamp?: string
+  /** Total allowance in MB (normalized). Additive — non-Choice providers may omit it. */
+  dataTotalMB?: number
+  /** Remaining allowance in MB (normalized). */
+  dataRemainingMB?: number
+  /** Percentage of the allowance used, clamped 0–100. */
+  percentageUsed?: number
+  /** Provider-reported expiry as an ISO 8601 UTC string. */
+  expiresAt?: string
+  /** Supplemental normalized status. Never used to downgrade a meaningful stored status. */
+  status?: string
+  /** Sanitized provider metadata safe to persist. */
+  rawMetadata?: Record<string, any>
 }
 
 export interface RateResult {
@@ -149,7 +161,7 @@ export interface ProviderAdapter {
 
   resumeESIM(subscriptionId: string): Promise<ProviderResult<void>>
 
-  getUsage(iccid: string): Promise<ProviderResult<UsageResult>>
+  getUsage(identifier: string | import('./connectors/connector-interface').StatusLookupIdentifier): Promise<ProviderResult<UsageResult>>
 
   getRates(): Promise<ProviderResult<RateResult[]>>
 

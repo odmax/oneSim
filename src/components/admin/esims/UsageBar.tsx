@@ -1,15 +1,47 @@
 'use client'
 
+export interface UsageMetrics {
+  hasSnapshot: boolean
+  used: number
+  total: number
+  remaining: number
+  percentage: number
+}
+
+/**
+ * Derive display metrics for the usage contract. A snapshot exists only when a
+ * real total or remaining allowance was recorded; otherwise the UI must show
+ * "Usage unavailable" instead of a misleading 0.00 GB. Valid zero usage with a
+ * real total stays a valid snapshot.
+ */
+export function deriveUsageMetrics(dataUsedMB?: number | null, dataTotalMB?: number | null, dataRemainingMB?: number | null): UsageMetrics {
+  const hasSnapshot = dataTotalMB != null || dataRemainingMB != null
+  if (!hasSnapshot) return { hasSnapshot: false, used: 0, total: 0, remaining: 0, percentage: 0 }
+  const used = dataUsedMB ?? 0
+  const total = dataTotalMB ?? (dataRemainingMB != null ? used + dataRemainingMB : 0)
+  const remaining = Math.max(0, dataRemainingMB ?? (total > 0 ? total - used : 0))
+  const percentage = total > 0 ? Math.min(100, Math.max(0, Math.round((used / total) * 100))) : 0
+  return { hasSnapshot: true, used, total, remaining, percentage }
+}
+
 export function UsageBar({ dataUsedMB, dataTotalMB, dataRemainingMB, label }: {
   dataUsedMB?: number | null
   dataTotalMB?: number | null
   dataRemainingMB?: number | null
   label?: string
 }) {
-  const used = dataUsedMB || 0
-  const total = dataTotalMB || dataRemainingMB ? (used + (dataRemainingMB || 0)) : 0
-  const remaining = dataRemainingMB ?? (total > 0 ? total - used : 0)
-  const percentage = total > 0 ? Math.round((used / total) * 100) : 0
+  const metrics = deriveUsageMetrics(dataUsedMB, dataTotalMB, dataRemainingMB)
+
+  if (!metrics.hasSnapshot) {
+    return (
+      <div className="space-y-1">
+        {label && <p className="text-xs font-medium text-gray-500">{label}</p>}
+        <p className="text-sm text-gray-400">Usage unavailable</p>
+      </div>
+    )
+  }
+
+  const { used, total, remaining, percentage } = metrics
   const usageGB = (used / 1024).toFixed(2)
   const totalGB = (total / 1024).toFixed(2)
   const remainingGB = (remaining / 1024).toFixed(2)
@@ -45,10 +77,10 @@ export function UsageSummary({ dataUsedMB, dataTotalMB, dataRemainingMB, lastUsa
   expiresAt?: Date | null
   status?: string | null
 }) {
-  const used = dataUsedMB || 0
-  const total = dataTotalMB || 0
-  const remaining = dataRemainingMB ?? (total > 0 ? total - used : 0)
-  const percentage = total > 0 ? Math.round((used / total) * 100) : 0
+  const metrics = deriveUsageMetrics(dataUsedMB, dataTotalMB, dataRemainingMB)
+  const used = metrics.used
+  const total = metrics.total
+  const remaining = metrics.remaining
 
   const isExpired = status === 'EXPIRED'
   const expiredSoon = expiresAt && !isExpired && new Date(expiresAt).getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000
@@ -57,22 +89,26 @@ export function UsageSummary({ dataUsedMB, dataTotalMB, dataRemainingMB, lastUsa
     <div className="space-y-3">
       <UsageBar dataUsedMB={dataUsedMB} dataTotalMB={dataTotalMB} dataRemainingMB={dataRemainingMB} />
       <dl className="space-y-1.5 text-xs">
-        <div className="flex justify-between">
-          <dt className="text-gray-500">Data Used</dt>
-          <dd className="font-medium text-gray-900">{(used / 1024).toFixed(2)} GB</dd>
-        </div>
-        {total > 0 && (
-          <div className="flex justify-between">
-            <dt className="text-gray-500">Total Data</dt>
-            <dd className="font-medium text-gray-900">{(total / 1024).toFixed(2)} GB</dd>
-          </div>
+        {metrics.hasSnapshot && (
+          <>
+            <div className="flex justify-between">
+              <dt className="text-gray-500">Data Used</dt>
+              <dd className="font-medium text-gray-900">{(used / 1024).toFixed(2)} GB</dd>
+            </div>
+            {total > 0 && (
+              <div className="flex justify-between">
+                <dt className="text-gray-500">Total Data</dt>
+                <dd className="font-medium text-gray-900">{(total / 1024).toFixed(2)} GB</dd>
+              </div>
+            )}
+            <div className="flex justify-between">
+              <dt className="text-gray-500">Remaining</dt>
+              <dd className={`font-medium ${remaining <= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                {Math.max(0, remaining / 1024).toFixed(2)} GB
+              </dd>
+            </div>
+          </>
         )}
-        <div className="flex justify-between">
-          <dt className="text-gray-500">Remaining</dt>
-          <dd className={`font-medium ${remaining <= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-            {Math.max(0, remaining / 1024).toFixed(2)} GB
-          </dd>
-        </div>
         {expiresAt && (
           <div className="flex justify-between">
             <dt className="text-gray-500">Expires</dt>

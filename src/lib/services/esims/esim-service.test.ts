@@ -4,6 +4,7 @@ vi.mock('@/lib/prisma', () => ({
   prisma: {
     eSIM: { findUnique: vi.fn(), update: vi.fn() },
     provider: { findUnique: vi.fn() },
+    usageRecord: { create: vi.fn() },
   },
 }))
 
@@ -24,7 +25,7 @@ vi.mock('@/lib/services/orders/wallet-actions', () => ({
 const { prisma } = await import('@/lib/prisma')
 const { getAdapterForProvider } = await import('@/lib/providers/adapter-manager')
 const { createTimelineEvent } = await import('@/lib/services/orders/order-state-machine')
-const { refreshEsimStatus, buildChoiceStatusLookup } = await import('./esim-service')
+const { refreshEsimStatus, refreshEsimUsage, buildChoiceStatusLookup } = await import('./esim-service')
 
 const mockPrisma = vi.mocked(prisma)
 const mockGetAdapter = vi.mocked(getAdapterForProvider)
@@ -190,6 +191,161 @@ describe('refreshEsimStatus (Choice)', () => {
 
     await refreshEsimStatus('esim-1')
     expect(getActivationStatus).toHaveBeenCalledWith('esim-1')
+  })
+})
+
+describe('refreshEsimUsage (Choice)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue({ code: 'CHOICE' })
+    mockPrisma.eSIM.update.mockResolvedValue({} as any)
+    mockPrisma.usageRecord.create.mockResolvedValue({} as any)
+    mockCreateTimeline.mockResolvedValue(undefined as any)
+  })
+
+  it('uses the Choice iccid identifier (never a local id) and persists usage + expiry + sanitized providerResponse', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim())
+    const getUsage = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        iccid: CHOICE_ICCID,
+        dataUsedMB: 512,
+        dataTotalMB: 1024,
+        dataRemainingMB: 512,
+        percentageUsed: 50,
+        expiresAt: '2026-08-31T00:00:00.000Z',
+        status: 'ACTIVE',
+        rawMetadata: { success: true, package: { iccid: '[REDACTED]', imsi_version: 70, status: 'active' } },
+      },
+    })
+    mockGetAdapter.mockResolvedValue({ getUsage } as any)
+
+    const result = await refreshEsimUsage('esim-1')
+    expect(result.success).toBe(true)
+    expect(result.data?.dataUsedMB).toBe(512)
+    expect(result.data?.dataTotalMB).toBe(1024)
+    expect(result.data?.expiresAt?.toISOString()).toBe('2026-08-31T00:00:00.000Z')
+
+    const lookup = getUsage.mock.calls[0][0]
+    expect(lookup).toMatchObject({ iccid: CHOICE_ICCID, currentStatus: 'PENDING_ACTIVATION' })
+    expect(lookup).not.toHaveProperty('id')
+    expect(lookup).not.toHaveProperty('purchaseId')
+
+    const createData = mockPrisma.usageRecord.create.mock.calls[0][0].data
+    expect(createData).toMatchObject({ esimId: 'esim-1', dataUsedMB: 512, dataTotalMB: 1024, dataRemainingMB: 512 })
+    expect(createData.rawData).toEqual({ success: true, package: { iccid: '[REDACTED]', imsi_version: 70, status: 'active' } })
+
+    const updateData = mockPrisma.eSIM.update.mock.calls[0][0].data
+    expect(updateData).toMatchObject({
+      dataUsedMB: 512,
+      dataTotalMB: 1024,
+      dataRemainingMB: 512,
+      providerResponse: { success: true, package: { iccid: '[REDACTED]', imsi_version: 70, status: 'active' } },
+    })
+    expect(updateData.expiresAt).toBeInstanceOf(Date)
+    expect(updateData.lastUsageSyncAt).toBeInstanceOf(Date)
+    expect(updateData.lastSyncAt).toBeInstanceOf(Date)
+  })
+
+  it('returns normalized fractional MB but rounds only for Int DB persistence', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim())
+    const getUsage = vi.fn().mockResolvedValue({
+      success: true,
+      data: { iccid: CHOICE_ICCID, dataUsedMB: 512.5, dataTotalMB: 1024.25, dataRemainingMB: 511.75 },
+    })
+    mockGetAdapter.mockResolvedValue({ getUsage } as any)
+
+    const result = await refreshEsimUsage('esim-1')
+    expect(result.data?.dataUsedMB).toBe(512.5)
+    expect(result.data?.dataTotalMB).toBe(1024.25)
+    expect(result.data?.dataRemainingMB).toBe(511.75)
+
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data.dataUsedMB).toBe(513)
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data.dataTotalMB).toBe(1024)
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data.dataRemainingMB).toBe(512)
+  })
+
+  it('falls back to the persisted IMSI when no ICCID is available', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ iccid: '', imsi: '310410123456789' }))
+    const getUsage = vi.fn().mockResolvedValue({ success: true, data: { iccid: '', dataUsedMB: 0, dataTotalMB: 1024 } })
+    mockGetAdapter.mockResolvedValue({ getUsage } as any)
+
+    await refreshEsimUsage('esim-1')
+    const lookup = getUsage.mock.calls[0][0]
+    expect(lookup.imsi).toBe('310410123456789')
+    expect(lookup.iccid).toBeUndefined()
+  })
+
+  it('falls back to Choice imsi_version read from providerResponse', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ iccid: '', imsi: null, providerResponse: { package: { imsi_version: 70 } } }))
+    const getUsage = vi.fn().mockResolvedValue({ success: true, data: { iccid: '', dataUsedMB: 0, dataTotalMB: 1024 } })
+    mockGetAdapter.mockResolvedValue({ getUsage } as any)
+
+    await refreshEsimUsage('esim-1')
+    const lookup = getUsage.mock.calls[0][0]
+    expect(lookup.imsiVersion).toBe(70)
+  })
+
+  it('returns an error without calling the provider when no Choice identifier exists (never sends esim.id)', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ iccid: '', imsi: null, providerResponse: {}, providerActivationId: 'order-1' }))
+    const getUsage = vi.fn()
+    mockGetAdapter.mockResolvedValue({ getUsage } as any)
+
+    const result = await refreshEsimUsage('esim-1')
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('No Choice usage identifier (ICCID/IMSI/imsi_version) available')
+    expect(getUsage).not.toHaveBeenCalled()
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+    expect(mockPrisma.usageRecord.create).not.toHaveBeenCalled()
+  })
+
+  it('preserves the last valid usage snapshot and status on provider failure', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'ACTIVE' }))
+    const getUsage = vi.fn().mockResolvedValue({ success: false, error: { code: 'CHOICE_USAGE_REJECTED', message: 'Bundle is expired' } })
+    mockGetAdapter.mockResolvedValue({ getUsage } as any)
+
+    const result = await refreshEsimUsage('esim-1')
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('Bundle is expired')
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+    expect(mockPrisma.usageRecord.create).not.toHaveBeenCalled()
+  })
+
+  it('never overwrites the stored status from supplemental usage data', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'ACTIVE' }))
+    const getUsage = vi.fn().mockResolvedValue({
+      success: true,
+      data: { iccid: CHOICE_ICCID, dataUsedMB: 0, dataTotalMB: 1024, status: 'EXPIRED' },
+    })
+    mockGetAdapter.mockResolvedValue({ getUsage } as any)
+
+    const result = await refreshEsimUsage('esim-1')
+    expect(result.data?.status).toBe('ACTIVE')
+    const updateData = mockPrisma.eSIM.update.mock.calls[0][0].data
+    expect(updateData).not.toHaveProperty('status')
+    expect(updateData).not.toHaveProperty('providerStatus')
+  })
+
+  it('keeps legacy identifier behavior for non-Choice providers', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue({ code: 'AIRHUB' })
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ iccid: CHOICE_ICCID }))
+    const getUsage = vi.fn().mockResolvedValue({ success: true, data: { iccid: CHOICE_ICCID, dataUsedMB: 10 } })
+    mockGetAdapter.mockResolvedValue({ getUsage } as any)
+
+    await refreshEsimUsage('esim-1')
+    expect(getUsage).toHaveBeenCalledWith(CHOICE_ICCID)
+  })
+
+  it('returns an error when a non-Choice eSIM has no ICCID', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue({ code: 'AIRHUB' })
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ iccid: '' }))
+    const getUsage = vi.fn()
+    mockGetAdapter.mockResolvedValue({ getUsage } as any)
+
+    const result = await refreshEsimUsage('esim-1')
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('eSIM has no ICCID')
+    expect(getUsage).not.toHaveBeenCalled()
   })
 })
 

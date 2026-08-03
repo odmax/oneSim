@@ -84,8 +84,8 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
       if (!r.success) return { success: false, error: r.error }
       return { success: true }
     },
-    getUsage: async (iccid) => {
-      const r = await connector.getUsage(iccid)
+    getUsage: async (identifier) => {
+      const r = await connector.getUsage(identifier)
       if (!r.success) return { success: false, error: r.error }
       return { success: true, data: r.data }
     },

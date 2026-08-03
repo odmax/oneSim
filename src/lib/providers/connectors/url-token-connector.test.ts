@@ -4,6 +4,7 @@ import { resolveConnectorType, createConnector } from './connector-factory'
 import { DEFAULT_PROVIDER_CAPABILITIES } from '../capabilities/defaults'
 
 import { UrlTokenConnector } from './url-token-connector'
+import { convertChoiceUsageToMB, parseChoiceUtcTimestamp, selectChoiceUsageRateGroups, normalizeChoiceUsage } from './url-token-connector'
 
 function makeChoiceConfig(overrides: any = {}) {
   return {
@@ -94,7 +95,11 @@ describe('UrlTokenConnector', () => {
       expect(caps).toContain('CATALOG_SYNC')
       expect(caps).toContain('PURCHASE')
       expect(caps).toContain('STATUS')
+      expect(caps).toContain('USAGE')
       expect(caps).toContain('BALANCE')
+      expect(caps).not.toContain('SUSPEND')
+      expect(caps).not.toContain('RESUME')
+      expect(caps).not.toContain('TOP_UP')
     })
 
     it('plumbs balancePath, currency, and timeoutMs from provider config into the connector', async () => {
@@ -773,6 +778,424 @@ describe('UrlTokenConnector', () => {
       expect(result.error?.code).toBe('HTTP_404')
 
       vi.unstubAllGlobals()
+    })
+  })
+
+  describe('getUsage (Choice package_detail rate groups)', () => {
+    const SAMPLE_PACKAGE = {
+      iccid: '89012345678901234567',
+      status: 'active',
+      package_status: 'New',
+      rate_group_allow_days: 30,
+      rate_group_occurrences: 1,
+      rate_groups: [
+        {
+          rate_group_id: '1',
+          rate_group_allowance: 1,
+          rate_group_allow_qtyp: 'GB',
+          rate_group_usage: 0.5,
+          rate_group_total_qty: 1,
+          rate_group_starttime: '2026-08-01 00:00:00.000',
+          rate_group_expire: '2026-08-31 00:00:00.000',
+          rate_group_days_used: 1,
+        },
+      ],
+    }
+
+    it('calls the exact Choice package_detail endpoint with an iccid query', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: SAMPLE_PACKAGE }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      const [url, init] = mockFetch.mock.calls[0]
+      expect(init.method).toBe('GET')
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/package_detail/test-token-abc123?iccid=89012345678901234567')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('prioritizes ICCID over IMSI and imsi_version', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: SAMPLE_PACKAGE }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getUsage({ iccid: '89012345678901234567', imsi: '310410123456789', imsiVersion: 70 })
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toContain('?iccid=89012345678901234567')
+      expect(url).not.toContain('imsi=')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('falls back to IMSI when no ICCID is available', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: SAMPLE_PACKAGE }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getUsage({ imsi: '310410123456789', imsiVersion: 70 })
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/package_detail/test-token-abc123?imsi=310410123456789')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('falls back to imsi_version when neither ICCID nor IMSI is available', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: SAMPLE_PACKAGE }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getUsage({ imsiVersion: 70 })
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/package_detail/test-token-abc123?imsi_version=70')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('rejects before HTTP when no Choice identifier is present', async () => {
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({})
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_USAGE_IDENTIFIER_MISSING')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('rejects a local-style identifier object before HTTP (never sends a local DB id)', async () => {
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ id: 'esim-cuid-123' } as any)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_USAGE_IDENTIFIER_MISSING')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('rejects a raw string identifier before HTTP (never sends a local DB id)', async () => {
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage('esim-cuid-123')
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_SUPPORTED')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('normalizes a single 1GB row with 0.5GB usage (top-level package)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, errmsg: '', package: SAMPLE_PACKAGE }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      expect(result.data).toMatchObject({
+        iccid: '89012345678901234567',
+        dataUsedMB: 512,
+        dataTotalMB: 1024,
+        dataRemainingMB: 512,
+        percentageUsed: 50,
+        status: 'ACTIVE',
+      })
+      expect(result.data?.expiresAt).toBe('2026-08-31T00:00:00.000Z')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('tolerates data.package as a nested variant', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, data: { package: SAMPLE_PACKAGE } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      expect(result.data?.dataTotalMB).toBe(1024)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('treats zero usage as valid with a real total', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        success: true,
+        package: {
+          iccid: '89012345678901234567',
+          status: 'active',
+          rate_groups: [{ rate_group_allowance: 1, rate_group_allow_qtyp: 'GB', rate_group_usage: 0 }],
+        },
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      expect(result.data?.dataUsedMB).toBe(0)
+      expect(result.data?.dataTotalMB).toBe(1024)
+      expect(result.data?.dataRemainingMB).toBe(1024)
+      expect(result.data?.percentageUsed).toBe(0)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('selects the full-package row and never double-counts the daily row', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        success: true,
+        package: {
+          iccid: '89012345678901234567',
+          status: 'active',
+          rate_groups: [
+            { rate_group_id: 'D', rate_group_allowance: 0.1, rate_group_allow_qtyp: 'GB', rate_group_usage: 0.02 },
+            { rate_group_id: 'T', rate_group_allowance: 1, rate_group_allow_qtyp: 'GB', rate_group_usage: 0.5, rate_group_total_qty: 1, rate_group_expire: '2026-08-31 00:00:00.000' },
+          ],
+        },
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      expect(result.data?.dataTotalMB).toBe(1024)
+      expect(result.data?.dataUsedMB).toBe(512)
+      expect(result.data?.dataRemainingMB).toBe(512)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('aggregates independent rate_group_ids as separate allowances', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        success: true,
+        package: {
+          iccid: '89012345678901234567',
+          status: 'active',
+          rate_groups: [
+            { rate_group_id: 'a', rate_group_allowance: 1, rate_group_allow_qtyp: 'GB', rate_group_usage: 0.25 },
+            { rate_group_id: 'b', rate_group_allowance: 1, rate_group_allow_qtyp: 'GB', rate_group_usage: 0.25 },
+          ],
+        },
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      expect(result.data?.dataTotalMB).toBe(2048)
+      expect(result.data?.dataUsedMB).toBe(512)
+      expect(result.data?.dataRemainingMB).toBe(1536)
+      expect(result.data?.percentageUsed).toBe(25)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('clamps over-allowance usage to 0 remaining and 100%', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        success: true,
+        package: {
+          iccid: '89012345678901234567',
+          status: 'active',
+          rate_groups: [{ rate_group_allowance: 1, rate_group_allow_qtyp: 'GB', rate_group_usage: 2 }],
+        },
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      expect(result.data?.dataUsedMB).toBe(2048)
+      expect(result.data?.dataTotalMB).toBe(1024)
+      expect(result.data?.dataRemainingMB).toBe(0)
+      expect(result.data?.percentageUsed).toBe(100)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('keeps the stored status on unknown supplemental values (never downgrades)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        success: true,
+        package: {
+          iccid: '89012345678901234567',
+          status: 'weird_unknown',
+          rate_groups: [{ rate_group_allowance: 1, rate_group_allow_qtyp: 'GB', rate_group_usage: 0 }],
+        },
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567', currentStatus: 'ACTIVE' })
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('surfaces Choice success=false with errmsg as a normalized provider error', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: false, errmsg: 'Bundle is expired. No changes allowed' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_USAGE_REJECTED')
+      expect(result.error?.message).toBe('Bundle is expired. No changes allowed')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_USAGE_PACKAGE_MISSING when the package object is absent', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, data: {} }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_USAGE_PACKAGE_MISSING')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_USAGE_RATE_GROUPS_MISSING when rate_groups is empty', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', rate_groups: [] } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_USAGE_RATE_GROUPS_MISSING')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_USAGE_TOTAL_MISSING when the allowance is missing', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', rate_groups: [{ rate_group_usage: 0.5 }] } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_USAGE_TOTAL_MISSING')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns CHOICE_USAGE_VALUE_MISSING when usage is missing', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', rate_groups: [{ rate_group_allowance: 1, rate_group_allow_qtyp: 'GB' }] } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_USAGE_VALUE_MISSING')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('rejects unsupported units instead of returning a misleading zero', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', rate_groups: [{ rate_group_allowance: 1, rate_group_allow_qtyp: 'ZB', rate_group_usage: 0.5 }] } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('CHOICE_USAGE_UNIT_UNSUPPORTED')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns error on HTTP failure', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(errorResponse(500))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('HTTP_500')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns sanitized provider metadata (iccid masked, imsi_version kept)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        success: true,
+        package: { ...SAMPLE_PACKAGE, imsi_version: 70 },
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getUsage({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      const meta = result.data?.rawMetadata
+      expect(meta?.package?.iccid).toBe('[REDACTED]')
+      expect(meta?.package?.imsi_version).toBe(70)
+      expect(meta?.package?.status).toBe('active')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('keeps the token path-based, URL-encoded, and out of logs', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: SAMPLE_PACKAGE }))
+      vi.stubGlobal('fetch', mockFetch)
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const c = makeConnector({ apiToken: 'tok/&+?=xyz' })
+
+      await c.getUsage({ iccid: '89012345678901234567' })
+      const [url] = mockFetch.mock.calls[0]
+      expect(url).toContain('/account/v03_09/package_detail/tok%2F%26%2B%3F%3Dxyz?iccid=89012345678901234567')
+      for (const call of logSpy.mock.calls) {
+        const line = String(call[0] || '')
+        expect(line).not.toContain('tok/&+?=xyz')
+        expect(line).not.toContain('package_detail/tok')
+      }
+      logSpy.mockRestore()
+
+      vi.unstubAllGlobals()
+    })
+  })
+
+  describe('usage unit + timestamp helpers', () => {
+    it.each([
+      ['B', 1 / (1024 * 1024)],
+      ['KB', 1 / 1024],
+      ['MB', 1],
+      ['GB', 1024],
+      ['TB', 1024 * 1024],
+    ] as [string, number][])('convertChoiceUsageToMB: 1 %s → %s MB', (unit, expected) => {
+      expect(convertChoiceUsageToMB(1, unit)).toBe(expected)
+    })
+
+    it('is case-insensitive for units', () => {
+      expect(convertChoiceUsageToMB(2, 'gb')).toBe(2048)
+      expect(convertChoiceUsageToMB(2, 'Gb')).toBe(2048)
+      expect(convertChoiceUsageToMB(2, 'GB')).toBe(2048)
+    })
+
+    it('defaults a missing unit to GB (Choice convention)', () => {
+      expect(normalizeChoiceUsage({ rate_groups: [{ rate_group_allowance: 1, rate_group_usage: 0 }] }).ok).toBe(true)
+    })
+
+    it('returns null for missing/invalid values and unsupported units', () => {
+      expect(convertChoiceUsageToMB(null, 'GB')).toBeNull()
+      expect(convertChoiceUsageToMB('', 'GB')).toBeNull()
+      expect(convertChoiceUsageToMB('nope', 'GB')).toBeNull()
+      expect(convertChoiceUsageToMB(1, 'ZB')).toBeNull()
+    })
+
+    it('parses the Choice UTC timestamp format without shifting to server-local time', () => {
+      const d = parseChoiceUtcTimestamp('2026-08-31 00:00:00.000')
+      expect(d?.toISOString()).toBe('2026-08-31T00:00:00.000Z')
+    })
+
+    it('parses ISO 8601 timestamps', () => {
+      expect(parseChoiceUtcTimestamp('2026-08-31T23:59:59Z')?.toISOString()).toBe('2026-08-31T23:59:59.000Z')
+      expect(parseChoiceUtcTimestamp('2026-08-31T00:00:00.000+00:00')?.toISOString()).toBe('2026-08-31T00:00:00.000Z')
+    })
+
+    it('returns null for unparseable timestamps', () => {
+      expect(parseChoiceUtcTimestamp(null)).toBeNull()
+      expect(parseChoiceUtcTimestamp('not-a-date')).toBeNull()
+    })
+
+    it('selects the full-package row by rate_group_total_qty', () => {
+      const selection = selectChoiceUsageRateGroups([
+        { rate_group_id: 'D', rate_group_allowance: 0.1 },
+        { rate_group_id: 'T', rate_group_allowance: 1, rate_group_total_qty: 1 },
+      ])
+      expect(selection.selectedIndices).toEqual([1])
+      expect(selection.reason).toBe('TOTAL_ROW_SELECTED')
+    })
+
+    it('selects the latest package-level expiry when rows are ambiguous', () => {
+      const selection = selectChoiceUsageRateGroups([
+        { rate_group_allowance: 1, rate_group_expire: '2026-01-31 00:00:00.000' },
+        { rate_group_allowance: 1, rate_group_expire: '2026-08-31 00:00:00.000' },
+      ])
+      expect(selection.selectedIndices).toEqual([1])
+      expect(selection.reason).toBe('LATEST_EXPIRY_SELECTED')
     })
   })
 

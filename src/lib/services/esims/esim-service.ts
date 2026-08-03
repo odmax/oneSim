@@ -140,22 +140,46 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
   const adapter = await getAdapterForProvider(providerId)
   if (!adapter) return { success: false, error: 'Provider adapter unavailable' }
 
-  const result = await adapter.getUsage(esim.iccid)
+  const provider = await prisma.provider.findUnique({
+    where: { id: providerId },
+    select: { code: true },
+  })
+  const isChoice = provider?.code?.toUpperCase() === 'CHOICE'
+
+  let identifier: string | StatusLookupIdentifier
+  if (isChoice) {
+    identifier = buildChoiceStatusLookup(esim)
+    if (!hasChoiceIdentifier(identifier)) {
+      return { success: false, error: 'No Choice usage identifier (ICCID/IMSI/imsi_version) available' }
+    }
+  } else {
+    if (!esim.iccid) return { success: false, error: 'eSIM has no ICCID' }
+    identifier = esim.iccid
+  }
+
+  const result = await adapter.getUsage(identifier)
   if (!result.success) return { success: false, error: result.error?.message || 'Usage fetch failed' }
 
-  const rawData = (result.data || {}) as Record<string, any>
-  const dataUsedMB = rawData.dataUsedMB ?? 0
-  const dataTotalMB = rawData.dataTotalMB ?? undefined
-  const dataRemainingMB = rawData.dataRemainingMB ?? undefined
+  const usageData = (result.data || {}) as Record<string, any>
+  const dataUsedMB = usageData.dataUsedMB ?? 0
+  const dataTotalMB = usageData.dataTotalMB ?? undefined
+  const dataRemainingMB = usageData.dataRemainingMB ?? undefined
+  const expiresAt = usageData.expiresAt ? new Date(usageData.expiresAt) : undefined
+
+  // DB columns are Int; keep fractional values in the normalized result and round only for persistence.
+  const persistedUsedMB = Number.isFinite(dataUsedMB) ? Math.round(dataUsedMB) : 0
+  const persistedTotalMB = dataTotalMB !== undefined ? Math.round(dataTotalMB) : undefined
+  const persistedRemainingMB = dataRemainingMB !== undefined ? Math.round(dataRemainingMB) : undefined
 
   // Store usage record
   await prisma.usageRecord.create({
     data: {
       esimId,
-      dataUsedMB,
-      dataTotalMB: dataTotalMB ?? null,
-      dataRemainingMB: dataRemainingMB ?? null,
-      timestamp: rawData.timestamp ? new Date(rawData.timestamp) : new Date(),
+      dataUsedMB: persistedUsedMB,
+      dataTotalMB: persistedTotalMB ?? null,
+      dataRemainingMB: persistedRemainingMB ?? null,
+      timestamp: usageData.timestamp ? new Date(usageData.timestamp) : new Date(),
+      ...(usageData.rawMetadata ? { rawData: usageData.rawMetadata as any } : {}),
     },
   })
 
@@ -163,9 +187,11 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
   await prisma.eSIM.update({
     where: { id: esimId },
     data: {
-      dataUsedMB,
-      dataTotalMB: dataTotalMB ?? undefined,
-      dataRemainingMB: dataRemainingMB ?? undefined,
+      dataUsedMB: persistedUsedMB,
+      ...(persistedTotalMB !== undefined ? { dataTotalMB: persistedTotalMB } : {}),
+      ...(persistedRemainingMB !== undefined ? { dataRemainingMB: persistedRemainingMB } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+      ...(usageData.rawMetadata ? { providerResponse: usageData.rawMetadata as any } : {}),
       lastUsageAt: new Date(),
       lastUsageSyncAt: new Date(),
       lastSyncAt: new Date(),
@@ -174,11 +200,11 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
 
   await createTimelineEvent(esim.purchaseId, { eventType: 'USAGE_REFRESHED', message: `Usage synced: ${dataUsedMB}MB used` })
 
-  const percentageUsed = dataTotalMB && dataTotalMB > 0 ? Math.round((dataUsedMB / dataTotalMB) * 100) : undefined
+  const percentageUsed = usageData.percentageUsed ?? (dataTotalMB !== undefined && dataTotalMB > 0 ? Math.round((dataUsedMB / dataTotalMB) * 100) : undefined)
 
   return {
     success: true,
-    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: esim.expiresAt || undefined, status: esim.status },
+    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: expiresAt || esim.expiresAt || undefined, status: esim.status },
   }
 }
 

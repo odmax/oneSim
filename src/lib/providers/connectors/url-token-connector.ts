@@ -1,5 +1,5 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, UsageResult } from './connector-interface'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
 interface UrlTokenConfig extends RestCatalogConfig {
@@ -131,6 +131,203 @@ function sanitizeChoiceStatusMetadata(json: any): Record<string, any> {
     sanitized.package.imsi_version = pkg.imsi_version
   }
   return sanitized as Record<string, any>
+}
+
+/** Decimal telecom unit → MB conversion factors (B/KB/MB/GB/TB), case-insensitive. */
+const USAGE_UNIT_TO_MB: Record<string, number> = {
+  B: 1 / (1024 * 1024),
+  KB: 1 / 1024,
+  MB: 1,
+  GB: 1024,
+  TB: 1024 * 1024,
+}
+
+/** True when the unit is recognized or absent (absent defaults to GB). */
+export function choiceUsageUnitSupported(unit: unknown): boolean {
+  const u = String(unit ?? '').trim().toUpperCase()
+  if (!u) return true
+  return u in USAGE_UNIT_TO_MB
+}
+
+/**
+ * Convert a Choice usage/allowance value to MB. Returns null when the value is
+ * missing/invalid or the unit is unsupported — callers must surface a specific
+ * error instead of returning a misleading zero.
+ */
+export function convertChoiceUsageToMB(value: unknown, unit: unknown): number | null {
+  if (value == null || String(value).trim() === '') return null
+  const num = typeof value === 'number' ? value : parseFloat(String(value))
+  if (!Number.isFinite(num)) return null
+  const u = String(unit ?? '').trim().toUpperCase()
+  const factor = USAGE_UNIT_TO_MB[u]
+  if (factor === undefined) return null
+  return num * factor
+}
+
+/**
+ * Parse a Choice timestamp as UTC. Choice documents timestamps (e.g.
+ * "2026-08-01 00:00:00.000") as UTC; ISO 8601 is also accepted. A missing
+ * timezone is treated as UTC — never reinterpreted as server-local time.
+ */
+export function parseChoiceUtcTimestamp(value: unknown): Date | null {
+  if (value == null) return null
+  let s = String(value).trim()
+  if (!s) return null
+  const iso = s.replace(' ', 'T')
+  let ts = iso
+  if (/^\d{4}-\d{2}-\d{2}$/.test(ts)) {
+    ts = `${ts}T00:00:00.000Z`
+  } else if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(ts)) {
+    ts = `${ts}Z`
+  }
+  const d = new Date(ts)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+export interface ChoiceRateGroupRow {
+  [key: string]: any
+}
+
+export interface ChoiceRateGroupSelection {
+  rows: ChoiceRateGroupRow[]
+  selectedIndices: number[]
+  reason: string
+}
+
+function positiveNumber(value: unknown): number | null {
+  if (value == null || String(value).trim() === '') return null
+  const n = typeof value === 'number' ? value : parseFloat(String(value))
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/**
+ * Pick the rate-group rows that describe the package allowance.
+ *
+ * Priority:
+ * 1. A row carrying a positive `rate_group_total_qty` represents the full-package
+ *    allowance (the "total duration" row); the per-day row is never added to it.
+ * 2. Rows with distinct `rate_group_id`s are independent allowances and are
+ *    aggregated.
+ * 3. Otherwise fall back to the row with the latest package-level expiry so two
+ *    ambiguous rows are never blindly summed.
+ * 4. Last resort: the first row.
+ */
+export function selectChoiceUsageRateGroups(rateGroups: unknown): ChoiceRateGroupSelection {
+  const rows = (Array.isArray(rateGroups) ? rateGroups : []).filter((r): r is ChoiceRateGroupRow => !!r && typeof r === 'object')
+  if (rows.length === 0) return { rows: [], selectedIndices: [], reason: 'RATE_GROUPS_MISSING' }
+
+  const totalRows = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => positiveNumber(row.rate_group_total_qty) !== null)
+  if (totalRows.length > 0) {
+    const selected = totalRows.reduce((best, cur) => {
+      const bestExp = parseChoiceUtcTimestamp(best.row.rate_group_expire)
+      const curExp = parseChoiceUtcTimestamp(cur.row.rate_group_expire)
+      if (curExp && (!bestExp || curExp.getTime() > bestExp.getTime())) return cur
+      if (!bestExp) {
+        const bestQty = positiveNumber(best.row.rate_group_total_qty) || 0
+        const curQty = positiveNumber(cur.row.rate_group_total_qty) || 0
+        if (curQty > bestQty) return cur
+      }
+      return best
+    })
+    return { rows: [selected.row], selectedIndices: [selected.index], reason: 'TOTAL_ROW_SELECTED' }
+  }
+
+  const ids = rows.map((row) => String(row.rate_group_id ?? '').trim())
+  if (ids.every((id) => id !== '') && new Set(ids).size === ids.length) {
+    return { rows, selectedIndices: rows.map((_, i) => i), reason: 'DISTINCT_RATE_GROUPS_AGGREGATED' }
+  }
+
+  let latestIndex = -1
+  let latestExp: Date | null = null
+  rows.forEach((row, index) => {
+    const exp = parseChoiceUtcTimestamp(row.rate_group_expire)
+    if (exp && (!latestExp || exp.getTime() > latestExp.getTime())) {
+      latestIndex = index
+      latestExp = exp
+    }
+  })
+  if (latestIndex >= 0) return { rows: [rows[latestIndex]], selectedIndices: [latestIndex], reason: 'LATEST_EXPIRY_SELECTED' }
+
+  return { rows: [rows[0]], selectedIndices: [0], reason: 'FALLBACK_FIRST_ROW' }
+}
+
+export interface ChoiceUsageNormalized {
+  dataUsedMB: number
+  dataTotalMB: number
+  dataRemainingMB: number
+  percentageUsed: number
+  expiresAt?: string
+  status?: string
+  rawMetadata?: Record<string, any>
+}
+
+export type NormalizeChoiceUsageResult =
+  | { ok: true; usage: ChoiceUsageNormalized }
+  | { ok: false; error: { code: string; message: string } }
+
+/**
+ * Normalize the Choice package_detail `package` object into the usage contract.
+ * Unit semantics: `rate_group_usage` and `rate_group_allowance` share the row's
+ * `rate_group_allow_qtyp` unit (Choice returns the same quantity type for both);
+ * a missing unit defaults to GB (Choice convention).
+ */
+export function normalizeChoiceUsage(pkg: any, currentStatus?: string, rawJson?: any): NormalizeChoiceUsageResult {
+  const selection = selectChoiceUsageRateGroups(pkg?.rate_groups)
+  if (selection.rows.length === 0) {
+    return { ok: false, error: { code: 'CHOICE_USAGE_RATE_GROUPS_MISSING', message: 'Choice usage response has no rate_groups to normalize' } }
+  }
+
+  let totalMB = 0
+  let usedMB = 0
+  let latestExpiry: Date | null = null
+
+  for (const row of selection.rows) {
+    const unit = String(row.rate_group_allow_qtyp ?? '').trim().toUpperCase() || 'GB'
+    if (!choiceUsageUnitSupported(unit)) {
+      return { ok: false, error: { code: 'CHOICE_USAGE_UNIT_UNSUPPORTED', message: `Unsupported Choice usage unit "${unit}"` } }
+    }
+    const allowanceMB = convertChoiceUsageToMB(row.rate_group_allowance, unit)
+    if (allowanceMB === null) {
+      return { ok: false, error: { code: 'CHOICE_USAGE_TOTAL_MISSING', message: 'Choice usage response is missing a valid total allowance (rate_group_allowance)' } }
+    }
+    const usageMB = convertChoiceUsageToMB(row.rate_group_usage, unit)
+    if (usageMB === null) {
+      return { ok: false, error: { code: 'CHOICE_USAGE_VALUE_MISSING', message: 'Choice usage response is missing a valid usage value (rate_group_usage)' } }
+    }
+    totalMB += allowanceMB
+    usedMB += usageMB
+    const exp = parseChoiceUtcTimestamp(row.rate_group_expire)
+    if (exp && (!latestExpiry || exp.getTime() > latestExpiry.getTime())) latestExpiry = exp
+  }
+
+  if (!(totalMB > 0)) {
+    return { ok: false, error: { code: 'CHOICE_USAGE_TOTAL_MISSING', message: 'Choice usage total allowance is not positive' } }
+  }
+
+  const used = Math.max(0, usedMB)
+  const remaining = Math.max(0, totalMB - used)
+  const percentage = Math.min(100, Math.max(0, (used / totalMB) * 100))
+
+  const fallbackExpiry = parseChoiceUtcTimestamp(pkg?.rate_group_expire)
+  const expiresAt = latestExpiry || fallbackExpiry
+
+  const rawStatus = typeof pkg?.status === 'string' ? pkg.status : ''
+  const packageStatus = typeof pkg?.package_status === 'string' ? pkg.package_status : ''
+
+  return {
+    ok: true,
+    usage: {
+      dataUsedMB: used,
+      dataTotalMB: totalMB,
+      dataRemainingMB: remaining,
+      percentageUsed: percentage,
+      ...(expiresAt ? { expiresAt: expiresAt.toISOString() } : {}),
+      status: normalizeChoiceStatus(rawStatus, packageStatus, currentStatus).status,
+      rawMetadata: sanitizeChoiceStatusMetadata(rawJson ?? { package: pkg }),
+    },
+  }
 }
 
 export class UrlTokenConnector extends RestCatalogConnector {
@@ -586,25 +783,29 @@ export class UrlTokenConnector extends RestCatalogConnector {
   }
 
   /**
-   * Choice package_detail status lookup:
+   * Shared Choice package_detail fetch used by both status and usage lookups:
    * GET {baseUrl}/account/v03_09/package_detail/{token}?iccid=...|imsi=...|imsi_version=...
-   * Token is path-based and URL-encoded; never logged in full.
+   * Token is path-based and URL-encoded; never logged in full. Error codes are
+   * parameterized so status and usage surface their own (CHOICE_STATUS_* / CHOICE_USAGE_*).
    */
-  private async getChoicePackageDetailStatus(lookup: StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
-    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'API base URL not configured' } }
+  private async fetchChoicePackageDetail(
+    lookup: StatusLookupIdentifier,
+    mode: 'STATUS' | 'USAGE',
+  ): Promise<{ ok: true; json: any; pkg: any; durationMs: number } | { ok: false; error: { code: string; message: string } }> {
+    if (!this.config.apiBaseUrl) return { ok: false, error: { code: 'NOT_CONFIGURED', message: 'API base URL not configured' } }
     const token = this.config.apiToken || ''
-    if (!token) return { success: false, error: { code: 'CHOICE_CREDENTIALS_MISSING', message: 'No Choice API token configured' } }
+    if (!token) return { ok: false, error: { code: 'CHOICE_CREDENTIALS_MISSING', message: 'No Choice API token configured' } }
 
     const resolved = resolveChoiceStatusIdentifier(lookup)
     if (!resolved) {
-      return { success: false, error: { code: 'CHOICE_STATUS_IDENTIFIER_MISSING', message: 'No Choice status identifier (ICCID/IMSI/imsi_version) provided' } }
+      return { ok: false, error: { code: `CHOICE_${mode}_IDENTIFIER_MISSING`, message: `No Choice ${mode.toLowerCase()} identifier (ICCID/IMSI/imsi_version) provided` } }
     }
 
     const path = (this.config.packageDetailPath || '/account/v03_09/package_detail').replace(/\/$/, '')
     const url = `${this.baseUrl(`${path}/${encodeURIComponent(token)}`)}?${resolved.key}=${encodeURIComponent(String(resolved.value))}`
     const host = urlHostname(url)
 
-    console.log(`[CHOICE_STATUS_REQUEST] providerCode=CHOICE hostname=${host} endpoint=${path} identifier=${resolved.key}=[REDACTED]`)
+    console.log(`[CHOICE_PACKAGE_REQUEST] providerCode=CHOICE hostname=${host} endpoint=${path} mode=${mode} identifier=${resolved.key}=[REDACTED]`)
 
     const start = Date.now()
     const { text, error, status } = await fetchText(url, {
@@ -614,29 +815,40 @@ export class UrlTokenConnector extends RestCatalogConnector {
     const durationMs = Date.now() - start
 
     if (error) {
-      console.log(`[CHOICE_STATUS_RESULT] providerCode=CHOICE success=false error=${error.code} httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
-      return { success: false, error }
+      console.log(`[CHOICE_PACKAGE_RESULT] providerCode=CHOICE mode=${mode} success=false error=${error.code} httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+      return { ok: false, error }
     }
-    if (!text) return { success: false, error: { code: 'EMPTY', message: 'Empty Choice status response' } }
+    if (!text) return { ok: false, error: { code: 'EMPTY', message: `Empty Choice ${mode.toLowerCase()} response` } }
 
     let json: any
     try {
       json = JSON.parse(text)
     } catch {
-      console.log(`[CHOICE_STATUS_RESULT] providerCode=CHOICE success=false error=CHOICE_STATUS_NON_JSON httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
-      return { success: false, error: { code: 'CHOICE_STATUS_NON_JSON', message: 'Choice status response is not valid JSON' } }
+      console.log(`[CHOICE_PACKAGE_RESULT] providerCode=CHOICE mode=${mode} success=false error=CHOICE_${mode}_NON_JSON httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+      return { ok: false, error: { code: `CHOICE_${mode}_NON_JSON`, message: `Choice ${mode.toLowerCase()} response is not valid JSON` } }
     }
 
     if (json.success === false) {
       const errmsg = String(json.errmsg || json.error_message || json.message || 'Choice reported a failure').slice(0, 300)
-      console.log(`[CHOICE_STATUS_RESULT] providerCode=CHOICE success=false error=CHOICE_STATUS_REJECTED errmsg=${errmsg.slice(0, 120)} httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
-      return { success: false, error: { code: 'CHOICE_STATUS_REJECTED', message: errmsg } }
+      console.log(`[CHOICE_PACKAGE_RESULT] providerCode=CHOICE mode=${mode} success=false error=CHOICE_${mode}_REJECTED errmsg=${errmsg.slice(0, 120)} httpStatus=${status ?? 'unknown'} durationMs=${durationMs}`)
+      return { ok: false, error: { code: `CHOICE_${mode}_REJECTED`, message: errmsg } }
     }
 
     const pkg = json?.package || json?.data?.package || json?.response?.package
     if (!pkg || typeof pkg !== 'object') {
-      return { success: false, error: { code: 'CHOICE_STATUS_PACKAGE_MISSING', message: 'Choice status response is missing the package object' } }
+      return { ok: false, error: { code: `CHOICE_${mode}_PACKAGE_MISSING`, message: `Choice ${mode.toLowerCase()} response is missing the package object` } }
     }
+
+    return { ok: true, json, pkg, durationMs }
+  }
+
+  /**
+   * Choice package_detail status lookup (official source, shared with usage).
+   */
+  private async getChoicePackageDetailStatus(lookup: StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
+    const fetched = await this.fetchChoicePackageDetail(lookup, 'STATUS')
+    if (!fetched.ok) return { success: false, error: fetched.error }
+    const { json, pkg, durationMs } = fetched
 
     const rawStatus = typeof pkg.status === 'string' ? pkg.status : ''
     const packageStatus = typeof pkg.package_status === 'string' ? pkg.package_status : ''
@@ -660,6 +872,46 @@ export class UrlTokenConnector extends RestCatalogConnector {
         rateGroupExpire: pkg.rate_group_expire || undefined,
         expiresAt: pkg.rate_group_expire || firstExpiry || undefined,
         rawMetadata: sanitizeChoiceStatusMetadata(json),
+      },
+    }
+  }
+
+  /**
+   * Choice usage lookup from the same package_detail source as status.
+   * Object identifiers route here (ICCID → IMSI → imsi_version); a raw string is
+   * rejected before any HTTP call so a local OneSIM id is never sent upstream.
+   */
+  async getUsage(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>> {
+    if (identifier && typeof identifier === 'object') {
+      return this.getChoicePackageDetailUsage(identifier)
+    }
+    return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Usage requires a Choice identifier (ICCID/IMSI/imsi_version); local ids are never sent' } }
+  }
+
+  private async getChoicePackageDetailUsage(lookup: StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>> {
+    const fetched = await this.fetchChoicePackageDetail(lookup, 'USAGE')
+    if (!fetched.ok) return { success: false, error: fetched.error }
+    const { json, pkg, durationMs } = fetched
+
+    const outcome = normalizeChoiceUsage(pkg, lookup.currentStatus, json)
+    if (!outcome.ok) {
+      console.log(`[CHOICE_USAGE_RESULT] providerCode=CHOICE success=false error=${outcome.error.code} durationMs=${durationMs}`)
+      return { success: false, error: outcome.error }
+    }
+
+    console.log(`[CHOICE_USAGE_RESULT] providerCode=CHOICE success=true dataUsedMB=${outcome.usage.dataUsedMB} dataTotalMB=${outcome.usage.dataTotalMB} remainingMB=${outcome.usage.dataRemainingMB} percentage=${outcome.usage.percentageUsed} durationMs=${durationMs}`)
+
+    return {
+      success: true,
+      data: {
+        iccid: pkg.iccid != null ? String(pkg.iccid) : '',
+        dataUsedMB: outcome.usage.dataUsedMB,
+        dataTotalMB: outcome.usage.dataTotalMB,
+        dataRemainingMB: outcome.usage.dataRemainingMB,
+        percentageUsed: outcome.usage.percentageUsed,
+        ...(outcome.usage.expiresAt ? { expiresAt: outcome.usage.expiresAt } : {}),
+        status: outcome.usage.status,
+        rawMetadata: outcome.usage.rawMetadata,
       },
     }
   }

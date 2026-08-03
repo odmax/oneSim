@@ -1,0 +1,110 @@
+import { describe, it, expect } from 'vitest'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+
+import { deriveUsageMetrics, UsageBar, UsageSummary } from './UsageBar'
+
+function renderUsageBar(props: Record<string, unknown>) {
+  return renderToStaticMarkup(createElement(UsageBar as any, props))
+}
+
+function renderUsageSummary(props: Record<string, unknown>) {
+  return renderToStaticMarkup(createElement(UsageSummary as any, props))
+}
+
+describe('deriveUsageMetrics', () => {
+  it('has no snapshot when neither total nor remaining is recorded', () => {
+    const m = deriveUsageMetrics(0, null, null)
+    expect(m.hasSnapshot).toBe(false)
+    expect(m).toMatchObject({ used: 0, total: 0, remaining: 0, percentage: 0 })
+  })
+
+  it('treats valid zero usage with a real total as a snapshot', () => {
+    const m = deriveUsageMetrics(0, 1024, 1024)
+    expect(m.hasSnapshot).toBe(true)
+    expect(m).toMatchObject({ used: 0, total: 1024, remaining: 1024, percentage: 0 })
+  })
+
+  it('derives the total from used + remaining when only remaining is recorded', () => {
+    const m = deriveUsageMetrics(512, null, 512)
+    expect(m.hasSnapshot).toBe(true)
+    expect(m).toMatchObject({ total: 1024, percentage: 50 })
+  })
+
+  it('clamps remaining to 0 when usage exceeds the allowance', () => {
+    const m = deriveUsageMetrics(1500, 1024, null)
+    expect(m).toMatchObject({ remaining: 0, percentage: 100 })
+  })
+})
+
+describe('UsageBar', () => {
+  it('renders "Usage unavailable" when there is no snapshot', () => {
+    const html = renderUsageBar({ dataUsedMB: 0, dataTotalMB: null, dataRemainingMB: null })
+    expect(html).toContain('Usage unavailable')
+    expect(html).not.toContain('GB used')
+  })
+
+  it('renders a real 0.00 GB for valid zero usage instead of "Usage unavailable"', () => {
+    const html = renderUsageBar({ dataUsedMB: 0, dataTotalMB: 1024, dataRemainingMB: 1024 })
+    expect(html).toContain('0.00 GB')
+    expect(html).toContain('of 1.00 GB')
+    expect(html).toContain('0% used')
+    expect(html).toContain('1.00 GB remaining')
+    expect(html).not.toContain('Usage unavailable')
+  })
+
+  it('renders used/total/remaining/percentage from normalized MB values', () => {
+    const html = renderUsageBar({ dataUsedMB: 512, dataTotalMB: 1024, dataRemainingMB: 512 })
+    expect(html).toContain('0.50 GB')
+    expect(html).toContain('of 1.00 GB')
+    expect(html).toContain('50% used')
+    expect(html).toContain('0.50 GB remaining')
+    expect(html).toContain('style="width:50%"')
+  })
+
+  it('renders the optional label', () => {
+    const html = renderUsageBar({ label: 'Data Usage', dataUsedMB: 512, dataTotalMB: 1024, dataRemainingMB: 512 })
+    expect(html).toContain('Data Usage')
+  })
+})
+
+describe('UsageSummary', () => {
+  it('shows Data Used / Total Data / Remaining when a snapshot exists', () => {
+    const html = renderUsageSummary({ dataUsedMB: 512, dataTotalMB: 1024, dataRemainingMB: 512 })
+    expect(html).toContain('Data Used')
+    expect(html).toContain('Total Data')
+    expect(html).toContain('Remaining')
+  })
+
+  it('hides the data rows but keeps the expiry row when no snapshot exists', () => {
+    const html = renderUsageSummary({
+      dataUsedMB: 0,
+      dataTotalMB: null,
+      dataRemainingMB: null,
+      expiresAt: new Date('2026-08-31T00:00:00.000Z'),
+    })
+    expect(html).toContain('Usage unavailable')
+    expect(html).not.toContain('Data Used')
+    expect(html).not.toContain('Total Data')
+    expect(html).toContain('Expires')
+  })
+
+  it('marks the expiry as soon when within 7 days', () => {
+    const expiresAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
+    const html = renderUsageSummary({ dataUsedMB: 512, dataTotalMB: 1024, dataRemainingMB: 512, expiresAt })
+    expect(html).toContain('(soon)')
+    expect(html).not.toContain('(expired)')
+  })
+
+  it('marks the package as expired when status is EXPIRED', () => {
+    const html = renderUsageSummary({
+      dataUsedMB: 512,
+      dataTotalMB: 1024,
+      dataRemainingMB: 512,
+      expiresAt: new Date('2026-01-01T00:00:00.000Z'),
+      status: 'EXPIRED',
+    })
+    expect(html).toContain('(expired)')
+    expect(html).not.toContain('(soon)')
+  })
+})
