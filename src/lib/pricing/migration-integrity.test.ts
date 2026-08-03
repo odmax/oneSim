@@ -13,12 +13,8 @@ describe('Prisma migration — quote pricing integrity', () => {
   })
 
   it('2. Prisma schema validates', () => {
-    try {
-      execSync('npx prisma validate', { stdio: 'pipe', encoding: 'utf8' })
-    } catch {
-      // Validation errors would throw; treat as failure
-    }
-    expect(true).toBe(true)
+    const output = execSync('npx prisma validate', { stdio: 'pipe', encoding: 'utf8' })
+    expect(output).toContain('valid')
   })
 
   it('3. migration SQL includes the required columns', () => {

@@ -5,6 +5,8 @@ import { releaseReservedFunds } from './wallet-actions'
 import { classifyRetry } from '@/lib/services/routing/provider-failover-engine'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
 import { isProviderOperational } from '@/lib/providers/adapter-manager'
+import { transitionOrder } from './order-state-machine'
+import { reconcileProviderOrder } from './reconciliation'
 import type { classifyRetry as ClassifyRetryFn } from '@/lib/services/routing/provider-failover-engine'
 
 // ─────────────────────────────────────────────
@@ -263,12 +265,23 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
     }
 
     case 'RECONCILIATION_REQUIRED': {
+      await transitionOrder(orderId, 'PROVIDER_RECONCILIATION')
+      await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION_STARTED', message: classification.reason })
+      const reconciliation = await reconcileProviderOrder(orderId)
+      if (reconciliation.outcome === 'FOUND_SUCCESS' || reconciliation.outcome === 'FOUND_FAILURE') {
+        return {
+          success: reconciliation.outcome === 'FOUND_SUCCESS',
+          action: reconciliation.outcome === 'FOUND_SUCCESS' ? 'RESUME_LOCAL_FINALIZATION' : 'NOT_RETRYABLE',
+          status: reconciliation.status || order.status,
+          retryCount: order.retryCount,
+          message: reconciliation.message,
+        }
+      }
       await prisma.eSIMPurchase.update({
         where: { id: orderId },
         data: { retryReason: `RECONCILIATION_REQUIRED: ${classification.reason}`, failureReason: classification.reason, lastRetryAt: new Date() },
       })
-      await createTimelineEvent(orderId, { eventType: 'RECONCILIATION_REQUIRED', message: classification.reason })
-      return { success: false, action: 'RECONCILIATION_REQUIRED', status: order.status, retryCount: order.retryCount, message: classification.reason }
+      return { success: false, action: 'RECONCILIATION_REQUIRED', status: 'PROVIDER_RECONCILIATION', retryCount: order.retryCount, message: reconciliation.message }
     }
 
     case 'NOT_RETRYABLE': {

@@ -16,7 +16,8 @@ const ORDER_TRANSITIONS: Record<string, string[]> = {
   ACTIVE: ['EXPIRED', 'CANCELLED'],
   EXPIRED: ['CANCELLED'],
   CANCELLED: ['REFUNDED'],
-  FAILED: ['CANCELLED', 'REFUNDED'],
+  FAILED: ['CANCELLED', 'REFUNDED', 'PROVIDER_RECONCILIATION'],
+  PROVIDER_RECONCILIATION: ['FULFILLED', 'FAILED', 'PROVIDER_RECONCILIATION'],
   REFUNDED: [],
 }
 
@@ -26,6 +27,7 @@ const ORDER_LABELS: Record<string, string> = {
   RESERVED: 'Reserved', FULFILLING: 'Fulfilling', FULFILLED: 'Fulfilled',
   INSTALLING: 'Installing', INSTALLED: 'Installed', ACTIVE: 'Active',
   EXPIRED: 'Expired', CANCELLED: 'Cancelled', FAILED: 'Failed', REFUNDED: 'Refunded',
+  PROVIDER_RECONCILIATION: 'Provider Reconciliation',
 }
 
 export type OrderStatus = keyof typeof ORDER_TRANSITIONS

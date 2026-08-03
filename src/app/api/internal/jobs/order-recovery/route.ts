@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
       OR: [
         { nextRetryAt: { lte: new Date() } },
         {
-          status: { in: ['PENDING_PROVIDER', 'PROVIDER_ACCEPTED', 'RESERVED', 'FULFILLING', 'CREATED', 'PAYMENT_RESERVED', 'FAILED'] },
+          status: { in: ['PENDING_PROVIDER', 'PROVIDER_ACCEPTED', 'RESERVED', 'FULFILLING', 'CREATED', 'PAYMENT_RESERVED', 'FAILED', 'PROVIDER_RECONCILIATION'] },
           updatedAt: { lt: staleThreshold },
           nextRetryAt: null,
         },

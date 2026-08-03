@@ -19,6 +19,7 @@ const STATUS_CONFIG: Record<string, { label: string; dot: string; bg: string }> 
   CANCELLED: { label: 'Cancelled', dot: 'bg-amber-400', bg: 'bg-amber-50 text-amber-600' },
   FAILED: { label: 'Failed', dot: 'bg-red-400', bg: 'bg-red-50 text-red-600' },
   REFUNDED: { label: 'Refunded', dot: 'bg-rose-400', bg: 'bg-rose-50 text-rose-600' },
+  PROVIDER_RECONCILIATION: { label: 'Reconciling', dot: 'bg-purple-400', bg: 'bg-purple-50 text-purple-700' },
 }
 
 function StatusBadge({ status }: { status: string }) {
