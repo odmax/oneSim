@@ -9,23 +9,21 @@ import { getAppUrl } from '@/lib/config/urls'
 import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
+import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 
 function StatusPill({ status }: { status: string }) {
-  const config: Record<string, { label: string; bg: string; dot: string }> = {
-    ACTIVE: { label: 'Active', bg: 'bg-emerald-50 text-emerald-600', dot: 'bg-emerald-400' },
-    PENDING_ACTIVATION: { label: 'Ready to install', bg: 'bg-amber-50 text-amber-600', dot: 'bg-amber-400' },
-    PENDING: { label: 'Provisioning', bg: 'bg-blue-50 text-blue-600', dot: 'bg-blue-400' },
-    FAILED: { label: 'Provisioning failed', bg: 'bg-red-50 text-red-600', dot: 'bg-red-400' },
-    EXPIRED: { label: 'Expired', bg: 'bg-red-50 text-red-600', dot: 'bg-red-400' },
-    SUSPENDED: { label: 'Suspended', bg: 'bg-orange-50 text-orange-600', dot: 'bg-orange-400' },
-    INACTIVE: { label: 'Inactive', bg: 'bg-gray-50 text-gray-500', dot: 'bg-gray-400' },
-    INSTALLED: { label: 'Installed on device', bg: 'bg-cyan-50 text-cyan-600', dot: 'bg-cyan-400' },
+  const { label, tone } = getEsimStatusLabel(status)
+  const styles: Record<string, { bg: string; dot: string }> = {
+    success: { bg: 'bg-emerald-50 text-emerald-600', dot: 'bg-emerald-400' },
+    warn: { bg: 'bg-amber-50 text-amber-600', dot: 'bg-amber-400' },
+    danger: { bg: 'bg-red-50 text-red-600', dot: 'bg-red-400' },
+    neutral: { bg: 'bg-gray-50 text-gray-600', dot: 'bg-gray-400' },
   }
-  const c = config[status] || { label: status, bg: 'bg-gray-50 text-gray-600', dot: 'bg-gray-400' }
+  const s = styles[tone] || styles.neutral
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${c.bg}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${c.dot}`} />
-      {c.label}
+    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${s.bg}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
+      {label}
     </span>
   )
 }
@@ -106,7 +104,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                   <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Delivery</th>
                   <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
                   <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Expires</th>
-                  {isAdmin && <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>}
+                  <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -151,17 +149,12 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                       <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
                         {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '—'}
                       </td>
-                       {isAdmin && (
-                        <td className="whitespace-nowrap px-5 py-4">
+                       <td className="whitespace-nowrap px-5 py-4">
                           <div className="flex flex-col gap-1.5">
-                            {/* Top Up */}
-                            {['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && esim.iccid && (
-                              <Link href={`/business/esims/${esim.id}/top-up`} className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Top Up</Link>
-                            )}
-                            {/* Refresh Status */}
-                            <form action={syncEsimStatusAction.bind(null, esim.id)}>
-                              <button type="submit" className="text-xs font-medium text-cyan-600 hover:text-cyan-700">Refresh Status</button>
-                            </form>
+                            {/* View eSIM — available to all users */}
+                            <Link href={`/business/esims/${esim.id}`} className="text-xs font-medium text-cyan-600 hover:text-cyan-700 underline">
+                              View eSIM
+                            </Link>
                             {/* View QR Code — visible regardless of customer assignment */}
                             <QrCodeButton esim={{
                               esimId: esim.id, iccid: esim.iccid,
@@ -170,42 +163,53 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                               status: esim.status,
                               customerName: esim.customer?.name || null,
                             }} />
-                            {/* Share Actions */}
-                            <ShareActions
-                              esimId={esim.id}
-                              iccid={esim.iccid}
-                              activationCode={esim.activationCode}
-                              qrCodeUrl={esim.qrCodeUrl}
-                              packageName={snapName}
-                              whatsAppUrl={whatsAppUrl}
-                              customerEmail={esim.customer?.email}
-                            />
-                            {/* Assign / Manage */}
-                            {esim.customer ? (
+                            {isAdmin && (
                               <>
-                                <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
-                                {esim.deliveryStatus === 'NOT_SENT' ? (
-                                  <form action={sendToCustomer}>
-                                    <input type="hidden" name="esimId" value={esim.id} />
-                                    <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Send to Customer</button>
-                                  </form>
+                                {/* Top Up */}
+                                {['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && esim.iccid && (
+                                  <Link href={`/business/esims/${esim.id}/top-up`} className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Top Up</Link>
+                                )}
+                                {/* Refresh Status */}
+                                <form action={syncEsimStatusAction.bind(null, esim.id)}>
+                                  <button type="submit" className="text-xs font-medium text-cyan-600 hover:text-cyan-700">Refresh Status</button>
+                                </form>
+                                {/* Share Actions */}
+                                <ShareActions
+                                  esimId={esim.id}
+                                  iccid={esim.iccid}
+                                  activationCode={esim.activationCode}
+                                  qrCodeUrl={esim.qrCodeUrl}
+                                  packageName={snapName}
+                                  whatsAppUrl={whatsAppUrl}
+                                  customerEmail={esim.customer?.email}
+                                />
+                                {/* Assign / Manage */}
+                                {esim.customer ? (
+                                  <>
+                                    <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
+                                    {esim.deliveryStatus === 'NOT_SENT' ? (
+                                      <form action={sendToCustomer}>
+                                        <input type="hidden" name="esimId" value={esim.id} />
+                                        <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Send to Customer</button>
+                                      </form>
+                                    ) : (
+                                      <span className="text-xs text-gray-400">Sent {esim.deliveredAt ? new Date(esim.deliveredAt).toLocaleDateString() : ''}</span>
+                                    )}
+                                  </>
                                 ) : (
-                                  <span className="text-xs text-gray-400">Sent {esim.deliveredAt ? new Date(esim.deliveredAt).toLocaleDateString() : ''}</span>
+                                  <form action={assignESIM} className="flex gap-1.5">
+                                    <input type="hidden" name="esimId" value={esim.id} />
+                                    <select name="customerId" required className="rounded-md border border-gray-200 px-2 py-1 text-xs">
+                                      <option value="">Assign to...</option>
+                                      {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                    </select>
+                                    <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Assign</button>
+                                  </form>
                                 )}
                               </>
-                            ) : (
-                              <form action={assignESIM} className="flex gap-1.5">
-                                <input type="hidden" name="esimId" value={esim.id} />
-                                <select name="customerId" required className="rounded-md border border-gray-200 px-2 py-1 text-xs">
-                                  <option value="">Assign to...</option>
-                                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                </select>
-                                <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Assign</button>
-                              </form>
                             )}
                           </div>
                         </td>
-                      )}
                     </tr>
                   )
                 })}

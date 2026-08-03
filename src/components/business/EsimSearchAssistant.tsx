@@ -3,6 +3,7 @@
 import { useState } from 'react'
 
 interface ParsedQuery {
+  rawQuery: string
   country: string | null
   region: string | null
   dataGB: number | null
@@ -13,7 +14,7 @@ interface ParsedQuery {
 
 function parseQuery(text: string): ParsedQuery {
   const lower = text.toLowerCase()
-  const result: ParsedQuery = { country: null, region: null, dataGB: null, validityDays: null, maxBudget: null, cheapest: false }
+  const result: ParsedQuery = { rawQuery: text.trim(), country: null, region: null, dataGB: null, validityDays: null, maxBudget: null, cheapest: false }
 
   if (/\bcheapest\b/i.test(text)) result.cheapest = true
   if (/\blowest\b/i.test(text)) result.cheapest = true

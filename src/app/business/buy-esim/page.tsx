@@ -4,8 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import { requiresTravelDateForPackage } from '@/lib/providers/travel-date-utils'
-import { PackageBuyCard } from './PackageBuyCard'
 import { SearchablePackageGrid } from './SearchablePackageGrid'
+import { buildPackageSearchText } from '@/lib/packages/search-text'
 
 export default async function BuyESIMPage({
   searchParams
@@ -20,21 +20,17 @@ export default async function BuyESIMPage({
 
   const packages = await prisma.eSIMPackage.findMany({
     where: { isActive: true, hiddenFromCatalog: false, archivedAt: null, source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } },
-    orderBy: { priceUSD: 'asc' }
+    include: { providerPackage: { select: { country: true, region: true, normalizedCountry: true, providerRawData: true } } },
+    orderBy: { priceUSD: 'asc' },
   })
 
-  const providerPackageIds = [...new Set(packages.map(p => p.providerPackageId).filter((id): id is string => !!id))]
-  const providerPackages = providerPackageIds.length
-    ? await prisma.providerPackage.findMany({
-        where: { id: { in: providerPackageIds } },
-        select: { id: true, providerRawData: true },
-      })
-    : []
-  const requiresTravelDateByPackage = new Map(providerPackages.map(pp => [pp.id, requiresTravelDateForPackage(pp)]))
-  const packagesWithRequirement = packages.map(pkg => ({
-    ...stripPackageProviderFields(pkg),
-    requiresTravelDate: pkg.providerPackageId ? (requiresTravelDateByPackage.get(pkg.providerPackageId) ?? false) : false,
-  }))
+  const packagesWithRequirement = packages.map(pkg => {
+    const searchText = buildPackageSearchText(pkg)
+    const requiresTravelDate = pkg.providerPackage ? requiresTravelDateForPackage(pkg.providerPackage) : false
+    const stripped = stripPackageProviderFields(pkg)
+    delete (stripped as any).providerPackage
+    return { ...stripped, _searchText: searchText, requiresTravelDate }
+  })
 
   const business = await prisma.business.findUnique({
     where: { id: session.user.businessId! },
