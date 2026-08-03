@@ -267,6 +267,7 @@ model Provider {
   pv2FeaturePackOverrides PV2ProviderFeaturePackOverride[]
   purchases               ESIMPurchase[]
   billingRecords          BillingRecord[]                  @relation("BillingRecordProvider")
+  inventoryReservations   ProviderInventoryReservation[]
   configurationRules      PackageConfigurationRule[]       @relation("ProviderConfigurationRules")
 
   @@index([pv2TemplateId])
@@ -557,6 +558,7 @@ model ESIMPurchase {
   billingRecords     BillingRecord[]      @relation("BillingRecordOrder")
   purchaseQuote      PurchaseQuote?       @relation(fields: [purchaseQuoteId], references: [id], onDelete: SetNull)
   packagePriceSnapshot PackagePriceSnapshot? @relation(fields: [packagePriceSnapshotId], references: [id], onDelete: SetNull)
+  inventoryReservations ProviderInventoryReservation[]
 
   @@map("esim_purchases")
 }
@@ -2915,4 +2917,33 @@ model SystemJobLock {
   updatedAt   DateTime @updatedAt
 
   @@map("system_job_locks")
+}
+
+model ProviderInventoryReservation {
+  id                          String   @id @default(cuid())
+  providerId                  String
+  orderId                     String?
+  reservationKey              String   @unique
+  requestedQuantity           Int
+  reservedQuantity            Int      @default(0)
+  fulfilledQuantity           Int      @default(0)
+  releasedQuantity            Int      @default(0)
+  status                      String   @default("PENDING")
+  providerReservationReference String?
+  expiresAt                   DateTime
+  fulfilledAt                 DateTime?
+  releasedAt                  DateTime?
+  metadata                    Json?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  provider  Provider      @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  order     ESIMPurchase? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([providerId])
+  @@index([orderId])
+  @@index([status])
+  @@index([expiresAt])
+  @@index([reservationKey])
+  @@map("provider_inventory_reservations")
 }
