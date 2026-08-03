@@ -6,45 +6,34 @@ import { authOptions } from '@/lib/auth/config'
 import { revalidatePath } from 'next/cache'
 import { transitionOrder, createTimelineEvent } from '@/lib/services/orders/order-state-machine'
 import { releaseReservedFunds, refundCapturedFunds } from '@/lib/services/orders/wallet-actions'
+import { recoverOrder } from '@/lib/services/orders/recovery'
 
 export async function retryFailedOrder(orderId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
 
-  const order = await prisma.eSIMPurchase.findUnique({
-    where: { id: orderId },
-    include: { business: true, provider: true },
-  })
-  if (!order) throw new Error('Order not found')
-  if (order.status !== 'FAILED') throw new Error('Only FAILED orders can be retried')
-  if (order.retryCount >= order.maxRetries) throw new Error('Max retries reached')
-
-  // Release any reserved funds first (they might still be held)
-  const reserveAmount = Number(order.totalAmount)
-  await releaseReservedFunds(orderId, order.businessId, reserveAmount)
-
-  // Reset order for retry
-  await prisma.eSIMPurchase.update({
-    where: { id: orderId },
-    data: {
-      retryCount: { increment: 1 },
-      lastRetryAt: new Date(),
-      retryReason: 'Manual retry',
-      failureReason: null,
-      providerErrorCode: null,
-      providerErrorMessage: null,
-    },
-  })
-
-  await createTimelineEvent(orderId, {
-    eventType: 'RETRY_INITIATED',
-    message: `Retry #${order.retryCount + 1}/${order.maxRetries} initiated`,
-    createdById: session.user.id,
-  })
-
+  const recovery = await recoverOrder(orderId)
   revalidatePath(`/admin/orders/${orderId}`)
   revalidatePath('/admin/orders')
-  return { success: true, message: `Retry #${order.retryCount + 1} initiated. Funds released.` }
+  return {
+    success: recovery.success,
+    action: recovery.action,
+    message: recovery.message || formatRecoveryMessage(recovery),
+    status: recovery.status,
+    retryCount: recovery.retryCount,
+  }
+}
+
+function formatRecoveryMessage(r: { action: string; message?: string }): string {
+  switch (r.action) {
+    case 'RESUME_LOCAL_FINALIZATION': return 'Local finalization resumed.'
+    case 'POLL_PROVIDER': return 'Provider status checked; order is still processing.'
+    case 'REDISPATCH_PROVIDER': return 'Provider request retried.'
+    case 'RECONCILIATION_REQUIRED': return 'Order requires reconciliation.'
+    case 'NOT_RETRYABLE': return 'Order is not retryable.'
+    case 'ALREADY_COMPLETE': return 'Order is already complete.'
+    default: return r.message || 'Recovery attempted.'
+  }
 }
 
 export async function cancelOrder(orderId: string) {
