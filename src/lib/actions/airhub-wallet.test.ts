@@ -69,10 +69,13 @@ describe('Airhub Wallet — Full Integration', () => {
     vi.unstubAllGlobals()
   })
 
-  it('partnercode is sent as query parameter in URL', async () => {
+  it('partnercode is sent as query parameter on the legacy fallback URL', async () => {
     let capturedUrl = ''
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       capturedUrl = url
+      if (url.includes('/GetWallet')) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ isSuccess: true, message: 'ok', getwallet: {} }) }
+      }
       return { ok: true, status: 200, text: async () => JSON.stringify({ balance: 50 }) }
     }))
 

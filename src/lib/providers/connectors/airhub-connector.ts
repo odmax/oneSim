@@ -82,7 +82,124 @@ function logBalanceDiagnostics(
   if (!balanceDiagnosticsEnabled()) return
   const sanitized = sanitizeDiagnostic(ctx.data)
   const tag = scope === 'purchase' ? '[AIRHUB_PURCHASE_RESPONSE]' : '[AIRHUB_WALLET_RESPONSE]'
-  console.log(`${tag} diagCorrelation=${airhubDiagCorrelationId} httpStatus=${ctx.httpStatus} isSuccess=${ctx.data?.isSuccess} message=${String(sanitized?.message ?? '').substring(0, 500)} partnerCode=${safeDiagValue(ctx.partnerCode)} tokenFingerprint=${tokenFingerprint(ctx.token)} topKeys=${Object.keys(ctx.data ?? {}).join(',')} balanceFields=${JSON.stringify(probeBalanceFields(ctx.data))} full=${JSON.stringify(sanitized)}`)
+  const base = `${tag} diagCorrelation=${airhubDiagCorrelationId} httpStatus=${ctx.httpStatus} isSuccess=${ctx.data?.isSuccess} message=${String(sanitized?.message ?? '').substring(0, 500)} partnerCode=${safeDiagValue(ctx.partnerCode)} tokenFingerprint=${tokenFingerprint(ctx.token)} topKeys=${Object.keys(ctx.data ?? {}).join(',')}`
+  if (scope === 'wallet') {
+    console.log(`${base} getwalletType=${describeDiagnosticValue(ctx.data?.getwallet)} balanceFields=${JSON.stringify(probeBalanceFields(ctx.data))} getwallet=${JSON.stringify(sanitized?.getwallet ?? null)} full=${JSON.stringify(sanitized)}`)
+  } else {
+    console.log(`${base} balanceFields=${JSON.stringify(probeBalanceFields(ctx.data))} full=${JSON.stringify(sanitized)}`)
+  }
+}
+
+/** Human-readable type of a value for safe, key-only error messages. */
+export function describeDiagnosticValue(v: unknown): string {
+  if (v === null) return 'null'
+  if (v === undefined) return 'missing'
+  if (Array.isArray(v)) return 'array'
+  if (typeof v === 'object') return 'object'
+  if (typeof v === 'string') return v.trim() ? 'string' : 'empty string'
+  if (typeof v === 'number') return isFinite(v) ? 'number' : 'NaN'
+  return typeof v
+}
+
+export interface NormalizedWalletBalance {
+  success: boolean
+  balance: number
+  currency: string
+  balancePath: string
+  getwalletType: string
+  reason?: string
+}
+
+const GETWALLET_BALANCE_KEYS = [
+  'balance', 'Balance', 'wallet', 'walletBalance', 'wallet_balance',
+  'availableBalance', 'available_balance', 'available',
+  'amount', 'runningBalance', 'running_balance', 'currentBalance', 'current_balance',
+  'totalBalance', 'total_balance', 'data',
+]
+
+/** Coerces number / numeric string to a finite number. Rejects "NA", empty, NaN. */
+function coerceBalanceNumber(raw: unknown): number | null {
+  if (typeof raw === 'number') return isFinite(raw) ? raw : null
+  if (typeof raw === 'string') {
+    const t = raw.trim()
+    if (!t) return null
+    if (t.toUpperCase() === 'NA') return null
+    const cleaned = t.replace(/,/g, '')
+    if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return null
+    const n = parseFloat(cleaned)
+    return isNaN(n) ? null : n
+  }
+  return null
+}
+
+/** Recursively finds a numeric balance inside getwallet (number, numeric string, object, array, JSON string). */
+function extractWalletBalance(node: unknown, depth = 0): { raw: number; path: string } | null {
+  if (node == null || depth > 4) return null
+  const direct = coerceBalanceNumber(node)
+  if (direct !== null) return { raw: direct, path: '$' }
+  if (typeof node === 'string') {
+    const t = node.trim()
+    if (t.startsWith('{') || t.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(t)
+        return extractWalletBalance(parsed, depth + 1)
+      } catch { return null }
+    }
+    return null
+  }
+  if (!node || typeof node !== 'object') return null
+  if (Array.isArray(node)) {
+    if (node.length === 0) return null
+    const first = extractWalletBalance(node[0], depth + 1)
+    return first ? { raw: first.raw, path: `[0]${first.path === '$' ? '' : '.' + first.path}` } : null
+  }
+  for (const key of GETWALLET_BALANCE_KEYS) {
+    if (!(key in node)) continue
+    const inner = extractWalletBalance((node as any)[key], depth + 1)
+    if (inner) return { raw: inner.raw, path: inner.path === '$' ? key : `${key}.${inner.path}` }
+  }
+  return null
+}
+
+/** Currency priority: response currency → getwallet currency → configured default → USD. */
+function extractWalletCurrency(data: any, getwallet: unknown, fallback?: string | null): string {
+  const pick = (node: any): string | null => {
+    if (!node || typeof node !== 'object') return null
+    for (const key of ['currency', 'currencyCode', 'currency_code', 'Currency']) {
+      const v = node[key]
+      if (typeof v === 'string' && v.trim()) return v.trim()
+      if (typeof v === 'number') return String(v)
+    }
+    return null
+  }
+  const gw = (getwallet && typeof getwallet === 'object' && !Array.isArray(getwallet)) ? getwallet : null
+  return pick(data) || pick(data?.data) || pick(gw) || (fallback ? String(fallback) : null) || 'USD'
+}
+
+/**
+ * Normalizes the AirHub wallet payload into { balance, currency }.
+ * getwallet may be a number, numeric string, object, array, or JSON-encoded string.
+ * On failure the reason only includes safe response keys and the detected getwallet type.
+ */
+export function normalizeAirHubWalletBalance(data: any, fallbackCurrency?: string | null): NormalizedWalletBalance {
+  const root = data ?? {}
+  const getwallet = root.getwallet !== undefined ? root.getwallet : root
+  const getwalletType = describeDiagnosticValue(getwallet)
+  const extracted = extractWalletBalance(getwallet)
+  if (extracted) {
+    return {
+      success: true,
+      balance: extracted.raw,
+      currency: extractWalletCurrency(root, getwallet, fallbackCurrency),
+      balancePath: extracted.path,
+      getwalletType,
+    }
+  }
+  const safeKeys = Object.keys(root).join(', ')
+  const reason = root.getwallet === undefined
+    ? `AirHub wallet balance unavailable: response keys (${safeKeys}) contained no numeric balance field`
+    : `AirHub wallet balance unavailable: getwallet is ${getwalletType} but no numeric balance field was found`
+  return { success: false, balance: 0, currency: fallbackCurrency || 'USD', balancePath: '', getwalletType, reason }
 }
 
 function isTokenExpired(expiry: unknown, bufferMs = 5 * 60 * 1000): boolean {
@@ -1054,21 +1171,12 @@ export class AirHubConnector implements IProviderConnector {
       const nested = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
       console.log(`[AIRHUB_WALLET] httpStatus=${response.status} topKeys=${topKeys.join(',')} nestedKeys=${nested.join(',')}`)
 
-      // Robust balance parsing
-      const balanceFields = ['balance', 'Balance', 'walletBalance', 'wallet_balance', 'currentBalance', 'current_balance',
-        'availableBalance', 'available_balance', 'amount', 'data.balance', 'data.Balance', 'data.walletBalance',
-        'data.wallet_balance', 'data.currentBalance', 'data.current_balance', 'data.availableBalance',
-        'data.available_balance', 'data.amount', 'response.balance', 'response.walletBalance']
-      let balanceRaw: any = null
-      let balanceFieldPath = ''
-      for (const f of balanceFields) {
-        const parts = f.split('.')
-        let v: any = data
-        for (const p of parts) { if (v && typeof v === 'object') v = v[p]; else { v = null; break } }
-        if (v != null) { balanceRaw = v; balanceFieldPath = f; break }
-      }
+      // Normalize the real { isSuccess, message, getwallet } shape (number | string | object | array | JSON string).
+      const parse = normalizeAirHubWalletBalance(data, cfg.currency)
+      let balanceRaw: number | null = parse.success ? parse.balance : null
+      let balanceFieldPath = parse.success ? parse.balancePath : ''
 
-      if (balanceRaw == null) {
+      if (!parse.success) {
         const tryLegacy = async () => {
           const legUrl = `${baseUrl.replace(/\/$/, '')}/api/ESIM/get_wallet_invidual?partnercode=${encodeURIComponent(String(partnerCode))}`
           const lr = await fetch(legUrl, { headers: { 'Authorization': `Bearer ${this.token}`, 'Accept': 'application/json' }, signal: AbortSignal.timeout(15000) })
@@ -1076,29 +1184,20 @@ export class AirHubConnector implements IProviderConnector {
         }
         const legacy = await tryLegacy()
         if (legacy) {
-          const lb = legacy.balance ?? legacy.Balance ?? legacy.walletBalance ?? legacy.data?.balance
-          if (lb != null) { balanceRaw = lb; balanceFieldPath = 'legacy:get_wallet_invidual.balance' }
+          const legacyParse = normalizeAirHubWalletBalance(legacy, cfg.currency)
+          if (legacyParse.success) {
+            balanceRaw = legacyParse.balance
+            balanceFieldPath = `legacy:get_wallet_invidual.${legacyParse.balancePath}`
+          }
         }
       }
 
       if (balanceRaw == null) {
-        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: `No balance field found. Keys: ${topKeys.join(', ')}${nested.length ? '; nested: ' + nested.join(', ') : ''}` } }
+        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: parse.reason || `No balance field found. Keys: ${topKeys.join(', ')}` } }
       }
 
-      const rawStr = String(balanceRaw).replace(/,/g, '')
-      const balance = parseFloat(rawStr)
-      if (isNaN(balance)) {
-        return { success: false, error: { code: 'MALFORMED_RESPONSE', message: `Balance "${String(balanceRaw).substring(0, 50)}" is not a valid number` } }
-      }
-
-      // Currency parsing
-      const currencyFields = ['currency', 'currencyCode', 'currency_code', 'Currency']
-      let curr: string | null = null
-      for (const f of currencyFields) {
-        if (data[f]) { curr = String(data[f]); break }
-        if (data.data?.[f]) { curr = String(data.data[f]); break }
-      }
-      const currency = curr || cfg.currency || 'USD'
+      const balance = balanceRaw
+      const currency = extractWalletCurrency(data, data.getwallet, cfg.currency)
 
       // Transaction history extraction
       const txFields = ['transactions', 'transactionHistory', 'transaction_history', 'walletHistory', 'wallet_history',

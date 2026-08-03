@@ -25,7 +25,6 @@ import { MappingValidator } from '@/components/admin/providers/MappingValidator'
 import { TestPurchasePanel } from '@/components/admin/providers/TestPurchasePanel'
 import { requiresTravelDateForPackage } from '@/lib/providers/travel-date-utils'
 import { TelnaDiscoveryPanel } from '@/components/admin/providers/telna/TelnaDiscoveryPanel'
-import { ProviderBalanceCard } from '@/components/admin/providers/ProviderBalanceCell'
 import { ProviderRoamingProfilesCard } from '@/components/admin/providers/ProviderRoamingProfilesCard'
 import { RoutingSimulator } from '@/components/admin/providers/RoutingSimulator'
 
@@ -77,7 +76,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   const hasCredentials = !!(safeConfig.username || safeConfig.userName)
 
   const packageCount = await prisma.providerPackage.count({ where: { providerId: provider.id } }).catch(() => 0)
-  const wallet = (provider.code === 'AIRHUB' || provider.code === 'CHOICE')
+  const wallet = providerSupports(provider, 'BALANCE')
     ? await prisma.providerWallet.findUnique({ where: { providerId: provider.id } }).catch(() => null)
     : null
   const walletTransactions = wallet
@@ -416,13 +415,8 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
         <ProviderCapabilityMatrix provider={provider} />
       </div>
 
-      {/* Running Balance */}
-      <div className="mb-6">
-        <ProviderBalanceCard providerId={provider.id} />
-      </div>
-
-      {/* AirHub/Choice Wallet (Phase 5C) */}
-      {(provider.code === 'AIRHUB' || provider.code === 'CHOICE') && (
+      {/* Provider Wallet — single balance source for any provider with the BALANCE capability */}
+      {providerSupports(provider, 'BALANCE') && (
         <div className="mb-6">
           <ProviderWalletCard
             providerId={provider.id}

@@ -42,8 +42,13 @@ export default function ProviderWalletCard({
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
   const [source, setSource] = useState<string | null>(initialSource || null)
   const [transactions, setTransactions] = useState<WalletTransaction[]>(initialTransactions || [])
+  const [hasBalance, setHasBalance] = useState<boolean>(
+    () => initialBalance != null && !(initialStatus === 'ERROR' && initialBalance === 0),
+  )
 
   const isLowBalance = initialThreshold != null && balance != null && balance < initialThreshold
+  const connected = status === 'OK' && hasBalance
+  const showBalance = hasBalance && balance != null
 
   async function handleRefresh() {
     setSyncing(true)
@@ -51,6 +56,7 @@ export default function ProviderWalletCard({
     try {
       const result = await fetchAirhubWallet(providerId, 'MANUAL')
       if (result.success && result.data) {
+        setHasBalance(true)
         setBalance(result.data.balance)
         setCurrency(result.data.currency)
         setLastSync(result.data.lastSyncedAt || null)
@@ -71,15 +77,19 @@ export default function ProviderWalletCard({
     } finally { setSyncing(false) }
   }
 
-  const statusBadge = status === 'OK' ? 'bg-emerald-100 text-emerald-700' :
-    status === 'LOW_BALANCE' ? 'bg-amber-100 text-amber-700' :
-    status === 'ERROR' ? 'bg-red-100 text-red-700' :
-    status === 'UNSUPPORTED' ? 'bg-gray-100 text-gray-400' :
+  const displayStatus = status === 'OK' ? (connected ? 'OK' : 'NO_BALANCE') : status
+
+  const statusBadge = displayStatus === 'OK' ? 'bg-emerald-100 text-emerald-700' :
+    displayStatus === 'LOW_BALANCE' ? 'bg-amber-100 text-amber-700' :
+    displayStatus === 'ERROR' ? 'bg-red-100 text-red-700' :
+    displayStatus === 'UNSUPPORTED' ? 'bg-gray-100 text-gray-400' :
     'bg-gray-100 text-gray-500'
 
-  const statusLabel = status === 'LOW_BALANCE' ? 'Low Balance' :
-    status === 'ERROR' ? 'Error' :
-    status === 'UNSUPPORTED' ? 'Unsupported' : status || 'Unknown'
+  const statusLabel = displayStatus === 'OK' ? 'Connected' :
+    displayStatus === 'LOW_BALANCE' ? 'Low Balance' :
+    displayStatus === 'ERROR' ? 'Error' :
+    displayStatus === 'NO_BALANCE' ? 'Not Connected' :
+    displayStatus === 'UNSUPPORTED' ? 'Unsupported' : displayStatus || 'Unknown'
 
   const sourceLabel = source === 'LIVE' ? 'Live' :
     source === 'CACHED' ? 'Cached' :
@@ -112,27 +122,26 @@ export default function ProviderWalletCard({
           <div className={`mb-4 rounded-lg p-3 text-sm ${feedback.type === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>{feedback.msg}</div>
         )}
 
-        {balance == null ? (
-          <div className="text-center py-6">
-            <p className="text-sm text-gray-400">Balance unavailable</p>
-            {error && <p className="text-xs text-red-500 mt-1 truncate">{error}</p>}
-          </div>
-        ) : (
+        {showBalance ? (
           <>
             <div className="grid gap-4 sm:grid-cols-2 mb-4">
               <div className={`rounded-lg p-4 ${isLowBalance ? 'bg-gradient-to-r from-amber-50 to-white border border-amber-100' : 'bg-gradient-to-r from-emerald-50 to-white border border-emerald-100'}`}>
                 <p className="text-xs text-gray-500 font-medium uppercase">Balance</p>
                 <p className={`text-2xl font-bold mt-1 ${isLowBalance ? 'text-amber-600' : 'text-emerald-700'}`}>
-                  ${balance.toFixed(2)} <span className="text-sm font-normal text-gray-500">{currency}</span>
+                  ${balance!.toFixed(2)} <span className="text-sm font-normal text-gray-500">{currency}</span>
                 </p>
                 {isLowBalance && <p className="text-xs text-amber-600 mt-1">Below threshold of ${initialThreshold!.toFixed(2)}</p>}
               </div>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between"><span className="text-gray-500">Last Synced</span><span className="text-gray-700">{lastSync ? new Date(lastSync).toLocaleString() : 'Never'}</span></div>
-                <div className="flex justify-between"><span className="text-gray-500">Connection</span><span className={status === 'OK' ? 'text-emerald-600' : 'text-red-600'}>{status === 'OK' ? 'Connected' : status || 'Unknown'}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Connection</span><span className={connected ? 'text-emerald-600' : 'text-red-600'}>{connected ? 'Connected' : status === 'ERROR' ? 'Error' : 'Not Connected'}</span></div>
                 {initialThreshold != null && <div className="flex justify-between"><span className="text-gray-500">Alert Threshold</span><span className="text-gray-700">${initialThreshold.toFixed(2)}</span></div>}
               </div>
             </div>
+
+            {status === 'ERROR' && (
+              <p className="mb-3 text-xs text-amber-600 truncate">{error || 'Refresh failed — showing last known balance'}</p>
+            )}
 
             {/* Transaction History */}
             {transactions.length > 0 ? (
@@ -172,9 +181,14 @@ export default function ProviderWalletCard({
               <p className="text-xs text-gray-400 text-center py-3">No transaction history returned by provider</p>
             )}
           </>
+        ) : (
+          <div className="text-center py-6">
+            <p className="text-sm text-gray-400">Balance unavailable</p>
+            {error && <p className="text-xs text-red-500 mt-1 truncate">{error}</p>}
+          </div>
         )}
 
-        {error && balance == null && <p className="mt-3 text-xs text-red-500 truncate">{error}</p>}
+        {!showBalance && error && <p className="mt-3 text-xs text-red-500 truncate">{error}</p>}
       </div>
     </div>
   )

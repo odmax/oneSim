@@ -33,7 +33,7 @@ vi.mock('@/lib/services/providers/health-monitor', () => ({
 }))
 
 import { prisma } from '@/lib/prisma'
-import { AirHubConnector, tokenFingerprint } from './airhub-connector'
+import { AirHubConnector, tokenFingerprint, normalizeAirHubWalletBalance, describeDiagnosticValue } from './airhub-connector'
 
 const mockPrisma = vi.mocked(prisma)
 
@@ -1733,6 +1733,112 @@ describe('AirHubConnector', () => {
       expect(purchaseEntry).toBeTruthy()
       expect(purchaseEntry).toContain(`tokenFingerprint=${expectedFp}`)
       logSpy.mockRestore()
+    })
+  })
+
+  describe('normalizeAirHubWalletBalance — getwallet shape', () => {
+    it('accepts a direct numeric getwallet value', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, message: 'ok', getwallet: 125.5 })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(125.5)
+      expect(r.balancePath).toBe('$')
+    })
+
+    it('accepts a numeric string getwallet value', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: '125.50' })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(125.5)
+    })
+
+    it('accepts a nested getwallet.balance object', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: { balance: 125.5 } })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(125.5)
+      expect(r.balancePath).toBe('balance')
+    })
+
+    it('accepts getwallet.Balance as a numeric string', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: { Balance: '125.50' } })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(125.5)
+    })
+
+    it('accepts an array with a first-item balance', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 125.5 }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(125.5)
+      expect(r.balancePath).toBe('[0].balance')
+    })
+
+    it('accepts a JSON-encoded object/array string', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: '[{"balance":"125.50"}]' })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(125.5)
+    })
+
+    it('preserves a valid zero balance as 0', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: { balance: 0 } })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(0)
+    })
+
+    it('rejects "NA" without echoing the value', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: false, message: 'NA', getwallet: 'NA' })
+      expect(r.success).toBe(false)
+      expect(r.reason).toContain('getwallet is string')
+      expect(r.reason).not.toContain('"NA"')
+    })
+
+    it('rejects an empty getwallet string', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: '' })
+      expect(r.success).toBe(false)
+      expect(r.reason).toContain('empty string')
+    })
+
+    it('rejects null/undefined getwallet', () => {
+      expect(normalizeAirHubWalletBalance({ isSuccess: true, getwallet: null }).success).toBe(false)
+      expect(normalizeAirHubWalletBalance({ isSuccess: true }).success).toBe(false)
+    })
+
+    it('rejects an unknown object with a safe descriptive error', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, message: 'ok', getwallet: { foo: 'bar' } })
+      expect(r.success).toBe(false)
+      expect(r.reason).toContain('getwallet is object')
+      expect(r.reason).toContain('no numeric balance field was found')
+      expect(r.reason).not.toContain('bar')
+    })
+
+    it('prioritizes provider response currency over getwallet currency', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, currency: 'EUR', getwallet: { balance: 10, currency: 'GBP' } })
+      expect(r.success).toBe(true)
+      expect(r.currency).toBe('EUR')
+    })
+
+    it('uses the getwallet currency when the response has none', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: { balance: 10, currency: 'GBP' } })
+      expect(r.currency).toBe('GBP')
+    })
+
+    it('falls back to the configured default currency, then USD', () => {
+      const withCfg = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: { balance: 10 } }, 'GBP')
+      expect(withCfg.currency).toBe('GBP')
+      const withNone = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: { balance: 10 } })
+      expect(withNone.currency).toBe('USD')
+    })
+
+    it('still accepts the legacy top-level balance shape without getwallet', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, balance: 120.5, currency: 'USD', data: { balance: 120.5, availableBalance: 90 } })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(120.5)
+    })
+
+    it('reports the detected getwallet type for diagnostics', () => {
+      expect(describeDiagnosticValue(null)).toBe('null')
+      expect(describeDiagnosticValue(undefined)).toBe('missing')
+      expect(describeDiagnosticValue([1])).toBe('array')
+      expect(describeDiagnosticValue({})).toBe('object')
+      expect(describeDiagnosticValue('NA')).toBe('string')
+      expect(describeDiagnosticValue('')).toBe('empty string')
     })
   })
 })
