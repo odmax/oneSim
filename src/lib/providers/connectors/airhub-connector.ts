@@ -117,26 +117,81 @@ const GETWALLET_BALANCE_KEYS = [
   'totalBalance', 'total_balance', 'data',
 ]
 
-/** Coerces number / numeric string to a finite number. Rejects "NA", empty, NaN. */
-function coerceBalanceNumber(raw: unknown): number | null {
-  if (typeof raw === 'number') return isFinite(raw) ? raw : null
-  if (typeof raw === 'string') {
-    const t = raw.trim()
-    if (!t) return null
-    if (t.toUpperCase() === 'NA') return null
-    const cleaned = t.replace(/,/g, '')
-    if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return null
-    const n = parseFloat(cleaned)
-    return isNaN(n) ? null : n
-  }
-  return null
+const CURRENCY_CODE_MAP: Record<string, string> = {
+  USD: 'USD', EUR: 'EUR', GBP: 'GBP', ZAR: 'ZAR',
+  NGN: 'NGN', KES: 'KES', GHS: 'GHS', XOF: 'XOF', XAF: 'XAF',
+  CAD: 'CAD', AUD: 'AUD', CHF: 'CHF', CNY: 'CNY', JPY: 'JPY', INR: 'INR',
+  ZMW: 'ZMW', MWK: 'MWK', ETB: 'ETB', TZS: 'TZS', UGX: 'UGX', RWF: 'RWF',
+  BWP: 'BWP', MZN: 'MZN', CDF: 'CDF', ZWL: 'ZWL', GMD: 'GMD', LRD: 'LRD', SLL: 'SLL',
 }
 
-/** Recursively finds a numeric balance inside a value (number, numeric string, object, array, JSON string). */
-function extractWalletBalance(node: unknown, depth = 0): { raw: number; path: string } | null {
+interface ParsedMonetaryValue {
+  value: number | null
+  currency: string | null
+}
+
+/**
+ * Safely parses a numeric or currency-formatted balance string.
+ * Accepts "$0.00", "$5.00", "USD 5.00", "5.00 USD", "1,250.50", "$1,250.50", "  $5.00  ".
+ * Rejects "NA", "N/A", "", null, undefined, NaN, "$", "USD", and non-numeric text.
+ * Recognized symbols: $→USD, €→EUR, £→GBP, R→ZAR (only as a prefix like "R 100.00").
+ * The final normalized string must validate as a plain decimal before conversion.
+ */
+function parseMonetaryValue(raw: unknown): ParsedMonetaryValue {
+  if (typeof raw === 'number') {
+    return isFinite(raw) ? { value: raw, currency: null } : { value: null, currency: null }
+  }
+  if (typeof raw !== 'string') return { value: null, currency: null }
+
+  let s = raw.trim()
+  if (!s) return { value: null, currency: null }
+  const upper = s.toUpperCase()
+  if (upper === 'NA' || upper === 'N/A') return { value: null, currency: null }
+
+  let currency: string | null = null
+
+  // Symbol prefixes/suffixes: $ € £
+  const symbols: Array<[string, string]> = [
+    ['$', 'USD'],
+    ['€', 'EUR'],
+    ['£', 'GBP'],
+  ]
+  for (const [sym, code] of symbols) {
+    if (s.startsWith(sym) || s.endsWith(sym)) {
+      currency = code
+      s = s.split(sym).join('')
+    }
+  }
+
+  // R → ZAR only when clearly a currency prefix such as "R 100.00"
+  if (currency == null && /^R\s+[-]?\d/.test(s)) {
+    currency = 'ZAR'
+    s = s.replace(/^R\s+/, '')
+  }
+
+  // Leading/trailing ISO-4217-style code, only when it is a recognized code
+  if (currency == null) {
+    const lead = upper.match(/^([A-Z]{3})(?:\s|$)/)
+    const trail = upper.match(/([A-Z]{3})$/)
+    const code = (lead && lead[1]) || (trail && trail[1]) || null
+    if (code && CURRENCY_CODE_MAP[code]) {
+      currency = CURRENCY_CODE_MAP[code]
+      s = s.replace(new RegExp(`^${code}\\s*|\\s*${code}$`, 'i'), '')
+    }
+  }
+
+  // Thousands separators (commas), then final validation
+  s = s.replace(/,/g, '').trim()
+  if (!/^-?\d+(\.\d+)?$/.test(s)) return { value: null, currency: null }
+  const n = Number(s)
+  return Number.isNaN(n) ? { value: null, currency: null } : { value: n, currency }
+}
+
+/** Recursively finds a numeric balance inside a value (number, numeric/monetary string, object, array, JSON string). */
+function extractWalletBalance(node: unknown, depth = 0): { raw: number; currency: string | null; path: string } | null {
   if (node == null || depth > 4) return null
-  const direct = coerceBalanceNumber(node)
-  if (direct !== null) return { raw: direct, path: '$' }
+  const direct = parseMonetaryValue(node)
+  if (direct.value !== null) return { raw: direct.value, currency: direct.currency, path: '$' }
   if (typeof node === 'string') {
     const t = node.trim()
     if (t.startsWith('{') || t.startsWith('[')) {
@@ -151,12 +206,12 @@ function extractWalletBalance(node: unknown, depth = 0): { raw: number; path: st
   if (Array.isArray(node)) {
     if (node.length === 0) return null
     const first = extractWalletBalance(node[0], depth + 1)
-    return first ? { raw: first.raw, path: `[0]${first.path === '$' ? '' : '.' + first.path}` } : null
+    return first ? { raw: first.raw, currency: first.currency, path: `[0]${first.path === '$' ? '' : '.' + first.path}` } : null
   }
   for (const key of GETWALLET_BALANCE_KEYS) {
     if (!(key in node)) continue
     const inner = extractWalletBalance((node as any)[key], depth + 1)
-    if (inner) return { raw: inner.raw, path: inner.path === '$' ? key : `${key}.${inner.path}` }
+    if (inner) return { raw: inner.raw, currency: inner.currency, path: inner.path === '$' ? key : `${key}.${inner.path}` }
   }
   return null
 }
@@ -229,7 +284,7 @@ function extractWalletRow(row: any, index: number, partnerCode?: string | number
     path: `[${index}]${extracted.path === '$' ? '' : '.' + extracted.path}`,
     partnerCodeMatch: partnerCode != null && rowPartner != null && rowPartner === String(partnerCode).trim(),
     active: rowLooksActive(row),
-    currency: pickCurrency(row),
+    currency: extracted.currency || pickCurrency(row),
   }
 }
 
@@ -243,9 +298,9 @@ function chooseWalletRow(rows: WalletRowCandidate[], partnerCode?: string | numb
   return rows[0]
 }
 
-/** Currency priority: matched wallet row → response → configured default → USD. */
-function extractWalletCurrency(data: any, chosenRow: unknown, fallback?: string | null): string {
-  return pickCurrency(chosenRow) || pickCurrency(data) || pickCurrency(data?.data) || (fallback ? String(fallback) : null) || 'USD'
+/** Currency priority: matched wallet row (incl. parsed symbol/code) → response → configured default → USD. */
+function extractWalletCurrency(data: any, chosen: WalletRowCandidate | null, fallback?: string | null): string {
+  return (chosen && chosen.currency) || pickCurrency(data) || pickCurrency(data?.data) || (fallback ? String(fallback) : null) || 'USD'
 }
 
 /**
@@ -290,7 +345,7 @@ export function normalizeAirHubWalletBalance(
         path: extracted.path,
         partnerCodeMatch: false,
         active: false,
-        currency: pickCurrency(getwallet),
+        currency: extracted.currency || pickCurrency(getwallet),
       }
     }
   }
@@ -299,7 +354,7 @@ export function normalizeAirHubWalletBalance(
     return {
       success: true,
       balance: chosen.balance,
-      currency: extractWalletCurrency(root, chosen.row, fallbackCurrency),
+      currency: extractWalletCurrency(root, chosen, fallbackCurrency),
       balancePath: chosen.path,
       getwalletType,
     }

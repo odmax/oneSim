@@ -1921,4 +1921,120 @@ describe('AirHubConnector', () => {
       expect(r.balance).toBe(1)
     })
   })
+
+  describe('normalizeAirHubWalletBalance — currency-formatted balances', () => {
+    it('parses the exact live getwallet array: "$0.00" balance → 0 USD (balance, not amount)', () => {
+      const live = {
+        isSuccess: true,
+        message: 'SuccessFul',
+        getwallet: [
+          {
+            date: '2026-06-08',
+            amount: '$1',
+            type: 'Credit',
+            description: '200652387',
+            balance: '$0.00',
+            planename: '',
+          },
+        ],
+      }
+      const r = normalizeAirHubWalletBalance(live)
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(0)
+      expect(r.currency).toBe('USD')
+      expect(r.balancePath).toBe('[0].balance')
+    })
+
+    it('uses the parsed balance field, never the transaction amount', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ amount: '$1', balance: '$0.00' }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(0)
+      expect(r.balancePath).toBe('[0].balance')
+    })
+
+    it('parses "$0.00" → 0 USD', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '$0.00' }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(0)
+      expect(r.currency).toBe('USD')
+    })
+
+    it('parses "$5.00" → 5 USD', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '$5.00' }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(5)
+      expect(r.currency).toBe('USD')
+    })
+
+    it('parses "$1,250.50" → 1250.50 USD and "1,250.50" → 1250.50', () => {
+      const withSymbol = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '$1,250.50' }] })
+      expect(withSymbol.success).toBe(true)
+      expect(withSymbol.balance).toBe(1250.5)
+      expect(withSymbol.currency).toBe('USD')
+      const plain = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '1,250.50' }] })
+      expect(plain.success).toBe(true)
+      expect(plain.balance).toBe(1250.5)
+      expect(plain.currency).toBe('USD')
+    })
+
+    it('parses "USD 5.00" → 5 USD and "5.00 USD" → 5 USD', () => {
+      const prefix = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 'USD 5.00' }] })
+      expect(prefix.success).toBe(true)
+      expect(prefix.balance).toBe(5)
+      expect(prefix.currency).toBe('USD')
+      const suffix = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '5.00 USD' }] })
+      expect(suffix.success).toBe(true)
+      expect(suffix.balance).toBe(5)
+      expect(suffix.currency).toBe('USD')
+    })
+
+    it('parses "€5.00" → 5 EUR and "£5.00" → 5 GBP', () => {
+      const eur = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '€5.00' }] })
+      expect(eur.success).toBe(true)
+      expect(eur.balance).toBe(5)
+      expect(eur.currency).toBe('EUR')
+      const gbp = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '£5.00' }] })
+      expect(gbp.success).toBe(true)
+      expect(gbp.balance).toBe(5)
+      expect(gbp.currency).toBe('GBP')
+    })
+
+    it('parses "R 100.00" → 100 ZAR only in the clearly-formatted prefix form', () => {
+      const zar = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 'R 100.00' }] })
+      expect(zar.success).toBe(true)
+      expect(zar.balance).toBe(100)
+      expect(zar.currency).toBe('ZAR')
+      const malformed = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 'R100.00' }] })
+      expect(malformed.success).toBe(false)
+    })
+
+    it('infers the symbol currency even when a configured fallback exists', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '$0.00' }] }, { fallbackCurrency: 'GBP' })
+      expect(r.success).toBe(true)
+      expect(r.currency).toBe('USD')
+    })
+
+    it('accepts surrounding whitespace around a symbol', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '  $5.00  ' }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(5)
+      expect(r.currency).toBe('USD')
+    })
+
+    it('still rejects "NA" and "N/A" without echoing the value', () => {
+      for (const bad of ['NA', 'N/A']) {
+        const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: bad }] })
+        expect(r.success).toBe(false)
+        expect(r.reason).not.toContain(bad)
+      }
+    })
+
+    it('rejects malformed currency strings ("$", "USD", "abc 5.00", "5$0")', () => {
+      for (const bad of ['$', 'USD', 'abc 5.00', '5$0']) {
+        const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: bad }] })
+        expect(r.success).toBe(false)
+        expect(r.reason).not.toContain(bad)
+      }
+    })
+  })
 })

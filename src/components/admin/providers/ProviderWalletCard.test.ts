@@ -60,6 +60,14 @@ describe('ProviderWalletCard — single balance card', () => {
     expect(html).toContain('Connected')
   })
 
+  it('shows the live "$0.00 USD" wallet result as Connected, never Balance unavailable', () => {
+    const html = renderCard({ initialBalance: 0, initialCurrency: 'USD', initialStatus: 'OK', initialLastSync: new Date().toISOString() })
+    expect(html).toContain('$0.00')
+    expect(html).toContain('USD')
+    expect(html).toContain('Connected')
+    expect(html).not.toContain('Balance unavailable')
+  })
+
   it('displays the $5.00 vendor credit with currency, Connected status and a Last Synced timestamp', () => {
     const lastSync = new Date().toISOString()
     const html = renderCard({ initialBalance: 5, initialCurrency: 'USD', initialStatus: 'OK', initialLastSync: lastSync })
