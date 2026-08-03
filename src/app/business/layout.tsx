@@ -39,7 +39,6 @@ export default async function BusinessLayout({
     { title: 'Buy eSIMs', href: '/business/buy-esim', icon: 'ShoppingCart' as const, readOnly: isMember },
     { title: 'eSIM Inventory', href: '/business/esims', icon: 'SimCard' as const },
     { title: 'eSIM Usage', href: '/business/esim-usage', icon: 'BarChart3' as const },
-    { title: 'Customers', href: '/business/customers', icon: 'Users' as const, readOnly: isMember },
     { title: 'Orders', href: '/business/orders', icon: 'FileText' as const, readOnly: isMember },
 
     { title: 'Finance', href: '#', sectionHeader: true },

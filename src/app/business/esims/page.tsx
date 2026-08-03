@@ -3,9 +3,8 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { assignESIM, unassignESIM, markAsSent, sendToCustomer, syncEsimStatusAction, shareEsimViaEmail, createShareToken } from '@/lib/actions/esim'
+import { syncEsimStatusAction } from '@/lib/actions/esim'
 import { getPackageDisplayName, getPackageDataGB, isPackageArchived } from '@/lib/packages/snapshot-utils'
-import { getAppUrl } from '@/lib/config/urls'
 import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
@@ -28,45 +27,22 @@ function StatusPill({ status }: { status: string }) {
   )
 }
 
-function DeliveryPill({ status }: { status: string }) {
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-      status === 'SENT' ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-50 text-gray-500'
-    }`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${status === 'SENT' ? 'bg-emerald-400' : 'bg-gray-400'}`} />
-      {status === 'SENT' ? 'Sent' : 'Not sent'}
-    </span>
-  )
-}
-
 export default async function ESIMsPage({ searchParams }: { searchParams: { success?: string; error?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'BUSINESS_USER') { redirect('/login') }
 
-  const businessUser = await prisma.businessUser.findFirst({
-    where: { userId: session.user.id, businessId: session.user.businessId! },
-    select: { role: true },
-  })
-  const isAdmin = businessUser?.role === 'ADMIN'
-
   const esims = await prisma.eSIM.findMany({
     where: { purchase: { businessId: session.user.businessId! } },
-    include: { purchase: { include: { package: true } }, customer: true },
+    include: { purchase: { include: { package: true } } },
     orderBy: { createdAt: 'desc' },
   })
-
-  const customers = isAdmin ? await prisma.customer.findMany({
-    where: { businessId: session.user.businessId! },
-    select: { id: true, name: true },
-    orderBy: { name: 'asc' },
-  }) : []
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">eSIM Inventory</h2>
-          <p className="mt-1 text-sm text-gray-500">Manage your eSIMs, assign to customers, and share activation details</p>
+          <p className="mt-1 text-sm text-gray-500">Manage your eSIMs and share activation details</p>
         </div>
         <Link href="/business/buy-esim">
           <button className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm">Buy eSIMs</button>
@@ -75,9 +51,6 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
 
       {searchParams.success && (
         <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700">
-          {searchParams.success === 'assigned' && 'eSIM assigned successfully'}
-          {searchParams.success === 'unassigned' && 'eSIM unassigned successfully'}
-          {searchParams.success === 'sent' && 'Activation details sent to customer'}
           {searchParams.success === 'refreshed' && 'eSIM status refreshed'}
           {searchParams.success === 'activated' && 'eSIM activation detected! Status updated to Active.'}
           {searchParams.success === 'shared' && 'eSIM shared successfully'}
@@ -86,9 +59,8 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
       {searchParams.error && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
           {searchParams.error === 'permission' && 'You do not have permission to perform this action'}
-          {searchParams.error === 'assignment_failed' && 'Failed to assign eSIM. Please make sure a customer is selected and try again.'}
           {searchParams.error === 'sync_failed' && 'Failed to sync eSIM status. Please try again later.'}
-          {searchParams.error !== 'permission' && searchParams.error !== 'assignment_failed' && searchParams.error !== 'sync_failed' && searchParams.error}
+          {searchParams.error !== 'permission' && searchParams.error !== 'sync_failed' && searchParams.error}
         </div>
       )}
 
@@ -100,8 +72,6 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                 <tr className="border-b border-gray-50 bg-gray-50/50">
                   <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">ICCID</th>
                   <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Package</th>
-                  <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Customer</th>
-                  <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Delivery</th>
                   <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
                   <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Expires</th>
                   <th className="px-5 py-3.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>
@@ -119,7 +89,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                   const whatsAppUrl = `https://wa.me/?text=${shareMsg}`
                   return (
                     <tr key={esim.id} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="whitespace-nowrap px-5 py-4">
+                       <td className="whitespace-nowrap px-5 py-4">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-mono text-gray-900">{esim.iccid}</span>
                           <CopyButton text={esim.iccid} label="Copy ICCID" />
@@ -130,84 +100,39 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                         <span className="ml-1.5 text-xs text-gray-400">({snapData}GB)</span>
                         {archived && <span className="ml-1.5 text-xs text-amber-500">(discontinued)</span>}
                       </td>
-                      <td className="whitespace-nowrap px-5 py-4 text-sm">
-                        {esim.customer ? (
-                          <div>
-                            <div className="font-medium text-gray-900">{esim.customer.name}</div>
-                            <div className="text-xs text-gray-500">{esim.customer.email}</div>
-                          </div>
-                        ) : (
-                          <span className="text-gray-400 italic">Unassigned</span>
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-5 py-4">
-                        <DeliveryPill status={esim.deliveryStatus} />
-                      </td>
                       <td className="whitespace-nowrap px-5 py-4">
                         <StatusPill status={esim.status} />
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
-                        {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '—'}
+                        {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '\u2014'}
                       </td>
                        <td className="whitespace-nowrap px-5 py-4">
                           <div className="flex flex-col gap-1.5">
-                            {/* View eSIM — available to all users */}
                             <Link href={`/business/esims/${esim.id}`} className="text-xs font-medium text-cyan-600 hover:text-cyan-700 underline">
                               View eSIM
                             </Link>
-                            {/* View QR Code — visible regardless of customer assignment */}
                             <QrCodeButton esim={{
                               esimId: esim.id, iccid: esim.iccid,
                               activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
                               providerResponse: esim.providerResponse,
                               status: esim.status,
-                              customerName: esim.customer?.name || null,
+                              customerName: null,
                             }} />
-                            {isAdmin && (
-                              <>
-                                {/* Top Up */}
-                                {['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && esim.iccid && (
-                                  <Link href={`/business/esims/${esim.id}/top-up`} className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Top Up</Link>
-                                )}
-                                {/* Refresh Status */}
-                                <form action={syncEsimStatusAction.bind(null, esim.id)}>
-                                  <button type="submit" className="text-xs font-medium text-cyan-600 hover:text-cyan-700">Refresh Status</button>
-                                </form>
-                                {/* Share Actions */}
-                                <ShareActions
-                                  esimId={esim.id}
-                                  iccid={esim.iccid}
-                                  activationCode={esim.activationCode}
-                                  qrCodeUrl={esim.qrCodeUrl}
-                                  packageName={snapName}
-                                  whatsAppUrl={whatsAppUrl}
-                                  customerEmail={esim.customer?.email}
-                                />
-                                {/* Assign / Manage */}
-                                {esim.customer ? (
-                                  <>
-                                    <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
-                                    {esim.deliveryStatus === 'NOT_SENT' ? (
-                                      <form action={sendToCustomer}>
-                                        <input type="hidden" name="esimId" value={esim.id} />
-                                        <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Send to Customer</button>
-                                      </form>
-                                    ) : (
-                                      <span className="text-xs text-gray-400">Sent {esim.deliveredAt ? new Date(esim.deliveredAt).toLocaleDateString() : ''}</span>
-                                    )}
-                                  </>
-                                ) : (
-                                  <form action={assignESIM} className="flex gap-1.5">
-                                    <input type="hidden" name="esimId" value={esim.id} />
-                                    <select name="customerId" required className="rounded-md border border-gray-200 px-2 py-1 text-xs">
-                                      <option value="">Assign to...</option>
-                                      {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                    </select>
-                                    <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Assign</button>
-                                  </form>
-                                )}
-                              </>
+                            <ShareActions
+                              esimId={esim.id}
+                              iccid={esim.iccid}
+                              activationCode={esim.activationCode}
+                              qrCodeUrl={esim.qrCodeUrl}
+                              packageName={snapName}
+                              whatsAppUrl={whatsAppUrl}
+                            />
+                            {['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && esim.iccid && (
+                              <Link href={`/business/esims/${esim.id}/top-up`} className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Top Up</Link>
                             )}
+                            <form action={syncEsimStatusAction.bind(null, esim.id)}>
+                              <button type="submit" className="text-xs font-medium text-cyan-600 hover:text-cyan-700">Refresh Status</button>
+                            </form>
+                            <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
                           </div>
                         </td>
                     </tr>

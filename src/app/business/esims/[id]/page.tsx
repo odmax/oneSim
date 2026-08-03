@@ -32,7 +32,6 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
     },
     include: {
       purchase: { include: { package: true } },
-      customer: true,
       usageRecords: { orderBy: { timestamp: 'desc' }, take: 20 },
     },
   })
@@ -130,19 +129,6 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
         </div>
       </div>
 
-      {/* Customer & Delivery */}
-      {esim.customer && (
-        <div className="rounded-xl border bg-white p-6 shadow-sm">
-          <h3 className="mb-4 text-base font-semibold text-gray-900">Customer &amp; Delivery</h3>
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <div><dt className="text-xs text-gray-500">Name</dt><dd className="font-medium text-gray-900">{esim.customer.name}</dd></div>
-            <div><dt className="text-xs text-gray-500">Email</dt><dd className="text-gray-700">{esim.customer.email}</dd></div>
-            <div><dt className="text-xs text-gray-500">Delivery Status</dt><dd><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${esim.deliveryStatus === 'SENT' ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-50 text-gray-500'}`}>{esim.deliveryStatus === 'SENT' ? 'Sent' : 'Not sent'}</span></dd></div>
-            {esim.deliveredAt && <div><dt className="text-xs text-gray-500">Delivered</dt><dd className="text-gray-700">{esim.deliveredAt.toLocaleDateString()}</dd></div>}
-          </dl>
-        </div>
-      )}
-
       {/* Actions — business-safe only */}
       <div className="rounded-xl border bg-white p-6 shadow-sm">
         <h3 className="mb-4 text-base font-semibold text-gray-900">Actions</h3>
@@ -163,7 +149,7 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
             activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
             providerResponse: esim.providerResponse,
             status: esim.status,
-            customerName: esim.customer?.name || null,
+            customerName: null,
           }} />
           <Link href="/business/esims"
             className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
