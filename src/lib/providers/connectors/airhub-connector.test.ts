@@ -1808,10 +1808,10 @@ describe('AirHubConnector', () => {
       expect(r.reason).not.toContain('bar')
     })
 
-    it('prioritizes provider response currency over getwallet currency', () => {
+    it('uses the matched wallet row currency over the response currency', () => {
       const r = normalizeAirHubWalletBalance({ isSuccess: true, currency: 'EUR', getwallet: { balance: 10, currency: 'GBP' } })
       expect(r.success).toBe(true)
-      expect(r.currency).toBe('EUR')
+      expect(r.currency).toBe('GBP')
     })
 
     it('uses the getwallet currency when the response has none', () => {
@@ -1839,6 +1839,86 @@ describe('AirHubConnector', () => {
       expect(describeDiagnosticValue({})).toBe('object')
       expect(describeDiagnosticValue('NA')).toBe('string')
       expect(describeDiagnosticValue('')).toBe('empty string')
+    })
+  })
+
+  describe('normalizeAirHubWalletBalance — getwallet array rows', () => {
+    it('iterates all rows and picks a numeric balance from a single-entry array', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 5 }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(5)
+      expect(r.balancePath).toBe('[0].balance')
+    })
+
+    it('prefers the row matching the configured partnerCode', () => {
+      const r = normalizeAirHubWalletBalance(
+        { isSuccess: true, getwallet: [{ balance: 1, partnerCode: 999 }, { balance: 5, partnerCode: 200652387 }] },
+        { partnerCode: 200652387 },
+      )
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(5)
+      expect(r.balancePath).toBe('[1].balance')
+    })
+
+    it('prefers the active/current row when partnerCode does not match', () => {
+      const r = normalizeAirHubWalletBalance(
+        { isSuccess: true, getwallet: [{ balance: 1 }, { balance: 5, status: 'ACTIVE' }] },
+        { partnerCode: 200652387 },
+      )
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(5)
+      expect(r.balancePath).toBe('[1].balance')
+    })
+
+    it('falls back to the first row with a valid numeric balance', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 1 }, { balance: 5 }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(1)
+      expect(r.balancePath).toBe('[0].balance')
+    })
+
+    it('accepts a numeric string balance in an array row', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: '5.00' }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(5)
+    })
+
+    it('preserves a legitimate zero balance in an array row', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 0 }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(0)
+    })
+
+    it('rejects NA inside an array row', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 'NA' }] })
+      expect(r.success).toBe(false)
+      expect(r.reason).toContain('getwallet is array')
+      expect(r.reason).not.toContain('NA')
+    })
+
+    it('rejects an array with no numeric balance field', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ foo: 'bar' }, { baz: 'qux' }] })
+      expect(r.success).toBe(false)
+      expect(r.reason).toContain('getwallet is array')
+      expect(r.reason).not.toContain('bar')
+      expect(r.reason).not.toContain('qux')
+    })
+
+    it('resolves currency from matched row, then response, then configured, then USD', () => {
+      const rowCur = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 5, currency: 'EUR' }] })
+      expect(rowCur.currency).toBe('EUR')
+      const respCur = normalizeAirHubWalletBalance({ isSuccess: true, currency: 'USD', getwallet: [{ balance: 5 }] })
+      expect(respCur.currency).toBe('USD')
+      const cfgCur = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 5 }] }, { fallbackCurrency: 'GBP' })
+      expect(cfgCur.currency).toBe('GBP')
+      const usd = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 5 }] })
+      expect(usd.currency).toBe('USD')
+    })
+
+    it('does not sum multiple wallet rows', () => {
+      const r = normalizeAirHubWalletBalance({ isSuccess: true, getwallet: [{ balance: 1 }, { balance: 2 }] })
+      expect(r.success).toBe(true)
+      expect(r.balance).toBe(1)
     })
   })
 })

@@ -68,12 +68,10 @@ export default function ProviderWalletCard({
       } else {
         setStatus('ERROR')
         setError(result.error || 'Sync failed')
-        setFeedback({ type: 'error', msg: result.error || 'Sync failed' })
       }
     } catch (e: any) {
       setStatus('ERROR')
       setError(e.message || 'Sync failed')
-      setFeedback({ type: 'error', msg: e.message || 'Sync failed' })
     } finally { setSyncing(false) }
   }
 
@@ -118,8 +116,8 @@ export default function ProviderWalletCard({
       </div>
 
       <div className="p-5">
-        {feedback && (
-          <div className={`mb-4 rounded-lg p-3 text-sm ${feedback.type === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>{feedback.msg}</div>
+        {feedback && feedback.type === 'success' && (
+          <div className="mb-4 rounded-lg p-3 text-sm bg-emerald-50 text-emerald-700 border border-emerald-200">{feedback.msg}</div>
         )}
 
         {showBalance ? (
@@ -187,8 +185,6 @@ export default function ProviderWalletCard({
             {error && <p className="text-xs text-red-500 mt-1 truncate">{error}</p>}
           </div>
         )}
-
-        {!showBalance && error && <p className="mt-3 text-xs text-red-500 truncate">{error}</p>}
       </div>
     </div>
   )

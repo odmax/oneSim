@@ -132,7 +132,7 @@ function coerceBalanceNumber(raw: unknown): number | null {
   return null
 }
 
-/** Recursively finds a numeric balance inside getwallet (number, numeric string, object, array, JSON string). */
+/** Recursively finds a numeric balance inside a value (number, numeric string, object, array, JSON string). */
 function extractWalletBalance(node: unknown, depth = 0): { raw: number; path: string } | null {
   if (node == null || depth > 4) return null
   const direct = coerceBalanceNumber(node)
@@ -161,40 +161,150 @@ function extractWalletBalance(node: unknown, depth = 0): { raw: number; path: st
   return null
 }
 
-/** Currency priority: response currency → getwallet currency → configured default → USD. */
-function extractWalletCurrency(data: any, getwallet: unknown, fallback?: string | null): string {
-  const pick = (node: any): string | null => {
-    if (!node || typeof node !== 'object') return null
-    for (const key of ['currency', 'currencyCode', 'currency_code', 'Currency']) {
-      const v = node[key]
-      if (typeof v === 'string' && v.trim()) return v.trim()
-      if (typeof v === 'number') return String(v)
-    }
-    return null
+const PARTNER_CODE_KEYS = ['partnerCode', 'partnercode', 'PartnerCode', 'partner_code']
+const PARTNER_CODE_NESTED_KEYS = ['data', 'wallet', 'account', 'accountInfo']
+
+/** Reads the partner code from a wallet row (top-level or a few known nested containers). */
+function readPartnerCode(row: unknown): string | null {
+  if (!row || typeof row !== 'object') return null
+  for (const key of PARTNER_CODE_KEYS) {
+    const v = (row as any)[key]
+    if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim()
   }
-  const gw = (getwallet && typeof getwallet === 'object' && !Array.isArray(getwallet)) ? getwallet : null
-  return pick(data) || pick(data?.data) || pick(gw) || (fallback ? String(fallback) : null) || 'USD'
+  for (const key of PARTNER_CODE_NESTED_KEYS) {
+    const nested = (row as any)[key]
+    if (nested && typeof nested === 'object') {
+      const found = readPartnerCode(nested)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+/** Heuristic for the active/current wallet row when multiple rows are returned. */
+function rowLooksActive(row: unknown): boolean {
+  if (!row || typeof row !== 'object') return false
+  const candidates: unknown[] = []
+  for (const key of ['isActive', 'active', 'isactive', 'status', 'Status', 'isCurrent', 'iscurrent', 'current', 'walletType', 'type']) {
+    const v = (row as any)[key]
+    if (v !== undefined) candidates.push(v)
+  }
+  return candidates.some((v) => {
+    if (v === true) return true
+    if (typeof v === 'string') return ['ACTIVE', 'CURRENT', 'ENABLED', 'PRIMARY', 'MAIN'].includes(v.toUpperCase())
+    return false
+  })
+}
+
+/** Reads a currency string from a node, if present. */
+function pickCurrency(node: unknown): string | null {
+  if (!node || typeof node !== 'object') return null
+  for (const key of ['currency', 'currencyCode', 'currency_code', 'Currency']) {
+    const v = (node as any)[key]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+    if (typeof v === 'number') return String(v)
+  }
+  return null
+}
+
+interface WalletRowCandidate {
+  row: any
+  index: number
+  balance: number
+  path: string
+  partnerCodeMatch: boolean
+  active: boolean
+  currency: string | null
+}
+
+/** Extracts a numeric balance from one getwallet array entry, keeping its metadata. */
+function extractWalletRow(row: any, index: number, partnerCode?: string | number | null): WalletRowCandidate | null {
+  const extracted = extractWalletBalance(row)
+  if (!extracted) return null
+  const rowPartner = readPartnerCode(row)
+  return {
+    row,
+    index,
+    balance: extracted.raw,
+    path: `[${index}]${extracted.path === '$' ? '' : '.' + extracted.path}`,
+    partnerCodeMatch: partnerCode != null && rowPartner != null && rowPartner === String(partnerCode).trim(),
+    active: rowLooksActive(row),
+    currency: pickCurrency(row),
+  }
+}
+
+/** Row selection: partnerCode match → active/current row → first row with a numeric balance. */
+function chooseWalletRow(rows: WalletRowCandidate[], partnerCode?: string | number | null): WalletRowCandidate | null {
+  if (rows.length === 0) return null
+  const partnerMatch = partnerCode != null ? rows.find((r) => r.partnerCodeMatch) : undefined
+  if (partnerMatch) return partnerMatch
+  const activeRow = rows.find((r) => r.active)
+  if (activeRow) return activeRow
+  return rows[0]
+}
+
+/** Currency priority: matched wallet row → response → configured default → USD. */
+function extractWalletCurrency(data: any, chosenRow: unknown, fallback?: string | null): string {
+  return pickCurrency(chosenRow) || pickCurrency(data) || pickCurrency(data?.data) || (fallback ? String(fallback) : null) || 'USD'
 }
 
 /**
  * Normalizes the AirHub wallet payload into { balance, currency }.
  * getwallet may be a number, numeric string, object, array, or JSON-encoded string.
+ * For arrays every row is inspected; rows are never summed — the best row wins.
  * On failure the reason only includes safe response keys and the detected getwallet type.
  */
-export function normalizeAirHubWalletBalance(data: any, fallbackCurrency?: string | null): NormalizedWalletBalance {
+export function normalizeAirHubWalletBalance(
+  data: any,
+  opts?: string | null | { fallbackCurrency?: string | null; partnerCode?: string | number | null },
+): NormalizedWalletBalance {
+  const fallbackCurrency = opts == null ? null : typeof opts === 'string' ? opts : (opts.fallbackCurrency ?? null)
+  const partnerCode = opts && typeof opts === 'object' ? (opts.partnerCode ?? null) : null
   const root = data ?? {}
   const getwallet = root.getwallet !== undefined ? root.getwallet : root
   const getwalletType = describeDiagnosticValue(getwallet)
-  const extracted = extractWalletBalance(getwallet)
-  if (extracted) {
+
+  let chosen: WalletRowCandidate | null = null
+  let arrayInput: unknown = getwallet
+  if (typeof getwallet === 'string') {
+    const t = getwallet.trim()
+    if (t.startsWith('[')) {
+      try { arrayInput = JSON.parse(t) } catch { arrayInput = getwallet }
+    }
+  }
+
+  if (Array.isArray(arrayInput)) {
+    const rows: WalletRowCandidate[] = []
+    for (let i = 0; i < arrayInput.length; i++) {
+      const candidate = extractWalletRow(arrayInput[i], i, partnerCode)
+      if (candidate) rows.push(candidate)
+    }
+    chosen = chooseWalletRow(rows, partnerCode)
+  } else {
+    const extracted = extractWalletBalance(getwallet)
+    if (extracted) {
+      chosen = {
+        row: getwallet,
+        index: -1,
+        balance: extracted.raw,
+        path: extracted.path,
+        partnerCodeMatch: false,
+        active: false,
+        currency: pickCurrency(getwallet),
+      }
+    }
+  }
+
+  if (chosen) {
     return {
       success: true,
-      balance: extracted.raw,
-      currency: extractWalletCurrency(root, getwallet, fallbackCurrency),
-      balancePath: extracted.path,
+      balance: chosen.balance,
+      currency: extractWalletCurrency(root, chosen.row, fallbackCurrency),
+      balancePath: chosen.path,
       getwalletType,
     }
   }
+
   const safeKeys = Object.keys(root).join(', ')
   const reason = root.getwallet === undefined
     ? `AirHub wallet balance unavailable: response keys (${safeKeys}) contained no numeric balance field`
@@ -1172,7 +1282,7 @@ export class AirHubConnector implements IProviderConnector {
       console.log(`[AIRHUB_WALLET] httpStatus=${response.status} topKeys=${topKeys.join(',')} nestedKeys=${nested.join(',')}`)
 
       // Normalize the real { isSuccess, message, getwallet } shape (number | string | object | array | JSON string).
-      const parse = normalizeAirHubWalletBalance(data, cfg.currency)
+      const parse = normalizeAirHubWalletBalance(data, { fallbackCurrency: cfg.currency, partnerCode })
       let balanceRaw: number | null = parse.success ? parse.balance : null
       let balanceFieldPath = parse.success ? parse.balancePath : ''
 
@@ -1184,7 +1294,7 @@ export class AirHubConnector implements IProviderConnector {
         }
         const legacy = await tryLegacy()
         if (legacy) {
-          const legacyParse = normalizeAirHubWalletBalance(legacy, cfg.currency)
+          const legacyParse = normalizeAirHubWalletBalance(legacy, { fallbackCurrency: cfg.currency, partnerCode })
           if (legacyParse.success) {
             balanceRaw = legacyParse.balance
             balanceFieldPath = `legacy:get_wallet_invidual.${legacyParse.balancePath}`
