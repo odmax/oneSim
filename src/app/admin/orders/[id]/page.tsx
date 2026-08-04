@@ -63,6 +63,11 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
           {order.status}
         </span>
       </div>
+      <div className="mt-2">
+        <Link href={`/admin/operations/orders/${order.id}`} className="text-xs text-cyan-600 hover:underline">
+          Open Operations View &rarr;
+        </Link>
+      </div>
 
       <div className="grid gap-6 md:grid-cols-2">
         <div className="rounded-xl border bg-white p-5 shadow-sm">
