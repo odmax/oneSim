@@ -19,7 +19,10 @@ export interface NormalizedWebhookEvent {
 
 const WEBHOOK_NORMALIZERS: Record<string, (payload: any) => NormalizedWebhookEvent> = {
   CHOICE: normalizeChoiceWebhook,
+  IBASIS: normalizeIbasisWebhook,
 }
+
+import { normalizeIbasisWebhook } from '@/lib/providers/webhooks/ibasis-webhook-normalizer'
 
 export function normalizeProviderWebhook(providerType: string, payload: any): NormalizedWebhookEvent {
   const normalizer = WEBHOOK_NORMALIZERS[providerType.toUpperCase()]
