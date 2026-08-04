@@ -38,6 +38,9 @@ type BuiltInTemplate = {
     environment: string
     apiVersion: string
     authorizationMode: string
+    name: string
+    code: string
+    capabilities: string[]
   }>
 }
 
@@ -111,6 +114,9 @@ const BUILTIN_TEMPLATES: Record<string, BuiltInTemplate> = {
       authType: 'api_token',
       apiBaseUrl: '',
       environment: 'staging',
+      name: 'iBASIS',
+      code: 'IBASIS',
+      capabilities: ['AUTH','INVENTORY','PLAN_SYNC','PURCHASE','STATUS','SUSPEND','RESUME'],
     },
   },
 }
@@ -149,6 +155,8 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
     setField('authUrl', template.presets.authUrl || '')
     setField('apiToken', template.presets.apiToken || '')
     setField('environment', template.presets.environment || 'staging')
+    if (template.presets.name) setField('name', template.presets.name)
+    if (template.presets.code) setField('code', template.presets.code)
     if (template.presets.apiVersion) setField('apiVersion', template.presets.apiVersion)
     if (template.presets.authorizationMode) setField('authorizationMode', template.presets.authorizationMode)
   }, [])

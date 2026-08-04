@@ -86,6 +86,14 @@ export async function createProvider(formData: FormData) {
     redirect(`/admin/providers/new?error=Provider+code+%22${code}%22+already+exists`)
   }
 
+  // iBASIS-specific validation
+  if (code === 'IBASIS' && resolvedStrategy !== 'IBASIS') {
+    redirect('/admin/providers/new?error=Provider+code+IBASIS+requires+adapterStrategy%3DIBASIS')
+  }
+  if (resolvedStrategy === 'IBASIS' && code !== 'IBASIS') {
+    redirect('/admin/providers/new?error=Adapter+strategy+IBASIS+requires+code%3DIBASIS')
+  }
+
   // Telna-specific validation
   if (resolvedStrategy === 'TELNA') {
     const authorizationMode = formData.get('authorizationMode') as string
@@ -147,6 +155,10 @@ export async function createProvider(formData: FormData) {
       supportsUsageSync,
       supportsWebhookPush,
       supportsSuspendResume,
+      // iBASIS default capabilities
+      enabledCapabilities: resolvedStrategy === 'IBASIS'
+        ? ['AUTH', 'INVENTORY', 'ESIM', 'PLAN_SYNC', 'PURCHASE', 'STATUS', 'SUSPEND', 'RESUME']
+        : undefined,
       providerTemplateId: providerTemplateId || null,
       endpointMappings: isTemplate ? parsedEndpointMappings : (endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : undefined),
       requestMappings: requestMappingsRaw ? tryParseJson(requestMappingsRaw) : (tpl?.requestMappings as any) || null,
