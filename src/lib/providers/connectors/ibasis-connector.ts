@@ -196,7 +196,7 @@ export class IbasisConnector implements IProviderConnector {
     path: string,
     options: {
       queryParams?: Record<string, string | number>
-      method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+      method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
       body?: unknown
     } = {},
   ): Promise<IbasisRequestResult> {
@@ -1009,12 +1009,57 @@ export class IbasisConnector implements IProviderConnector {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Usage implementation pending (Phase 2)' } }
   }
 
-  async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Suspend implementation pending (Phase 2)' } }
+  async suspendESIM(subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    if (!subscriptionId || String(subscriptionId).trim() === '') {
+      return { success: false, error: { code: 'VALIDATION_ERROR', message: 'subscriptionId is required' } }
+    }
+
+    const result = await this.request(`${config.subscriptionsPath}/${encodeURIComponent(subscriptionId)}/suspend`, { method: 'PUT', body: {} })
+    if (!result.success) {
+      return { success: false, error: normalizeProviderError(result.error) }
+    }
+    return { success: true, data: { status: 'SUSPENDED', providerStatus: 'suspended' } }
   }
 
-  async resumeESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Resume implementation pending (Phase 2)' } }
+  async resumeESIM(subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    if (!subscriptionId || String(subscriptionId).trim() === '') {
+      return { success: false, error: { code: 'VALIDATION_ERROR', message: 'subscriptionId is required' } }
+    }
+
+    const result = await this.request(`${config.subscriptionsPath}/${encodeURIComponent(subscriptionId)}/restore`, { method: 'PUT', body: {} })
+    if (!result.success) {
+      return { success: false, error: normalizeProviderError(result.error) }
+    }
+    return { success: true, data: { status: 'ACTIVE', providerStatus: 'active' } }
+  }
+
+  /** Cancels an entire subscription (`DELETE {subscriptionsPath}/{id}`). Irreversible. */
+  async cancelSubscription(subscriptionId: string): Promise<ConnectorResult<void>> {
+    const config = await this.loadConfig()
+    if (!config) {
+      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
+    }
+    if (!subscriptionId || String(subscriptionId).trim() === '') {
+      return { success: false, error: { code: 'VALIDATION_ERROR', message: 'subscriptionId is required' } }
+    }
+
+    const result = await this.request(`${config.subscriptionsPath}/${encodeURIComponent(subscriptionId)}`, { method: 'DELETE', body: {} })
+    if (!result.success) {
+      const code = result.error?.code || ''
+      if (code === 'HTTP_404' || code === 'NOT_FOUND') {
+        return { success: true } // Already cancelled — idempotent
+      }
+      return { success: false, error: normalizeProviderError(result.error) }
+    }
+    return { success: true }
   }
 
   async getRates(): Promise<ConnectorResult<RateResult[]>> {

@@ -357,11 +357,16 @@ describe('IbasisConnector', () => {
       expect(result.error?.code).toBe('NOT_CONFIGURED')
     })
 
-    it('returns NOT_IMPLEMENTED for suspendESIM and resumeESIM', async () => {
+    it('suspendESIM and resumeESIM are now implemented (PUT endpoints)', async () => {
+      fetchSpy.mockResolvedValue(mockFetchSuccess({}, 200))
       const suspend = await connector.suspendESIM('s1')
+      expect(suspend.success).toBe(true)
+      expect(suspend.data?.status).toBe('SUSPENDED')
+
+      fetchSpy.mockResolvedValue(mockFetchSuccess({}, 200))
       const resume = await connector.resumeESIM('s1')
-      expect(suspend.error?.code).toBe('NOT_IMPLEMENTED')
-      expect(resume.error?.code).toBe('NOT_IMPLEMENTED')
+      expect(resume.success).toBe(true)
+      expect(resume.data?.status).toBe('ACTIVE')
     })
   })
 

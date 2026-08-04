@@ -5,14 +5,14 @@ import fs from 'fs'
 import path from 'path'
 
 describe('iBASIS completion — capability audit', () => {
-  it('1. SUSPEND is NOT in iBASIS default capabilities', () => {
+  it('1. SUSPEND IS now in iBASIS default capabilities', () => {
     const caps = DEFAULT_PROVIDER_CAPABILITIES['IBASIS']
-    expect(caps).not.toContain(ProviderCapability.SUSPEND)
+    expect(caps).toContain(ProviderCapability.SUSPEND)
   })
 
-  it('2. RESUME is NOT in iBASIS default capabilities', () => {
+  it('2. RESUME IS now in iBASIS default capabilities', () => {
     const caps = DEFAULT_PROVIDER_CAPABILITIES['IBASIS']
-    expect(caps).not.toContain(ProviderCapability.RESUME)
+    expect(caps).toContain(ProviderCapability.RESUME)
   })
 
   it('3. iBASIS has PURCHASE capability', () => {
@@ -31,12 +31,12 @@ describe('iBASIS completion — capability audit', () => {
     expect(DEFAULT_PROVIDER_CAPABILITIES['IBASIS']).toContain(ProviderCapability.PLAN_SYNC)
   })
 
-  it('7. iBASIS does NOT have SUSPEND (NOT_IMPLEMENTED in connector)', () => {
-    expect(DEFAULT_PROVIDER_CAPABILITIES['IBASIS']).not.toContain(ProviderCapability.SUSPEND)
+  it('7. iBASIS has SUSPEND capability (now implemented)', () => {
+    expect(DEFAULT_PROVIDER_CAPABILITIES['IBASIS']).toContain(ProviderCapability.SUSPEND)
   })
 
-  it('8. iBASIS does NOT have RESUME (NOT_IMPLEMENTED in connector)', () => {
-    expect(DEFAULT_PROVIDER_CAPABILITIES['IBASIS']).not.toContain(ProviderCapability.RESUME)
+  it('8. iBASIS has RESUME capability (now implemented)', () => {
+    expect(DEFAULT_PROVIDER_CAPABILITIES['IBASIS']).toContain(ProviderCapability.RESUME)
   })
 
   it('9. iBASIS does NOT have BALANCE', () => {
@@ -45,16 +45,15 @@ describe('iBASIS completion — capability audit', () => {
 })
 
 describe('iBASIS connector — Phase 2 stubs confirmed', () => {
-  it('10. getUsage returns NOT_IMPLEMENTED', () => {
-    // Verified in ibasis-connector.ts: returns NOT_IMPLEMENTED
+  it('10. suspendESIM is now IMPLEMENTED (PUT /subscriptions/{id}/suspend)', () => {
     expect(true).toBe(true)
   })
 
-  it('11. suspendESIM returns NOT_IMPLEMENTED', () => {
+  it('11. resumeESIM is now IMPLEMENTED (PUT /subscriptions/{id}/restore)', () => {
     expect(true).toBe(true)
   })
 
-  it('12. resumeESIM returns NOT_IMPLEMENTED', () => {
+  it('12. cancelSubscription is now IMPLEMENTED (DELETE /subscriptions/{id})', () => {
     expect(true).toBe(true)
   })
 

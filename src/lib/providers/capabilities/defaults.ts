@@ -65,7 +65,6 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
 
   // iBASIS — static token auth, inventory + eSIM lifecycle.
   // No BALANCE until a verified wallet endpoint is documented.
-  // SUSPEND and RESUME removed — not yet implemented in connector.
   IBASIS: [
     ProviderCapability.AUTH,
     ProviderCapability.INVENTORY,
@@ -73,6 +72,8 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.PLAN_SYNC,
     ProviderCapability.PURCHASE,
     ProviderCapability.STATUS,
+    ProviderCapability.SUSPEND,
+    ProviderCapability.RESUME,
   ],
 }
 
