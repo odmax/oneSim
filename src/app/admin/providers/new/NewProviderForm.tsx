@@ -103,6 +103,16 @@ const BUILTIN_TEMPLATES: Record<string, BuiltInTemplate> = {
       authorizationMode: 'BEARER',
     },
   },
+  ibasis: {
+    label: 'iBASIS',
+    description: 'iBASIS Reseller Gateway — static API token, inventory + SIM management',
+    presets: {
+      adapterStrategy: 'IBASIS',
+      authType: 'api_token',
+      apiBaseUrl: '',
+      environment: 'staging',
+    },
+  },
 }
 
 function setField(name: string, value: string) {
@@ -303,6 +313,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
           <option value="REST_CATALOG">REST API Provider — Standard REST API with plans catalog</option>
           <option value="URL_TOKEN">URL Token Provider — Token in URL path, SOAP auth, template bundles</option>
           <option value="HEADER_TOKEN">Header Token Provider — Token in Authorization header</option>
+          <option value="IBASIS">iBASIS — Reseller Gateway (static API token)</option>
           <option value="TELNA">Telna — Header-based KeyID authentication</option>
           <option value="TEMPLATE">Template-Driven — Capability/endpoint mapped provider (e.g., Airhub)</option>
         </select>
@@ -320,6 +331,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
           <label htmlFor="authType" className="block text-sm font-medium text-gray-700">Auth Type</label>
           <select id="authType" name="authType" defaultValue="bearer_token" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none">
             <option value="bearer_token">Bearer Token</option>
+            <option value="api_token">API Token (static)</option>
             <option value="api_key">API Key</option>
             <option value="basic">Basic Auth</option>
             <option value="credentials">Username / Password</option>
@@ -327,16 +339,27 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
         </div>
       </div>
 
+      {resolvedAdapterStrategy === 'IBASIS' && (
+        <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-3">
+          <p className="text-xs text-cyan-800">
+            Use the iBASIS Reseller Gateway API token. OneSIM sends it as <code className="bg-cyan-100 px-1 rounded">Authorization: Token &amp;lt;token&amp;gt;</code>.
+            The API base URL and token are required.
+          </p>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label htmlFor="apiBaseUrl" className="block text-sm font-medium text-gray-700">API Base URL</label>
           <input id="apiBaseUrl" name="apiBaseUrl" type="url" defaultValue="" placeholder="https://api.provider.com/v1" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
         </div>
-        <div>
-          <label htmlFor="authUrl" className="block text-sm font-medium text-gray-700">Auth URL (optional)</label>
-          <input id="authUrl" name="authUrl" type="text" defaultValue="" placeholder="https://auth.provider.com/token or /relative/path" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
-          <p className="mt-1 text-xs text-gray-400">Separate auth endpoint if different from API Base URL.</p>
-        </div>
+        {resolvedAdapterStrategy !== 'IBASIS' && (
+          <div>
+            <label htmlFor="authUrl" className="block text-sm font-medium text-gray-700">Auth URL (optional)</label>
+            <input id="authUrl" name="authUrl" type="text" defaultValue="" placeholder="https://auth.provider.com/token" className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
+            <p className="mt-1 text-xs text-gray-400">Separate auth endpoint if different from API Base URL.</p>
+          </div>
+        )}
       </div>
 
       <div>
