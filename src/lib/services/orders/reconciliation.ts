@@ -4,6 +4,7 @@ import { createTimelineEvent, transitionOrder } from './order-state-machine'
 import { completeProviderFinalization } from './fulfillment'
 import { releaseReservedFunds } from './wallet-actions'
 import { failOrder } from './order-state-machine'
+import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 
 // ─────────────────────────────────────────────
 // Reconciliation outcome types
@@ -91,6 +92,10 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
     eventType: attemptNum === 1 ? 'PROVIDER_RECONCILIATION_STARTED' : 'PROVIDER_RECONCILIATION_RETRY',
     message: `Reconciliation attempt #${attemptNum}`,
   })
+
+  if (attemptNum === 1) {
+    publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.RECONCILIATION_REQUIRED }).catch(() => {})
+  }
 
   // Still pending within the retry window — keep waiting
   if (attemptNum < REDISPATCH_AFTER_ATTEMPT) {

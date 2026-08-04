@@ -9,6 +9,7 @@ import { executeProviderAttempt, tryFailoverAfterAttempt } from './provider-atte
 import { ProviderRoutingEngine } from '@/lib/services/routing/provider-routing-engine'
 import { requiresTravelDateForPackage, isValidTravelDate } from '@/lib/providers/travel-date-utils'
 import { consumeQuoteAndCreateOrder } from '@/lib/pricing/purchase-quote-service'
+import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 
 const DUP_WINDOW_MS = 30_000
@@ -261,6 +262,7 @@ export class PurchaseOrchestrator {
 
     await createTimelineEvent(orderId, { eventType: 'ORDER_CREATED', message: `Purchase started: ${quantity}x ${displayName} via ${provider.name}` })
     await transitionOrder(orderId, 'CREATED')
+    publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.CREATED }).catch(() => {})
 
     // Step 11: Reserve wallet
     const reserve = await reserveWalletFunds(orderId, businessId, totalAmount)

@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { captureReservedFunds } from '@/lib/services/orders/wallet-actions'
 import { createTimelineEvent, transitionOrder } from '@/lib/services/orders/order-state-machine'
+import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 
 // ─────────────────────────────────────────────
 // Types
@@ -301,6 +302,7 @@ export async function completeProviderFinalization(input: {
   })
 
   await createTimelineEvent(orderId, { eventType: 'ORDER_FULFILLED', message: `Order completed — ${providerName}` })
+  publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.FULFILLED }).catch(() => {})
 
   // Audit
   await prisma.auditLog.create({
@@ -402,6 +404,7 @@ export async function resumeProviderFinalization(orderId: string): Promise<Final
 
   if (order.status !== 'FULFILLED') {
     await createTimelineEvent(orderId, { eventType: 'ORDER_FULFILLED', message: 'Order completed — resumed finalization' })
+    publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.FULFILLED }).catch(() => {})
   }
 
   return { success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true }
@@ -522,11 +525,13 @@ export async function processPartialFulfillment(input: {
     await transitionOrder(orderId, 'FULFILLED')
     await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { fulfillmentCompletedAt: new Date() } })
     await createTimelineEvent(orderId, { eventType: 'ORDER_FULFILLED', message: `All ${qtys.fulfilledQuantity} eSIMs fulfilled` })
+    publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.FULFILLED }).catch(() => {})
     return { success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true }
   }
 
   if (qtys.fulfilledQuantity > 0 && qtys.remainingQuantity > 0) {
     await transitionOrder(orderId, 'PARTIALLY_FULFILLED')
+    publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.PARTIALLY_FULFILLED, metadata: { fulfilledQuantity: qtys.fulfilledQuantity, remainingQuantity: qtys.remainingQuantity }, transitionKey: `${orderId}:partial:${qtys.fulfilledQuantity}` }).catch(() => {})
     await createTimelineEvent(orderId, { eventType: 'PARTIAL_FULFILLMENT_RECORDED', message: `${qtys.fulfilledQuantity} of ${qtys.requestedQuantity} eSIMs fulfilled` })
     await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { nextRetryAt: new Date(Date.now() + 5 * 60_000), retryReason: `Waiting for ${qtys.remainingQuantity} remaining eSIMs` } })
     return { success: true, orderStatus: 'PARTIALLY_FULFILLED', walletCaptured: walletCaptured, eSIMsPersisted: true }
