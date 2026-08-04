@@ -151,12 +151,12 @@ describe('getEsimActionAvailability — other providers', () => {
     expect(a.qrCode.enabled).toBe(true)
   })
 
-  it('iBASIS (STATUS/SUSPEND/RESUME) with ICCID: suspend enabled, resume disabled, usage hidden', () => {
+  it('iBASIS (STATUS only) with ICCID: refreshStatus enabled, suspend hidden, resume hidden, usage hidden', () => {
     const ibasis = provider({ code: 'IBASIS' })
     const a = getEsimActionAvailability({ provider: ibasis, esim: esim() })
     expect(a.refreshStatus.enabled).toBe(true)
-    expect(a.suspend.enabled).toBe(true)
-    expect(a.resume).toMatchObject({ visible: true, enabled: false, reason: 'Resume is only available for suspended eSIMs.' })
+    expect(a.suspend.visible).toBe(false)
+    expect(a.resume.visible).toBe(false)
     expect(a.refreshUsage.visible).toBe(false)
     expect(a.topUp.visible).toBe(false)
   })
