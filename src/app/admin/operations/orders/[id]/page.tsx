@@ -253,6 +253,16 @@ export default async function OperationsOrderDetailPage({ params }: { params: { 
       <div className="rounded-xl border bg-white p-5">
         <h3 className="text-base font-semibold text-gray-900">Safe Actions</h3>
         <div className="mt-3 flex flex-wrap gap-2">
+          {actions.pollProvider.visible && (
+            <form action={async (formData: FormData) => { 'use server'; const { adminPollProvider } = await import('@/lib/actions/operations-actions'); await adminPollProvider(formData) }}>
+              <input type="hidden" name="orderId" value={params.id} />
+              <button type="submit" disabled={!actions.pollProvider.enabled}
+                title={actions.pollProvider.reason}
+                className="rounded-lg border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                Poll Provider
+              </button>
+            </form>
+          )}
           {actions.resumeFinalization.visible && (
             <form action={async (formData: FormData) => { 'use server'; const { adminResumeFinalization } = await import('@/lib/actions/operations-actions'); await adminResumeFinalization(formData) }}>
               <input type="hidden" name="orderId" value={params.id} />
@@ -315,14 +325,14 @@ export default async function OperationsOrderDetailPage({ params }: { params: { 
             <form key={w.id} action={async (formData: FormData) => { 'use server'; const { adminRequeueWebhook } = await import('@/lib/actions/operations-actions'); await adminRequeueWebhook(formData) }}>
               <input type="hidden" name="eventId" value={w.id} />
               <input type="hidden" name="orderId" value={params.id} />
-              <button type="submit" disabled={!actions.requeueWebhook.enabled}
+              <button type="submit" disabled={!actions.reprocessWebhook.enabled}
                 className="rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">
                 Reprocess Webhook
               </button>
             </form>
           ))}
-          {actions.markReviewed.visible && (
-            <form action={async (formData: FormData) => { 'use server'; const { adminMarkReviewed } = await import('@/lib/actions/operations-actions'); await adminMarkReviewed(formData) }}>
+          {actions.acknowledgeIncident.visible && (
+            <form action={async (formData: FormData) => { 'use server'; const { adminAcknowledgeIncident } = await import('@/lib/actions/operations-actions'); await adminAcknowledgeIncident(formData) }}>
               <input type="hidden" name="orderId" value={params.id} />
               <button type="submit" className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">
                 Mark Reviewed
