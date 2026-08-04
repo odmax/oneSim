@@ -1,320 +1,166 @@
-'use client'
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth/config'
+import { prisma } from '@/lib/prisma'
+import { redirect } from 'next/navigation'
+import Link from 'next/link'
+import { deriveOperationalState, deriveWalletOperationalSummary, deriveFulfillmentOperationalSummary } from '@/lib/services/operations/operational-classifier'
 
-import { useState, useEffect, useCallback } from 'react'
-import {
-  getHealthAction, getProviderHealthAction, getPipelineMetricsAction,
-  getSystemMetricsAction, getAlertsAction, getRunningJobsAction, getErrorsAction,
-} from '@/lib/actions/operations-actions'
-
-const HEALTH_COLORS: Record<string, string> = {
-  HEALTHY: 'bg-emerald-100 text-emerald-700',
-  WARNING: 'bg-amber-100 text-amber-700',
-  CRITICAL: 'bg-red-100 text-red-700',
-  OFFLINE: 'bg-gray-100 text-gray-400',
+function SeverityBadge({ severity }: { severity: string }) {
+  const colors: Record<string, string> = {
+    INFO: 'bg-gray-100 text-gray-700',
+    WARNING: 'bg-amber-100 text-amber-700',
+    ERROR: 'bg-red-100 text-red-700',
+    CRITICAL: 'bg-red-200 text-red-900 font-semibold',
+  }
+  return <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${colors[severity] || colors.INFO}`}>{severity}</span>
 }
 
-const SEVERITY_COLORS: Record<string, string> = {
-  info: 'bg-cyan-100 text-cyan-700',
-  warning: 'bg-amber-100 text-amber-700',
-  critical: 'bg-red-100 text-red-700',
+function CountCard({ label, count, href, severity }: { label: string; count: number; href?: string; severity?: string }) {
+  const colors: Record<string, string> = {
+    CRITICAL: 'border-red-300 bg-red-50', ERROR: 'border-red-200 bg-red-50',
+    WARNING: 'border-amber-200 bg-amber-50', INFO: 'border-gray-200 bg-white',
+  }
+  const content = (
+    <div className={`rounded-xl border p-4 ${colors[severity || 'INFO']} ${href ? 'hover:shadow-md transition-shadow cursor-pointer' : ''}`}>
+      <p className="text-xs font-medium uppercase tracking-wider text-gray-500">{label}</p>
+      <p className="mt-1 text-2xl font-bold text-gray-900">{count}</p>
+    </div>
+  )
+  if (href) return <Link href={href}>{content}</Link>
+  return content
 }
 
-function formatMs(ms: number | null): string {
-  if (ms == null) return '—'
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
+export default async function OperationsDashboardPage() {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
 
-function relativeTime(date: string | Date | null): string {
-  if (!date) return 'Never'
-  const d = new Date(date)
-  const diff = Date.now() - d.getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'Just now'
-  if (mins < 60) return `${mins}m ago`
-  return `${Math.floor(mins / 60)}h ago`
-}
+  const now = new Date()
+  const last24h = new Date(now.getTime() - 86400000)
 
-export default function OperationsDashboard() {
-  const [loading, setLoading] = useState(true)
-  const [health, setHealth] = useState<any>({})
-  const [providers, setProviders] = useState<any[]>([])
-  const [pipeline, setPipeline] = useState<any[]>([])
-  const [metrics, setMetrics] = useState<any>({})
-  const [alerts, setAlerts] = useState<any[]>([])
-  const [runningJobs, setRunningJobs] = useState<any[]>([])
-  const [errors, setErrors] = useState<any[]>([])
-  const [errorFilter, setErrorFilter] = useState({ type: '', providerId: '' })
-  const [tab, setTab] = useState('overview')
-  const [autoRefresh, setAutoRefresh] = useState(false)
+  const [
+    processingCount, reconcilingCount, partialCount, failed24h,
+    deadLetterCallbacks, unprocessedWebhooks, unhealthyProviders,
+    openCircuits, staleInventory, failedJobs24h,
+    criticalOrders,
+  ] = await Promise.all([
+    prisma.eSIMPurchase.count({ where: { status: { in: ['PENDING_PROVIDER', 'PROVIDER_ACCEPTED', 'RESERVED', 'FULFILLING'] } } }),
+    prisma.eSIMPurchase.count({ where: { status: 'PROVIDER_RECONCILIATION' } }),
+    prisma.eSIMPurchase.count({ where: { status: 'PARTIALLY_FULFILLED' } }),
+    prisma.eSIMPurchase.count({ where: { status: 'FAILED', updatedAt: { gte: last24h } } }),
+    prisma.orderCallbackDelivery.count({ where: { status: 'DEAD_LETTERED' } }),
+    prisma.providerWebhookEvent.count({ where: { status: 'RECEIVED', receivedAt: { lt: new Date(now.getTime() - 3600000) } } }),
+    prisma.provider.count({ where: { status: { notIn: ['ACTIVE', 'DEGRADED', 'TESTING'] } } }),
+    0, // open circuits require JSON query — count from config
+    prisma.providerInventoryReservation.count({ where: { status: { in: ['RESERVED', 'PARTIALLY_FULFILLED'] }, expiresAt: { lt: now } } }),
+    prisma.backgroundJob.count({ where: { status: 'FAILED', finishedAt: { gte: last24h } } }),
+    prisma.eSIMPurchase.findMany({
+      where: { status: { notIn: ['FULFILLED', 'REFUNDED', 'CANCELLED', 'EXPIRED'] }, updatedAt: { gte: new Date(now.getTime() - 3600000) } },
+      select: { id: true, status: true, fulfilledQuantity: true, quantity: true },
+      orderBy: { updatedAt: 'desc' }, take: 50,
+    }),
+  ])
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [h, p, pl, m, a, rj, er] = await Promise.all([
-        getHealthAction(), getProviderHealthAction(), getPipelineMetricsAction(),
-        getSystemMetricsAction(), getAlertsAction(), getRunningJobsAction(),
-        getErrorsAction(errorFilter),
-      ])
-      setHealth(h); setProviders(p); setPipeline(pl)
-      setMetrics(m); setAlerts(a); setRunningJobs(rj); setErrors(er.items)
-    } catch { /* silent */ }
-    setLoading(false)
-  }, [errorFilter])
+  // Rough critical count: orders needing manual intervention from recent set
+  const interventionCount = criticalOrders.filter(o => {
+    const state = deriveOperationalState({
+      orderStatus: o.status, orderAgeMinutes: 60,
+      fulfilledQuantity: o.fulfilledQuantity ?? 0, requestedQuantity: o.quantity ?? 1,
+      esimCount: 0, walletState: 'CAPTURED', walletAlerts: [],
+      maxRetries: 5, retryCount: 5, isReconciling: o.status === 'PROVIDER_RECONCILIATION',
+      isDeadLetteredCallback: false, hasUnprocessedWebhook: false, hasProviderFulfillmentEvidence: false,
+    })
+    return state.severity === 'CRITICAL' || (state.severity === 'ERROR' && state.actionRequired)
+  }).length
 
-  useEffect(() => { load() }, [load])
-  useEffect(() => {
-    if (!autoRefresh) return
-    const interval = setInterval(load, 15000)
-    return () => clearInterval(interval)
-  }, [autoRefresh, load])
+  const manualIntervention = deadLetterCallbacks + unprocessedWebhooks + interventionCount + staleInventory
 
   return (
     <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Operations Center</h1>
-          <p className="text-sm text-gray-500 mt-1">System health, monitoring, and diagnostics</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-sm text-gray-600">
-            <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} className="rounded border-gray-300" />
-            Auto-refresh (15s)
-          </label>
-          <button onClick={load} className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Refresh</button>
-        </div>
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900">Operations</h2>
+        <p className="mt-1 text-sm text-gray-500">System overview and operational health</p>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200">
-        {(['overview', 'providers', 'pipeline', 'jobs', 'errors', 'alerts'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium capitalize transition-colors ${tab === t ? 'text-cyan-700 border-b-2 border-cyan-600' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            {t}
-          </button>
-        ))}
+      {/* Summary cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <CountCard label="Orders Processing" count={processingCount} href="/admin/operations/orders?status=PENDING_PROVIDER" severity="INFO" />
+        <CountCard label="Orders Reconciling" count={reconcilingCount} href="/admin/operations/orders?reconciliation=1" severity="ERROR" />
+        <CountCard label="Partially Fulfilled" count={partialCount} href="/admin/operations/orders?partial=1" severity="WARNING" />
+        <CountCard label="Failed (24h)" count={failed24h} href="/admin/operations/orders?status=FAILED" severity="ERROR" />
+        <CountCard label="Manual Intervention" count={manualIntervention} href="/admin/operations/orders?actionRequired=1" severity={manualIntervention > 0 ? 'CRITICAL' : 'INFO'} />
+        <CountCard label="Dead-Letter Callbacks" count={deadLetterCallbacks} severity={deadLetterCallbacks > 0 ? 'ERROR' : 'INFO'} />
+        <CountCard label="Unprocessed Webhooks" count={unprocessedWebhooks} severity={unprocessedWebhooks > 0 ? 'ERROR' : 'INFO'} />
+        <CountCard label="Unhealthy Providers" count={unhealthyProviders} severity={unhealthyProviders > 0 ? 'ERROR' : 'INFO'} />
+        <CountCard label="Stale Inventory" count={staleInventory} severity={staleInventory > 0 ? 'WARNING' : 'INFO'} />
+        <CountCard label="Failed Jobs (24h)" count={failedJobs24h} href="/admin/jobs" severity={failedJobs24h > 0 ? 'ERROR' : 'INFO'} />
       </div>
 
-      {/* ── OVERVIEW ── */}
-      {tab === 'overview' && (
-        <div className="space-y-5">
-          <div className="grid gap-3 sm:grid-cols-4">
-            <Card label="System Health" value={health.successRate != null ? `${health.successRate}%` : '—'} sub="Success rate" />
-            <Card label="Running Jobs" value={String(health.runningJobs || 0)} sub={`${health.activeWorkers || 0} workers`} />
-            <Card label="Failed (24h)" value={String(health.failedJobs24h || 0)} sub="Last 24 hours" />
-            <Card label="Pending Reviews" value={String(health.pendingReviews || 0)} sub="In review queue" />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-4">
-            <Card label="Active Providers" value={String(health.activeProviders || 0)} sub="Active + Testing" />
-            <Card label="Avg Sync" value={formatMs(health.avgSyncDurationMs)} sub="Duration" />
-            <Card label="Avg Pipeline" value={formatMs(health.avgPipelineDurationMs)} sub="Duration" />
-            <Card label="Last Sync" value={relativeTime(health.lastSuccessfulSync)} sub={health.lastSuccessfulSync ? new Date(health.lastSuccessfulSync).toLocaleTimeString() : ''} />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-4">
-            <Card label="Jobs/Hour" value={String(metrics.jobsPerHour || 0)} sub="Last hour" />
-            <Card label="Queue Length" value={String(metrics.queueLength || 0)} sub="Pending jobs" />
-            <Card label="Provider Failures" value={String(metrics.providerFailures || 0)} sub="24h" />
-            <Card label="Throughput" value={String(metrics.pipelineThroughput || 0)} sub="Syncs/day" />
-          </div>
-        </div>
-      )}
-
-      {/* ── PROVIDERS ── */}
-      {tab === 'providers' && (
-        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50/80 text-[11px] uppercase tracking-wider text-gray-500">
-                <tr>
-                  <th className="px-3 py-2 text-left">Provider</th>
-                  <th className="px-3 py-2 text-center">Health</th>
-                  <th className="px-3 py-2 text-center">Status</th>
-                  <th className="px-3 py-2 text-right">Packages</th>
-                  <th className="px-3 py-2 text-right">Success Rate</th>
-                  <th className="px-3 py-2 text-right">Retries</th>
-                  <th className="px-3 py-2 text-left">Last Sync</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {providers.map(p => (
-                  <tr key={p.providerId} className="hover:bg-gray-50/50">
-                    <td className="px-3 py-3">
-                      <div className="text-sm font-medium text-gray-900">{p.providerName}</div>
-                      <div className="text-xs text-gray-400">{p.providerCode}</div>
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${HEALTH_COLORS[p.health]}`}>{p.health}</span>
-                    </td>
-                    <td className="px-3 py-3 text-center text-xs text-gray-500">{p.status}</td>
-                    <td className="px-3 py-3 text-right text-xs text-gray-700">{p.packagesSynced}</td>
-                    <td className="px-3 py-3 text-right text-xs text-gray-700">{p.successRate != null ? `${p.successRate}%` : '—'}</td>
-                    <td className="px-3 py-3 text-right text-xs text-amber-600">{p.retryCount}</td>
-                    <td className="px-3 py-3 text-xs text-gray-400">{relativeTime(p.lastSyncAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ── PIPELINE ── */}
-      {tab === 'pipeline' && (
-        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50/80 text-[11px] uppercase tracking-wider text-gray-500">
-                <tr>
-                  <th className="px-3 py-2 text-left">Stage</th>
-                  <th className="px-3 py-2 text-center">Status</th>
-                  <th className="px-3 py-2 text-right">Avg Duration</th>
-                  <th className="px-3 py-2 text-right">Errors</th>
-                  <th className="px-3 py-2 text-right">Packages</th>
-                  <th className="px-3 py-2 text-left">Last Run</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {pipeline.map((s: any) => (
-                  <tr key={s.stage} className="hover:bg-gray-50/50">
-                    <td className="px-3 py-3 text-sm font-medium text-gray-900">{s.stage.replace(/_/g, ' ')}</td>
-                    <td className="px-3 py-3 text-center">
-                      <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">{s.status}</span>
-                    </td>
-                    <td className="px-3 py-3 text-right text-xs text-gray-700">{formatMs(s.avgDurationMs)}</td>
-                    <td className="px-3 py-3 text-right text-xs text-red-600">{s.errorCount}</td>
-                    <td className="px-3 py-3 text-right text-xs text-gray-700">{s.packagesProcessed}</td>
-                    <td className="px-3 py-3 text-xs text-gray-400">{relativeTime(s.lastExecutedAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ── JOBS (Live Monitor) ── */}
-      {tab === 'jobs' && (
-        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b bg-gray-50/50">
-            <span className="text-sm font-semibold text-gray-700">Live Job Monitor <span className="text-gray-400 font-normal">({runningJobs.length} running)</span></span>
+      {/* Manual intervention table */}
+      {criticalOrders.length > 0 ? (
+        <div className="rounded-xl border bg-white shadow-sm">
+          <div className="flex items-center justify-between px-5 py-3 border-b">
+            <h3 className="text-base font-semibold text-gray-900">Manual Intervention Required</h3>
+            <Link href="/admin/operations/orders?actionRequired=1" className="text-xs text-cyan-600 hover:underline">View all</Link>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50/80 text-[11px] uppercase tracking-wider text-gray-500">
+            <table className="w-full">
+              <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-3 py-2 text-left">Type</th>
-                  <th className="px-3 py-2 text-left">Provider</th>
-                  <th className="px-3 py-2 text-left">Worker</th>
-                  <th className="px-3 py-2 text-center">Progress</th>
-                  <th className="px-3 py-2 text-center">Attempts</th>
-                  <th className="px-3 py-2 text-left">Started</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Severity</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Order</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Status</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">Reason</th>
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500">View</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
-                {runningJobs.length === 0 ? (
-                  <tr><td colSpan={6} className="px-3 py-12 text-center text-gray-400">No running jobs</td></tr>
-                ) : runningJobs.map((j: any) => (
-                  <tr key={j.id} className="hover:bg-gray-50/50">
-                    <td className="px-3 py-3 text-xs font-medium text-gray-900">{j.type}</td>
-                    <td className="px-3 py-3 text-xs text-gray-500">{j.providerId || '—'}</td>
-                    <td className="px-3 py-3 text-xs text-gray-400 font-mono">{j.workerId?.slice(0, 12) || '—'}</td>
-                    <td className="px-3 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-20 bg-gray-100 rounded-full h-1.5"><div className="bg-cyan-500 h-1.5 rounded-full" style={{ width: `${j.progress || 0}%` }} /></div>
-                        <span className="text-xs text-gray-500">{j.progress || 0}%</span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 text-center text-xs text-gray-500">{j.attempts}/{j.maxAttempts}</td>
-                    <td className="px-3 py-3 text-xs text-gray-400">{relativeTime(j.startedAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ── ERRORS ── */}
-      {tab === 'errors' && (
-        <div className="space-y-4">
-          <div className="flex gap-3">
-            <select value={errorFilter.type} onChange={e => setErrorFilter(p => ({ ...p, type: e.target.value }))}
-              className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
-              <option value="">All Types</option>
-              <option value="PROVIDER_SYNC">Provider Sync</option>
-              <option value="CATALOG_PIPELINE">Catalog Pipeline</option>
-            </select>
-            <input type="text" placeholder="Provider ID" value={errorFilter.providerId}
-              onChange={e => setErrorFilter(p => ({ ...p, providerId: e.target.value }))}
-              className="rounded-lg border border-gray-200 px-3 py-2 text-sm w-40" />
-            <button onClick={load} className="text-xs text-cyan-600 hover:text-cyan-700">Search</button>
-          </div>
-          <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50/80 text-[11px] uppercase tracking-wider text-gray-500">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Type</th>
-                    <th className="px-3 py-2 text-left">Provider</th>
-                    <th className="px-3 py-2 text-left">Error</th>
-                    <th className="px-3 py-2 text-center">Retryable?</th>
-                    <th className="px-3 py-2 text-right">Attempts</th>
-                    <th className="px-3 py-2 text-left">Time</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {errors.length === 0 ? (
-                    <tr><td colSpan={6} className="px-3 py-12 text-center text-gray-400">No errors found</td></tr>
-                  ) : errors.map((e: any) => (
-                    <tr key={e.id} className="hover:bg-gray-50/50">
-                      <td className="px-3 py-3 text-xs text-gray-700">{e.type}</td>
-                      <td className="px-3 py-3 text-xs text-gray-500">{e.providerId || '—'}</td>
-                      <td className="px-3 py-3 text-xs text-red-600 truncate max-w-[300px]" title={e.lastError}>{e.lastError?.slice(0, 80)}</td>
-                      <td className="px-3 py-3 text-center">
-                        <span className={`text-[10px] font-medium ${e.retryClassification === 'NON_RETRYABLE' ? 'text-red-600' : 'text-amber-600'}`}>
-                          {e.retryClassification || 'RETRYABLE'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-3 text-right text-xs text-gray-500">{e.attempts}</td>
-                      <td className="px-3 py-3 text-xs text-gray-400">{relativeTime(e.finishedAt)}</td>
+              <tbody className="divide-y">
+                {criticalOrders.slice(0, 10).map(o => {
+                  const state = deriveOperationalState({
+                    orderStatus: o.status, orderAgeMinutes: 60,
+                    fulfilledQuantity: o.fulfilledQuantity ?? 0, requestedQuantity: o.quantity ?? 1,
+                    esimCount: 0, walletState: 'NONE', walletAlerts: [],
+                    maxRetries: 5, retryCount: 5, isReconciling: o.status === 'PROVIDER_RECONCILIATION',
+                    isDeadLetteredCallback: false, hasUnprocessedWebhook: false, hasProviderFulfillmentEvidence: false,
+                  })
+                  if (state.severity === 'INFO') return null
+                  return (
+                    <tr key={o.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-2"><SeverityBadge severity={state.severity} /></td>
+                      <td className="px-4 py-2 text-xs font-mono">{o.id.slice(-8)}</td>
+                      <td className="px-4 py-2 text-xs">{o.status}</td>
+                      <td className="px-4 py-2 text-xs text-gray-500">{state.reason}</td>
+                      <td className="px-4 py-2 text-xs"><Link href={`/admin/orders/${o.id}`} className="text-cyan-600 hover:underline">View</Link></td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
-      )}
-
-      {/* ── ALERTS ── */}
-      {tab === 'alerts' && (
-        <div className="space-y-3">
-          {alerts.map(alert => (
-            <div key={alert.id} className={`rounded-lg border p-4 flex items-start gap-3 ${alert.severity === 'critical' ? 'border-red-200 bg-red-50' : alert.severity === 'warning' ? 'border-amber-200 bg-amber-50' : 'border-cyan-100 bg-cyan-50'}`}>
-              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium mt-0.5 ${SEVERITY_COLORS[alert.severity]}`}>
-                {alert.severity}
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-900">{alert.type.replace(/_/g, ' ')}</p>
-                <p className="text-xs text-gray-600 mt-0.5">{alert.message}</p>
-                {alert.suggestedAction && <p className="text-xs text-gray-400 mt-1">Suggested: {alert.suggestedAction}</p>}
-              </div>
-              <span className="text-xs text-gray-400 shrink-0">{relativeTime(alert.timestamp)}</span>
-            </div>
-          ))}
+      ) : (
+        <div className="rounded-xl border-2 border-dashed border-gray-200 p-8 text-center text-sm text-gray-400">
+          No orders currently require manual intervention.
         </div>
       )}
-    </div>
-  )
-}
 
-function Card({ label, value, sub }: { label: string; value: string; sub: string }) {
-  return (
-    <div className="rounded-lg border bg-white p-4">
-      <p className="text-xs text-gray-500">{label}</p>
-      <p className="text-2xl font-bold text-gray-900 mt-1">{value}</p>
-      <p className="text-xs text-gray-400 mt-0.5">{sub}</p>
+      {/* Job health */}
+      <div className="rounded-xl border bg-white shadow-sm">
+        <div className="px-5 py-3 border-b">
+          <h3 className="text-base font-semibold text-gray-900">Job Health</h3>
+        </div>
+        <div className="px-5 py-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {['order-recovery', 'order-callback-delivery', 'inventory-reservation-sweep', 'exchange-rate-refresh'].map(name => (
+              <div key={name} className="rounded-lg border p-3">
+                <p className="text-xs font-medium text-gray-700">{name}</p>
+                <p className="mt-1 text-xs text-gray-400">Feature: {process.env[name.toUpperCase().replace(/-/g, '_') + '_ENABLED'] ? 'Enabled' : 'Default'}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <p className="text-xs text-gray-300 text-right">Operations Centre v1.0</p>
     </div>
   )
 }
