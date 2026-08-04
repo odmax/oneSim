@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from './logging'
 import { authenticateApiKey } from './auth'
+import { apiError, generateRequestId, type ApiErrorCode } from './error-contract'
 
 export interface RespondOptions {
   apiKeyId?: string
   idempotencyKey?: string
+  errorCode?: ApiErrorCode
   errorMessage?: string
   rateLimit?: { limit: number; remaining: number }
+  requestId?: string
+  details?: any
 }
 
 export async function respond(
@@ -30,20 +34,25 @@ export interface AuthBusinessResult {
   businessId: string
   apiKeyId?: string
   rateLimit?: { limit: number; remaining: number }
+  requestId: string
 }
 
 export async function authenticateAndCheck(
   request: NextRequest,
   startTime: number,
 ): Promise<AuthBusinessResult> {
+  const requestId = generateRequestId()
   const auth = await authenticateApiKey(request)
 
   if (!auth.authenticated) {
-    const errorResponse = NextResponse.json(
-      { success: false, error: auth.error },
-      { status: auth.status || 401 },
+    const errorResponse = apiError(
+      auth.status === 429 ? 'RATE_LIMITED' : 'UNAUTHORIZED',
+      auth.error || 'Invalid or revoked API key',
+      auth.status || 401,
+      undefined,
+      requestId,
     )
-    return { authError: errorResponse, businessId: 'unknown' }
+    return { authError: errorResponse, businessId: 'unknown', requestId }
   }
 
   const businessId = auth.businessId!
@@ -53,10 +62,11 @@ export async function authenticateAndCheck(
   const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
 
   if (!rateCheck.allowed) {
-    return { authError: addRateLimitHeaders(createRateLimitResponse(), rateCheck), businessId, apiKeyId, rateLimit }
+    const errorResponse = apiError('RATE_LIMITED', 'API rate limit exceeded', 429, undefined, requestId)
+    return { authError: addRateLimitHeaders(errorResponse, rateCheck), businessId, apiKeyId, rateLimit, requestId }
   }
 
-  return { businessId, apiKeyId, rateLimit }
+  return { businessId, apiKeyId, rateLimit, requestId }
 }
 
 export function addRateLimit(

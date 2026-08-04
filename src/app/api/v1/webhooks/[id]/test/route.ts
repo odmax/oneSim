@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
+import { apiError, generateRequestId } from '@/lib/api/error-contract'
 import crypto from 'crypto'
 
 function makeError(c: string, m: string) { return { success: false, error: { code: c, message: m } } }
@@ -17,16 +18,17 @@ async function respond(req: NextRequest, body: any, status: number, st: number, 
 
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   const startTime = Date.now()
+  const requestId = generateRequestId()
   try {
     const auth = await authenticateApiKey(request)
-    if (!auth.authenticated) return respond(request, makeError('AUTH_FAILED', auth.error || ''), auth.status || 401, startTime, 'unknown', { errorMessage: auth.error })
+    if (!auth.authenticated) return apiError('UNAUTHORIZED', auth.error || 'Invalid API key', auth.status || 401, undefined, requestId)
     const businessId = auth.businessId!
     const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
 
     const endpoint = await prisma.businessWebhookEndpoint.findFirst({ where: { id: params.id, businessId } })
-    if (!endpoint) return respond(request, makeError('NOT_FOUND', 'Webhook endpoint not found'), 404, startTime, businessId, { errorMessage: 'Not found', rateLimit })
+    if (!endpoint) return apiError('NOT_FOUND', 'Webhook endpoint not found', 404, undefined, requestId)
 
     const eventId = `evt_test_${crypto.randomBytes(8).toString('hex')}`
     const payload = { id: eventId, type: 'webhook.test', createdAt: new Date().toISOString(), data: { message: 'This is a test webhook from OneSIM' } }
@@ -50,17 +52,20 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
       if (response.ok) {
         await prisma.businessWebhookEndpoint.update({ where: { id: endpoint.id }, data: { lastSuccessAt: new Date(), failureCount: 0 } })
+        return NextResponse.json({ success: true, message: 'Test webhook sent successfully', statusCode: response.status, requestId }, { status: 200, headers: { 'X-Request-Id': requestId } })
       } else {
         await prisma.businessWebhookEndpoint.update({ where: { id: endpoint.id }, data: { lastFailureAt: new Date(), failureCount: { increment: 1 } } })
+        return apiError('SERVICE_UNAVAILABLE', `Endpoint returned HTTP ${response.status}`, 200, undefined, requestId)
       }
-
-      return respond(request, { success: response.ok, message: response.ok ? 'Test webhook sent successfully' : `Endpoint returned ${response.status}`, statusCode: response.status }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
     } catch (e: any) {
       await prisma.webhookDelivery.create({
         data: { businessId, endpointId: endpoint.id, eventType: 'webhook.test', eventId, payload, status: 'FAILED', errorMessage: e.message?.substring(0, 500) || 'Connection failed', attempts: 1 },
       })
       await prisma.businessWebhookEndpoint.update({ where: { id: endpoint.id }, data: { lastFailureAt: new Date(), failureCount: { increment: 1 } } }).catch(() => {})
-      return respond(request, { success: false, message: `Connection failed: ${e.message}` }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
+      return apiError('SERVICE_UNAVAILABLE', 'Connection to webhook endpoint failed', 200, undefined, requestId)
     }
-  } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
+  } catch (e: any) {
+    console.error(e)
+    return apiError('INTERNAL_ERROR', 'An internal error occurred', 500, undefined, requestId)
+  }
 }

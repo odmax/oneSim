@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateAndCheck, respond } from '@/lib/api/v1-response'
+import { apiError } from '@/lib/api/error-contract'
 import { stripPackageProviderFields, stripEsimProviderFields } from '@/lib/analytics/safe-fields'
 import { getActivationInstructions } from '@/lib/esim/activation-instructions'
 import { getPackageDisplayName, getPackageDataGB, PurchaseSnapshot } from '@/lib/packages/snapshot-utils'
@@ -13,7 +14,7 @@ export async function GET(
 ) {
   const startTime = Date.now()
 
-  const { authError, businessId, apiKeyId, rateLimit } = await authenticateAndCheck(request, startTime)
+  const { authError, businessId, apiKeyId, rateLimit, requestId } = await authenticateAndCheck(request, startTime)
   if (authError) return authError
 
   const esim = await prisma.eSIM.findUnique({
@@ -29,19 +30,11 @@ export async function GET(
   })
 
   if (!esim) {
-    return respond(request, { success: false, error: 'eSIM not found' }, 404, startTime, businessId, {
-      apiKeyId,
-      rateLimit,
-      errorMessage: 'eSIM not found',
-    })
+    return apiError('NOT_FOUND', 'eSIM not found', 404, undefined, requestId)
   }
 
   if (esim.purchase.businessId !== businessId) {
-    return respond(request, { success: false, error: 'Forbidden' }, 403, startTime, businessId, {
-      apiKeyId,
-      rateLimit,
-      errorMessage: 'eSIM does not belong to this business',
-    })
+    return apiError('FORBIDDEN', 'eSIM does not belong to this business', 403, undefined, requestId)
   }
 
   const safeEsim = stripEsimProviderFields(esim)
