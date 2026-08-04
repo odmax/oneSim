@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
 import { getOrderOperationsDetail } from '@/lib/services/operations/order-operations-detail'
+import { getOrderOperationsActions } from '@/lib/services/operations/order-operation-actions'
 
 function SeverityBadge({ severity }: { severity: string }) {
   const c: Record<string, string> = { INFO: 'bg-gray-100 text-gray-700', WARNING: 'bg-amber-100 text-amber-700', ERROR: 'bg-red-100 text-red-700', CRITICAL: 'bg-red-200 text-red-900 font-semibold' }
@@ -30,6 +31,7 @@ export default async function OperationsOrderDetailPage({ params }: { params: { 
 
   const detail = await getOrderOperationsDetail(params.id)
   if (!detail) notFound()
+  const actions = await getOrderOperationsActions(params.id)
 
   const { header, fulfillment, wallet, providerAttempts, esims, inventory, recovery, timeline, webhooks, callbacks, pricing, integrityChecks } = detail
 
@@ -244,6 +246,89 @@ export default async function OperationsOrderDetailPage({ params }: { params: { 
               <IntegrityBadge result={check.result} />
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Safe Actions */}
+      <div className="rounded-xl border bg-white p-5">
+        <h3 className="text-base font-semibold text-gray-900">Safe Actions</h3>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {actions.resumeFinalization.visible && (
+            <form action={async (formData: FormData) => { 'use server'; const { adminResumeFinalization } = await import('@/lib/actions/operations-actions'); await adminResumeFinalization(formData) }}>
+              <input type="hidden" name="orderId" value={params.id} />
+              <button type="submit" disabled={!actions.resumeFinalization.enabled}
+                title={actions.resumeFinalization.reason}
+                className="rounded-lg border border-cyan-300 px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                Resume Finalization
+              </button>
+            </form>
+          )}
+          {actions.startReconciliation.visible && (
+            <form action={async (formData: FormData) => { 'use server'; const { adminStartReconciliation } = await import('@/lib/actions/operations-actions'); await adminStartReconciliation(formData) }}>
+              <input type="hidden" name="orderId" value={params.id} />
+              <button type="submit" disabled={!actions.startReconciliation.enabled}
+                title={actions.startReconciliation.reason}
+                className="rounded-lg border border-purple-300 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                {detail.header.status === 'PROVIDER_RECONCILIATION' ? 'Continue Reconciliation' : 'Start Reconciliation'}
+              </button>
+            </form>
+          )}
+          {actions.safeRedispatch.visible && (
+            <form action={async (formData: FormData) => { 'use server'; const { adminSafeRedispatch } = await import('@/lib/actions/operations-actions'); await adminSafeRedispatch(formData) }} onSubmit={e => { if (!confirm('This will send a new provider purchase request. Continue?')) e.preventDefault() }}>
+              <input type="hidden" name="orderId" value={params.id} />
+              <button type="submit" disabled={!actions.safeRedispatch.enabled}
+                title={actions.safeRedispatch.reason}
+                className="rounded-lg border border-orange-300 px-3 py-1.5 text-xs font-medium text-orange-700 hover:bg-orange-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                Retry Provider Purchase
+              </button>
+            </form>
+          )}
+          {detail.inventory && actions.releaseInventory.visible && (
+            <form action={async (formData: FormData) => { 'use server'; const { adminReleaseInventory } = await import('@/lib/actions/operations-actions'); await adminReleaseInventory(formData) }} onSubmit={e => { if (!confirm('This releases only the local inventory hold. Continue?')) e.preventDefault() }}>
+              <input type="hidden" name="reservationId" value={detail.inventory.id} />
+              <input type="hidden" name="orderId" value={params.id} />
+              <button type="submit" disabled={!actions.releaseInventory.enabled}
+                className="rounded-lg border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                Release Inventory
+              </button>
+            </form>
+          )}
+          {detail.callbacks.filter(c => c.status === 'DEAD_LETTERED' || c.status === 'FAILED').map(c => (
+            <div key={c.id} className="inline-flex gap-1">
+              <form action={async (formData: FormData) => { 'use server'; const { adminRetryCallback } = await import('@/lib/actions/operations-actions'); await adminRetryCallback(formData) }}>
+                <input type="hidden" name="deliveryId" value={c.id} />
+                <input type="hidden" name="orderId" value={params.id} />
+                <button type="submit" className="rounded-lg border border-cyan-300 px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-50">
+                  Retry Callback
+                </button>
+              </form>
+              {actions.cancelCallback.visible && (
+                <form action={async (formData: FormData) => { 'use server'; const { adminCancelCallback } = await import('@/lib/actions/operations-actions'); await adminCancelCallback(formData) }} onSubmit={e => { if (!confirm('This prevents further delivery attempts. Continue?')) e.preventDefault() }}>
+                  <input type="hidden" name="deliveryId" value={c.id} />
+                  <input type="hidden" name="orderId" value={params.id} />
+                  <button type="submit" className="rounded-lg border border-gray-300 px-2 py-1.5 text-xs text-gray-500 hover:bg-gray-50">Cancel</button>
+                </form>
+              )}
+            </div>
+          ))}
+          {detail.webhooks.filter(w => w.status === 'FAILED' || w.status === 'RECEIVED').map(w => (
+            <form key={w.id} action={async (formData: FormData) => { 'use server'; const { adminRequeueWebhook } = await import('@/lib/actions/operations-actions'); await adminRequeueWebhook(formData) }}>
+              <input type="hidden" name="eventId" value={w.id} />
+              <input type="hidden" name="orderId" value={params.id} />
+              <button type="submit" disabled={!actions.requeueWebhook.enabled}
+                className="rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">
+                Reprocess Webhook
+              </button>
+            </form>
+          ))}
+          {actions.markReviewed.visible && (
+            <form action={async (formData: FormData) => { 'use server'; const { adminMarkReviewed } = await import('@/lib/actions/operations-actions'); await adminMarkReviewed(formData) }}>
+              <input type="hidden" name="orderId" value={params.id} />
+              <button type="submit" className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">
+                Mark Reviewed
+              </button>
+            </form>
+          )}
         </div>
       </div>
 
