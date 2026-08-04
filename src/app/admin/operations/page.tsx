@@ -93,6 +93,8 @@ export default async function OperationsDashboardPage() {
         <CountCard label="Unhealthy Providers" count={unhealthyProviders} severity={unhealthyProviders > 0 ? 'ERROR' : 'INFO'} />
         <CountCard label="Stale Inventory" count={staleInventory} severity={staleInventory > 0 ? 'WARNING' : 'INFO'} />
         <CountCard label="Failed Jobs (24h)" count={failedJobs24h} href="/admin/jobs" severity={failedJobs24h > 0 ? 'ERROR' : 'INFO'} />
+        <CountCard label="Callback Retries Due" count={deadLetterCallbacks} href="/admin/operations/callbacks?status=DEAD_LETTERED" severity={deadLetterCallbacks > 0 ? 'ERROR' : 'INFO'} />
+        <CountCard label="Unprocessed Webhooks" count={unprocessedWebhooks} href="/admin/operations/webhooks?status=RECEIVED" severity={unprocessedWebhooks > 0 ? 'ERROR' : 'INFO'} />
       </div>
 
       {/* Manual intervention table */}
