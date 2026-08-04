@@ -7,14 +7,14 @@ const BASE_URL = `${getAppUrl()}/api/v1`
 const STAGING_URL = 'https://staging.onetelecom.cloud/api/v1'
 const PROD_URL = 'https://m2m.onetelecom.cloud/api/v1'
 const JS_FETCH = `// OneSim Business API — JavaScript Integration Example
-const ONESIM_API_KEY = 'your_api_key_here';
+const Bearer  = 'your_api_key_here';
 const BASE_URL = '${BASE_URL}';
 
 async function createESIMOrder() {
   const response = await fetch(\`\${BASE_URL}/esims/order\`, {
     method: 'POST',
     headers: {
-      'x-api-key': ONESIM_API_KEY,
+      'Authorization': Bearer ,
       'Content-Type': 'application/json',
       'Idempotency-Key': crypto.randomUUID(),
     },
@@ -30,28 +30,28 @@ async function createESIMOrder() {
 
 async function getPackages() {
   const response = await fetch(\`\${BASE_URL}/packages\`, {
-    headers: { 'x-api-key': ONESIM_API_KEY },
+    headers: { 'Authorization': Bearer  },
   });
   return response.json();
 }
 
 async function getEsimStatus(esimId) {
   const response = await fetch(\`\${BASE_URL}/esims/\${esimId}\`, {
-    headers: { 'x-api-key': ONESIM_API_KEY },
+    headers: { 'Authorization': Bearer  },
   });
   return response.json();
 }`
 
 const CURL_EXAMPLE = `# ── Staging (testing) ──
-# Export your key: export ONESIM_API_KEY=your_key_here
+# Export your key: export Bearer =your_key_here
 
 # List available packages
 curl -X GET "https://staging.onetelecom.cloud/api/v1/packages" \\
-  -H "x-api-key: $ONESIM_API_KEY"
+  -H "Authorization: $Bearer "
 
 # Buy an eSIM (staging)
 curl -X POST "https://staging.onetelecom.cloud/api/v1/esims/order" \\
-  -H "x-api-key: $ONESIM_API_KEY" \\
+  -H "Authorization: $Bearer " \\
   -H "Content-Type: application/json" \\
   -H "Idempotency-Key: $(uuidgen)" \\
   -d '{
@@ -63,19 +63,19 @@ curl -X POST "https://staging.onetelecom.cloud/api/v1/esims/order" \\
 
 # ── Production (live) ──
 # curl -X GET "https://m2m.onetelecom.cloud/api/v1/packages" \\
-#   -H "x-api-key: $ONESIM_API_KEY"
+#   -H "Authorization: $Bearer "
 
 # Check eSIM status
 curl -X GET "${BASE_URL}/esims/{esimId}" \\
-  -H "x-api-key: $ONESIM_API_KEY"
+  -H "Authorization: $Bearer "
 
 # Get wallet balance
 curl -X GET "${BASE_URL}/wallet" \\
-  -H "x-api-key: $ONESIM_API_KEY"
+  -H "Authorization: $Bearer "
 
 # Top up an eSIM
 curl -X POST "${BASE_URL}/esims/{esimId}/top-up" \\
-  -H "x-api-key: $ONESIM_API_KEY" \\
+  -H "Authorization: $Bearer " \\
   -H "Content-Type: application/json" \\
   -d '{"packageId": "TOPUP_PACKAGE_ID"}'`
 
@@ -84,11 +84,11 @@ const ENV_TEMPLATE = `# ── OneSim Business API Configuration ──
 
 # Staging (testing):
 ONESIM_API_BASE_URL=${STAGING_URL}
-ONESIM_API_KEY=your_staging_api_key_here
+Bearer =your_staging_api_key_here
 
 # Production (live — uncomment after approval):
 # ONESIM_API_BASE_URL=${PROD_URL}
-# ONESIM_API_KEY=your_production_api_key_here
+# Bearer =your_production_api_key_here
 
 ONESIM_IDEMPOTENCY_PREFIX=onesim_`
 
@@ -98,7 +98,7 @@ const DOWNLOAD_TEMPLATE = {
   baseUrl: BASE_URL,
   authentication: {
     type: 'Bearer Token',
-    header: 'Authorization: Bearer <ONESIM_API_KEY>',
+    header: 'Authorization: Bearer <Bearer >',
     idempotency: {
       header: 'Idempotency-Key',
       description: 'Use a unique UUID per order to prevent duplicates. Keys expire after 24 hours.',
@@ -240,7 +240,7 @@ export default function IntegrationTemplatePage() {
         <h2 className="text-lg font-semibold text-gray-900 mb-3">2. Authentication</h2>
         <div className="space-y-3">
           <div className="rounded-lg border border-gray-200 bg-amber-50 p-4 text-sm text-amber-800">
-            <strong>Header:</strong> <code>x-api-key: YOUR_API_KEY</code>
+            <strong>Header:</strong> <code>Authorization: Bearer YOUR_API_KEY</code>
             <p className="mt-1 text-xs">All requests require this header. Get your API key from the <strong>API Keys</strong> page. <br/>Set <code>Content-Type: application/json</code> for POST/PATCH requests.</p>
           </div>
           <div className="rounded-lg border border-gray-200 bg-blue-50 p-4 text-sm text-blue-800">

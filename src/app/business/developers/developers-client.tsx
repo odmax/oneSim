@@ -213,7 +213,7 @@ export default function DevelopersClient({ packages, apiKeys, isAdmin, baseUrl }
             </div>
             <div className="rounded-lg bg-gray-50 p-4">
               <p className="text-sm font-medium text-gray-700">Auth Method</p>
-              <code className="mt-1 block text-sm text-blue-600">x-api-key header</code>
+              <code className="mt-1 block text-sm text-blue-600">Authorization: Bearer YOUR_API_KEY</code>
             </div>
             <div className="rounded-lg bg-gray-50 p-4">
               <p className="text-sm font-medium text-gray-700">Content Type</p>
