@@ -372,6 +372,11 @@ export class PurchaseOrchestrator {
     await failOrder(orderId, 'All provider attempts exhausted')
     await this.writeAudit(businessId, userId, provider.id, pkg.id, displayName, totalAmount, 'FAILED', 'All attempts exhausted')
     return this.fail('ALL_PROVIDERS_EXHAUSTED', 'All available providers failed', false)
+    } catch (e: any) {
+      console.error(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=UNCAUGHT_EXCEPTION name=${e.name} message=${e.message} stack=${e.stack?.substring(0, 300)}`)
+      trace(correlationId, 'ACTION_RESULT', 'FAILED', { publicCode: 'purchase_failed', exception: e.name })
+      return this.fail('INTERNAL_ERROR', e.message || 'Internal error', false)
+    }
   }
 
   private async buildActivationInput(orderId: string, businessId: string, providerId: string, provider: any, planId: string, quantity: number, subscriber: any, totalAmount: number, displayName: string, pkg: any, packageSnapshot: any, customerId: any, rankedProviders: any) {
