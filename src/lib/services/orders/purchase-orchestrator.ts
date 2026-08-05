@@ -96,6 +96,7 @@ export class PurchaseOrchestrator {
     trace(correlationId, 'PACKAGE_RESOLVED', 'SUCCESS', { orderPackageId: pkg.id, providerBound: Boolean(pkg.providerId) })
 
     // Step 4: Validate pricing availability
+    trace(correlationId, 'PRICING_CHECK', 'START', { providerPackageId: pkg.providerPackageId || 'none' })
     if (pkg.providerPackageId) {
       const providerPkg = await prisma.providerPackage.findUnique({
         where: { id: pkg.providerPackageId },
@@ -103,13 +104,17 @@ export class PurchaseOrchestrator {
       })
       if (providerPkg) {
         if (providerPkg.costStatus === 'MISSING' || providerPkg.costStatus === 'INVALID') {
+          trace(correlationId, 'PRICING_CHECK', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', costStatus: providerPkg.costStatus, publicCode: 'package_pricing_unavailable' })
           return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', false)
         }
         if (providerPkg.pricingStatus === 'COST_UNAVAILABLE' || providerPkg.pricingStatus === 'DISABLED') {
+          trace(correlationId, 'PRICING_CHECK', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', pricingStatus: providerPkg.pricingStatus, publicCode: 'package_pricing_unavailable' })
           return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', false)
         }
-        console.log(`[COST_CHECK] packageId=${pkg.providerPackageId} costStatus=${providerPkg.costStatus} pricingStatus=${providerPkg.pricingStatus}`)
+        trace(correlationId, 'PRICING_CHECK', 'SUCCESS', { costStatus: providerPkg.costStatus, costSource: providerPkg.costSource || 'none' })
       }
+    } else {
+      trace(correlationId, 'PRICING_CHECK', 'SUCCESS', { pricingSource: 'direct_package_price' })
     }
 
     // Step 4b: Validate travel date requirement before any wallet hold. A
@@ -232,6 +237,7 @@ export class PurchaseOrchestrator {
         return this.fail(qtResult.errorCode || 'QUOTE_FAILED', qtResult.error || 'Quote consumption failed', false)
       }
       orderId = qtResult.orderId!
+      trace(correlationId, 'ORDER_CREATION', 'SUCCESS', { orderId, fromQuote: true })
       // Use immutable quote pricing for wallet operations
       const qOrder = qtResult.order!
       unitPrice = Number(qOrder.quotedUnitPrice || qOrder.packageUnitPrice || unitPrice)
@@ -255,6 +261,7 @@ export class PurchaseOrchestrator {
           },
         })
         orderId = order.id
+        trace(correlationId, 'ORDER_CREATION', 'SUCCESS', { orderId, fromQuote: false })
         await createTimelineEvent(orderId, { eventType: 'ORDER_CREATED_WITHOUT_QUOTE', message: `Order created directly — ${quantity}x ${displayName}` })
       } catch (e: any) {
         if (purchaseKey && (e.code === 'P2002' || /providerPurchaseKey/i.test(e.message || ''))) {

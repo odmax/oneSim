@@ -56,6 +56,12 @@ export default async function BuyESIMPage({
           {searchParams.error === 'invalid_travel_date' && 'Travel Date must be a valid date in YYYY-MM-DD format.'}
           {searchParams.error === 'provider_failed' && 'Provider could not provision this eSIM right now. Please contact support or try again later.'}
           {searchParams.error === 'purchase_failed' && 'Purchase failed. Please try again.'}
+          {searchParams.error === 'package_pricing_unavailable' && 'This eSIM package is not yet available for purchase.'}
+          {searchParams.error === 'quote_required' && 'Please refresh the package price and try again.'}
+          {searchParams.error === 'quote_expired' && 'Your quote has expired. Please try again.'}
+          {searchParams.error === 'quote_already_used' && 'This purchase request has already been processed.'}
+          {searchParams.error === 'temporarily_unavailable' && 'This eSIM package is temporarily unavailable.'}
+          {searchParams.error === 'order_creation_failed' && 'We could not create the order. Please try again.'}
         </div>
       )}
 

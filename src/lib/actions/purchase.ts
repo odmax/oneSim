@@ -18,6 +18,15 @@ const ERROR_MAP: Record<string, string> = {
   'No provider adapter available': 'provider_failed',
   'Provider activation failed': 'provider_failed',
   'Provider returned fewer ICCIDs': 'provider_failed',
+  'This package is temporarily unavailable': 'package_pricing_unavailable',
+  'Quote not found': 'quote_required',
+  'Quote has expired': 'quote_expired',
+  'Quote is already': 'quote_already_used',
+  'No eligible provider found': 'temporarily_unavailable',
+  'Provider not found': 'temporarily_unavailable',
+  'Provider does not support purchases': 'temporarily_unavailable',
+  'Failed to create order': 'order_creation_failed',
+  'Wallet reserve failed': 'purchase_failed',
 }
 
 export async function purchaseESIMs(formData: FormData) {
