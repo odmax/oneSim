@@ -20,6 +20,8 @@ export interface CreateOrderParams {
   idempotencyKey?: string
   /** Travel date (YYYY-MM-DD) required by plans that mandate it. */
   travelDate?: string
+  /** Internal trace correlation ID */
+  correlationId?: string
 }
 
 export interface CreateOrderResult {
@@ -53,6 +55,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     sku: params.sku,
     packageCode: params.packageCode,
     quantity: params.quantity,
+    correlationId: params.correlationId,
     customer: params.customer ? {
       name: params.customer.name,
       email: params.customer.email,

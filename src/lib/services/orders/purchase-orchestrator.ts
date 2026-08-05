@@ -12,6 +12,13 @@ import { consumeQuoteAndCreateOrder } from '@/lib/pricing/purchase-quote-service
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 
+function trace(correlationId: string | undefined, stage: string, status: string, extra?: Record<string, any>) {
+  if (!correlationId) return
+  const fields = [`correlationId=${correlationId}`, `stage=${stage}`, `status=${status}`]
+  if (extra) for (const [k, v] of Object.entries(extra)) fields.push(`${k}=${v}`)
+  console.log(`[BUSINESS_PURCHASE_TRACE] ${fields.join(' ')}`)
+}
+
 const DUP_WINDOW_MS = 30_000
 
 export interface PurchaseRequest {
@@ -23,6 +30,8 @@ export interface PurchaseRequest {
   quantity: number
   /** Optional quote reference for atomic quote consumption + order creation. */
   quoteReference?: string
+  /** Internal trace correlation ID — never exposed to clients. */
+  correlationId?: string
   customer?: {
     name: string
     email: string
@@ -67,7 +76,8 @@ export interface PurchaseResult {
 
 export class PurchaseOrchestrator {
   async executePurchase(request: PurchaseRequest): Promise<PurchaseResult> {
-    const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl, idempotencyKey, travelDate } = request
+    const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl, idempotencyKey, travelDate, correlationId } = request
+    trace(correlationId, 'VALIDATION', 'START', { packageId, quantity, businessId })
 
     // Step 1: Validate business
     const business = await prisma.business.findUnique({ where: { id: businessId } })
@@ -83,6 +93,7 @@ export class PurchaseOrchestrator {
       return this.fail('PACKAGE_NOT_FOUND', 'Package not available for purchase', false)
     }
     const pkg = resolution.package
+    trace(correlationId, 'PACKAGE_RESOLVED', 'SUCCESS', { orderPackageId: pkg.id, providerBound: Boolean(pkg.providerId) })
 
     // Step 4: Validate pricing availability
     if (pkg.providerPackageId) {
@@ -271,6 +282,7 @@ export class PurchaseOrchestrator {
       await this.writeAudit(businessId, userId, providerId, pkg.id, displayName, totalAmount, 'FAILED', reserve.error)
       return this.fail('WALLET_RESERVE_FAILED', reserve.error || 'Wallet reserve failed', true)
     }
+    trace(correlationId, 'WALLET_RESERVE', 'SUCCESS')
     await transitionOrder(orderId, 'PAYMENT_RESERVED')
     await createTimelineEvent(orderId, { eventType: 'WALLET_RESERVED', message: `Reserved $${totalAmount}` })
 
@@ -296,6 +308,7 @@ export class PurchaseOrchestrator {
       })
 
       if (result.success && (result.status === 'SUCCEEDED' || result.status === 'ALREADY_COMPLETE')) {
+        trace(correlationId, 'PROVIDER_ATTEMPT', 'SUCCESS', { providerName: currentProviderName, attemptNum, connectorType: result.providerReference ? 'found' : 'none' })
         // Load saved eSIMs
         const savedEsims = await prisma.eSIM.findMany({ where: { purchaseId: orderId }, select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } })
         return { success: true, orderId, status: 'FULFILLED', provider: currentProviderName, providerReference: result.providerReference, iccid: result.iccids?.[0], qrCode: result.qrCode, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD', esims: savedEsims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi, activationCode: e.activationCode, status: e.status, qrCodeUrl: e.qrCodeUrl })) }

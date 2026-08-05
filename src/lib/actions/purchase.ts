@@ -22,21 +22,27 @@ const ERROR_MAP: Record<string, string> = {
 
 export async function purchaseESIMs(formData: FormData) {
   const session = await getServerSession(authOptions)
+  const correlationId = `purchase-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
 
   if (!session || session.user.role !== 'BUSINESS_USER') {
     redirect('/login')
   }
 
   const rawTravelDate = (formData.get('travelDate') as string) || undefined
+  const parsedQty = parseInt(formData.get('quantity') as string)
+  const pkgId = formData.get('packageId') as string
+
+  console.log(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=ACTION_RECEIVED status=START packageId=${pkgId} quantity=${parsedQty} businessId=${session.user.businessId}`)
 
   const validatedFields = purchaseESIMSchema.safeParse({
-    packageId: formData.get('packageId'),
-    quantity: parseInt(formData.get('quantity') as string),
+    packageId: pkgId,
+    quantity: parsedQty,
     idempotencyKey: formData.get('idempotencyKey') as string,
     travelDate: rawTravelDate,
   })
 
   if (!validatedFields.success) {
+    console.log(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=VALIDATION status=FAILED`)
     redirect('/business/buy-esim?error=invalid_input')
   }
 
@@ -49,18 +55,22 @@ export async function purchaseESIMs(formData: FormData) {
     packageId,
     quantity,
     travelDate: travelDate || undefined,
+    correlationId,
   })
 
   if (!result.success) {
     const msg = result.error || 'Purchase failed'
     console.error(`purchaseESIMs failed: business=${businessId} pkg=${packageId} qty=${quantity} error=${msg}`)
 
+    let publicCode = 'purchase_failed'
     for (const [key, value] of Object.entries(ERROR_MAP)) {
       if (msg.startsWith(key)) {
-        redirect(`/business/buy-esim?error=${value}`)
+        publicCode = value
+        break
       }
     }
-    redirect(`/business/buy-esim?error=purchase_failed`)
+    console.log(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=ACTION_RESULT status=FAILED publicCode=${publicCode}`)
+    redirect(`/business/buy-esim?error=${publicCode}`)
   }
 
   revalidatePath('/business/orders')
@@ -69,6 +79,6 @@ export async function purchaseESIMs(formData: FormData) {
   revalidatePath('/business/wallet')
   revalidatePath('/business/dashboard')
 
-  // Redirect to order detail page on success
+  console.log(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=ACTION_RESULT status=SUCCESS orderId=${result.orderId}`)
   redirect(`/business/orders/${result.orderId}`)
 }
