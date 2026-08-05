@@ -31,6 +31,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
   const [submitting, setSubmitting] = useState(false)
   const keyRef = useRef(generateIdempotencyKey())
   const formRef = useRef<HTMLFormElement>(null)
+  const quoteRefInput = useRef<HTMLInputElement>(null)
   const price = parseFloat(pkg.priceUSD.toString())
   const total = quotedTotal ?? price * quantity
   const insufficient = walletBalance < total
@@ -39,24 +40,30 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
     e.preventDefault()
     setQuoteError('')
 
+    // First click: no quote yet → request one and store in ref + state
     if (!quoteRef) {
       setQuoteLoading(true)
       const result = await requestPurchaseQuote(pkg.id, quantity)
       setQuoteLoading(false)
+
       if (!result.success) {
         setQuoteError(result.error || 'Cannot get price')
         return
       }
+
+      // Set hidden input value synchronously via ref (avoids React async state race)
+      quoteRefInput.current!.value = result.quote.reference
       setQuoteRef(result.quote.reference)
       setQuotedTotal(result.quote.totalAmount)
-      // Wait for state to update showing confirmed price, then submit
-      setTimeout(() => formRef.current?.requestSubmit(), 100)
+      // Submit the form now — hidden input has the correct value via ref
+      formRef.current!.requestSubmit()
       return
     }
 
+    // Second click: quote is ready, submit purchase
     setSubmitting(true)
     keyRef.current = generateIdempotencyKey()
-    formRef.current?.requestSubmit()
+    formRef.current!.requestSubmit()
   }
 
   const buttonLabel = quoteLoading ? 'Getting price\u2026' : quoteRef ? 'Confirm Purchase' : 'Buy Now'
@@ -88,7 +95,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
       <form ref={formRef} action={purchaseESIMs} className="space-y-3" onSubmit={handleSubmit}>
         <input type="hidden" name="packageId" value={pkg.id} />
         <input type="hidden" name="idempotencyKey" value={keyRef.current} />
-        <input type="hidden" name="quoteReference" value={quoteRef || ''} />
+        <input type="hidden" name="quoteReference" ref={quoteRefInput} />
         <div>
           <label htmlFor={`quantity-${pkg.id}`} className="block text-xs font-medium text-gray-500 mb-1">
             Quantity

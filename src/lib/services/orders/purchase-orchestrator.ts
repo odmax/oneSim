@@ -217,8 +217,9 @@ export class PurchaseOrchestrator {
     // Step 10: Create order — use quote atomic flow when quoteReference provided
     const quotesRequired = process.env.PRICING_QUOTES_REQUIRED === 'true'
     let orderId: string
-
     if (request.quoteReference) {
+      trace(correlationId, 'QUOTE_FORWARDING', 'SUCCESS', { quotePresent: true, quantity })
+
       // Atomic quote consumption + order creation
       const qtResult = await consumeQuoteAndCreateOrder({
         quoteReference: request.quoteReference, businessId, userId: userId,
@@ -244,6 +245,7 @@ export class PurchaseOrchestrator {
       unitPrice = Number(qOrder.quotedUnitPrice || qOrder.packageUnitPrice || unitPrice)
       totalAmount = Number(qOrder.quotedTotalAmount || qOrder.totalAmount || totalAmount)
     } else if (quotesRequired) {
+      trace(correlationId, 'QUOTE_FORWARDING', 'FAILED', { quotePresent: false, quotesRequired: true })
       trace(correlationId, 'QUOTE_VALIDATION', 'FAILED', { quotePresent: false, quotesRequired: true, publicCode: 'quote_required' })
       return this.fail('QUOTE_REQUIRED', 'A valid purchase quote is required for checkout', false)
     } else {
