@@ -950,16 +950,24 @@ enum ApiKeyStatus {
 }
 
 model BusinessApiKey {
-  id         String       @id @default(cuid())
-  businessId String
-  name       String
-  keyHash    String
-  keyPrefix  String       @unique
-  status     ApiKeyStatus @default(ACTIVE)
-  lastUsedAt DateTime?
-  expiresAt  DateTime?
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
+  id              String       @id @default(cuid())
+  businessId      String
+  name            String
+  keyHash         String
+  keyPrefix       String       @unique
+  status          ApiKeyStatus @default(ACTIVE)
+  lastUsedAt      DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  /// Access control
+  scopes          String[]     @default([])
+  /// Key rotation
+  replacedById    String?
+  rotatedAt       DateTime?
+  gracePeriodEndAt DateTime?
+  /// Environment label
+  environment     String       @default("production")
 
   business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 

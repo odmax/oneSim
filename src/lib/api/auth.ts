@@ -6,6 +6,7 @@ export interface ApiAuthResult {
   businessId?: string
   businessName?: string
   apiKeyId?: string
+  scopes?: string[]
   error?: string
   status?: number
 }
@@ -78,6 +79,10 @@ export async function authenticateApiKey(request: Request): Promise<ApiAuthResul
     }
   }
 
+  if (keyRecord.expiresAt && new Date() > keyRecord.expiresAt) {
+    return { authenticated: false, error: 'API key has expired', status: 401 }
+  }
+
   // Update last used timestamp (fire-and-forget)
   prisma.businessApiKey.update({
     where: { id: keyRecord.id },
@@ -89,5 +94,6 @@ export async function authenticateApiKey(request: Request): Promise<ApiAuthResul
     businessId: keyRecord.business.id,
     businessName: keyRecord.business.name,
     apiKeyId: keyRecord.id,
+    scopes: keyRecord.scopes || [],
   }
 }
