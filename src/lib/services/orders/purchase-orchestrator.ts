@@ -79,6 +79,8 @@ export class PurchaseOrchestrator {
     const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl, idempotencyKey, travelDate, correlationId } = request
     trace(correlationId, 'VALIDATION', 'START', { packageId, quantity, businessId })
 
+    try {
+
     // Step 1: Validate business
     const business = await prisma.business.findUnique({ where: { id: businessId } })
     if (!business) return this.fail('BUSINESS_NOT_FOUND', 'Business not found', false)
@@ -138,39 +140,55 @@ export class PurchaseOrchestrator {
     let unitPrice = parseFloat(pkg.priceUSD.toString())
     let totalAmount = unitPrice * quantity
     if (parseFloat(business.walletBalance.toString()) < totalAmount) {
+      trace(correlationId, 'WALLET_VALIDATION', 'FAILED', { internalCode: 'INSUFFICIENT_WALLET' })
       return this.fail('INSUFFICIENT_WALLET', `Wallet balance $${business.walletBalance} is insufficient for $${totalAmount}`, false)
     }
 
     // Step 5: Validate provider — use routing engine if not assigned
     let providerId = pkg.providerId
+    trace(correlationId, 'PROVIDER_ROUTING', providerId ? 'ASSIGNED' : 'ROUTING_REQUIRED', { providerId: providerId || 'null' })
     if (!providerId) {
       const { ProviderRoutingEngine } = await import('@/lib/services/routing/provider-routing-engine')
       const engine = new ProviderRoutingEngine()
       const route = await engine.selectBestProvider({ packageId: pkg.id, quantity })
-      if (!route.success || !route.selected) return this.fail('NO_PROVIDER', 'No eligible provider found via routing', false)
+      if (!route.success || !route.selected) {
+        trace(correlationId, 'PROVIDER_ROUTING', 'FAILED', { internalCode: 'NO_PROVIDER' })
+        return this.fail('NO_PROVIDER', 'No eligible provider found via routing', false)
+      }
       providerId = route.selected.providerId
       console.log(`[ROUTING] Selected provider=${route.selected.providerName}(${providerId}) score=${route.selected.score}`)
     }
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
-    if (!provider) return this.fail('PROVIDER_NOT_FOUND', 'Provider not found', false)
-    if (!isProviderOperational(provider.status)) return this.fail('PROVIDER_UNAVAILABLE', `Provider is ${provider.status}`, false)
+    if (!provider) {
+      trace(correlationId, 'PROVIDER_VALIDATION', 'FAILED', { internalCode: 'PROVIDER_NOT_FOUND' })
+      return this.fail('PROVIDER_NOT_FOUND', 'Provider not found', false)
+    }
+    if (!isProviderOperational(provider.status)) {
+      trace(correlationId, 'PROVIDER_VALIDATION', 'FAILED', { internalCode: 'PROVIDER_UNAVAILABLE', providerStatus: provider.status })
+      return this.fail('PROVIDER_UNAVAILABLE', `Provider is ${provider.status}`, false)
+    }
 
     // Step 6: Validate PURCHASE capability
     const caps = (provider.enabledCapabilities || DEFAULT_PROVIDER_CAPABILITIES[provider.code || ''] || []) as string[]
-    if (!caps.includes('PURCHASE')) return this.fail('PROVIDER_NO_PURCHASE', 'Provider does not support purchases', false)
+    if (!caps.includes('PURCHASE')) {
+      trace(correlationId, 'PROVIDER_VALIDATION', 'FAILED', { internalCode: 'PROVIDER_NO_PURCHASE' })
+      return this.fail('PROVIDER_NO_PURCHASE', 'Provider does not support purchases', false)
+    }
 
     // Step 7: Validate provider balance (if BALANCE capability)
     if (caps.includes('BALANCE')) {
       const balanceResult = await getProviderBalance(provider.id, { forceRefresh: false })
       if (balanceResult.success && balanceResult.supported && balanceResult.balance != null) {
         if (balanceResult.balance < totalAmount) {
+          trace(correlationId, 'PROVIDER_VALIDATION', 'FAILED', { internalCode: 'PROVIDER_LOW_BALANCE' })
           return this.fail('PROVIDER_LOW_BALANCE', `Provider balance ${(balanceResult.currency || '')} ${balanceResult.balance} is insufficient for order total $${totalAmount}`, true)
         }
       }
     }
 
     // Step 8: Dedup
+    trace(correlationId, 'ORDER_CREATION', 'START')
     const recent = await prisma.eSIMPurchase.findFirst({
       where: { businessId, packageId: pkg.id, quantity, totalAmount, createdAt: { gte: new Date(Date.now() - DUP_WINDOW_MS) }, status: { notIn: ['FAILED', 'CANCELLED', 'REFUNDED'] } },
     })
@@ -361,6 +379,8 @@ export class PurchaseOrchestrator {
   }
 
   private fail(code: string, message: string, retryable: boolean): PurchaseResult {
+    // Log every failure through this central exit
+    console.log(`[BUSINESS_PURCHASE_TRACE] failCode=${code} retryable=${retryable} message=${message.substring(0, 100)}`)
     return { success: false, errorCode: code, message, retryable }
   }
 
