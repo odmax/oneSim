@@ -6,6 +6,8 @@ import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
 import { purchaseESIMSchema } from '@/lib/validators/business'
 import { createOrder } from '@/lib/services/orders/create-order'
+import { createPurchaseQuote } from '@/lib/pricing/purchase-quote-service'
+import { prisma } from '@/lib/prisma'
 
 const ERROR_MAP: Record<string, string> = {
   'Package not found or inactive': 'package_not_found',
@@ -91,4 +93,21 @@ export async function purchaseESIMs(formData: FormData) {
 
   console.log(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=ACTION_RESULT status=SUCCESS orderId=${result.orderId}`)
   redirect(`/business/orders/${result.orderId}`)
+}
+
+export async function requestPurchaseQuote(packageId: string, quantity: number) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'BUSINESS_USER') return { success: false, error: 'Not authorized' }
+
+  const retailPkg = await prisma.eSIMPackage.findUnique({
+    where: { id: packageId },
+    select: { id: true, providerPackageId: true, displayName: true, name: true },
+  })
+  if (!retailPkg?.providerPackageId) return { success: false, error: 'Package not available for pricing' }
+
+  return await createPurchaseQuote({
+    businessId: session.user.businessId!,
+    providerPackageId: retailPkg.providerPackageId,
+    quantity,
+  })
 }

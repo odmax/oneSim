@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
-import { purchaseESIMs } from '@/lib/actions/purchase'
+import { purchaseESIMs, requestPurchaseQuote } from '@/lib/actions/purchase'
 
 interface PackageBuyCardProps {
   pkg: {
@@ -24,11 +24,42 @@ function generateIdempotencyKey(): string {
 
 export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
   const [quantity, setQuantity] = useState(1)
+  const [quoteRef, setQuoteRef] = useState<string | null>(null)
+  const [quotedTotal, setQuotedTotal] = useState<number | null>(null)
+  const [quoteLoading, setQuoteLoading] = useState(false)
+  const [quoteError, setQuoteError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const keyRef = useRef(generateIdempotencyKey())
+  const formRef = useRef<HTMLFormElement>(null)
   const price = parseFloat(pkg.priceUSD.toString())
-  const total = price * quantity
+  const total = quotedTotal ?? price * quantity
   const insufficient = walletBalance < total
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setQuoteError('')
+
+    if (!quoteRef) {
+      setQuoteLoading(true)
+      const result = await requestPurchaseQuote(pkg.id, quantity)
+      setQuoteLoading(false)
+      if (!result.success) {
+        setQuoteError(result.error || 'Cannot get price')
+        return
+      }
+      setQuoteRef(result.quote.reference)
+      setQuotedTotal(result.quote.totalAmount)
+      // Wait for state to update showing confirmed price, then submit
+      setTimeout(() => formRef.current?.requestSubmit(), 100)
+      return
+    }
+
+    setSubmitting(true)
+    keyRef.current = generateIdempotencyKey()
+    formRef.current?.requestSubmit()
+  }
+
+  const buttonLabel = quoteLoading ? 'Getting price\u2026' : quoteRef ? 'Confirm Purchase' : 'Buy Now'
 
   return (
     <div className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
@@ -54,9 +85,10 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
         </div>
       </div>
 
-      <form action={purchaseESIMs} className="space-y-3" onSubmit={() => { setSubmitting(true); keyRef.current = generateIdempotencyKey() }}>
+      <form ref={formRef} action={purchaseESIMs} className="space-y-3" onSubmit={handleSubmit}>
         <input type="hidden" name="packageId" value={pkg.id} />
         <input type="hidden" name="idempotencyKey" value={keyRef.current} />
+        <input type="hidden" name="quoteReference" value={quoteRef || ''} />
         <div>
           <label htmlFor={`quantity-${pkg.id}`} className="block text-xs font-medium text-gray-500 mb-1">
             Quantity
@@ -95,7 +127,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
           <span className="text-sm font-semibold text-gray-900">Total: ${total.toFixed(2)}</span>
           <button
             type="submit"
-            disabled={insufficient || submitting}
+            disabled={insufficient || submitting || quoteLoading}
             className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             {submitting ? (
@@ -104,12 +136,13 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
-                Processing...
+                Purchasing...
               </>
-            ) : insufficient ? 'Insufficient Balance' : 'Buy Now'}
+            ) : insufficient ? 'Insufficient Balance' : buttonLabel}
           </button>
         </div>
-      </form>
+        {quoteError && <p className="mt-1 text-[11px] text-red-500">{quoteError === 'Cannot get price' ? 'Pricing unavailable — please try again' : quoteError}</p>}
+        {quoteRef && !quoteError && <p className="mt-1 text-[11px] text-emerald-600">Quoted price confirmed</p>}
     </div>
   )
 }
