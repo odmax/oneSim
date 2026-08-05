@@ -25,6 +25,7 @@ const ERROR_MAP: Record<string, string> = {
   'No eligible provider found': 'temporarily_unavailable',
   'Provider not found': 'temporarily_unavailable',
   'Provider does not support purchases': 'temporarily_unavailable',
+  'A valid purchase quote is required for checkout': 'quote_required',
   'Failed to create order': 'order_creation_failed',
   'Wallet reserve failed': 'purchase_failed',
 }

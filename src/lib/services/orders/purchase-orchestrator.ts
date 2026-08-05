@@ -234,6 +234,7 @@ export class PurchaseOrchestrator {
             return { success: ex.status === 'FULFILLED', orderId: ex.id, status: ex.status, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD', esims: ex.esims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi ?? null, activationCode: e.activationCode ?? null, status: e.status, qrCodeUrl: e.qrCodeUrl ?? null })) }
           }
         }
+        trace(correlationId, 'ORDER_CREATION', 'FAILED', { internalCode: qtResult.errorCode || 'QUOTE_FAILED' })
         return this.fail(qtResult.errorCode || 'QUOTE_FAILED', qtResult.error || 'Quote consumption failed', false)
       }
       orderId = qtResult.orderId!
@@ -243,6 +244,7 @@ export class PurchaseOrchestrator {
       unitPrice = Number(qOrder.quotedUnitPrice || qOrder.packageUnitPrice || unitPrice)
       totalAmount = Number(qOrder.quotedTotalAmount || qOrder.totalAmount || totalAmount)
     } else if (quotesRequired) {
+      trace(correlationId, 'QUOTE_VALIDATION', 'FAILED', { quotePresent: false, quotesRequired: true, publicCode: 'quote_required' })
       return this.fail('QUOTE_REQUIRED', 'A valid purchase quote is required for checkout', false)
     } else {
       // Legacy flow — create order directly
