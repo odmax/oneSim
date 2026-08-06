@@ -318,6 +318,13 @@ model ProviderPackage {
   normalizedValidityDays Int?
   normalizedCoverageType String?
 
+  // Travel-date / activation policy fields
+  activationPolicy        String?   @default("IMMEDIATE")  /// IMMEDIATE | SCHEDULED | FLEXIBLE
+  travelDateRequirement   String?   @default("NOT_REQUIRED") /// NOT_REQUIRED | OPTIONAL | REQUIRED
+  travelDateLeadDays      Int       @default(0)
+  travelDateMaxAdvanceDays Int?
+  travelDateSource        String?    /// PROVIDER | TEMPLATE | ADMIN_OVERRIDE | INFERRED
+
   // Cheapest ranking fields
   cheapestRank         Int?
   isCheapestCandidate  Boolean @default(false)

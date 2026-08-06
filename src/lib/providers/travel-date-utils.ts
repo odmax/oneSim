@@ -145,30 +145,63 @@ export function withTravelDateMarker(raw: any, requiresTravelDate: boolean): any
 
 /**
  * Resolves the effective travel date for a purchase.
- * Provider-neutral — used for AirHub TravelDate field and any future provider.
+ * Uses canonical ProviderPackage activation policy fields — provider-neutral.
  *
- * 1. Client-supplied valid YYYY-MM-DD → use it.
- * 2. Package requires travel date + no client date → default to today (server UTC).
- *    Immediately usable plans (e.g. AirHub) receive today's date automatically.
- * 3. Package does not require travel date → undefined.
+ * Rules:
+ *   NOT_REQUIRED: returns undefined unless client supplied a valid date
+ *   OPTIONAL: client date used if valid; otherwise undefined
+ *   REQUIRED + IMMEDIATE/FLEXIBLE: client date or today + leadDays
+ *   REQUIRED + SCHEDULED: client date required; returns error state
  *
- * Returns YYYY-MM-DD or undefined.
+ * Returns { resolvedDate, error? } — YYYY-MM-DD or undefined.
  */
 export function resolveEffectiveTravelDate(params: {
   requestedTravelDate?: string | null
-  requiresTravelDate: boolean
-}): string | undefined {
+  activationPolicy?: string | null
+  travelDateRequirement?: string | null
+  travelDateLeadDays?: number | null
+  purchaseTime?: Date
+}): { resolvedDate: string | undefined; error?: string } {
+  const req = params.travelDateRequirement || 'NOT_REQUIRED'
+  const policy = params.activationPolicy || 'IMMEDIATE'
+  const leadDays = params.travelDateLeadDays || 0
+  const now = params.purchaseTime || new Date()
   const raw = params.requestedTravelDate
+
+  // Client-supplied valid date takes priority
   if (typeof raw === 'string' && raw.trim()) {
     const trimmed = raw.trim()
-    if (isValidTravelDate(trimmed)) return trimmed
+    if (isValidTravelDate(trimmed)) {
+      return { resolvedDate: trimmed }
+    }
+    // Invalid client date
+    if (req === 'REQUIRED') {
+      return { resolvedDate: undefined, error: 'The selected activation date is not valid.' }
+    }
+    return { resolvedDate: undefined }
   }
-  if (params.requiresTravelDate) {
-    const now = new Date()
-    const y = now.getUTCFullYear()
-    const m = String(now.getUTCMonth() + 1).padStart(2, '0')
-    const d = String(now.getUTCDate()).padStart(2, '0')
-    return `${y}-${m}-${d}`
+
+  if (req === 'NOT_REQUIRED') {
+    return { resolvedDate: undefined }
   }
-  return undefined
+
+  if (req === 'OPTIONAL') {
+    return { resolvedDate: undefined }
+  }
+
+  // REQUIRED
+  if (req === 'REQUIRED') {
+    if (policy === 'SCHEDULED') {
+      return { resolvedDate: undefined, error: 'Please select an activation date for this eSIM.' }
+    }
+
+    // IMMEDIATE or FLEXIBLE: default to earliest valid date
+    const earliest = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + leadDays))
+    const y = earliest.getUTCFullYear()
+    const m = String(earliest.getUTCMonth() + 1).padStart(2, '0')
+    const d = String(earliest.getUTCDate()).padStart(2, '0')
+    return { resolvedDate: `${y}-${m}-${d}` }
+  }
+
+  return { resolvedDate: undefined }
 }

@@ -123,14 +123,26 @@ export class PurchaseOrchestrator {
     if (pkg.providerPackageId) {
       const travelPkg = await prisma.providerPackage.findUnique({
         where: { id: pkg.providerPackageId },
-        select: { providerRawData: true },
+        select: {
+          providerRawData: true,
+          activationPolicy: true, travelDateRequirement: true, travelDateLeadDays: true, travelDateSource: true,
+        },
       })
-      const requiresDate = requiresTravelDateForPackage(travelPkg)
-      const resolved = resolveEffectiveTravelDate({ requestedTravelDate: normalizedTravelDate, requiresTravelDate: requiresDate })
-      if (requiresDate && !resolved) {
-        return this.fail('TRAVEL_DATE_REQUIRED', 'This package requires a travel date (YYYY-MM-DD) before purchase.', false)
+      const req = travelPkg?.travelDateRequirement || 'NOT_REQUIRED'
+      const policy = travelPkg?.activationPolicy || 'IMMEDIATE'
+      const leadDays = travelPkg?.travelDateLeadDays || 0
+
+      const resolved = resolveEffectiveTravelDate({
+        requestedTravelDate: normalizedTravelDate,
+        activationPolicy: policy,
+        travelDateRequirement: req,
+        travelDateLeadDays: leadDays,
+      })
+
+      if (resolved.error) {
+        return this.fail('TRAVEL_DATE_REQUIRED', resolved.error, false)
       }
-      normalizedTravelDate = resolved
+      normalizedTravelDate = resolved.resolvedDate
     }
 
     // Step 5: Validate business wallet
