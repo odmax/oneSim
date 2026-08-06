@@ -83,6 +83,23 @@ async function processPackages(pkgs: any[], dryRun: boolean) {
       snapshotCandidates.push({ retailPkg: p, providerPkgId: p.providerPackage.id, name: p.displayName || p.name })
     }
 
+    // Recalculation candidate: pricing is COST_UNAVAILABLE but has a cost and selling price to work with
+    const pp = p.providerPackage
+    const hasPricingData = pp && (
+      (Number(pp.costPrice || 0) > 0) ||
+      ((pp as any).adminCostPrice && Number((pp as any).adminCostPrice) > 0)
+    )
+    const hasSellingPriceData = pp && Number(pp.sellingPrice || 0) > 0
+    const needsRecalculation = r.reasons.some(x => x.includes('Pricing status is') && x.includes('COST_UNAVAILABLE'))
+    const canRecalculate = needsRecalculation && hasPricingData && hasSellingPriceData
+
+    if (canRecalculate && pp?.id) {
+      const alreadyCandidate = snapshotCandidates.find(s => s.providerPkgId === pp.id)
+      if (!alreadyCandidate) {
+        snapshotCandidates.push({ retailPkg: p, providerPkgId: pp.id, name: p.displayName || p.name })
+      }
+    }
+
     if (!r.ready) {
       console.log(`  ${p.displayName || p.name} (${p.id.slice(-8)}): ${r.reasons.join('; ')}`)
     }
