@@ -5,6 +5,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
+import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
 
 export async function autoPickAndPublishWinners() {
   const session = await getServerSession(authOptions)
@@ -77,25 +78,14 @@ export async function autoPickAndPublishWinners() {
       continue
     }
 
-    // Publish the winner
-    const sellPrice = parseFloat((winner.sellingPrice ?? 0).toString())
-    const existing = await prisma.eSIMPackage.findFirst({ where: { providerPackageId: winner.id } })
-    if (existing) {
-      await prisma.eSIMPackage.update({ where: { id: existing.id }, data: { priceUSD: sellPrice, localPrice: sellPrice, currency: winner.sellingCurrency || 'USD', isActive: true } })
-    } else {
-      await prisma.eSIMPackage.create({
-        data: {
-          name: winner.name, displayName: winner.name, dataGB: winner.dataGB, validityDays: winner.validityDays,
-          priceUSD: sellPrice, localPrice: sellPrice, currency: winner.sellingCurrency || 'USD',
-          providerName: winner.provider?.name || null, providerPlanId: winner.providerPlanId,
-          providerId: winner.providerId, sku: winner.providerPlanCode || undefined,
-          packageCode: winner.providerPlanCode || undefined, costPriceUSD: winner.costPrice,
-          costCurrency: winner.currency, markupPercent: winner.markupPercent ? parseFloat(winner.markupPercent.toString()) : null,
-          source: 'CATALOG_PRODUCT', isActive: true, providerPackageId: winner.id,
-        },
-      })
+    // Publish the winner — canonical service
+    const result = await publishProviderPackageToRetailCatalog(winner.id, { reason: 'AUTO_PICK' })
+    if (!result.success) {
+      skipped++
+      skippedReasons.push(`${winner.name}: publish failed — ${result.error}`)
+      await prisma.providerPackage.updateMany({ where: { id: { in: others.map(p => p.id) } }, data: { publishStatus: 'HIDDEN' } })
+      continue
     }
-    await prisma.providerPackage.update({ where: { id: winner.id }, data: { publishStatus: 'PUBLISHED' } })
     // Hide the non-preferred
     await prisma.providerPackage.updateMany({ where: { id: { in: others.map(p => p.id) } }, data: { publishStatus: 'HIDDEN' } })
     published++
@@ -139,21 +129,8 @@ export async function publishPreferredOnly() {
     if (!costPrice || costPrice <= 0 || !sellPrice || sellPrice <= 0 || !pp.sellingCurrency) continue
     if (pp.configurationStatus !== 'CONFIGURED' && pp.configurationStatus !== 'AUTO_CONFIGURED') continue
 
-    const existing = await prisma.eSIMPackage.findFirst({ where: { providerPackageId: pp.id } })
-    if (existing) {
-      await prisma.eSIMPackage.update({ where: { id: existing.id }, data: { priceUSD: sellPrice, isActive: true } })
-    } else {
-      await prisma.eSIMPackage.create({
-        data: {
-          name: pp.name, displayName: pp.name, dataGB: pp.dataGB, validityDays: pp.validityDays,
-          priceUSD: sellPrice, localPrice: sellPrice, currency: pp.sellingCurrency,
-          providerName: null, providerPlanId: pp.providerPlanId,
-          providerId: pp.providerId, source: 'CATALOG_PRODUCT', isActive: true, providerPackageId: pp.id,
-        },
-      })
-    }
-    await prisma.providerPackage.update({ where: { id: pp.id }, data: { publishStatus: 'PUBLISHED' } })
-    published++
+    const result = await publishProviderPackageToRetailCatalog(pp.id, { reason: 'PREFERRED' })
+    if (result.success) published++
   }
 
   await prisma.auditLog.create({ data: { userId: session.user.id, action: 'PUBLISH_PREFERRED_PACKAGES', entity: 'ProviderPackage', details: `Published ${published} preferred packages` } }).catch(() => {})

@@ -105,7 +105,7 @@ export async function importCatalogCSV(formData: FormData): Promise<{ success: b
       if (row.changes.sellingCurrency) updateData.sellingCurrency = row.changes.sellingCurrency
       if (row.changes.markupPercent) updateData.markupPercent = parseFloat(row.changes.markupPercent)
       if (row.changes.pricingMode) updateData.pricingMode = row.changes.pricingMode
-      if (row.changes.publishStatus) updateData.publishStatus = row.changes.publishStatus
+      if (row.changes.publishStatus && row.changes.publishStatus !== 'PUBLISHED') updateData.publishStatus = row.changes.publishStatus
       if (row.changes.configurationStatus) { updateData.configurationStatus = row.changes.configurationStatus; updateData.lastConfiguredAt = new Date() }
       if (row.changes.tags) updateData.tags = row.changes.tags.split(/[;,]/).map(s => s.trim()).filter(Boolean)
       if (row.changes.notes) updateData.notes = row.changes.notes

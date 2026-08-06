@@ -8,6 +8,7 @@ import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipel
 import { emitEvent } from '@/lib/catalog-events'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
 import { finalizeCatalogPackageConfiguration } from '@/lib/pricing/configuration-finalizer'
+import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
 
 function shortCode(s: string | null | undefined, fallback: string): string {
   if (!s) return fallback
@@ -107,62 +108,18 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
 
   if (qualified.length > 0) {
     for (const pp of qualified) {
-      // Guard: finalize pricing + create snapshot + verify readiness before publishing
-      const finalized = await finalizeCatalogPackageConfiguration(pp.id, { reason: 'PUBLISH' })
-      if (!finalized.success) {
+      const result = await publishProviderPackageToRetailCatalog(pp.id, { reason: 'PUBLISH' })
+
+      if (!result.success) {
         skipped++
-        skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `finalization failed: ${finalized.error || 'unknown'} (stage: ${finalized.failedStage})` })
+        skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `publish failed: ${result.error || 'unknown'} (stage: ${result.failedStage})` })
         continue
       }
 
-      try {
-        await prisma.$transaction(async (tx) => {
-          const existing = await tx.eSIMPackage.findFirst({
-            where: { providerPackageId: pp.id },
-          })
+      if (result.created) created++
+      else updated++
 
-          if (existing) {
-            await syncProviderPackageToPublishedProducts(tx, pp)
-            updated++
-          } else {
-            const sku = await generateOneSimSku(tx, pp)
-            await tx.eSIMPackage.create({
-              data: {
-                name: pp.name,
-                displayName: pp.name,
-                dataGB: pp.dataGB,
-                validityDays: pp.validityDays,
-                priceUSD: pp.sellingPrice!,
-                localPrice: pp.sellingPrice!,
-                currency: pp.sellingCurrency!,
-                providerName: pp.provider?.name || null,
-                providerPlanId: pp.providerPlanId,
-                providerId: pp.providerId,
-                sku,
-                packageCode: sku,
-                costPriceUSD: pp.costPrice,
-                costCurrency: pp.currency,
-                markupPercent: pp.markupPercent,
-                source: 'CATALOG_PRODUCT',
-                isActive: true,
-                providerPackageId: pp.id,
-              },
-            })
-            created++
-          }
-
-          await tx.providerPackage.update({
-            where: { id: pp.id },
-            data: { publishStatus: 'PUBLISHED' },
-          })
-        })
-      } catch (e: any) {
-        skipped++
-        let reason = e.message || 'unknown error'
-        if (e.code === 'P2002') reason = `duplicate SKU/packageCode (${pp.providerPlanCode || 'none'})`
-        skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `create/update failed: ${reason}` })
-        console.error(`[publishToCatalog] Failed: ${pp.name} (${pp.id}) — ${reason}`)
-      }
+      console.log(`[publishToCatalog] ${pp.name}: ${result.created ? 'created' : 'updated'} retail ${result.retailPackageId}, ready=${result.ready}`)
     }
   }
 

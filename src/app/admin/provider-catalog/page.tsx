@@ -67,6 +67,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
     configured: await prisma.providerPackage.count({ where: { ...where, configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] } } }).catch(() => 0),
     unconfigured: await prisma.providerPackage.count({ where: { ...where, configurationStatus: 'UNCONFIGURED' } }).catch(() => 0),
     published: await prisma.providerPackage.count({ where: { ...where, publishStatus: 'PUBLISHED' } }).catch(() => 0),
+    clientReady: await prisma.eSIMPackage.count({ where: { isActive: true, hiddenFromCatalog: false, archivedAt: null, source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } } }).catch(() => 0),
   }
 
   return (
@@ -138,7 +139,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
       </div>
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-5">
         <div className="rounded-xl border bg-white p-4 shadow-sm">
           <p className="text-xs text-gray-500 uppercase">Total Packages</p>
           <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
@@ -154,6 +155,10 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
         <div className="rounded-xl border bg-white p-4 shadow-sm">
           <p className="text-xs text-gray-500 uppercase">Published</p>
           <p className="text-2xl font-bold text-blue-600">{stats.published}</p>
+        </div>
+        <div className="rounded-xl border bg-white p-4 shadow-sm">
+          <p className="text-xs text-gray-500 uppercase">Client-Ready</p>
+          <p className="text-2xl font-bold text-emerald-600">{stats.clientReady}</p>
         </div>
       </div>
 

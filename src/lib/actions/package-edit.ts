@@ -5,6 +5,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes, recordCatalogPriceSyncAudit } from '@/lib/services/catalog-price-sync'
+import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
 
 export async function updateSinglePackage(packageId: string, data: {
   costPrice?: number
@@ -19,6 +20,14 @@ export async function updateSinglePackage(packageId: string, data: {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
 
+  // Route PUBLISHED through canonical publish service
+  if (data.publishStatus === 'PUBLISHED') {
+    const result = await publishProviderPackageToRetailCatalog(packageId, { reason: 'MANUAL_EDIT' })
+    if (!result.success) return { success: false, error: result.error || 'Publish failed' }
+    await revalidateCatalogRoutes()
+    return { success: true }
+  }
+
   try {
     const { updated, before } = await prisma.$transaction(async (tx) => {
       const before = await tx.providerPackage.findUnique({ where: { id: packageId } })
@@ -30,7 +39,7 @@ export async function updateSinglePackage(packageId: string, data: {
       if (data.sellingCurrency !== undefined) updateData.sellingCurrency = data.sellingCurrency
       if (data.markupPercent !== undefined) updateData.markupPercent = data.markupPercent
       if (data.pricingMode !== undefined) updateData.pricingMode = data.pricingMode
-      if (data.publishStatus !== undefined) updateData.publishStatus = data.publishStatus
+      if (data.publishStatus !== undefined && data.publishStatus !== 'PUBLISHED') updateData.publishStatus = data.publishStatus
       if (data.configurationStatus !== undefined) { updateData.configurationStatus = data.configurationStatus; updateData.lastConfiguredAt = new Date() }
       if (data.notes !== undefined) updateData.notes = data.notes
 
