@@ -2914,6 +2914,8 @@ model PurchaseQuote {
   @@index([expiresAt])
 
   order ESIMPurchase?
+
+  @@map("purchase_quotes")
 }
 
 model SystemJobLock {
