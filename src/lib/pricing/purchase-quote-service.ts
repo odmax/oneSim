@@ -12,9 +12,20 @@ export async function createPurchaseQuote(params: {
     where: { id: providerPackageId },
     select: { pricingStatus: true, sellingPrice: true, sellingCurrency: true, effectiveCostPrice: true, currency: true, id: true, activePriceSnapshotId: true, provider: { select: { status: true } } },
   })
-  if (!pkg) return { success: false, error: 'Package not found' }
-  if (pkg.pricingStatus !== 'READY') return { success: false, error: `Package not available for purchase (${pkg.pricingStatus})` }
-  if (!pkg.activePriceSnapshotId) return { success: false, error: 'No active price snapshot — package requires recalculation' }
+  if (!pkg) {
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=PACKAGE_LOOKUP status=FAILED providerPackageId=${providerPackageId}`)
+    return { success: false, error: 'Package not found' }
+  }
+  console.log(`[BUSINESS_QUOTE_TRACE] stage=PACKAGE_LOOKUP status=SUCCESS pricingStatus=${pkg.pricingStatus} hasSnapshot=${!!pkg.activePriceSnapshotId}`)
+
+  if (pkg.pricingStatus !== 'READY') {
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=PRICING_READINESS status=FAILED pricingStatus=${pkg.pricingStatus}`)
+    return { success: false, error: `Package not available for purchase (${pkg.pricingStatus})` }
+  }
+  if (!pkg.activePriceSnapshotId) {
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=SNAPSHOT_RESOLUTION status=FAILED reason=no_snapshot_id`)
+    return { success: false, error: 'No active price snapshot — package requires recalculation' }
+  }
 
   // Verify active snapshot exists and belongs to this package
   const snapshot = await prisma.packagePriceSnapshot.findUnique({

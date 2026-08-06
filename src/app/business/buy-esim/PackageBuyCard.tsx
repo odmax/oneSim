@@ -151,7 +151,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
             ) : insufficient ? 'Insufficient Balance' : buttonLabel}
           </button>
         </div>
-        {quoteError && <p className="mt-1 text-[11px] text-red-500">{quoteError === 'Cannot get price' ? 'Pricing unavailable — please try again' : quoteError}</p>}
+        {quoteError && <p className="mt-1 text-[11px] text-red-500">{quoteError}</p>}
         {quoteRef && !quoteError && <p className="mt-1 text-[11px] text-emerald-600">Quoted price confirmed</p>}
       </form>
     </div>

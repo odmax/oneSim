@@ -100,15 +100,42 @@ export async function requestPurchaseQuote(packageId: string, quantity: number) 
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'BUSINESS_USER') return { success: false, error: 'Not authorized' }
 
+  console.log(`[BUSINESS_QUOTE_TRACE] stage=ACTION_RECEIVED status=START packageId=${packageId} quantity=${quantity}`)
+
   const retailPkg = await prisma.eSIMPackage.findUnique({
     where: { id: packageId },
-    select: { id: true, providerPackageId: true, displayName: true, name: true },
+    select: { id: true, providerPackageId: true, displayName: true, name: true, isActive: true, hiddenFromCatalog: true, archivedAt: true },
   })
-  if (!retailPkg?.providerPackageId) return { success: false, error: 'Package not available for pricing' }
+  if (!retailPkg) {
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=FAILED reason=package_not_found`)
+    return { success: false, error: 'Package not found', code: 'package_not_found' }
+  }
+  if (!retailPkg.isActive || retailPkg.hiddenFromCatalog || retailPkg.archivedAt) {
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=FAILED reason=package_unavailable`)
+    return { success: false, error: 'Package not available', code: 'package_unavailable' }
+  }
+  if (!retailPkg.providerPackageId) {
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=FAILED reason=no_provider_package`)
+    return { success: false, error: 'Package pricing not configured', code: 'provider_package_missing' }
+  }
+  console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=SUCCESS providerPackagePresent=true`)
 
-  return await createPurchaseQuote({
+  const quoteResult = await createPurchaseQuote({
     businessId: session.user.businessId!,
     providerPackageId: retailPkg.providerPackageId,
     quantity,
   })
+
+  if (!quoteResult.success) {
+    const safeError = quoteResult.error || 'Quote creation failed'
+    const code = safeError.includes('snapshot') ? 'pricing_snapshot_unavailable'
+      : safeError.includes('pricing') || safeError.includes('not available') ? 'package_pricing_unavailable'
+      : safeError.includes('selling price') ? 'quote_invalid'
+      : 'pricing_unavailable'
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=ACTION_RESULT status=FAILED internalCode=${code} error=${safeError.substring(0, 80)}`)
+    return { success: false, error: safeError, code }
+  }
+
+  console.log(`[BUSINESS_QUOTE_TRACE] stage=ACTION_RESULT status=SUCCESS quoteRef=${quoteResult.quote.reference}`)
+  return { success: true, quote: quoteResult.quote }
 }
