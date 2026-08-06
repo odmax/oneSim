@@ -2,11 +2,16 @@
  * Backfill purchasable package readiness.
  * Reports which packages are ready and which are blocked, and why.
  *
- * Modes: --dry-run | --apply [--provider-code=xxx] [--package-id=xxx]
+ * Modes:
+ *   --dry-run          Report only, no changes
+ *   --apply            Create snapshots for packages that are ready except for missing snapshot
+ *   --provider-code=X  Filter to one provider
+ *   --package-id=X     Check a single package
  */
 
 import { prisma } from '../src/lib/prisma'
 import { getPackagePurchaseReadiness } from '../src/lib/packages/purchase-readiness'
+import { recalculatePackagePrice } from '../src/lib/pricing/price-recalculation-service'
 
 async function main() {
   const args = process.argv.slice(2)
@@ -26,7 +31,7 @@ async function main() {
   const packages = await prisma.eSIMPackage.findMany({
     where,
     include: {
-      providerPackage: { select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true } },
+      providerPackage: { select: { id: true, costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true } },
       provider: { select: { status: true, enabledCapabilities: true, code: true } },
     },
     orderBy: { displayName: 'asc' },
@@ -34,43 +39,90 @@ async function main() {
 
   if (codeFilter) {
     const filtered = packages.filter(p => p.provider?.code?.toUpperCase() === codeFilter)
-    console.log(`Filtered to ${codeFilter}: ${filtered.length} packages\n`)
-    processResults(filtered, dryRun)
+    console.log(`Filtered to ${codeFilter}: ${filtered.length} packages`)
+    await processPackages(filtered, dryRun)
   } else {
-    processResults(packages, dryRun)
+    await processPackages(packages, dryRun)
   }
 
-  prisma.$disconnect()
+  await prisma.$disconnect()
 }
 
-function processResults(pkgs: any[], dryRun: boolean) {
-  let ready = 0, blockedByCost = 0, blockedByPrice = 0, blockedBySnapshot = 0, blockedByProvider = 0, blockedByConfig = 0
+async function processPackages(pkgs: any[], dryRun: boolean) {
+  let totalReady = 0
+  let blockedByCost = 0
+  let blockedByPrice = 0
+  let blockedBySnapshot = 0
+  let blockedByProvider = 0
+  let blockedByConfig = 0
+  let snapshotsCreated = 0
+  let becameReady = 0
+
+  const snapshotCandidates: { retailPkg: any; providerPkgId: string; name: string }[] = []
 
   for (const p of pkgs) {
     const r = getPackagePurchaseReadiness({ pkg: p, providerPkg: p.providerPackage, provider: p.provider })
+
     if (r.ready) {
-      ready++
-    } else {
-      for (const reason of r.reasons) {
-        if (reason.includes('Cost')) blockedByCost++
-        else if (reason.includes('selling price')) blockedByPrice++
-        else if (reason.includes('snapshot')) blockedBySnapshot++
-        else if (reason.includes('Provider') && !reason.includes('PURCHASE')) blockedByProvider++
-        else if (reason.includes('Configuration') || reason.includes('published')) blockedByConfig++
-      }
+      totalReady++
+      continue
     }
+
+    // Classify blocking reasons
+    for (const reason of r.reasons) {
+      if (reason.includes('Cost')) blockedByCost++
+      else if (reason.includes('selling price')) blockedByPrice++
+      else if (reason.includes('snapshot')) blockedBySnapshot++
+      else if (reason.includes('Provider') && !reason.includes('PURCHASE')) blockedByProvider++
+      else if (reason.includes('Configuration') || reason.includes('published')) blockedByConfig++
+    }
+
+    // Snapshot candidate: blocked ONLY by missing snapshot, everything else is fine
+    const snapshotOnly = r.reasons.length === 1 && r.reasons[0] === 'No active price snapshot'
+    if (snapshotOnly && p.providerPackage?.id) {
+      snapshotCandidates.push({ retailPkg: p, providerPkgId: p.providerPackage.id, name: p.displayName || p.name })
+    }
+
     if (!r.ready) {
       console.log(`  ${p.displayName || p.name} (${p.id.slice(-8)}): ${r.reasons.join('; ')}`)
     }
   }
 
-  console.log(`\nTotal: ${pkgs.length}`)
-  console.log(`  Ready: ${ready}`)
-  console.log(`  Blocked by cost: ${blockedByCost}`)
-  console.log(`  Blocked by selling price: ${blockedByPrice}`)
-  console.log(`  Blocked by snapshot: ${blockedBySnapshot}`)
-  console.log(`  Blocked by provider: ${blockedByProvider}`)
-  console.log(`  Blocked by configuration: ${blockedByConfig}`)
+  // Create snapshots
+  if (!dryRun && snapshotCandidates.length > 0) {
+    console.log(`\nCreating snapshots for ${snapshotCandidates.length} packages with missing snapshots...`)
+    for (const c of snapshotCandidates) {
+      console.log(`  ${c.name}: recalculating...`)
+      const result = await recalculatePackagePrice(c.providerPkgId, 'BACKFILL')
+      if (result.success && result.priceSnapshotId) {
+        console.log(`    -> snapshot created: ${result.priceSnapshotId}`)
+        snapshotsCreated++
+      } else {
+        console.log(`    -> FAILED: ${result.reason}`)
+      }
+
+      // Re-check readiness after snapshot
+      const updatedPp = await prisma.providerPackage.findUnique({
+        where: { id: c.providerPkgId },
+        select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true },
+      })
+      const recheck = getPackagePurchaseReadiness({ pkg: c.retailPkg, providerPkg: updatedPp, provider: c.retailPkg.provider })
+      if (recheck.ready) becameReady++
+    }
+  }
+
+  console.log(`\n--- Results ---`)
+  console.log(`Total inspected:   ${pkgs.length}`)
+  console.log(`Ready before:      ${totalReady}`)
+  if (!dryRun) {
+    console.log(`Snapshots created: ${snapshotsCreated}`)
+    console.log(`Became ready:      ${becameReady}`)
+  }
+  console.log(`Blocked by cost:   ${blockedByCost}`)
+  console.log(`Blocked by price:  ${blockedByPrice}`)
+  console.log(`Blocked by snap:   ${blockedBySnapshot}`)
+  console.log(`Blocked by prov:   ${blockedByProvider}`)
+  console.log(`Blocked by config: ${blockedByConfig}`)
 }
 
 main().catch(e => { console.error(e); process.exit(1) })

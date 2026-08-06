@@ -290,8 +290,9 @@ export function CountrySearchPage({ packages, walletBalance }: Props) {
       {/* Empty state */}
       {displayPackages.length === 0 && !aiNoResults && (
         <div className="rounded-xl border-2 border-dashed border-gray-200 p-12 text-center">
-          <p className="text-sm text-gray-500">No packages found for</p>
-          <p className="mt-1 text-lg font-semibold text-gray-700">&ldquo;{selectedCountry ? selectedCountry.name : search}&rdquo;</p>
+          <p className="text-sm text-gray-500">{selectedCountry
+            ? `No eSIM packages are currently available for this destination.`
+            : `No eSIM packages are currently available.`}</p>
           <button onClick={clearCountry} className="mt-4 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50">
             Clear Search
           </button>

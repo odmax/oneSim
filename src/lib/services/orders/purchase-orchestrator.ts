@@ -99,7 +99,7 @@ export class PurchaseOrchestrator {
     trace(correlationId, 'PACKAGE_RESOLVED', 'SUCCESS', { orderPackageId: pkg.id, providerBound: Boolean(pkg.providerId) })
 
     // Step 4: Validate pricing availability using centralized readiness
-    trace(correlationId, 'PRICING_CHECK', 'START')
+    trace(correlationId, 'PURCHASE_READINESS', 'START')
     const readiness = getPackagePurchaseReadiness({
       pkg: { isActive: pkg.isActive, hiddenFromCatalog: pkg.hiddenFromCatalog, archivedAt: pkg.archivedAt, source: pkg.source, providerPackageId: pkg.providerPackageId },
       providerPkg: pkg.providerPackageId ? await prisma.providerPackage.findUnique({
@@ -108,10 +108,10 @@ export class PurchaseOrchestrator {
       }) : null,
     })
     if (!readiness.ready) {
-      trace(correlationId, 'PRICING_CHECK', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', reasons: readiness.reasons.join('; ') })
+      trace(correlationId, 'PURCHASE_READINESS', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', reasonsCount: readiness.reasons.length })
       return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', false)
     }
-    trace(correlationId, 'PRICING_CHECK', 'SUCCESS')
+    trace(correlationId, 'PURCHASE_READINESS', 'SUCCESS')
 
     // Step 4b: Validate travel date requirement before any wallet hold. A
     // required travel date is never invented here — the purchase fails fast

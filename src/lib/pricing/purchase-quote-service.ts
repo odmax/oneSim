@@ -28,7 +28,7 @@ export async function createPurchaseQuote(params: {
     provider: { status: pkg.provider.status, enabledCapabilities: pkg.provider.enabledCapabilities, code: pkg.provider.code },
   })
   if (!readiness.ready) {
-    console.log(`[BUSINESS_QUOTE_TRACE] stage=PRICING_READINESS status=FAILED reasons=${readiness.reasons.join('; ')}`)
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=PURCHASE_READINESS status=FAILED reasonsCount=${readiness.reasons.length}`)
     return { success: false, error: readiness.reasons[0] || 'Package not ready for purchase' }
   }
 

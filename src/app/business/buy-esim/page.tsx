@@ -6,7 +6,7 @@ import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import { requiresTravelDateForPackage } from '@/lib/providers/travel-date-utils'
 import { CountrySearchPage } from './CountrySearchPage'
 import { buildPackageSearchText } from '@/lib/packages/search-text'
-import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
+import { queryPurchasablePackages } from '@/lib/packages/query-purchasable'
 
 export default async function BuyESIMPage({
   searchParams
@@ -19,23 +19,8 @@ export default async function BuyESIMPage({
     redirect('/login')
   }
 
-  const allPackages = await prisma.eSIMPackage.findMany({
-    where: { isActive: true, source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } },
-    include: {
-      providerPackage: { select: { country: true, region: true, normalizedCountry: true, providerRawData: true, costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true } },
-      provider: { select: { status: true, enabledCapabilities: true, code: true } },
-    },
-    orderBy: { priceUSD: 'asc' },
-  })
-
-  const readyPackages = allPackages.filter(pkg => {
-    const readiness = getPackagePurchaseReadiness({
-      pkg: { isActive: pkg.isActive, hiddenFromCatalog: pkg.hiddenFromCatalog, archivedAt: pkg.archivedAt, source: pkg.source, providerPackageId: pkg.providerPackageId },
-      providerPkg: pkg.providerPackage,
-      provider: pkg.provider,
-    })
-    return readiness.ready
-  })
+  // Shared query — identical to /api/v1/packages
+  const readyPackages = await queryPurchasablePackages()
 
   const packagesWithRequirement = readyPackages.map(pkg => {
     const searchText = buildPackageSearchText(pkg)

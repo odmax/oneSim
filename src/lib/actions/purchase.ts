@@ -121,10 +121,10 @@ export async function requestPurchaseQuote(packageId: string, quantity: number) 
     provider: retailPkg.provider as any,
   })
   if (!readiness.ready) {
-    console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=FAILED reasons=${readiness.reasons.join('; ')}`)
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=PURCHASE_READINESS status=FAILED reasonsCount=${readiness.reasons.length}`)
     return { success: false, error: readiness.reasons[0] || 'Package not ready for purchase', code: 'package_pricing_unavailable' }
   }
-  console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=SUCCESS providerPackagePresent=true`)
+  console.log(`[BUSINESS_QUOTE_TRACE] stage=PURCHASE_READINESS status=SUCCESS reasonsCount=0`)
 
   const quoteResult = await createPurchaseQuote({
     businessId: session.user.businessId!,
