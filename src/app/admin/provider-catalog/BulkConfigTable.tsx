@@ -51,6 +51,8 @@ interface Package {
   publishStatus: string | null
   notes: string | null
   provider: { id: string; name: string; code: string } | null
+  purchaseReady?: boolean
+  readinessReasons?: string[]
 }
 
 export function BulkConfigTable({ initialPackages, total, page, totalPages, rules }: {
@@ -556,12 +558,13 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
               <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Markup</th>
               <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Config</th>
               <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Publish</th>
+              <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Ready</th>
               <th className="px-3 py-3 text-center text-xs font-medium uppercase text-gray-500">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {initialPackages.length === 0 ? (
-              <tr><td colSpan={13} className="px-4 py-12 text-center text-sm text-gray-400">No packages found.</td></tr>
+              <tr><td colSpan={14} className="px-4 py-12 text-center text-sm text-gray-400">No packages found.</td></tr>
             ) : initialPackages.map(pkg => (
               <tr key={pkg.id} className={`hover:bg-gray-50 ${selected.has(pkg.id) ? 'bg-cyan-50' : ''}`}>
                 <td className="px-3 py-3">
@@ -595,6 +598,13 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
                   <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${PUBLISH_COLORS[pkg.publishStatus || 'DRAFT']}`}>
                     {pkg.publishStatus || 'DRAFT'}
                   </span>
+                </td>
+                <td className="px-3 py-3 text-center">
+                  {pkg.purchaseReady === true ? (
+                    <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium bg-emerald-100 text-emerald-700">Ready</span>
+                  ) : (
+                    <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium bg-red-100 text-red-600" title={(pkg.readinessReasons || []).join('; ')}>Blocked</span>
+                  )}
                 </td>
                 <td className="px-3 py-3 text-center">
                   <div className="flex items-center justify-center gap-1">

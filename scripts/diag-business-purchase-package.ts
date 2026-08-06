@@ -6,6 +6,7 @@
  */
 
 import { prisma } from '../src/lib/prisma'
+import { getPackagePurchaseReadiness } from '../src/lib/packages/purchase-readiness'
 
 async function main() {
   const packageId = process.argv[2]
@@ -13,13 +14,9 @@ async function main() {
 
   const pkg = await prisma.eSIMPackage.findUnique({
     where: { id: packageId },
-    select: {
-      id: true, name: true, displayName: true, isActive: true,
-      hiddenFromCatalog: true, archivedAt: true, source: true,
-      priceUSD: true, currency: true, dataGB: true, validityDays: true,
-      providerId: true, providerPackageId: true,
-      provider: { select: { id: true, name: true, code: true, status: true, adapterStrategy: true, type: true } },
-      providerPackage: { select: { id: true, providerPlanId: true, costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, costSource: true, adminCostPrice: true, sellingPrice: true, activePriceSnapshotId: true } },
+    include: {
+      provider: { select: { id: true, name: true, code: true, status: true, adapterStrategy: true, type: true, enabledCapabilities: true } },
+      providerPackage: { select: { id: true, providerPlanId: true, costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, costSource: true, adminCostPrice: true, sellingPrice: true, costPrice: true, activePriceSnapshotId: true } },
     },
   })
 
@@ -46,6 +43,7 @@ async function main() {
     console.log(`Provider Status: ${pkg.provider.status}`)
     console.log(`Adapter:         ${pkg.provider.adapterStrategy || '(none)'}`)
     console.log(`Type:            ${pkg.provider.type}`)
+    console.log(`Capabilities:    ${(pkg.provider.enabledCapabilities as string[])?.join(', ') || 'none'}`)
   } else {
     console.log('No provider linked')
   }
@@ -67,28 +65,16 @@ async function main() {
   }
   console.log()
 
-  // Determine blocking factor
+  // Purchase readiness via centralized helper
   console.log('=== Purchase Readiness ===')
-  const issues: string[] = []
-  if (!pkg.isActive) issues.push('Package is inactive')
-  if (pkg.hiddenFromCatalog) issues.push('Package is hidden from catalog')
-  if (pkg.archivedAt) issues.push('Package is archived')
-  if (pkg.source === 'PROVIDER_PLAN') issues.push('Source is PROVIDER_PLAN (not purchasable)')
-  if (pkg.providerPackage) {
-    if (pkg.providerPackage.costStatus === 'MISSING') issues.push('Cost status is MISSING — admin cost override needed')
-    if (pkg.providerPackage.costStatus === 'INVALID') issues.push('Cost status is INVALID')
-    if (pkg.providerPackage.pricingStatus === 'COST_UNAVAILABLE') issues.push('Pricing status is COST_UNAVAILABLE')
-    if (pkg.providerPackage.pricingStatus === 'DISABLED') issues.push('Pricing status is DISABLED')
-  }
-  if (!pkg.providerId) issues.push('No provider assigned')
-  if (pkg.provider && !['ACTIVE','DEGRADED','TESTING'].includes(pkg.provider.status)) issues.push(`Provider is ${pkg.provider.status}`)
+  const readiness = getPackagePurchaseReadiness({
+    pkg: { isActive: pkg.isActive, hiddenFromCatalog: pkg.hiddenFromCatalog, archivedAt: pkg.archivedAt, source: pkg.source, providerPackageId: pkg.providerPackageId },
+    providerPkg: pkg.providerPackage,
+    provider: pkg.provider ? { status: pkg.provider.status, enabledCapabilities: pkg.provider.enabledCapabilities, code: pkg.provider.code } : null,
+  })
 
-  if (issues.length === 0) {
-    console.log('Ready for purchase ✓')
-  } else {
-    console.log('BLOCKED:')
-    for (const issue of issues) console.log(`  - ${issue}`)
-  }
+  console.log(`purchaseReady: ${readiness.ready}`)
+  console.log(`readinessReasons: ${readiness.reasons.length > 0 ? readiness.reasons.join('; ') : '(none)'}`)
 
   prisma.$disconnect()
 }

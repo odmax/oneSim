@@ -69,7 +69,8 @@ export function getPackagePurchaseReadiness(params: {
     return { ready: false, reasons }
   }
 
-  if (providerPkg.costStatus !== 'VALID') reasons.push(`Cost status is ${providerPkg.costStatus || 'MISSING'} — admin cost override needed`)
+  const validCostStatuses = ['VALID', 'OVERRIDDEN']
+  if (!validCostStatuses.includes(providerPkg.costStatus ?? '')) reasons.push(`Cost status is ${providerPkg.costStatus || 'MISSING'} — admin cost override needed`)
   if (providerPkg.pricingStatus !== 'READY') reasons.push(`Pricing status is ${providerPkg.pricingStatus || 'COST_UNAVAILABLE'}`)
   if (providerPkg.publishStatus !== 'PUBLISHED') reasons.push(`Package not published (${providerPkg.publishStatus})`)
   if (providerPkg.configurationStatus !== 'CONFIGURED' && providerPkg.configurationStatus !== 'AUTO_CONFIGURED') reasons.push(`Configuration incomplete (${providerPkg.configurationStatus})`)

@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { BulkConfigTable } from './BulkConfigTable'
 import { PublishAllReadyButton } from './PublishAllReadyButton'
+import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 
 export default async function ProviderCatalogPage({ searchParams }: { searchParams?: { provider?: string; publishStatus?: string; configStatus?: string; search?: string; country?: string; page?: string; costFilter?: string } }) {
   const session = await getServerSession(authOptions)
@@ -50,7 +51,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
   const [packages, total, providers, countries] = await Promise.all([
     prisma.providerPackage.findMany({
       where,
-      include: { provider: { select: { id: true, name: true, code: true } } },
+      include: { provider: { select: { id: true, name: true, code: true, status: true, enabledCapabilities: true } } },
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
@@ -210,27 +211,35 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
       <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
         <BulkConfigTable
           rules={rules}
-          initialPackages={packages.map(p => ({
-            id: p.id,
-            providerId: p.providerId,
-            providerPlanId: p.providerPlanId,
-            providerPlanCode: p.providerPlanCode,
-            name: p.name,
-            dataGB: p.dataGB,
-            validityDays: p.validityDays,
-            costPrice: p.costPrice,
-            currency: p.currency,
-            country: p.country,
-            region: p.region,
-            sellingPrice: p.sellingPrice,
-            sellingCurrency: p.sellingCurrency,
-            markupPercent: p.markupPercent,
-            pricingMode: p.pricingMode,
-            configurationStatus: p.configurationStatus,
-            publishStatus: p.publishStatus,
-            notes: p.notes,
-            provider: p.provider ? { id: p.provider.id, name: p.provider.name, code: p.provider.code } : null,
-          }))}
+          initialPackages={packages.map(p => {
+            const readiness = getPackagePurchaseReadiness({
+              providerPkg: { costStatus: p.costStatus, pricingStatus: p.pricingStatus, publishStatus: p.publishStatus, configurationStatus: p.configurationStatus, activePriceSnapshotId: p.activePriceSnapshotId, sellingPrice: p.sellingPrice, costPrice: p.costPrice },
+              provider: p.provider ? { status: p.provider.status, enabledCapabilities: p.provider.enabledCapabilities, code: p.provider.code } : null,
+            })
+            return {
+              id: p.id,
+              providerId: p.providerId,
+              providerPlanId: p.providerPlanId,
+              providerPlanCode: p.providerPlanCode,
+              name: p.name,
+              dataGB: p.dataGB,
+              validityDays: p.validityDays,
+              costPrice: p.costPrice,
+              currency: p.currency,
+              country: p.country,
+              region: p.region,
+              sellingPrice: p.sellingPrice,
+              sellingCurrency: p.sellingCurrency,
+              markupPercent: p.markupPercent,
+              pricingMode: p.pricingMode,
+              configurationStatus: p.configurationStatus,
+              publishStatus: p.publishStatus,
+              notes: p.notes,
+              purchaseReady: readiness.ready,
+              readinessReasons: readiness.reasons,
+              provider: p.provider ? { id: p.provider.id, name: p.provider.name, code: p.provider.code } : null,
+            }
+          })}
           total={total}
           page={page}
           totalPages={totalPages}
