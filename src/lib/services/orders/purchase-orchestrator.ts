@@ -7,7 +7,7 @@ import { getProviderBalance } from '@/lib/services/providers/provider-balance'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { executeProviderAttempt, tryFailoverAfterAttempt } from './provider-attempt-service'
 import { ProviderRoutingEngine } from '@/lib/services/routing/provider-routing-engine'
-import { requiresTravelDateForPackage, isValidTravelDate } from '@/lib/providers/travel-date-utils'
+import { requiresTravelDateForPackage, isValidTravelDate, resolveEffectiveTravelDate } from '@/lib/providers/travel-date-utils'
 import { consumeQuoteAndCreateOrder } from '@/lib/pricing/purchase-quote-service'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
@@ -113,10 +113,10 @@ export class PurchaseOrchestrator {
     }
     trace(correlationId, 'PURCHASE_READINESS', 'SUCCESS')
 
-    // Step 4b: Validate travel date requirement before any wallet hold. A
-    // required travel date is never invented here — the purchase fails fast
-    // with a clear message instead of letting the provider reject it later.
-    const normalizedTravelDate = travelDate !== undefined && travelDate !== null && travelDate.trim() !== '' ? travelDate.trim() : undefined
+    // Step 4b: Validate travel date requirement before any wallet hold.
+    // Uses resolveEffectiveTravelDate to default to today for packages that
+    // mandate a travel date (e.g. AirHub) for immediate purchases.
+    let normalizedTravelDate = travelDate !== undefined && travelDate !== null && travelDate.trim() !== '' ? travelDate.trim() : undefined
     if (normalizedTravelDate !== undefined && !isValidTravelDate(normalizedTravelDate)) {
       return this.fail('TRAVEL_DATE_INVALID', `travelDate must be a valid date in YYYY-MM-DD format, got "${normalizedTravelDate}"`, false)
     }
@@ -125,9 +125,12 @@ export class PurchaseOrchestrator {
         where: { id: pkg.providerPackageId },
         select: { providerRawData: true },
       })
-      if (requiresTravelDateForPackage(travelPkg) && !normalizedTravelDate) {
+      const requiresDate = requiresTravelDateForPackage(travelPkg)
+      const resolved = resolveEffectiveTravelDate({ requestedTravelDate: normalizedTravelDate, requiresTravelDate: requiresDate })
+      if (requiresDate && !resolved) {
         return this.fail('TRAVEL_DATE_REQUIRED', 'This package requires a travel date (YYYY-MM-DD) before purchase.', false)
       }
+      normalizedTravelDate = resolved
     }
 
     // Step 5: Validate business wallet

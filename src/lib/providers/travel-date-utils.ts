@@ -142,3 +142,33 @@ export function withTravelDateMarker(raw: any, requiresTravelDate: boolean): any
   const base = raw && typeof raw === 'object' ? { ...raw } : {}
   return { ...base, __requiresTravelDate: requiresTravelDate }
 }
+
+/**
+ * Resolves the effective travel date for a purchase.
+ * Provider-neutral — used for AirHub TravelDate field and any future provider.
+ *
+ * 1. Client-supplied valid YYYY-MM-DD → use it.
+ * 2. Package requires travel date + no client date → default to today (server UTC).
+ *    Immediately usable plans (e.g. AirHub) receive today's date automatically.
+ * 3. Package does not require travel date → undefined.
+ *
+ * Returns YYYY-MM-DD or undefined.
+ */
+export function resolveEffectiveTravelDate(params: {
+  requestedTravelDate?: string | null
+  requiresTravelDate: boolean
+}): string | undefined {
+  const raw = params.requestedTravelDate
+  if (typeof raw === 'string' && raw.trim()) {
+    const trimmed = raw.trim()
+    if (isValidTravelDate(trimmed)) return trimmed
+  }
+  if (params.requiresTravelDate) {
+    const now = new Date()
+    const y = now.getUTCFullYear()
+    const m = String(now.getUTCMonth() + 1).padStart(2, '0')
+    const d = String(now.getUTCDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+  return undefined
+}
