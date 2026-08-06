@@ -35,6 +35,7 @@ const ERROR_MAP: Record<string, string> = {
 export async function purchaseESIMs(formData: FormData) {
   const session = await getServerSession(authOptions)
   const correlationId = `purchase-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+  console.log('[SERVER] purchaseESIMs invoked', { correlationId })
 
   if (!session || session.user.role !== 'BUSINESS_USER') {
     redirect('/login')

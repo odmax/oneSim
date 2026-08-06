@@ -43,8 +43,10 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
     // First click: no quote yet → request one and store in ref + state
     if (!quoteRef) {
       setQuoteLoading(true)
+      console.log('[BUY_CLICK] requesting quote', { packageId: pkg.id, quantity })
       const result = await requestPurchaseQuote(pkg.id, quantity)
       setQuoteLoading(false)
+      console.log('[QUOTE_RECEIVED]', { success: result.success, quoteRef: result.quote?.reference, total: result.quote?.totalAmount })
 
       if (!result.success) {
         setQuoteError(result.error || 'Cannot get price')
@@ -55,7 +57,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
       quoteRefInput.current!.value = result.quote.reference
       setQuoteRef(result.quote.reference)
       setQuotedTotal(result.quote.totalAmount)
-      // Submit the form now — hidden input has the correct value via ref
+      console.log('[REQUEST_SUBMIT] form submitting with quoteRef:', result.quote.reference)
       formRef.current!.requestSubmit()
       return
     }
@@ -63,6 +65,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
     // Second click: quote is ready, submit purchase
     setSubmitting(true)
     keyRef.current = generateIdempotencyKey()
+    console.log('[SUBMITTING_PURCHASE]', { packageId: pkg.id, quoteRef, quantity })
     formRef.current!.requestSubmit()
   }
 
