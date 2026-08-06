@@ -9,6 +9,7 @@
 
 import { prisma } from '@/lib/prisma'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
+import { finalizeCatalogPackageConfiguration } from '@/lib/pricing/configuration-finalizer'
 import type { ReviewItemStatus } from '@prisma/client'
 
 interface ApplyResult {
@@ -111,6 +112,12 @@ export async function applyReviewDecision(
     const newSell = item.proposedSellingPrice || item.currentSellingPrice
     if (!newSell || newSell <= 0) {
       return { success: false, itemId, message: 'No valid selling price to apply' }
+    }
+
+    // Guard: finalize pricing + create snapshot + verify readiness before marking configured
+    const finalized = await finalizeCatalogPackageConfiguration(item.packageId, { reason: 'CATALOG_REVIEW' })
+    if (!finalized.success) {
+      return { success: false, itemId, message: `Finalization failed: ${finalized.error} (${finalized.failedStage})` }
     }
 
     try {

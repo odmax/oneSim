@@ -7,6 +7,7 @@ import { revalidatePath } from 'next/cache'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 import { emitEvent } from '@/lib/catalog-events'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
+import { finalizeCatalogPackageConfiguration } from '@/lib/pricing/configuration-finalizer'
 
 function shortCode(s: string | null | undefined, fallback: string): string {
   if (!s) return fallback
@@ -106,6 +107,14 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
 
   if (qualified.length > 0) {
     for (const pp of qualified) {
+      // Guard: finalize pricing + create snapshot + verify readiness before publishing
+      const finalized = await finalizeCatalogPackageConfiguration(pp.id, { reason: 'PUBLISH' })
+      if (!finalized.success) {
+        skipped++
+        skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `finalization failed: ${finalized.error || 'unknown'} (stage: ${finalized.failedStage})` })
+        continue
+      }
+
       try {
         await prisma.$transaction(async (tx) => {
           const existing = await tx.eSIMPackage.findFirst({
