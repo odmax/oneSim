@@ -10,6 +10,7 @@ import { ProviderRoutingEngine } from '@/lib/services/routing/provider-routing-e
 import { requiresTravelDateForPackage, isValidTravelDate } from '@/lib/providers/travel-date-utils'
 import { consumeQuoteAndCreateOrder } from '@/lib/pricing/purchase-quote-service'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
+import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 
 function trace(correlationId: string | undefined, stage: string, status: string, extra?: Record<string, any>) {
@@ -97,27 +98,20 @@ export class PurchaseOrchestrator {
     const pkg = resolution.package
     trace(correlationId, 'PACKAGE_RESOLVED', 'SUCCESS', { orderPackageId: pkg.id, providerBound: Boolean(pkg.providerId) })
 
-    // Step 4: Validate pricing availability
-    trace(correlationId, 'PRICING_CHECK', 'START', { providerPackageId: pkg.providerPackageId || 'none' })
-    if (pkg.providerPackageId) {
-      const providerPkg = await prisma.providerPackage.findUnique({
+    // Step 4: Validate pricing availability using centralized readiness
+    trace(correlationId, 'PRICING_CHECK', 'START')
+    const readiness = getPackagePurchaseReadiness({
+      pkg: { isActive: pkg.isActive, hiddenFromCatalog: pkg.hiddenFromCatalog, archivedAt: pkg.archivedAt, source: pkg.source, providerPackageId: pkg.providerPackageId },
+      providerPkg: pkg.providerPackageId ? await prisma.providerPackage.findUnique({
         where: { id: pkg.providerPackageId },
-        select: { costStatus: true, pricingStatus: true, costSource: true },
-      })
-      if (providerPkg) {
-        if (providerPkg.costStatus === 'MISSING' || providerPkg.costStatus === 'INVALID') {
-          trace(correlationId, 'PRICING_CHECK', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', costStatus: providerPkg.costStatus, publicCode: 'package_pricing_unavailable' })
-          return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', false)
-        }
-        if (providerPkg.pricingStatus === 'COST_UNAVAILABLE' || providerPkg.pricingStatus === 'DISABLED') {
-          trace(correlationId, 'PRICING_CHECK', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', pricingStatus: providerPkg.pricingStatus, publicCode: 'package_pricing_unavailable' })
-          return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', false)
-        }
-        trace(correlationId, 'PRICING_CHECK', 'SUCCESS', { costStatus: providerPkg.costStatus, costSource: providerPkg.costSource || 'none' })
-      }
-    } else {
-      trace(correlationId, 'PRICING_CHECK', 'SUCCESS', { pricingSource: 'direct_package_price' })
+        select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true },
+      }) : null,
+    })
+    if (!readiness.ready) {
+      trace(correlationId, 'PRICING_CHECK', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', reasons: readiness.reasons.join('; ') })
+      return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', false)
     }
+    trace(correlationId, 'PRICING_CHECK', 'SUCCESS')
 
     // Step 4b: Validate travel date requirement before any wallet hold. A
     // required travel date is never invented here — the purchase fails fast

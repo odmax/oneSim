@@ -4,6 +4,7 @@ vi.mock('@/lib/prisma', () => ({
   prisma: {
     exchangeRate: { findFirst: vi.fn() },
     providerPackage: { findUnique: vi.fn() },
+    packagePriceSnapshot: { findUnique: vi.fn() },
     purchaseQuote: { create: vi.fn(), findUnique: vi.fn(), updateMany: vi.fn() },
   },
 }))
@@ -102,15 +103,22 @@ describe('purchase-quote-service', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('rejects package with non-READY pricing status', async () => {
-    ;(prisma.providerPackage.findUnique as any).mockResolvedValue({ pricingStatus: 'COST_UNAVAILABLE' })
+    ;(prisma.providerPackage.findUnique as any).mockResolvedValue({
+      pricingStatus: 'COST_UNAVAILABLE', costStatus: 'MISSING', publishStatus: 'DRAFT', configurationStatus: 'UNCONFIGURED', activePriceSnapshotId: null, sellingPrice: '0', costPrice: '0',
+      provider: { status: 'ACTIVE', enabledCapabilities: ['PURCHASE'], code: 'TEST' },
+    })
     const result = await createPurchaseQuote({ businessId: 'b1', providerPackageId: 'p1', quantity: 1 })
     expect(result.success).toBe(false)
   })
 
   it('creates quote for READY package', async () => {
     ;(prisma.providerPackage.findUnique as any).mockResolvedValue({
-      pricingStatus: 'READY', sellingPrice: { toString: () => '5' }, sellingCurrency: 'USD',
+      pricingStatus: 'READY', sellingPrice: '5', sellingCurrency: 'USD', costStatus: 'VALID', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap_1', costPrice: '2',
       effectiveCostPrice: { toString: () => '2' }, currency: 'USD',
+      provider: { status: 'ACTIVE', enabledCapabilities: ['PURCHASE'], code: 'TEST' },
+    })
+    ;(prisma.packagePriceSnapshot as any).findUnique.mockResolvedValue({
+      id: 'snap_1', finalSellingPrice: '5', sellingCurrency: 'USD', effectiveCostAmount: '2', effectiveCostCurrency: 'USD', status: 'ACTIVE',
     })
     ;(prisma.purchaseQuote.create as any).mockResolvedValue({
       quoteReference: 'QT-1', unitPrice: 5, totalAmount: 5, currency: 'USD', expiresAt: new Date(),

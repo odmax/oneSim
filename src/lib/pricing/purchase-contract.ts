@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { validatePurchaseQuote } from './purchase-quote-service'
 import { PRICING_ENGINE_VERSION } from '../currency/currency-config'
+import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 
 export interface ValidatedPurchaseContext {
   quoteId: string
@@ -35,14 +36,18 @@ export async function buildValidatedPurchaseContext(
     where: { id: quote.providerPackageId },
     select: {
       providerId: true, providerPlanId: true, activePriceSnapshotId: true,
-      provider: { select: { status: true, code: true } }, pricingStatus: true,
+      costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, sellingPrice: true, costPrice: true,
+      provider: { select: { status: true, code: true, enabledCapabilities: true } },
     },
   })
   if (!pkg) return { success: false, error: 'Package not found' }
-  if (pkg.pricingStatus !== 'READY') return { success: false, error: 'Package not available' }
-  if (!pkg.activePriceSnapshotId) return { success: false, error: 'No active price snapshot' }
   if (!pkg.providerPlanId) return { success: false, error: 'Missing provider plan ID' }
-  if (pkg.provider.status !== 'ACTIVE' && pkg.provider.status !== 'TESTING') return { success: false, error: 'Provider not available' }
+
+  const readiness = getPackagePurchaseReadiness({
+    providerPkg: { costStatus: pkg.costStatus, pricingStatus: pkg.pricingStatus, publishStatus: pkg.publishStatus, configurationStatus: pkg.configurationStatus, activePriceSnapshotId: pkg.activePriceSnapshotId, sellingPrice: pkg.sellingPrice, costPrice: pkg.costPrice },
+    provider: { status: pkg.provider.status, enabledCapabilities: pkg.provider.enabledCapabilities, code: pkg.provider.code },
+  })
+  if (!readiness.ready) return { success: false, error: readiness.reasons[0] || 'Package not ready' }
 
   // Verify quote references the active snapshot
   if (quote.packagePriceSnapshotId !== pkg.activePriceSnapshotId) return { success: false, error: 'Quote snapshot mismatch' }

@@ -7,6 +7,7 @@ import { redirect } from 'next/navigation'
 import { purchaseESIMSchema } from '@/lib/validators/business'
 import { createOrder } from '@/lib/services/orders/create-order'
 import { createPurchaseQuote } from '@/lib/pricing/purchase-quote-service'
+import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 import { prisma } from '@/lib/prisma'
 
 const ERROR_MAP: Record<string, string> = {
@@ -104,25 +105,30 @@ export async function requestPurchaseQuote(packageId: string, quantity: number) 
 
   const retailPkg = await prisma.eSIMPackage.findUnique({
     where: { id: packageId },
-    select: { id: true, providerPackageId: true, displayName: true, name: true, isActive: true, hiddenFromCatalog: true, archivedAt: true },
+    include: {
+      providerPackage: { select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true } },
+      provider: { select: { status: true, enabledCapabilities: true, code: true } },
+    },
   })
   if (!retailPkg) {
     console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=FAILED reason=package_not_found`)
     return { success: false, error: 'Package not found', code: 'package_not_found' }
   }
-  if (!retailPkg.isActive || retailPkg.hiddenFromCatalog || retailPkg.archivedAt) {
-    console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=FAILED reason=package_unavailable`)
-    return { success: false, error: 'Package not available', code: 'package_unavailable' }
-  }
-  if (!retailPkg.providerPackageId) {
-    console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=FAILED reason=no_provider_package`)
-    return { success: false, error: 'Package pricing not configured', code: 'provider_package_missing' }
+
+  const readiness = getPackagePurchaseReadiness({
+    pkg: retailPkg,
+    providerPkg: retailPkg.providerPackage as any,
+    provider: retailPkg.provider as any,
+  })
+  if (!readiness.ready) {
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=FAILED reasons=${readiness.reasons.join('; ')}`)
+    return { success: false, error: readiness.reasons[0] || 'Package not ready for purchase', code: 'package_pricing_unavailable' }
   }
   console.log(`[BUSINESS_QUOTE_TRACE] stage=PROVIDER_PACKAGE_RESOLUTION status=SUCCESS providerPackagePresent=true`)
 
   const quoteResult = await createPurchaseQuote({
     businessId: session.user.businessId!,
-    providerPackageId: retailPkg.providerPackageId,
+    providerPackageId: retailPkg.providerPackageId!,
     quantity,
   })
 

@@ -8,6 +8,7 @@ import { createOrder } from '@/lib/services/orders/create-order'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import { getActivationInstructions } from '@/lib/esim/activation-instructions'
 import { isValidTravelDate } from '@/lib/providers/travel-date-utils'
+import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -69,14 +70,21 @@ export async function POST(request: NextRequest) {
     }
     const pkg = resolution.package
 
-    // Phase 5C — purchasability check
+    // Phase 5C — purchasability check using centralized readiness
     if (pkg.providerPackageId) {
       const pp = await prisma.providerPackage.findUnique({
         where: { id: pkg.providerPackageId },
-        select: { costStatus: true, pricingStatus: true },
+        select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true, provider: { select: { status: true, enabledCapabilities: true, code: true } } },
       })
-      if (pp && (pp.costStatus === 'MISSING' || pp.costStatus === 'INVALID' || pp.pricingStatus === 'COST_UNAVAILABLE' || pp.pricingStatus === 'DISABLED')) {
-        return respond(request, makeError('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.'), 400, startTime, businessId, { errorMessage: `Cost unavailable: ${pp.costStatus}/${pp.pricingStatus}`, rateLimit })
+      if (!pp) {
+        return respond(request, makeError('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.'), 400, startTime, businessId, { errorMessage: 'Provider package not found', rateLimit })
+      }
+      const readiness = getPackagePurchaseReadiness({
+        providerPkg: { costStatus: pp.costStatus, pricingStatus: pp.pricingStatus, publishStatus: pp.publishStatus, configurationStatus: pp.configurationStatus, activePriceSnapshotId: pp.activePriceSnapshotId, sellingPrice: pp.sellingPrice, costPrice: pp.costPrice },
+        provider: { status: pp.provider.status, enabledCapabilities: pp.provider.enabledCapabilities, code: pp.provider.code },
+      })
+      if (!readiness.ready) {
+        return respond(request, makeError('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.'), 400, startTime, businessId, { errorMessage: readiness.reasons.join('; '), rateLimit })
       }
     }
 

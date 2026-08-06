@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { getQuoteExpiryMinutes, PRICING_ENGINE_VERSION } from '../currency/currency-config'
+import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 
 export async function createPurchaseQuote(params: {
   businessId: string
@@ -10,7 +11,11 @@ export async function createPurchaseQuote(params: {
 
   const pkg = await prisma.providerPackage.findUnique({
     where: { id: providerPackageId },
-    select: { pricingStatus: true, sellingPrice: true, sellingCurrency: true, effectiveCostPrice: true, currency: true, id: true, activePriceSnapshotId: true, provider: { select: { status: true } } },
+    select: {
+      pricingStatus: true, sellingPrice: true, sellingCurrency: true, effectiveCostPrice: true, currency: true, id: true,
+      activePriceSnapshotId: true, costStatus: true, publishStatus: true, configurationStatus: true, costPrice: true,
+      provider: { select: { status: true, enabledCapabilities: true, code: true } },
+    },
   })
   if (!pkg) {
     console.log(`[BUSINESS_QUOTE_TRACE] stage=PACKAGE_LOOKUP status=FAILED providerPackageId=${providerPackageId}`)
@@ -18,18 +23,18 @@ export async function createPurchaseQuote(params: {
   }
   console.log(`[BUSINESS_QUOTE_TRACE] stage=PACKAGE_LOOKUP status=SUCCESS pricingStatus=${pkg.pricingStatus} hasSnapshot=${!!pkg.activePriceSnapshotId}`)
 
-  if (pkg.pricingStatus !== 'READY') {
-    console.log(`[BUSINESS_QUOTE_TRACE] stage=PRICING_READINESS status=FAILED pricingStatus=${pkg.pricingStatus}`)
-    return { success: false, error: `Package not available for purchase (${pkg.pricingStatus})` }
-  }
-  if (!pkg.activePriceSnapshotId) {
-    console.log(`[BUSINESS_QUOTE_TRACE] stage=SNAPSHOT_RESOLUTION status=FAILED reason=no_snapshot_id`)
-    return { success: false, error: 'No active price snapshot — package requires recalculation' }
+  const readiness = getPackagePurchaseReadiness({
+    providerPkg: { costStatus: pkg.costStatus, pricingStatus: pkg.pricingStatus, publishStatus: pkg.publishStatus, configurationStatus: pkg.configurationStatus, activePriceSnapshotId: pkg.activePriceSnapshotId, sellingPrice: pkg.sellingPrice, costPrice: pkg.costPrice },
+    provider: { status: pkg.provider.status, enabledCapabilities: pkg.provider.enabledCapabilities, code: pkg.provider.code },
+  })
+  if (!readiness.ready) {
+    console.log(`[BUSINESS_QUOTE_TRACE] stage=PRICING_READINESS status=FAILED reasons=${readiness.reasons.join('; ')}`)
+    return { success: false, error: readiness.reasons[0] || 'Package not ready for purchase' }
   }
 
   // Verify active snapshot exists and belongs to this package
   const snapshot = await prisma.packagePriceSnapshot.findUnique({
-    where: { id: pkg.activePriceSnapshotId },
+    where: { id: pkg.activePriceSnapshotId! },
     select: { id: true, finalSellingPrice: true, sellingCurrency: true, effectiveCostAmount: true, effectiveCostCurrency: true, status: true },
   })
   if (!snapshot || snapshot.status !== 'ACTIVE') return { success: false, error: 'Active price snapshot invalid' }

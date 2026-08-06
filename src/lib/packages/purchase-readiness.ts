@@ -33,12 +33,12 @@ export interface PackageReadiness {
  * Evaluates generic conditions only — never checks provider code.
  */
 export function getPackagePurchaseReadiness(params: {
-  pkg: {
-    isActive: boolean
-    hiddenFromCatalog: boolean
-    archivedAt: Date | null
-    source: string
-    providerPackageId: string | null
+  pkg?: {
+    isActive?: boolean
+    hiddenFromCatalog?: boolean
+    archivedAt?: Date | null
+    source?: string
+    providerPackageId?: string | null
   }
   providerPkg: {
     costStatus: string | null
@@ -49,20 +49,20 @@ export function getPackagePurchaseReadiness(params: {
     sellingPrice: any
     costPrice: any
   } | null
-  provider: {
+  provider?: {
     status: string
     enabledCapabilities: any
     code: string | null
   } | null
 }): PackageReadiness {
   const reasons: string[] = []
-  const { pkg, providerPkg, provider } = params
+  const { pkg = {}, providerPkg, provider } = params
 
-  if (!pkg.isActive) reasons.push('Package is inactive')
+  if (pkg.isActive === false) reasons.push('Package is inactive')
   if (pkg.hiddenFromCatalog) reasons.push('Package is hidden from catalog')
   if (pkg.archivedAt) reasons.push('Package is archived')
   if (pkg.source === 'PROVIDER_PLAN') reasons.push('Source is PROVIDER_PLAN (not purchasable)')
-  if (!pkg.providerPackageId) reasons.push('No provider package linked')
+  if (pkg.providerPackageId !== undefined && !pkg.providerPackageId) reasons.push('No provider package linked')
 
   if (!providerPkg) {
     reasons.push('Provider package not found')
@@ -79,16 +79,13 @@ export function getPackagePurchaseReadiness(params: {
 
   if (!providerPkg.activePriceSnapshotId) reasons.push('No active price snapshot')
 
-  if (!provider) {
-    reasons.push('No provider linked')
-    return { ready: false, reasons }
+  if (provider) {
+    const operationalStatuses = ['ACTIVE', 'DEGRADED', 'TESTING']
+    if (!operationalStatuses.includes(provider.status)) reasons.push(`Provider is ${provider.status}`)
+
+    const caps = (provider.enabledCapabilities || DEFAULT_PROVIDER_CAPABILITIES[provider.code || ''] || []) as string[]
+    if (!caps.includes('PURCHASE')) reasons.push('Provider does not support PURCHASE')
   }
-
-  const operationalStatuses = ['ACTIVE', 'DEGRADED', 'TESTING']
-  if (!operationalStatuses.includes(provider.status)) reasons.push(`Provider is ${provider.status}`)
-
-  const caps = (provider.enabledCapabilities || DEFAULT_PROVIDER_CAPABILITIES[provider.code || ''] || []) as string[]
-  if (!caps.includes('PURCHASE')) reasons.push('Provider does not support PURCHASE')
 
   return { ready: reasons.length === 0, reasons }
 }

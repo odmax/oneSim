@@ -88,7 +88,8 @@ describe('PurchaseOrchestrator', () => {
   }
 
   function setupPackage(source = 'CATALOG' as string) {
-    mockResolve.mockResolvedValue({ package: { id: 'pkg-1', displayName: 'Test Plan', dataGB: 1, validityDays: 7, priceUSD: { toString: () => '5' }, localPrice: { toString: () => '5' }, currency: 'USD', source, providerId: 'prov-1', providerPlanId: 'pl-1', providerName: 'CHOICE', sku: 'SKU1', packageCode: 'PC1', customerDescription: null } as any, source: 'PACKAGE' } as any)
+    mockResolve.mockResolvedValue({ package: { id: 'pkg-1', displayName: 'Test Plan', dataGB: 1, validityDays: 7, priceUSD: { toString: () => '5' }, localPrice: { toString: () => '5' }, currency: 'USD', source, providerId: 'prov-1', providerPlanId: 'pl-1', providerName: 'CHOICE', providerPackageId: 'pp-1', sku: 'SKU1', packageCode: 'PC1', customerDescription: null } as any, source: 'PACKAGE' } as any)
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2' } as any)
   }
 
   function setupCustomer() {
@@ -373,13 +374,17 @@ describe('PurchaseOrchestrator', () => {
       } as any,
       source: 'PACKAGE',
     } as any)
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
+    } as any)
   }
 
   it('fails with TRAVEL_DATE_REQUIRED before any wallet hold when the plan requires a travel date', async () => {
     setupBusiness()
     setupTravelPackage()
     mockPrisma.providerPackage.findUnique.mockResolvedValue({
-      costStatus: 'VALID', pricingStatus: 'READY', costSource: 'PROVIDER',
+      costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
+      costSource: 'PROVIDER',
       providerRawData: { planCode: 'pl-1', __requiresTravelDate: true },
     } as any)
     setupProvider()
@@ -396,7 +401,8 @@ describe('PurchaseOrchestrator', () => {
     setupBusiness()
     setupTravelPackage()
     mockPrisma.providerPackage.findUnique.mockResolvedValue({
-      costStatus: 'VALID', pricingStatus: 'READY', costSource: 'PROVIDER',
+      costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
+      costSource: 'PROVIDER',
       providerRawData: { planCode: 'pl-1', __requiresTravelDate: true },
     } as any)
     setupProvider()
@@ -412,8 +418,9 @@ describe('PurchaseOrchestrator', () => {
     setupBusiness()
     setupTravelPackage()
     mockPrisma.providerPackage.findUnique.mockResolvedValue({
-      costStatus: 'VALID', pricingStatus: 'READY', costSource: 'PROVIDER',
-      providerRawData: { planCode: 'pl-1', isTravelDateRequired: 'Mandatory' },
+      costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
+      costSource: 'PROVIDER',
+      providerRawData: { planCode: 'pl-1', __requiresTravelDate: true },
     } as any)
     setupProvider()
     setupSuccessAdapter()
@@ -436,7 +443,8 @@ describe('PurchaseOrchestrator', () => {
     setupBusiness()
     setupTravelPackage()
     mockPrisma.providerPackage.findUnique.mockResolvedValue({
-      costStatus: 'VALID', pricingStatus: 'READY', costSource: 'PROVIDER',
+      costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
+      costSource: 'PROVIDER',
       providerRawData: { planCode: 'pl-1', __requiresTravelDate: false },
     } as any)
     setupProvider()
