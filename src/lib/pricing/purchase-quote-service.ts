@@ -9,6 +9,8 @@ export async function createPurchaseQuote(params: {
 }): Promise<{ success: boolean; quote?: any; error?: string }> {
   const { businessId, providerPackageId, quantity } = params
 
+  try {
+  console.log(`[QUERY_TRACE] QUERY=providerPackage.findUnique model=providerPackage id=${providerPackageId}`)
   const pkg = await prisma.providerPackage.findUnique({
     where: { id: providerPackageId },
     select: {
@@ -33,6 +35,7 @@ export async function createPurchaseQuote(params: {
   }
 
   // Verify active snapshot exists and belongs to this package
+  console.log(`[QUERY_TRACE] QUERY=packagePriceSnapshot.findUnique model=packagePriceSnapshot id=${pkg.activePriceSnapshotId}`)
   const snapshot = await prisma.packagePriceSnapshot.findUnique({
     where: { id: pkg.activePriceSnapshotId! },
     select: { id: true, finalSellingPrice: true, sellingCurrency: true, effectiveCostAmount: true, effectiveCostCurrency: true, status: true },
@@ -49,6 +52,7 @@ export async function createPurchaseQuote(params: {
   const totalAmount = sellPrice * quantity
   const costAmount = Number(snapshot.effectiveCostAmount)
 
+  console.log(`[QUERY_TRACE] QUERY=purchaseQuote.create model=purchaseQuote`)
   const quote = await prisma.purchaseQuote.create({
     data: {
       quoteReference: quoteRef,
@@ -63,6 +67,16 @@ export async function createPurchaseQuote(params: {
   })
 
   return { success: true, quote: { reference: quote.quoteReference, unitPrice: sellPrice, totalAmount, currency: quote.currency, expiresAt: quote.expiresAt.toISOString() } }
+  } catch (e: any) {
+    console.error(`[P2021_DIAGNOSTIC] createPurchaseQuote failed`, {
+      code: e.code,
+      meta: JSON.stringify(e.meta),
+      message: e.message?.substring(0, 200),
+      clientVersion: e.clientVersion,
+      stack: e.stack?.split('\n').slice(0, 5).join(' | '),
+    })
+    return { success: false, error: e.code === 'P2021' ? `Database table missing: ${JSON.stringify(e.meta)}` : (e.message || 'Quote creation failed') }
+  }
 }
 
 export async function validatePurchaseQuote(quoteRef: string, businessId: string): Promise<{ valid: boolean; quote?: any; error?: string }> {
