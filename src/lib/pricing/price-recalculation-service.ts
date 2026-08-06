@@ -8,7 +8,7 @@ export type RecalculationReason =
   | 'PROVIDER_COST_CHANGED' | 'ADMIN_OVERRIDE_CHANGED'
   | 'EXCHANGE_RATE_CHANGED' | 'FEE_CHANGED' | 'TAX_CHANGED'
   | 'PRICING_RULE_CHANGED' | 'CURRENCY_CHANGED'
-  | 'COST_FRESHNESS_CHANGED' | 'BACKFILL' | 'MANUAL'
+  | 'COST_FRESHNESS_CHANGED' | 'BACKFILL' | 'REBUILD' | 'MANUAL'
 
 export type RecalculationResult = {
   success: boolean
