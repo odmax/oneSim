@@ -3,7 +3,6 @@
 import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
-import { redirect } from 'next/navigation'
 import { purchaseESIMSchema } from '@/lib/validators/business'
 import { createOrder } from '@/lib/services/orders/create-order'
 import { createPurchaseQuote } from '@/lib/pricing/purchase-quote-service'
@@ -33,34 +32,46 @@ const ERROR_MAP: Record<string, string> = {
   'Wallet reserve failed': 'purchase_failed',
 }
 
-export async function purchaseESIMs(formData: FormData) {
+export interface PurchaseResult {
+  success: boolean
+  orderId?: string
+  code?: string
+  message?: string
+}
+
+/**
+ * Process an eSIM purchase with a pre-requested quote.
+ * Returns a structured result — the client handles redirect.
+ */
+export async function executePurchase(params: {
+  packageId: string
+  quantity: number
+  quoteReference: string
+  idempotencyKey?: string
+  travelDate?: string
+}): Promise<PurchaseResult> {
   const session = await getServerSession(authOptions)
   const correlationId = `purchase-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
-  console.log('[SERVER] purchaseESIMs invoked', { correlationId })
 
   if (!session || session.user.role !== 'BUSINESS_USER') {
-    redirect('/login')
+    return { success: false, code: 'unauthorized', message: 'Not authorized' }
   }
 
-  const rawTravelDate = (formData.get('travelDate') as string) || undefined
-  const parsedQty = parseInt(formData.get('quantity') as string)
-  const pkgId = formData.get('packageId') as string
+  console.log(`[BUY_FLOW_TRACE] stage=PURCHASE_SUBMIT_START packageId=${params.packageId} quotePresent=true correlationId=${correlationId}`)
 
-  console.log(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=ACTION_RECEIVED status=START packageId=${pkgId} quantity=${parsedQty} businessId=${session.user.businessId}`)
-
-  const validatedFields = purchaseESIMSchema.safeParse({
-    packageId: pkgId,
-    quantity: parsedQty,
-    idempotencyKey: formData.get('idempotencyKey') as string,
-    travelDate: rawTravelDate,
+  const validated = purchaseESIMSchema.safeParse({
+    packageId: params.packageId,
+    quantity: params.quantity,
+    idempotencyKey: params.idempotencyKey,
+    travelDate: params.travelDate,
   })
 
-  if (!validatedFields.success) {
-    console.log(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=VALIDATION status=FAILED`)
-    redirect('/business/buy-esim?error=invalid_input')
+  if (!validated.success) {
+    console.log(`[BUY_FLOW_TRACE] stage=VALIDATION status=FAILED`)
+    return { success: false, code: 'invalid_input', message: 'Invalid input' }
   }
 
-  const { packageId, quantity, travelDate } = validatedFields.data
+  const { packageId, quantity, travelDate } = validated.data
   const businessId = session.user.businessId!
 
   const result = await createOrder({
@@ -74,17 +85,12 @@ export async function purchaseESIMs(formData: FormData) {
 
   if (!result.success) {
     const msg = result.error || 'Purchase failed'
-    console.error(`purchaseESIMs failed: business=${businessId} pkg=${packageId} qty=${quantity} error=${msg}`)
-
     let publicCode = 'purchase_failed'
     for (const [key, value] of Object.entries(ERROR_MAP)) {
-      if (msg.startsWith(key)) {
-        publicCode = value
-        break
-      }
+      if (msg.startsWith(key)) { publicCode = value; break }
     }
-    console.log(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=ACTION_RESULT status=FAILED publicCode=${publicCode}`)
-    redirect(`/business/buy-esim?error=${publicCode}`)
+    console.log(`[BUY_FLOW_TRACE] stage=ACTION_RETURNED success=false code=${publicCode}`)
+    return { success: false, code: publicCode, message: msg }
   }
 
   revalidatePath('/business/orders')
@@ -93,8 +99,20 @@ export async function purchaseESIMs(formData: FormData) {
   revalidatePath('/business/wallet')
   revalidatePath('/business/dashboard')
 
-  console.log(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=ACTION_RESULT status=SUCCESS orderId=${result.orderId}`)
-  redirect(`/business/orders/${result.orderId}`)
+  console.log(`[BUY_FLOW_TRACE] stage=ORDER_CREATED orderId=${result.orderId}`)
+  console.log(`[BUY_FLOW_TRACE] stage=ACTION_RETURNED success=true orderId=${result.orderId}`)
+  return { success: true, orderId: result.orderId }
+}
+
+/** @deprecated Use executePurchase with pre-requested quote instead */
+export async function purchaseESIMs(formData: FormData) {
+  return executePurchase({
+    packageId: formData.get('packageId') as string,
+    quantity: parseInt(formData.get('quantity') as string),
+    quoteReference: formData.get('quoteReference') as string,
+    idempotencyKey: formData.get('idempotencyKey') as string,
+    travelDate: (formData.get('travelDate') as string) || undefined,
+  })
 }
 
 export async function requestPurchaseQuote(packageId: string, quantity: number) {

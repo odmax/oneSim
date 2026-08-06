@@ -27,7 +27,10 @@ export default async function BuyESIMPage({
     const requiresTravelDate = pkg.providerPackage ? requiresTravelDateForPackage(pkg.providerPackage) : false
     const stripped = stripPackageProviderFields(pkg)
     delete (stripped as any).providerPackage
-    return { ...stripped, _searchText: searchText, requiresTravelDate }
+    // Use snapshot-based selling price — authoritative source of truth
+    const snapshotPrice = pkg.providerPackage?.sellingPrice
+    const unitPrice = snapshotPrice ? Number(snapshotPrice) : parseFloat(pkg.priceUSD.toString())
+    return { ...stripped, _searchText: searchText, requiresTravelDate, unitPrice, currency: pkg.currency || 'USD' }
   })
 
   const business = await prisma.business.findUnique({
