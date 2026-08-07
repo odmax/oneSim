@@ -12,9 +12,9 @@ const makePkg = (overrides: Record<string, any> = {}) => ({
 
 describe('resolveEffectiveProviderRequirements', () => {
   describe('AirHub', () => {
-    it('legacy package with null source inherits REQUIRED/FLEXIBLE from built-in defaults', () => {
+    it('legacy package with null source + CUSTOM type + AIRHUB adapter → REQUIRED/FLEXIBLE', () => {
       const r = resolveEffectiveProviderRequirements({
-        provider: { code: 'AIRHUB' },
+        provider: { code: 'AIRHUB', adapterStrategy: 'AIRHUB' },
         providerPackage: makePkg({ travelDateSource: null }),
       })
       expect(r.travelDateRequirement).toBe('REQUIRED')
@@ -23,7 +23,17 @@ describe('resolveEffectiveProviderRequirements', () => {
       expect(r.source).toBe('PROVIDER_DEFAULTS')
     })
 
-    it('ADMIN_OVERRIDE NOT_REQUIRED wins over built-in defaults', () => {
+    it('AIRHUB by adapterStrategy even if type=CUSTOM', () => {
+      const r = resolveEffectiveProviderRequirements({
+        provider: { code: 'AIRHUB', adapterStrategy: 'AIRHUB' },
+        providerPackage: makePkg({ travelDateSource: null }),
+      })
+      expect(r.travelDateRequirement).toBe('REQUIRED')
+      expect(r.activationPolicy).toBe('FLEXIBLE')
+      expect(r.source).toBe('PROVIDER_DEFAULTS')
+    })
+
+    it('ADMIN_OVERRIDE NOT_REQUIRED wins', () => {
       const r = resolveEffectiveProviderRequirements({
         provider: { code: 'AIRHUB' },
         providerPackage: makePkg({ travelDateRequirement: 'NOT_REQUIRED', travelDateSource: 'ADMIN_OVERRIDE' }),

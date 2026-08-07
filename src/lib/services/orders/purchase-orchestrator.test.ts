@@ -461,9 +461,7 @@ describe('PurchaseOrchestrator', () => {
 
     expect(result.success).toBe(true)
     expect(activateESIM).toHaveBeenCalled()
-    // Fallback: connector always receives a YYYY-MM-DD date when linked to provider package
-    const date = activateESIM.mock.calls[0][0].travelDate
-    expect(date).toBeDefined()
-    expect(date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    // NOT_REQUIRED packages do not receive a synthesized travel date
+    expect(activateESIM.mock.calls[0][0].travelDate).toBeUndefined()
   })
 })

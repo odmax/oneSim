@@ -126,11 +126,11 @@ export class PurchaseOrchestrator {
         where: { id: pkg.providerPackageId },
         select: {
           activationPolicy: true, travelDateRequirement: true, travelDateLeadDays: true, travelDateSource: true,
-          provider: { select: { code: true, config: true } },
+          provider: { select: { code: true, config: true, adapterStrategy: true } },
         },
       })
       const requirements = resolveEffectiveProviderRequirements({
-        provider: { code: travelPkg?.provider?.code, config: travelPkg?.provider?.config },
+        provider: { code: travelPkg?.provider?.code, adapterStrategy: travelPkg?.provider?.adapterStrategy, config: travelPkg?.provider?.config },
         providerPackage: {
           activationPolicy: travelPkg?.activationPolicy,
           travelDateRequirement: travelPkg?.travelDateRequirement,
@@ -149,14 +149,6 @@ export class PurchaseOrchestrator {
         return this.fail('TRAVEL_DATE_REQUIRED', resolved.error, false)
       }
       normalizedTravelDate = resolved.resolvedDate
-
-      // Fallback: if connector may need a date but resolver didn't produce one
-      // (e.g. AirHub provider but package requirement field is stale/default),
-      // default to today so the connector always has a valid YYYY-MM-DD to send.
-      if (!normalizedTravelDate && travelPkg) {
-        const now = new Date()
-        normalizedTravelDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`
-      }
     }
 
     trace(correlationId, 'TRAVEL_DATE_RESOLVED', 'SUCCESS', {

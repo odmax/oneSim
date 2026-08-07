@@ -68,7 +68,7 @@ export interface EffectiveTravelRequirements {
  * regressing to NOT_REQUIRED when their record has only schema defaults.
  */
 export function resolveEffectiveProviderRequirements(params: {
-  provider: { code?: string | null; config?: any }
+  provider: { code?: string | null; adapterStrategy?: string | null; config?: any }
   providerPackage: {
     activationPolicy?: string | null
     travelDateRequirement?: string | null
@@ -80,63 +80,80 @@ export function resolveEffectiveProviderRequirements(params: {
   const pkg = params.providerPackage
   const pkgSource = pkg.travelDateSource || null
   const providerCode = params.provider.code?.toUpperCase() || ''
+  const adapterStrategy = params.provider.adapterStrategy?.toUpperCase() || ''
   const providerConfig = (params.provider.config as any) || {}
 
   // 1. ADMIN_OVERRIDE — user explicitly set these
   if (pkgSource === 'ADMIN_OVERRIDE') {
-    return {
+    const result: EffectiveTravelRequirements = {
       activationPolicy: pkg.activationPolicy || 'IMMEDIATE',
       travelDateRequirement: pkg.travelDateRequirement || 'NOT_REQUIRED',
       travelDateLeadDays: pkg.travelDateLeadDays ?? 0,
       travelDateMaxAdvanceDays: pkg.travelDateMaxAdvanceDays ?? null,
       source: 'ADMIN_OVERRIDE',
     }
+    logRequirements('ADMIN_OVERRIDE', result)
+    return result
   }
 
   // 2. Explicit PROVIDER metadata — authoritative plan-level data
   if (pkgSource === 'PROVIDER') {
-    return {
+    const result: EffectiveTravelRequirements = {
       activationPolicy: pkg.activationPolicy || 'IMMEDIATE',
       travelDateRequirement: pkg.travelDateRequirement || 'NOT_REQUIRED',
       travelDateLeadDays: pkg.travelDateLeadDays ?? 0,
       travelDateMaxAdvanceDays: pkg.travelDateMaxAdvanceDays ?? null,
       source: 'PROVIDER',
     }
+    logRequirements('PROVIDER', result)
+    return result
   }
 
   // 3. Provider.config.travelDefaults — runtime-configured provider defaults
   const cfgDefaults = providerConfig.travelDefaults
   if (cfgDefaults && typeof cfgDefaults === 'object') {
-    return {
+    const result: EffectiveTravelRequirements = {
       activationPolicy: cfgDefaults.activationPolicy || 'IMMEDIATE',
       travelDateRequirement: cfgDefaults.travelDateRequirement || 'NOT_REQUIRED',
       travelDateLeadDays: cfgDefaults.travelDateLeadDays ?? 0,
       travelDateMaxAdvanceDays: cfgDefaults.travelDateMaxAdvanceDays ?? null,
       source: 'PROVIDER_CONFIG',
     }
+    logRequirements('PROVIDER_CONFIG', result)
+    return result
   }
 
-  // 4. Built-in provider registry
-  const builtIn = PROVIDER_PURCHASE_DEFAULTS[providerCode]
+  // 4. Built-in provider registry — match by adapterStrategy first, then by code.
+  // adapterStrategy is the definitive connector identity (e.g. 'AIRHUB').
+  // 'code' is the DB identifier. Either can match the built-in registry.
+  const strategyMatch = adapterStrategy ? PROVIDER_PURCHASE_DEFAULTS[adapterStrategy] : undefined
+  const codeMatch = providerCode ? PROVIDER_PURCHASE_DEFAULTS[providerCode] : undefined
+  const builtIn = strategyMatch || codeMatch
   if (builtIn) {
-    return {
-      ...builtIn,
-      source: 'PROVIDER_DEFAULTS',
-    }
+    const result: EffectiveTravelRequirements = { ...builtIn, source: 'PROVIDER_DEFAULTS' }
+    logRequirements(`PROVIDER_DEFAULTS(strategy=${adapterStrategy} code=${providerCode})`, result)
+    return result
   }
 
   // 5. TEMPLATE source — use package values from template
   if (pkgSource === 'TEMPLATE') {
-    return {
+    const result: EffectiveTravelRequirements = {
       activationPolicy: pkg.activationPolicy || 'IMMEDIATE',
       travelDateRequirement: pkg.travelDateRequirement || 'NOT_REQUIRED',
       travelDateLeadDays: pkg.travelDateLeadDays ?? 0,
       travelDateMaxAdvanceDays: pkg.travelDateMaxAdvanceDays ?? null,
       source: 'TEMPLATE',
     }
+    logRequirements('TEMPLATE', result)
+    return result
   }
 
   // 6. Legacy — travelDateSource is null, do NOT trust schema defaults
-  // Fall through to generic safe fallback (NOT_REQUIRED for unknown providers)
-  return { ...SAFE_GENERIC_FALLBACK, source: 'SAFE_FALLBACK' }
+  const result: EffectiveTravelRequirements = { ...SAFE_GENERIC_FALLBACK, source: 'SAFE_FALLBACK' }
+  logRequirements(`SAFE_FALLBACK(strategy=${adapterStrategy} code=${providerCode})`, result)
+  return result
+}
+
+function logRequirements(context: string, req: EffectiveTravelRequirements) {
+  console.log(`[PROVIDER_REQUIREMENTS_TRACE] source=${req.source} context=${context} activationPolicy=${req.activationPolicy} requirement=${req.travelDateRequirement} leadDays=${req.travelDateLeadDays}`)
 }
