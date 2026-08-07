@@ -8,6 +8,7 @@ import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { executeProviderAttempt, tryFailoverAfterAttempt } from './provider-attempt-service'
 import { ProviderRoutingEngine } from '@/lib/services/routing/provider-routing-engine'
 import { requiresTravelDateForPackage, isValidTravelDate, resolveEffectiveTravelDate } from '@/lib/providers/travel-date-utils'
+import { resolveEffectiveProviderRequirements } from '@/lib/providers/provider-requirements-resolver'
 import { consumeQuoteAndCreateOrder } from '@/lib/pricing/purchase-quote-service'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
@@ -124,19 +125,24 @@ export class PurchaseOrchestrator {
       const travelPkg = await prisma.providerPackage.findUnique({
         where: { id: pkg.providerPackageId },
         select: {
-          providerRawData: true,
           activationPolicy: true, travelDateRequirement: true, travelDateLeadDays: true, travelDateSource: true,
+          provider: { select: { code: true, config: true } },
         },
       })
-      const req = travelPkg?.travelDateRequirement || 'NOT_REQUIRED'
-      const policy = travelPkg?.activationPolicy || 'IMMEDIATE'
-      const leadDays = travelPkg?.travelDateLeadDays || 0
-
+      const requirements = resolveEffectiveProviderRequirements({
+        provider: { code: travelPkg?.provider?.code, config: travelPkg?.provider?.config },
+        providerPackage: {
+          activationPolicy: travelPkg?.activationPolicy,
+          travelDateRequirement: travelPkg?.travelDateRequirement,
+          travelDateLeadDays: travelPkg?.travelDateLeadDays,
+          travelDateSource: travelPkg?.travelDateSource,
+        },
+      })
       const resolved = resolveEffectiveTravelDate({
         requestedTravelDate: normalizedTravelDate,
-        activationPolicy: policy,
-        travelDateRequirement: req,
-        travelDateLeadDays: leadDays,
+        activationPolicy: requirements.activationPolicy,
+        travelDateRequirement: requirements.travelDateRequirement,
+        travelDateLeadDays: requirements.travelDateLeadDays,
       })
 
       if (resolved.error) {

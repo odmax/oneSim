@@ -552,6 +552,9 @@ model ESIMPurchase {
   nextRetryAt           DateTime?
   lastRetryAt           DateTime?
   retryReason           String?
+  /// Travel-date persistence for retry stability
+  requestedTravelDate   String?
+  resolvedTravelDate    String?  /// Never recomputed on retry — stored once, reused always
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
