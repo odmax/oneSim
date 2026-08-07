@@ -323,8 +323,8 @@ describe('rollbackChangeSet', () => {
 
     await rollbackChangeSet('cs-1')
 
-    expect(capturedUpdateData.costPrice).toBeUndefined()
-    expect(capturedUpdateData.name).toBeUndefined()
+    expect(capturedUpdateData.costPrice).toBe(1)    // costPrice IS a tracked field (Phase 5C)
+    expect(capturedUpdateData.name).toBeUndefined()  // name is NOT tracked
     expect(capturedUpdateData.sellingPrice).toBe(5)
   })
 
