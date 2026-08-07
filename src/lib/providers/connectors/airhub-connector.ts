@@ -806,7 +806,7 @@ export class AirHubConnector implements IProviderConnector {
     const planCode = params.planId
     const uniqueOrderId = params.externalId || `onesim-${Date.now()}`
     const rawTravelDate = (params as any).travelDate || (params.subscriber as any)?.travelDate || undefined
-    console.log(`[TRAVEL_DATE_TRACE] stage=AIRHUB_CONNECTOR travelDate=${rawTravelDate || 'undefined'} planCode=${planCode}`)
+    console.log(`[TRAVEL_DATE_TRACE] stage=AIRHUB_CONNECTOR travelDatePresent=${!!rawTravelDate}`)
 
     const validation = this.validatePurchasePayload({ partnerCode, planCode, uniqueOrderId, travelDate: rawTravelDate })
     if (!validation.valid) return { success: false, error: validation.error! }
