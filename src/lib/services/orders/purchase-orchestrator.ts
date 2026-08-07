@@ -149,7 +149,21 @@ export class PurchaseOrchestrator {
         return this.fail('TRAVEL_DATE_REQUIRED', resolved.error, false)
       }
       normalizedTravelDate = resolved.resolvedDate
+
+      // Fallback: if connector may need a date but resolver didn't produce one
+      // (e.g. AirHub provider but package requirement field is stale/default),
+      // default to today so the connector always has a valid YYYY-MM-DD to send.
+      if (!normalizedTravelDate && travelPkg) {
+        const now = new Date()
+        normalizedTravelDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`
+      }
     }
+
+    trace(correlationId, 'TRAVEL_DATE_RESOLVED', 'SUCCESS', {
+      requested: travelDate || null,
+      resolved: normalizedTravelDate || null,
+      present: !!normalizedTravelDate,
+    })
 
     // Step 5: Validate business wallet
     let unitPrice = parseFloat(pkg.priceUSD.toString())

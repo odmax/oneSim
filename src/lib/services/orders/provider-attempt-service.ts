@@ -84,6 +84,7 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
 
   // Dispatch
   try {
+    console.log(`[TRAVEL_DATE_TRACE] stage=DISPATCH travelDate=${travelDate || 'undefined'} provider=${providerName} orderId=${orderId}`)
     const result = await adapter.activateESIM({ planId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: businessId, orderId, ...(travelDate ? { travelDate } : {}) } as any)
     const latencyMs = Date.now() - startedAt.getTime()
 
