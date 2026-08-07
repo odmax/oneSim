@@ -12,6 +12,13 @@ const SEVERITY_COLORS: Record<string, string> = {
   UNKNOWN: 'bg-gray-100 text-gray-500',
 }
 
+const VERDICT_COLORS: Record<string, string> = {
+  READY: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+  DEGRADED: 'bg-amber-100 text-amber-800 border-amber-300',
+  BLOCKED: 'bg-red-100 text-red-800 border-red-300',
+  UNKNOWN: 'bg-gray-100 text-gray-500 border-gray-300',
+}
+
 const CHECK_COLORS: Record<string, string> = {
   PASS: 'bg-emerald-100 text-emerald-700',
   WARN: 'bg-amber-100 text-amber-700',
@@ -33,7 +40,21 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
         <Link href="/admin/providers/diagnostics" className="text-sm text-gray-400 hover:text-gray-600">← Back</Link>
         <h2 className="text-2xl font-bold text-gray-900">{d.name}</h2>
         <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${SEVERITY_COLORS[d.severity]}`}>{d.severity}</span>
+        <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${VERDICT_COLORS[d.verdict]}`}>Purchase: {d.verdict}</span>
+        <span className="text-xs text-gray-400">{d.verdictReason}</span>
       </div>
+
+      {d.recommendations.length > 0 && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 space-y-2">
+          <p className="text-sm font-semibold text-blue-800">Recommended Actions</p>
+          {d.recommendations.map((r, i) => (
+            <div key={i} className="flex items-start gap-2 text-xs">
+              <span className="rounded bg-blue-200 px-1.5 py-0.5 font-mono text-[10px] text-blue-700">{r.code}</span>
+              <span className="text-blue-600">{r.action}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {d.alerts.length > 0 && (
         <div className="rounded-xl border border-orange-200 bg-orange-50 p-4 space-y-2">
@@ -188,6 +209,36 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
         )}
         <KV label="Retry Class" value={d.lastResponse.retryClass || 'N/A'} />
         <KV label="Reconciliation" value={d.lastResponse.reconciliationRequired ? 'Yes' : 'No'} />
+      </Section>
+
+      {/* Failure Classification */}
+      <Section title="Failure Classification">
+        {d.failureCategories.length === 0 ? (
+          <p className="text-sm text-gray-400">No failures recorded.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 text-left">
+                <tr>
+                  <th className="px-2 py-2">Category</th>
+                  <th className="px-2 py-2 text-center">1h</th>
+                  <th className="px-2 py-2 text-center">24h</th>
+                  <th className="px-2 py-2 text-center">7d</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {d.failureCategories.map((f, i) => (
+                  <tr key={i}>
+                    <td className="px-2 py-1.5 font-medium">{f.category}</td>
+                    <td className="px-2 py-1.5 text-center">{f.count1h}</td>
+                    <td className="px-2 py-1.5 text-center">{f.count24h}</td>
+                    <td className="px-2 py-1.5 text-center">{f.count7d}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Section>
     </div>
   )
