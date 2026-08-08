@@ -14,6 +14,34 @@ const TABS = [
   { id: 'needs-pricing', label: 'Needs Pricing' },
 ] as const
 
+const PROVIDER_OPTIONS = [
+  { label: 'All', value: '' },
+  { label: 'Choice', value: 'CHOICE' },
+  { label: 'AirHub', value: 'AIRHUB' },
+  { label: 'iBASIS', value: 'IBASIS' },
+  { label: 'Telna', value: 'TELNA' },
+  { label: 'Custom', value: 'CUSTOM' },
+] as const
+
+const VALIDITY_OPTIONS = [
+  { label: 'All', days: 0 },
+  { label: '1 Day', days: 1 },
+  { label: '7 Days', days: 7 },
+  { label: '15 Days', days: 15 },
+  { label: '30 Days', days: 30 },
+  { label: '60 Days', days: 60 },
+  { label: '90 Days', days: 90 },
+] as const
+
+const SORT_OPTIONS = [
+  { label: 'Cheapest', value: 'cheapest' },
+  { label: 'Most Expensive', value: 'price-desc' },
+  { label: 'Highest Margin', value: 'margin-desc' },
+  { label: 'Lowest Margin', value: 'margin-asc' },
+  { label: 'Data: Highest', value: 'data-desc' },
+  { label: 'Validity: Longest', value: 'validity-desc' },
+] as const
+
 type TabId = (typeof TABS)[number]['id']
 
 function StatusBadge({ isActive, hiddenFromCatalog, purchaseReady }: { isActive: boolean; hiddenFromCatalog?: boolean; purchaseReady?: boolean }) {
@@ -41,7 +69,7 @@ function SummaryCard({ label, value, color }: { label: string; value: number; co
 export default async function AdminPackagesPage({
   searchParams,
 }: {
-  searchParams?: { error?: string; success?: string; tab?: string; search?: string }
+  searchParams?: { error?: string; success?: string; tab?: string; search?: string; provider?: string; validity?: string; sort?: string }
 }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
@@ -51,6 +79,9 @@ export default async function AdminPackagesPage({
 
   const tab: TabId = (TABS.some(t => t.id === searchParams?.tab) ? searchParams!.tab : 'live') as TabId
   const searchQuery = (searchParams?.search || '').trim()
+  const providerFilter = (searchParams?.provider || '').toUpperCase()
+  const validityFilter = parseInt(searchParams?.validity || '0') || 0
+  const sortParam = searchParams?.sort || 'cheapest'
 
   // Base retail packages query
   const retailBase: any = {
@@ -65,7 +96,7 @@ export default async function AdminPackagesPage({
     where: retailBase,
     include: {
       providerPackage: { select: { publishStatus: true, costStatus: true, pricingStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true } },
-      provider: { select: { status: true, enabledCapabilities: true, code: true } },
+      provider: { select: { status: true, enabledCapabilities: true, code: true, adapterStrategy: true } },
       _count: { select: { purchases: true, topUpRecords: true } },
     },
     orderBy: { priceUSD: 'asc' },
@@ -106,10 +137,68 @@ export default async function AdminPackagesPage({
       p.isActive && !p.hiddenFromCatalog && !p.archivedAt)
   }
 
-  // Search filter (after tab, server-side)
-  const displayPackages = searchQuery
-    ? tabFiltered.filter(p => p._searchable.includes(searchQuery.toLowerCase()))
-    : tabFiltered
+  // Filtering pipeline: tab → search → provider → validity → sort
+  let filtered = tabFiltered
+
+  // Search filter
+  if (searchQuery) {
+    filtered = filtered.filter(p => p._searchable.includes(searchQuery.toLowerCase()))
+  }
+
+  // Provider filter
+  if (providerFilter && PROVIDER_OPTIONS.some(o => o.value === providerFilter)) {
+    filtered = filtered.filter(p => {
+      const strat = p.provider?.adapterStrategy?.toUpperCase()
+      const code = p.provider?.code?.toUpperCase()
+      return strat === providerFilter || code === providerFilter
+    })
+  }
+
+  // Validity filter
+  if (validityFilter > 0) {
+    filtered = filtered.filter(p => (p.validityDays || 0) >= validityFilter)
+  }
+
+  // Sort
+  filtered = [...filtered]
+  switch (sortParam) {
+    case 'price-asc':
+    case 'cheapest':
+      filtered.sort((a, b) => parseFloat(a.priceUSD?.toString?.() || '0') - parseFloat(b.priceUSD?.toString?.() || '0'))
+      break
+    case 'price-desc':
+      filtered.sort((a, b) => parseFloat(b.priceUSD?.toString?.() || '0') - parseFloat(a.priceUSD?.toString?.() || '0'))
+      break
+    case 'margin-desc': {
+      const margin = (p: any) => {
+        const cost = parseFloat(p.costPriceUSD?.toString?.() || '0')
+        const sell = parseFloat(p.priceUSD?.toString?.() || '0')
+        if (cost <= 0 || sell <= 0) return -Infinity
+        return ((sell - cost) / sell) * 100
+      }
+      filtered.sort((a, b) => margin(b) - margin(a))
+      break
+    }
+    case 'margin-asc': {
+      const margin = (p: any) => {
+        const cost = parseFloat(p.costPriceUSD?.toString?.() || '0')
+        const sell = parseFloat(p.priceUSD?.toString?.() || '0')
+        if (cost <= 0 || sell <= 0) return Infinity
+        return ((sell - cost) / sell) * 100
+      }
+      filtered.sort((a, b) => margin(a) - margin(b))
+      break
+    }
+    case 'data-desc':
+      filtered.sort((a, b) => (b.dataGB || 0) - (a.dataGB || 0))
+      break
+    case 'validity-desc':
+      filtered.sort((a, b) => (b.validityDays || 0) - (a.validityDays || 0))
+      break
+    default:
+      filtered.sort((a, b) => parseFloat(a.priceUSD?.toString?.() || '0') - parseFloat(b.priceUSD?.toString?.() || '0'))
+  }
+  const displayPackages = filtered
 
   const livePackages = packagesWithReadiness.filter(p => p._readiness.ready)
   const draftPackages = packagesWithReadiness.filter(p => !p.isActive || p.hiddenFromCatalog || p.archivedAt ||
@@ -118,6 +207,19 @@ export default async function AdminPackagesPage({
     p.isActive && !p.hiddenFromCatalog && !p.archivedAt)
 
   const tabCounts: Record<string, number> = { live: livePackages.length, draft: draftPackages.length, 'needs-pricing': needsPricingPackages.length }
+
+  function buildUrl(targetTab: string, overrides: Record<string, string | number>) {
+    const p = new URLSearchParams()
+    if (targetTab !== 'live') p.set('tab', targetTab)
+    const s = overrides.search !== undefined ? String(overrides.search || '') : searchQuery
+    if (s) p.set('search', s)
+    const prov = overrides.provider !== undefined ? String(overrides.provider || '') : providerFilter
+    if (prov) p.set('provider', prov)
+    const val = overrides.validity !== undefined ? Number(overrides.validity) : validityFilter
+    if (val > 0) p.set('validity', String(val))
+    const qs = p.toString()
+    return qs ? `/admin/packages?${qs}` : '/admin/packages'
+  }
 
   return (
     <div className="p-6">
@@ -170,15 +272,46 @@ export default async function AdminPackagesPage({
         </div>
       </form>
 
+      {/* Filters */}
+      <div className="mb-4 space-y-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider w-14">Provider</span>
+          {PROVIDER_OPTIONS.map(o => {
+            const href = buildUrl(tab, { provider: o.value || '' })
+            const active = (providerFilter || '') === o.value
+            return <a key={o.value || 'all'} href={href} className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${active ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{o.label}</a>
+          })}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider w-14">Validity</span>
+          {VALIDITY_OPTIONS.map(o => {
+            const href = buildUrl(tab, { validity: o.days || '' })
+            const active = validityFilter === o.days
+            return <a key={o.days} href={href} className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${active ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{o.label}</a>
+          })}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider w-14">Sort</span>
+          <form method="GET" action="/admin/packages" className="inline-flex items-center gap-1.5">
+            {tab !== 'live' && <input type="hidden" name="tab" value={tab} />}
+            {searchQuery && <input type="hidden" name="search" value={searchQuery} />}
+            {providerFilter && <input type="hidden" name="provider" value={providerFilter} />}
+            {validityFilter > 0 && <input type="hidden" name="validity" value={validityFilter} />}
+            <select name="sort" defaultValue={sortParam} onChange={e => e.target.form?.submit()} className="rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-medium text-gray-700 bg-white focus:border-cyan-500 focus:outline-none">
+              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </form>
+          {(searchQuery || providerFilter || validityFilter > 0) && (
+            <a href={tab === 'live' ? '/admin/packages' : `/admin/packages?tab=${tab}`} className="ml-2 rounded-lg border border-gray-300 px-2.5 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-50">Clear Filters</a>
+          )}
+        </div>
+      </div>
+
       {/* Pill tabs */}
       <div className="mb-6">
         <nav className="inline-flex rounded-xl bg-gray-100 p-1">
           {TABS.map((t) => {
-            const params = new URLSearchParams()
-            if (t.id !== 'live') params.set('tab', t.id)
-            if (searchQuery) params.set('search', searchQuery)
-            const qs = params.toString()
-            const href = qs ? `/admin/packages?${qs}` : '/admin/packages'
+            const href = buildUrl(t.id, {})
             const isActive = tab === t.id
             return (
               <Link
@@ -201,6 +334,8 @@ export default async function AdminPackagesPage({
           {searchQuery
             ? `Showing ${displayPackages.length} of ${tabFiltered.length} products matching "${searchQuery}"`
             : `Showing ${displayPackages.length} of ${tabFiltered.length} products`}
+          {providerFilter && ` · ${providerFilter}`}
+          {validityFilter > 0 && ` · ${validityFilter} Days`}
         </p>
       )}
 
