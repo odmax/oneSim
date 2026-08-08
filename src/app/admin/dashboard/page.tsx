@@ -30,7 +30,7 @@ export default async function AdminDashboard({
     prisma.eSIMPurchase.count(),
     prisma.eSIMPurchase.aggregate({
       _sum: { totalAmount: true },
-      where: { status: 'COMPLETED' },
+      where: { status: { in: ['FULFILLED', 'ACTIVE', 'INSTALLED'] } },
     }),
   ]);
 
