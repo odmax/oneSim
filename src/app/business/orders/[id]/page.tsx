@@ -22,15 +22,19 @@ export default async function BusinessOrderDetailPage({ params }: { params: { id
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'BUSINESS_USER') redirect('/login')
 
-  const order = await prisma.eSIMPurchase.findUnique({
-    where: { id: params.id },
+  const businessId = session.user.businessId!
+  if (!businessId) redirect('/login')
+
+  const order = await prisma.eSIMPurchase.findFirst({
+    where: { id: params.id, businessId },
     include: {
-      business: true, user: true, package: true,
+      package: { select: { id: true, name: true, dataGB: true, validityDays: true } },
+      user: { select: { name: true, email: true } },
       esims: true,
       events: { orderBy: { createdAt: 'desc' } },
     },
   })
-  if (!order || order.businessId !== session.user.businessId) redirect('/business/orders')
+  if (!order) redirect('/business/orders')
 
   const esim = order.esims[0]
 

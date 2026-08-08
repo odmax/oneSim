@@ -20,7 +20,7 @@ const STATUS_CONFIG: Record<string, { label: string; dot: string; bg: string }> 
   FAILED: { label: 'Failed', dot: 'bg-red-400', bg: 'bg-red-50 text-red-600' },
   REFUNDED: { label: 'Refunded', dot: 'bg-rose-400', bg: 'bg-rose-50 text-rose-600' },
   PROVIDER_RECONCILIATION: { label: 'Reconciling', dot: 'bg-purple-400', bg: 'bg-purple-50 text-purple-700' },
-  PARTIALLY_FULFILLED: { label: 'Partial', dot: 'bg-amber-400', bg: 'bg-amber-50 text-amber-700' },
+  PARTIALLY_FULFILLED: { label: 'Partial', dot: 'bg-orange-400', bg: 'bg-orange-50 text-orange-700' },
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -81,13 +81,16 @@ export default async function OrdersPage({ searchParams }: { searchParams?: { st
 
       {/* Status filters */}
       <div className="flex flex-wrap gap-2">
-        <Link href="/business/orders" className={`rounded-full px-3 py-1 text-xs font-medium ${!searchParams?.status ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>All</Link>
-        {['PENDING_PROVIDER', 'FULFILLED', 'ACTIVE', 'FAILED', 'REFUNDED'].map(s => (
-          <Link key={s} href={`/business/orders?status=${s}`}
-            className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.status === s ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-            {STATUS_CONFIG[s]?.label || s}
-          </Link>
-        ))}
+        <Link href={`/business/orders${searchParams?.search ? `?search=${encodeURIComponent(searchParams.search)}` : ''}`} className={`rounded-full px-3 py-1 text-xs font-medium ${!searchParams?.status ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>All</Link>
+        {['PENDING_PROVIDER', 'FULFILLED', 'ACTIVE', 'FAILED', 'REFUNDED'].map(s => {
+          const href = `/business/orders?status=${s}${searchParams?.search ? `&search=${encodeURIComponent(searchParams.search)}` : ''}`
+          return (
+            <Link key={s} href={href}
+              className={`rounded-full px-3 py-1 text-xs font-medium ${searchParams?.status === s ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+              {STATUS_CONFIG[s]?.label || s}
+            </Link>
+          )
+        })}
       </div>
 
       {/* Search */}
