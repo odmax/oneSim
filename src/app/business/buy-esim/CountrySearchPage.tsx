@@ -103,7 +103,7 @@ export function CountrySearchPage({ packages, walletBalance }: Props) {
     return countries.filter(c => c.searchable.includes(q))
   }, [countries, search])
 
-  // Filter packages by selected country + validity
+  // Filter packages by selected country + free-text search + validity
   const displayPackages = useMemo(() => {
     let pkgs = aiResults || packages
     if (selectedCountry) {
@@ -112,12 +112,16 @@ export function CountrySearchPage({ packages, walletBalance }: Props) {
         const tokens = (p._searchText || '').toLowerCase().split(' | ')
         return tokens.some((t: string) => t === code)
       })
+    } else if (search.trim()) {
+      // Free-text fallback: filter by search text against _searchText
+      const q = search.toLowerCase().trim()
+      pkgs = pkgs.filter((p: any) => (p._searchText || '').toLowerCase().includes(q))
     }
     if (validityDays > 0) {
       pkgs = pkgs.filter((p: any) => (p.validityDays || 0) >= validityDays)
     }
     return sortPackages(pkgs, sortMode)
-  }, [packages, selectedCountry, validityDays, sortMode, aiResults])
+  }, [packages, selectedCountry, search, validityDays, sortMode, aiResults])
 
   // Keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -283,7 +287,9 @@ export function CountrySearchPage({ packages, walletBalance }: Props) {
         <p className="text-xs text-gray-400">
           {selectedCountry
             ? `${displayPackages.length} package${displayPackages.length !== 1 ? 's' : ''} for ${selectedCountry.flag} ${selectedCountry.name}`
-            : `Showing ${displayPackages.length} of ${packages.length} packages`}
+            : search.trim()
+              ? `Showing ${displayPackages.length} of ${packages.length} packages matching "${search.trim()}"`
+              : `Showing ${displayPackages.length} of ${packages.length} packages`}
         </p>
       )}
 
