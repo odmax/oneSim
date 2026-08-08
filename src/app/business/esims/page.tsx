@@ -10,6 +10,17 @@ import ShareActions from './ShareActions'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 
+function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } | null {
+  if (!raw) return null
+  try {
+    const data = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (!data || typeof data !== 'object') return null
+    const lpa = data.lpa || data.LPA || data.activationString || data.smdp
+    const smdp = data.smdp || data.SMDP || data['sm-dp+'] || null
+    return { lpaValue: lpa || undefined, smdpAddress: smdp || undefined }
+  } catch { return null }
+}
+
 function StatusPill({ status }: { status: string }) {
   const { label, tone } = getEsimStatusLabel(status)
   const styles: Record<string, { bg: string; dot: string }> = {
@@ -114,7 +125,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                             <QrCodeButton esim={{
                               esimId: esim.id, iccid: esim.iccid,
                               activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
-                              providerResponse: esim.providerResponse,
+                              providerResponse: safeProviderLPA(esim.providerResponse),
                               status: esim.status,
                               customerName: null,
                             }} />

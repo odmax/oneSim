@@ -81,7 +81,6 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
               <dt className="text-xs text-gray-500">Status</dt>
               <dd><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses}`}>{statusLabel.label}</span></dd>
             </div>
-            {esim.providerStatus && <DetailRow label="Provider Status" value={esim.providerStatus} />}
             <div className="flex justify-between py-1.5">
               <dt className="text-xs text-gray-500">Package</dt>
               <dd className="text-xs font-medium text-gray-900 text-right">{getPackageDisplayName(esim)}</dd>

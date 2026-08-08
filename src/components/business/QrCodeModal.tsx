@@ -7,7 +7,9 @@ interface QREsimProps {
   iccid: string
   activationCode: string | null
   qrCodeUrl: string | null
-  providerResponse: any
+  providerResponse?: any
+  lpaValue?: string
+  smdpAddress?: string
   status: string
   customerName: string | null
 }
@@ -37,8 +39,8 @@ function QrCodeModal({ esim, onClose }: { esim: QREsimProps; onClose: () => void
   const [imgLoading, setImgLoading] = useState(!!esim.qrCodeUrl)
   const [imgError, setImgError] = useState(false)
 
-  const lpaValue = resolveLPA(esim.providerResponse)
-  const smdpAddress = extractSMDP(esim.providerResponse, lpaValue)
+  const lpaValue = esim.lpaValue || resolveLPA(esim.providerResponse)
+  const smdpAddress = esim.smdpAddress || extractSMDP(esim.providerResponse, lpaValue)
   const displayActivationCode = esim.activationCode || extractActivationCode(lpaValue)
 
   const handleEsc = useCallback((e: KeyboardEvent) => {
