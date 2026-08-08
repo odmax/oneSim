@@ -7,12 +7,7 @@ import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import PackageActions from '@/components/admin/packages/PackageActions'
 import { roundMoney, computeMarkupFromCostAndSell, computeMarginAmount, computeMarginFromCostAndSell } from '@/lib/pricing/pricing-engine'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
-
-const TABS = [
-  { id: 'live', label: 'Live Products' },
-  { id: 'draft', label: 'Draft / Inactive' },
-  { id: 'needs-pricing', label: 'Needs Pricing' },
-] as const
+import { ProductCatalogFilters } from './ProductCatalogFilters'
 
 const PROVIDER_OPTIONS = [
   { label: 'All', value: '' },
@@ -23,23 +18,10 @@ const PROVIDER_OPTIONS = [
   { label: 'Custom', value: 'CUSTOM' },
 ] as const
 
-const VALIDITY_OPTIONS = [
-  { label: 'All', days: 0 },
-  { label: '1 Day', days: 1 },
-  { label: '7 Days', days: 7 },
-  { label: '15 Days', days: 15 },
-  { label: '30 Days', days: 30 },
-  { label: '60 Days', days: 60 },
-  { label: '90 Days', days: 90 },
-] as const
-
-const SORT_OPTIONS = [
-  { label: 'Cheapest', value: 'cheapest' },
-  { label: 'Most Expensive', value: 'price-desc' },
-  { label: 'Highest Margin', value: 'margin-desc' },
-  { label: 'Lowest Margin', value: 'margin-asc' },
-  { label: 'Data: Highest', value: 'data-desc' },
-  { label: 'Validity: Longest', value: 'validity-desc' },
+const TABS = [
+  { id: 'live', label: 'Live Products' },
+  { id: 'draft', label: 'Draft / Inactive' },
+  { id: 'needs-pricing', label: 'Needs Pricing' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -208,19 +190,6 @@ export default async function AdminPackagesPage({
 
   const tabCounts: Record<string, number> = { live: livePackages.length, draft: draftPackages.length, 'needs-pricing': needsPricingPackages.length }
 
-  function buildUrl(targetTab: string, overrides: Record<string, string | number>) {
-    const p = new URLSearchParams()
-    if (targetTab !== 'live') p.set('tab', targetTab)
-    const s = overrides.search !== undefined ? String(overrides.search || '') : searchQuery
-    if (s) p.set('search', s)
-    const prov = overrides.provider !== undefined ? String(overrides.provider || '') : providerFilter
-    if (prov) p.set('provider', prov)
-    const val = overrides.validity !== undefined ? Number(overrides.validity) : validityFilter
-    if (val > 0) p.set('validity', String(val))
-    const qs = p.toString()
-    return qs ? `/admin/packages?${qs}` : '/admin/packages'
-  }
-
   return (
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between">
@@ -249,69 +218,26 @@ export default async function AdminPackagesPage({
         <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-800">{decodeURIComponent(searchParams.success)}</div>
       )}
 
-      {/* Search */}
-      <form method="GET" action="/admin/packages" className="mb-4">
-        {tab !== 'live' && <input type="hidden" name="tab" value={tab} />}
-        <div className="relative">
-          <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-          </svg>
-          <input
-            type="text"
-            name="search"
-            defaultValue={searchQuery}
-            placeholder="Search products, country, package code..."
-            className="w-full rounded-xl border border-gray-200 bg-white pl-11 pr-10 py-3 text-sm text-gray-900 placeholder:text-gray-400 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 shadow-sm"
-          />
-          {searchQuery && (
-            <a href={`/admin/packages${tab !== 'live' ? `?tab=${tab}` : ''}`}
-              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-            </a>
-          )}
-        </div>
-      </form>
-
-      {/* Filters */}
-      <div className="mb-4 space-y-2">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider w-14">Provider</span>
-          {PROVIDER_OPTIONS.map(o => {
-            const href = buildUrl(tab, { provider: o.value || '' })
-            const active = (providerFilter || '') === o.value
-            return <a key={o.value || 'all'} href={href} className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${active ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{o.label}</a>
-          })}
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider w-14">Validity</span>
-          {VALIDITY_OPTIONS.map(o => {
-            const href = buildUrl(tab, { validity: o.days || '' })
-            const active = validityFilter === o.days
-            return <a key={o.days} href={href} className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${active ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{o.label}</a>
-          })}
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider w-14">Sort</span>
-          <form method="GET" action="/admin/packages" className="inline-flex items-center gap-1.5">
-            {tab !== 'live' && <input type="hidden" name="tab" value={tab} />}
-            {searchQuery && <input type="hidden" name="search" value={searchQuery} />}
-            {providerFilter && <input type="hidden" name="provider" value={providerFilter} />}
-            {validityFilter > 0 && <input type="hidden" name="validity" value={validityFilter} />}
-            <select name="sort" defaultValue={sortParam} onChange={e => e.target.form?.submit()} className="rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-medium text-gray-700 bg-white focus:border-cyan-500 focus:outline-none">
-              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </form>
-          {(searchQuery || providerFilter || validityFilter > 0) && (
-            <a href={tab === 'live' ? '/admin/packages' : `/admin/packages?tab=${tab}`} className="ml-2 rounded-lg border border-gray-300 px-2.5 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-50">Clear Filters</a>
-          )}
-        </div>
-      </div>
+      {/* Search + Filters (Client Component) */}
+      <ProductCatalogFilters
+        tab={tab}
+        search={searchQuery}
+        provider={providerFilter}
+        validity={String(validityFilter || '')}
+        sort={sortParam}
+      />
 
       {/* Pill tabs */}
       <div className="mb-6">
         <nav className="inline-flex rounded-xl bg-gray-100 p-1">
           {TABS.map((t) => {
-            const href = buildUrl(t.id, {})
+            const params = new URLSearchParams()
+            if (t.id !== 'live') params.set('tab', t.id)
+            if (searchQuery) params.set('search', searchQuery)
+            if (providerFilter) params.set('provider', providerFilter)
+            if (validityFilter > 0) params.set('validity', String(validityFilter))
+            const qs = params.toString()
+            const href = qs ? `/admin/packages?${qs}` : '/admin/packages'
             const isActive = tab === t.id
             return (
               <Link
