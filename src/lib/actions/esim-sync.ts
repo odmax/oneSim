@@ -104,7 +104,13 @@ export async function getQrCode(esimId: string) {
   if (result.data?.qrCodeUrl) {
     await prisma.eSIM.update({
       where: { id: esimId },
-      data: { qrCodeUrl: result.data.qrCodeUrl },
+      data: { qrCodeUrl: result.data.qrCodeUrl, installationStatus: 'READY', installationLastCheckedAt: new Date() },
+    })
+  } else if (result.success) {
+    // activationCode found but no QR URL
+    await prisma.eSIM.update({
+      where: { id: esimId },
+      data: { installationStatus: 'READY', installationLastCheckedAt: new Date() },
     })
   }
 

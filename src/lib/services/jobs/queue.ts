@@ -112,6 +112,8 @@ async function executeJob(job: { id: string; type: string; payload: any }) {
       return { completed: true }
     case 'PROVIDER_OPERATION':
       return executeProviderOperation(job.payload)
+    case 'INSTALLATION_RECONCILIATION':
+      return (await import('./handlers/installation-reconciliation')).executeInstallationReconciliation()
     default:
       return { completed: false, error: `Unknown job type: ${job.type}` }
   }

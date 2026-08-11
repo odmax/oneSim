@@ -1327,11 +1327,27 @@ export class UrlTokenConnector extends RestCatalogConnector {
     const path = `/template/v03_09/add_bundle_using_template/${token}`
     const body = JSON.stringify(params)
     try {
-      const { text, error, status } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers, body })
+      const { text, error } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers, body })
       if (error) return { success: false, error }
       return { success: true, data: JSON.parse(text || '{}') }
     } catch (e: any) {
       return { success: false, error: { code: 'CHOICE_TEMPLATE_PURCHASE_FAILED', message: e.message } }
     }
+  }
+
+  /** Override getQRCode — use package_detail endpoint for delayed installation lookup */
+  async getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string; activationCode?: string }>> {
+    await this.ensureAuthenticated()
+    if (!iccid) return { success: false, error: { code: 'MISSING_ICCID', message: 'No ICCID available' } }
+    const { text, error } = await fetchText(this.baseUrl(`/account/v03_09/package_detail/${this.config.apiToken}?iccid=${encodeURIComponent(iccid)}`), { headers: this.headers })
+    if (error) return { success: false, error }
+    try {
+      const json = JSON.parse(text || '{}')
+      const pkg = json.package || json.data?.package || json
+      const qr = pkg?.qr_code_link || pkg?.qr_code_url || pkg?.qrCodeUrl || ''
+      const code = pkg?.activation_code || pkg?.activationCode || ''
+      return qr ? { success: true, data: { qrCodeUrl: qr, activationCode: code || undefined } }
+        : { success: false, error: { code: 'NO_QR_CODE', message: 'No QR code found in package detail' } }
+    } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
   }
 }

@@ -1066,8 +1066,22 @@ export class IbasisConnector implements IProviderConnector {
     return { success: false, error: { code: 'UNSUPPORTED', message: 'iBASIS does not expose a standalone rates endpoint' } }
   }
 
-  async getQRCode(_iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'QR retrieval pending (Phase 2)' } }
+  async getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string; activationCode?: string }>> {
+    // iBASIS does not expose QR URLs directly. Return activationCode from inventory/subscription if available,
+    // as this is the primary install mechanism (LPA/SM-DP+ based activation).
+    const config = await this.loadConfig()
+    if (!config) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured' } }
+    // Try subscription status for any stored activation data
+    const esim = await prisma.eSIM.findFirst({ where: { iccid }, select: { providerResponse: true, activationCode: true, providerSubscriptionId: true } })
+    if (esim?.activationCode) {
+      return { success: true, data: { qrCodeUrl: '', activationCode: esim.activationCode } }
+    }
+    // Check providerResponse for LPA/SM-DP data
+    const resp = (esim?.providerResponse as any) || {}
+    if (resp.lpa || resp.smdp) {
+      return { success: true, data: { qrCodeUrl: '', activationCode: resp.lpa || resp.smdp } }
+    }
+    return { success: false, error: { code: 'NOT_AVAILABLE', message: 'iBASIS does not support delayed QR retrieval' } }
   }
 
   async topUpESIM(_params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
