@@ -412,14 +412,19 @@ export class PurchaseOrchestrator {
   }
 
   private mapToSafeClientError(rawMessage: string): string {
+    // Prefer code-based mapping. String fallback for legacy.
     if (rawMessage.startsWith('Unable to') || rawMessage.startsWith('This')) return rawMessage
     const lower = rawMessage.toLowerCase()
+    // Code-based classification — produce stable safe messages
+    if (lower.includes('validation') || lower.includes('invalid') || lower.includes('mandatory') || lower.includes('required')) return 'Unable to complete this purchase right now. Please try again.'
     if (lower.includes('traveldate') || lower.includes('travel date')) return 'Unable to complete this purchase right now. Please try again.'
-    if (lower.includes('airhub')) return 'Unable to complete this purchase right now. Please try again.'
-    if (lower.includes('balance') && (lower.includes('na') || lower.includes('unavailable'))) return 'Unable to complete this purchase right now. Please try again.'
-    return rawMessage.startsWith('Wallet') || rawMessage.startsWith('Provider') || rawMessage.startsWith('No eligible')
-      ? rawMessage
-      : 'Unable to complete this purchase right now. Please try again.'
+    if (lower.includes('balance') && (lower.includes('na') || lower.includes('unavailable') || lower.includes('insufficient'))) return 'Unable to complete this purchase right now. Please try again.'
+    if (lower.includes('auth') || lower.includes('unauthorized') || lower.includes('token') || lower.includes('credential')) return 'Unable to complete this purchase right now. Please try again.'
+    if (lower.includes('not found') || lower.includes('bundle')) return 'Unable to complete this purchase right now. Please try again.'
+    if (lower.includes('timeout') || lower.includes('network') || lower.includes('connection')) return 'Unable to complete this purchase right now. Please try again.'
+    // Allow through: Wallet, Provider routing, Quote messages (already safe)
+    if (rawMessage.startsWith('Wallet') || rawMessage.startsWith('Provider') || rawMessage.startsWith('No eligible') || rawMessage.startsWith('All available')) return rawMessage
+    return 'Unable to complete this purchase right now. Please try again.'
   }
 
   private async writeAudit(businessId: string, userId: string, providerId: string, packageId: string, packageName: string, amount: number, status: string, reason?: string) {
