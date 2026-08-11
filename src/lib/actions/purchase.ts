@@ -30,6 +30,23 @@ const ERROR_MAP: Record<string, string> = {
   'A valid purchase quote is required for checkout': 'quote_required',
   'Failed to create order': 'order_creation_failed',
   'Wallet reserve failed': 'purchase_failed',
+  'Unable to complete': 'provider_error',
+  // Added structured error codes for diagnostics
+  PACKAGE_NOT_FOUND: 'package_not_found',
+  PACKAGE_UNAVAILABLE: 'package_unavailable',
+  INSUFFICIENT_WALLET: 'insufficient_balance',
+  BUSINESS_NOT_FOUND: 'business_not_found',
+  BUSINESS_SUSPENDED: 'business_suspended',
+  PROVIDER_NOT_FOUND: 'temporarily_unavailable',
+  PROVIDER_NO_PURCHASE: 'temporarily_unavailable',
+  PROVIDER_UNAVAILABLE: 'temporarily_unavailable',
+  PROVIDER_LOW_BALANCE: 'temporarily_unavailable',
+  QUOTE_REQUIRED: 'quote_required',
+  QUOTE_FAILED: 'quote_required',
+  ORDER_CREATE_FAILED: 'order_creation_failed',
+  WALLET_RESERVE_FAILED: 'purchase_failed',
+  PROVIDER_FAILED: 'provider_failed',
+  ALL_PROVIDERS_EXHAUSTED: 'temporarily_unavailable',
 }
 
 export interface PurchaseResult {
@@ -85,12 +102,20 @@ export async function executePurchase(params: {
 
   if (!result.success) {
     const msg = result.error || 'Purchase failed'
+    const errorCode = result.errorCode || 'purchase_failed'
     let publicCode = 'purchase_failed'
-    for (const [key, value] of Object.entries(ERROR_MAP)) {
-      if (msg.startsWith(key)) { publicCode = value; break }
+    // First check the structured errorCode from the orchestrator
+    const mapped = ERROR_MAP[errorCode]
+    if (mapped) {
+      publicCode = mapped
+    } else {
+      // Fall back to string matching on the message
+      for (const [key, value] of Object.entries(ERROR_MAP)) {
+        if (msg.startsWith(key)) { publicCode = value; break }
+      }
     }
-    console.log(`[BUY_FLOW_TRACE] stage=ACTION_RETURNED success=false code=${publicCode}`)
-    return { success: false, code: publicCode, message: msg }
+    console.log(`[PURCHASE_TRACE] traceId=${correlationId} step=ACTION_RETURNED success=false errorCode=${errorCode} publicCode=${publicCode} message=${msg.substring(0, 120)}`)
+    return { success: false, code: publicCode, message: errorCode ? `[${errorCode}] ${msg}` : msg }
   }
 
   revalidatePath('/business/orders')

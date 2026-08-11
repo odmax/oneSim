@@ -42,6 +42,7 @@ export interface CreateOrderResult {
     qrCodeUrl?: string | null
   }>
   error?: string
+  errorCode?: string
   errorStatus?: number
 }
 
@@ -94,7 +95,8 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
   }
 
   if (!result.success) {
-    return { success: false, error: result.message || 'Purchase failed', errorStatus: result.retryable ? 502 : 400 }
+    console.log(`[PURCHASE_TRACE] step=CREATE_ORDER_FAILED errorCode=${result.errorCode} message=${result.message?.substring(0, 120)}`)
+    return { success: false, error: result.message || 'Purchase failed', errorCode: result.errorCode, errorStatus: result.retryable ? 502 : 400 }
   }
 
   return {

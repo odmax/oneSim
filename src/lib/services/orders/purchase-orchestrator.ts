@@ -405,9 +405,8 @@ export class PurchaseOrchestrator {
   }
 
   private fail(code: string, message: string, retryable: boolean): PurchaseResult {
-    // Sanitize: never leak provider-specific details to Business clients
     const safeMessage = this.mapToSafeClientError(message)
-    console.log(`[BUSINESS_PURCHASE_TRACE] failCode=${code} retryable=${retryable} message=${safeMessage.substring(0, 100)}`)
+    console.log(`[PURCHASE_TRACE] traceId=orph step=FAIL code=${code} retryable=${retryable}`)
     return { success: false, errorCode: code, message: safeMessage, retryable }
   }
 
