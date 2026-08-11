@@ -19,22 +19,27 @@ export async function updateProviderBundle(formData: FormData) {
   const sku = formData.get('sku') as string
   const bundleName = formData.get('bundleName') as string
 
-  // Persist local record first
-  await prisma.$executeRawUnsafe(`UPDATE provider_bundle_definitions SET "bundleName"=$1, "updatedAt"=NOW() WHERE id=$2`, bundleName, bundleId)
+  // Capture old version before update
+  const old = await prisma.$queryRawUnsafe<any[]>(`SELECT "externalVersion" FROM provider_bundle_definitions WHERE id=$1`, bundleId).catch(() => [])
+  const oldVersion = old[0]?.externalVersion || 'N/A'
 
-  // Call provider adapter for remote update
+  // Call provider adapter FIRST — do not persist local state before remote success
   const connector = await buildConnectorFromProvider(providerId) as any
+  let newVersion = ''
   if (connector?.updateBundleTemplate) {
     const result = await connector.updateBundleTemplate({ sku, bundle_name: bundleName })
-    if (result.success && result.data?.template_version) {
-      await prisma.$executeRawUnsafe(
-        `UPDATE provider_bundle_definitions SET "externalVersion"=$1, "updatedAt"=NOW() WHERE id=$2 AND "externalVersion" IS DISTINCT FROM $1`,
-        String(result.data.template_version), bundleId
-      )
+    if (!result.success) {
+      redirect(`/admin/providers/bundles/${bundleId}?error=${encodeURIComponent(result.error?.message || 'update_failed')}`)
     }
+    newVersion = result.data?.template_version || ''
   }
 
-  await prisma.auditLog.create({ data: { userId: session.user.id, action: 'UPDATE_BUNDLE', entity: 'ProviderBundleDefinition', entityId: bundleId, details: `Updated bundle: ${sku}` } }).catch(() => {})
+  // Persist local only after provider success
+  await prisma.$executeRawUnsafe(`UPDATE provider_bundle_definitions SET "bundleName"=$1, "externalVersion"=$2, "updatedAt"=NOW() WHERE id=$3`,
+    bundleName, newVersion || oldVersion, bundleId)
+
+  await prisma.auditLog.create({ data: { userId: session.user.id, action: 'UPDATE_BUNDLE', entity: 'ProviderBundleDefinition', entityId: bundleId,
+    details: `Updated bundle ${sku}: name="${bundleName}" version ${oldVersion}→${newVersion || 'unchanged'}` } }).catch(() => {})
   redirect(`/admin/providers/bundles/${bundleId}?success=updated`)
 }
 
@@ -48,6 +53,7 @@ export async function importProviderBundles(formData: FormData) {
   const bundleIds = formData.getAll('bundleIds') as string[]
 
   const connector = await buildConnectorFromProvider(providerId) as any
+  // Choice: syncPlans() hits /account/v03_09/bundle_templates which IS the LIST_BUNDLES endpoint
   if (!connector?.syncPlans) redirect('/admin/providers/bundles?error=provider_not_supported')
 
   const result = await connector.syncPlans()
