@@ -654,8 +654,10 @@ export class UrlTokenConnector extends RestCatalogConnector {
     if (!payloadType) {
       return { valid: false, reason: `Required field mapping "activationPayloadType" is missing. Set it to "CHOICE_ADD_BUNDLE_FROM_POOL" in the provider fieldMappings.` }
     }
-    if (!this.fieldMappings.userId) {
-      return { valid: false, reason: `Required field mapping "userId" is missing. Set it in the provider fieldMappings.` }
+    // userId defaults to 'onesim' if not configured (see activateESIM body)
+    const effectiveUserId = this.fieldMappings.userId || 'onesim'
+    if (!effectiveUserId) {
+      return { valid: false, reason: `Choice user/account identifier could not be resolved.` }
     }
     return { valid: true }
   }

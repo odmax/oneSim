@@ -476,13 +476,13 @@ describe('UrlTokenConnector', () => {
       expect(result.reason).toContain('token')
     })
 
-    it('returns invalid when userId is missing', async () => {
+    it('userId defaults to onesim when missing from fieldMappings', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
         fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL' },
       }))
       const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
-      expect(result.valid).toBe(false)
-      expect(result.reason).toContain('userId')
+      expect(result.valid).toBe(true)
+      // userId defaults to 'onesim' — same as activateESIM body fallback
     })
   })
 
