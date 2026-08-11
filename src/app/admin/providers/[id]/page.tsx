@@ -13,6 +13,7 @@ import { ProviderAuthPanel } from '@/components/admin/providers/ProviderAuthPane
 import { SetupWizard } from '@/components/admin/providers/SetupWizard'
 import { ProviderLifecycleActions } from '@/components/admin/providers/ProviderLifecycleActions'
 import ProviderCertificationWizard from '@/components/admin/providers/ProviderCertificationWizard'
+import { toggleCapabilityExposure } from '@/lib/actions/capability-exposure-actions'
 import { ProviderHealthCards, ProviderCapabilityMatrix } from '@/components/admin/providers/ProviderHealthCards'
 import { detectUrlMismatch } from '@/lib/providers/url-resolver'
 import { SaveAsTemplateButton } from '@/components/admin/providers/SaveAsTemplateButton'
@@ -628,6 +629,63 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       )}
       </>)
         : null}
+    </div>
+  )
+}
+
+async function CapabilityExposurePanel({ providerId }: { providerId: string }) {
+  const { parseCapabilities } = await import('@/lib/providers/capabilities/registry')
+  const prov = await prisma.provider.findUnique({ where: { id: providerId } })
+  if (!prov) return null
+  const allCaps = Array.from(new Set(parseCapabilities(prov)))
+  if (allCaps.length === 0) return null
+
+  const rows = await prisma.$queryRawUnsafe<{ capability: string; clientPortalEnabled: boolean; clientApiEnabled: boolean }[]>(
+    `SELECT capability, "clientPortalEnabled", "clientApiEnabled" FROM provider_capability_exposure WHERE "providerId"=$1`, providerId).catch(() => [])
+  const map = new Map(rows.map(r => [r.capability, r]))
+
+  return (
+    <div className="mt-6 rounded-xl border bg-white p-5 shadow-sm">
+      <h3 className="text-sm font-semibold text-gray-900 mb-3">Capability Exposure</h3>
+      <table className="w-full text-xs">
+        <thead className="bg-gray-50">
+          <tr><th className="px-2 py-2 text-left text-gray-500">Capability</th><th className="px-2 py-2 text-center w-16">Supported</th><th className="px-2 py-2 text-center w-20">Portal</th><th className="px-2 py-2 text-center w-20">API</th></tr>
+        </thead>
+        <tbody className="divide-y">
+          {allCaps.map(cap => {
+            const exp = map.get(cap)
+            const def = ['PURCHASE','STATUS','USAGE','TOP_UP','SUSPEND','RESUME','BALANCE'].includes(cap)
+            return (
+              <tr key={cap}>
+                <td className="px-2 py-2 text-gray-700">{cap.replace(/_/g, ' ')}</td>
+                <td className="px-2 py-2 text-center text-emerald-600">✓</td>
+                <td className="px-2 py-2 text-center">
+                  <form action={toggleCapabilityExposure} className="inline">
+                    <input type="hidden" name="providerId" value={providerId} />
+                    <input type="hidden" name="capability" value={cap} />
+                    <input type="hidden" name="field" value="clientPortalEnabled" />
+                    <input type="hidden" name="value" value={String(!((exp?.clientPortalEnabled) ?? def))} />
+                    <button type="submit" className={`rounded px-2 py-0.5 text-[10px] font-medium ${(exp?.clientPortalEnabled ?? def) ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-400'} hover:opacity-80`}>
+                      {(exp?.clientPortalEnabled ?? def) ? 'ON' : 'OFF'}
+                    </button>
+                  </form>
+                </td>
+                <td className="px-2 py-2 text-center">
+                  <form action={toggleCapabilityExposure} className="inline">
+                    <input type="hidden" name="providerId" value={providerId} />
+                    <input type="hidden" name="capability" value={cap} />
+                    <input type="hidden" name="field" value="clientApiEnabled" />
+                    <input type="hidden" name="value" value={String(!((exp?.clientApiEnabled) ?? def))} />
+                    <button type="submit" className={`rounded px-2 py-0.5 text-[10px] font-medium ${(exp?.clientApiEnabled ?? def) ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-400'} hover:opacity-80`}>
+                      {(exp?.clientApiEnabled ?? def) ? 'ON' : 'OFF'}
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
