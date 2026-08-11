@@ -8,6 +8,7 @@ import { UsageSummary } from '@/components/admin/esims/UsageBar'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 import { syncEsimStatusAction } from '@/lib/actions/esim'
+import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
 
 function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -18,6 +19,17 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
   )
 }
 
+function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } | null {
+  if (!raw) return null
+  try { const d = typeof raw === 'string' ? JSON.parse(raw) : raw; return d && typeof d === 'object' ? { lpaValue: d.lpa || d.LPA || undefined, smdpAddress: d.smdp || d.SMDP || undefined } : null } catch { return null }
+}
+
+const INSTALL_MESSAGES: Record<string, string> = {
+  PENDING: 'Installation details are being prepared automatically.',
+  FAILED: 'Installation details could not be retrieved. Please contact support.',
+  STALE: 'Installation details could not be retrieved. Please contact support.',
+}
+
 export default async function BusinessEsimDetailPage({ params, searchParams }: {
   params: { id: string }
   searchParams?: { error?: string; success?: string }
@@ -26,12 +38,9 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
   if (!session || session.user.role !== 'BUSINESS_USER') redirect('/login')
 
   const esim = await prisma.eSIM.findFirst({
-    where: {
-      id: params.id,
-      purchase: { businessId: session.user.businessId! },
-    },
+    where: { id: params.id, purchase: { businessId: session.user.businessId! } },
     include: {
-      purchase: { include: { package: true } },
+      purchase: { include: { package: { select: { id: true, name: true, displayName: true, dataGB: true, validityDays: true, providerId: true } } } },
       usageRecords: { orderBy: { timestamp: 'desc' }, take: 20 },
     },
   })
@@ -39,14 +48,14 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
   if (!esim) notFound()
 
   const pkg = esim.purchase.package
+  const providerId = pkg.providerId
+  const caps = await getEsimClientCapabilities(providerId)
   const statusLabel = getEsimStatusLabel(esim.status)
-  const toneClasses =
-    statusLabel.tone === 'success' ? 'bg-green-100 text-green-800'
-    : statusLabel.tone === 'warn' ? 'bg-yellow-100 text-yellow-800'
-    : statusLabel.tone === 'danger' ? 'bg-red-100 text-red-800'
-    : 'bg-gray-100 text-gray-700'
-
+  const toneClasses = statusLabel.tone === 'success' ? 'bg-green-100 text-green-800' : statusLabel.tone === 'warn' ? 'bg-yellow-100 text-yellow-800' : statusLabel.tone === 'danger' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'
   const hasUsageSnapshot = esim.dataTotalMB != null || esim.dataRemainingMB != null
+  const installStatus = esim.installationStatus || 'READY'
+  const hasInstallData = !!(esim.qrCodeUrl || esim.activationCode)
+  const lpa = safeProviderLPA(esim.providerResponse)
 
   return (
     <div className="space-y-6">
@@ -64,10 +73,7 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
         </div>
       )}
       {searchParams?.error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {searchParams.error === 'sync_failed' && 'Failed to sync eSIM status'}
-          {searchParams.error !== 'sync_failed' && searchParams.error}
-        </div>
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{searchParams.error}</div>
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -92,68 +98,80 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
           </dl>
         </div>
 
-        {/* QR Code & Usage */}
+        {/* Installation */}
         <div className="rounded-xl border bg-white p-6 shadow-sm">
-          <h3 className="mb-4 text-base font-semibold text-gray-900">QR Code &amp; Usage</h3>
-
-          {esim.qrCodeUrl ? (
-            <div className="mb-4 text-center">
-              <img src={esim.qrCodeUrl} alt="eSIM QR Code" className="mx-auto h-36 w-36 rounded-lg border" />
-              <a href={esim.qrCodeUrl} target="_blank" className="mt-2 inline-block text-xs text-cyan-600 hover:underline">Open QR Code</a>
-            </div>
-          ) : esim.activationCode ? (
-            <div className="mb-4 rounded-lg bg-cyan-50 border border-cyan-100 p-4 text-center">
-              <p className="text-sm font-medium text-cyan-700">eSIM Ready</p>
-              <p className="mt-1 text-xs text-cyan-600">Activation code is available. Use the QR button to view details.</p>
-            </div>
+          <h3 className="mb-4 text-base font-semibold text-gray-900">Installation</h3>
+          {installStatus === 'READY' && hasInstallData ? (
+            <>
+              {esim.qrCodeUrl && (
+                <div className="mb-4 text-center">
+                  <img src={esim.qrCodeUrl} alt="eSIM QR Code" className="mx-auto h-36 w-36 rounded-lg border" />
+                  <a href={esim.qrCodeUrl} target="_blank" className="mt-2 inline-block text-xs text-cyan-600 hover:underline">Open QR Code</a>
+                </div>
+              )}
+              {esim.activationCode && (
+                <div className="mb-4 rounded-lg bg-gray-50 p-3">
+                  <p className="text-[10px] text-gray-400 mb-1">Activation Code</p>
+                  <p className="font-mono text-xs text-gray-900 break-all">{esim.activationCode}</p>
+                </div>
+              )}
+              {lpa?.smdpAddress && (
+                <div className="mb-4 rounded-lg bg-gray-50 p-3">
+                  <p className="text-[10px] text-gray-400 mb-1">SM-DP+ Address</p>
+                  <p className="font-mono text-xs text-gray-900 break-all">{lpa.smdpAddress}</p>
+                </div>
+              )}
+              {!esim.qrCodeUrl && esim.activationCode && (
+                <p className="text-xs text-gray-500">Use the activation code above for manual eSIM installation.</p>
+              )}
+            </>
           ) : (
-            <p className="mb-4 text-xs text-gray-400">No QR code available yet.</p>
-          )}
-
-          {hasUsageSnapshot ? (
-            <div className="mb-4 rounded-lg bg-gray-50 p-4">
-              <UsageSummary
-                dataUsedMB={esim.dataUsedMB}
-                dataTotalMB={esim.dataTotalMB}
-                dataRemainingMB={esim.dataRemainingMB}
-                lastUsageAt={esim.lastUsageAt}
-                lastUsageSyncAt={esim.lastUsageSyncAt}
-                expiresAt={esim.expiresAt}
-                status={esim.status}
-              />
-            </div>
-          ) : (
-            <p className="mb-4 text-xs text-gray-400">Usage data is not yet available.</p>
+            <p className="text-xs text-gray-400">{INSTALL_MESSAGES[installStatus] || `Installation status: ${installStatus}`}</p>
           )}
         </div>
       </div>
 
-      {/* Actions — business-safe only */}
+      {/* Usage */}
+      {caps.canViewUsage && (
+        <div className="rounded-xl border bg-white p-6 shadow-sm">
+          <h3 className="mb-4 text-base font-semibold text-gray-900">Usage</h3>
+          {hasUsageSnapshot ? (
+            <UsageSummary
+              dataUsedMB={esim.dataUsedMB}
+              dataTotalMB={esim.dataTotalMB}
+              dataRemainingMB={esim.dataRemainingMB}
+              lastUsageAt={esim.lastUsageAt}
+              lastUsageSyncAt={esim.lastUsageSyncAt}
+              expiresAt={esim.expiresAt}
+              status={esim.status}
+            />
+          ) : (
+            <p className="text-xs text-gray-400">Usage data has not been retrieved yet.</p>
+          )}
+        </div>
+      )}
+
+      {/* Actions */}
       <div className="rounded-xl border bg-white p-6 shadow-sm">
         <h3 className="mb-4 text-base font-semibold text-gray-900">Actions</h3>
         <div className="flex flex-wrap gap-3 items-center">
-          {(esim.status === 'ACTIVE' || esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING') && (
-            <Link href={`/business/esims/${esim.id}/top-up`}
-              className="rounded-lg border border-emerald-300 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 dark-hover:bg-emerald-50/80">
-              Top Up
-            </Link>
+          {caps.canRefreshStatus && (
+            <form action={syncEsimStatusAction.bind(null, esim.id)}>
+              <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Refresh Status</button>
+            </form>
           )}
-          <form action={syncEsimStatusAction.bind(null, esim.id)}>
-            <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">
-              Refresh Status
-            </button>
-          </form>
-          <QrCodeButton esim={{
-            esimId: esim.id, iccid: esim.iccid,
-            activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
-            providerResponse: esim.providerResponse,
-            status: esim.status,
-            customerName: null,
-          }} />
-          <Link href="/business/esims"
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
-            Back to Inventory
-          </Link>
+          {caps.canTopUp && (esim.status === 'ACTIVE' || esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING') && (
+            <Link href={`/business/esims/${esim.id}/top-up`} className="rounded-lg border border-emerald-300 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50">Top Up</Link>
+          )}
+          {hasInstallData && (
+            <QrCodeButton esim={{
+              esimId: esim.id, iccid: esim.iccid,
+              activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
+              lpaValue: lpa?.lpaValue, smdpAddress: lpa?.smdpAddress,
+              status: esim.status, customerName: null,
+            }} />
+          )}
+          <Link href="/business/esims" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Back to Inventory</Link>
         </div>
       </div>
     </div>
