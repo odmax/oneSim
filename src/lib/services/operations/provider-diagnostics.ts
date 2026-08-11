@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { getChoiceEndpointCoverage, getDocumentedUnusedEndpoints } from '@/lib/providers/telemetry/endpoint-telemetry'
 import type { Prisma } from '@prisma/client'
 
 // ── Types ──

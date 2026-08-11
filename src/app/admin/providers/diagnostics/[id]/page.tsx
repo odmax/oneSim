@@ -4,6 +4,8 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { getProviderDiagnosticsDetail } from '@/lib/services/operations/provider-diagnostics'
+import { prisma } from '@/lib/prisma'
+import { getChoiceEndpointCoverage, getDocumentedUnusedEndpoints } from '@/lib/providers/telemetry/endpoint-telemetry'
 
 const SEVERITY_COLORS: Record<string, string> = {
   HEALTHY: 'bg-emerald-100 text-emerald-800',
@@ -211,6 +213,9 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
         <KV label="Reconciliation" value={d.lastResponse.reconciliationRequired ? 'Yes' : 'No'} />
       </Section>
 
+      {/* Choice API Coverage */}
+      {(d.code === 'CHOICE' || d.adapterStrategy === 'CHOICE') && <ChoiceApiCoverage providerId={d.id} />}
+
       {/* Failure Classification */}
       <Section title="Failure Classification">
         {d.failureCategories.length === 0 ? (
@@ -259,5 +264,74 @@ function KV({ label, value }: { label: string; value: string | number | null | u
       <span className="text-gray-500">{label}</span>
       <span className="font-medium text-gray-900 ml-4 text-right">{value ?? 'N/A'}</span>
     </div>
+  )
+}
+
+async function ChoiceApiCoverage({ providerId }: { providerId: string }) {
+  const endpoints = getChoiceEndpointCoverage(providerId)
+  const unused = getDocumentedUnusedEndpoints()
+  const now = Date.now()
+  const h24 = now - 86400000
+
+  const records = await prisma.$queryRawUnsafe<{ operation: string; totalCalls: number; totalSuccesses: number; totalFailures: number; lastAttemptedAt: string | null; lastSuccessAt: string | null; lastFailureAt: string | null }[]>(
+    `SELECT operation, "totalCalls", "totalSuccesses", "totalFailures", "lastAttemptedAt", "lastSuccessAt", "lastFailureAt"
+     FROM provider_endpoint_calls WHERE "providerId" = $1 ORDER BY "lastAttemptedAt" DESC NULLS LAST`, providerId
+  ).catch(() => [])
+
+  const recordMap = new Map(records.map(r => [r.operation, r]))
+
+  return (
+    <Section title="Choice API Coverage">
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50 text-left">
+            <tr>
+              <th className="px-2 py-1.5">Operation</th>
+              <th className="px-2 py-1.5">Path</th>
+              <th className="px-2 py-1.5 text-center">Status</th>
+              <th className="px-2 py-1.5 text-center">Calls</th>
+              <th className="px-2 py-1.5 text-center">Last Success</th>
+              <th className="px-2 py-1.5 text-center">Last Failure</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {endpoints.map(e => {
+              const r = recordMap.get(e.operation)
+              const used24h = r?.lastAttemptedAt ? new Date(r.lastAttemptedAt).getTime() > h24 : false
+              return (
+                <tr key={e.operation} className={!e.usedInPool ? 'text-gray-400' : ''}>
+                  <td className="px-2 py-1 font-mono text-[10px]">{e.operation}</td>
+                  <td className="px-2 py-1 text-[10px] text-gray-500 max-w-[200px] truncate">{e.path}</td>
+                  <td className="px-2 py-1 text-center">
+                    {r?.totalCalls ? (
+                      <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${used24h ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                        {used24h ? 'USED 24H' : 'USED'}
+                      </span>
+                    ) : (
+                      <span className="rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-gray-100 text-gray-400">
+                        {e.usedInPool ? 'READY' : 'AVAILABLE'}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1 text-center">{r?.totalCalls || 0}</td>
+                  <td className="px-2 py-1 text-center text-gray-400">{r?.lastSuccessAt ? new Date(r.lastSuccessAt).toLocaleDateString() : '-'}</td>
+                  <td className="px-2 py-1 text-center text-gray-400">{r?.lastFailureAt ? new Date(r.lastFailureAt).toLocaleDateString() : '-'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 border-t pt-3">
+        <p className="text-[10px] font-medium text-gray-400 uppercase mb-2">Documented but intentionally unused</p>
+        {unused.map(u => (
+          <div key={u.operation} className="flex justify-between text-[11px] py-0.5">
+            <span className="font-mono text-gray-300">{u.operation}</span>
+            <span className="text-gray-400">{u.reason}</span>
+          </div>
+        ))}
+      </div>
+    </Section>
   )
 }
