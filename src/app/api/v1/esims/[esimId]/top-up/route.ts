@@ -6,10 +6,13 @@ import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
 import { createTopUpOrder } from '@/lib/services/orders/top-up-order'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
+import { isCapabilityExposedToApi } from '@/lib/providers/capabilities/exposure'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
 }
+
+const UNAVAILABLE = makeError('capability_not_available', 'This operation is not available.')
 
 async function respond(request: NextRequest, body: any, status: number, startTime: number, businessId: string, options?: { apiKeyId?: string; errorMessage?: string; rateLimit?: { limit: number; remaining: number } }) {
   let response = NextResponse.json(body, { status })
@@ -56,7 +59,7 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
     if (resolution.package.providerPackageId) {
       const pp = await prisma.providerPackage.findUnique({
         where: { id: resolution.package.providerPackageId },
-        select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true, provider: { select: { status: true, enabledCapabilities: true, code: true } } },
+        select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true, providerId: true, provider: { select: { status: true, enabledCapabilities: true, code: true } } },
       })
       if (!pp) {
         return respond(request, makeError('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable.'), 400, startTime, businessId, { errorMessage: 'Provider package not found', rateLimit })
@@ -67,6 +70,9 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
       })
       if (!readiness.ready) {
         return respond(request, makeError('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable.'), 400, startTime, businessId, { errorMessage: readiness.reasons.join('; '), rateLimit })
+      }
+      if (!await isCapabilityExposedToApi(pp.providerId, 'TOP_UP' as any)) {
+        return respond(request, UNAVAILABLE, 403, startTime, businessId, { errorMessage: 'capability_not_available', rateLimit })
       }
     }
 
