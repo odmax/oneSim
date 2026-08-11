@@ -405,9 +405,21 @@ export class PurchaseOrchestrator {
   }
 
   private fail(code: string, message: string, retryable: boolean): PurchaseResult {
-    // Log every failure through this central exit
-    console.log(`[BUSINESS_PURCHASE_TRACE] failCode=${code} retryable=${retryable} message=${message.substring(0, 100)}`)
-    return { success: false, errorCode: code, message, retryable }
+    // Sanitize: never leak provider-specific details to Business clients
+    const safeMessage = this.mapToSafeClientError(message)
+    console.log(`[BUSINESS_PURCHASE_TRACE] failCode=${code} retryable=${retryable} message=${safeMessage.substring(0, 100)}`)
+    return { success: false, errorCode: code, message: safeMessage, retryable }
+  }
+
+  private mapToSafeClientError(rawMessage: string): string {
+    if (rawMessage.startsWith('Unable to') || rawMessage.startsWith('This')) return rawMessage
+    const lower = rawMessage.toLowerCase()
+    if (lower.includes('traveldate') || lower.includes('travel date')) return 'Unable to complete this purchase right now. Please try again.'
+    if (lower.includes('airhub')) return 'Unable to complete this purchase right now. Please try again.'
+    if (lower.includes('balance') && (lower.includes('na') || lower.includes('unavailable'))) return 'Unable to complete this purchase right now. Please try again.'
+    return rawMessage.startsWith('Wallet') || rawMessage.startsWith('Provider') || rawMessage.startsWith('No eligible')
+      ? rawMessage
+      : 'Unable to complete this purchase right now. Please try again.'
   }
 
   private async writeAudit(businessId: string, userId: string, providerId: string, packageId: string, packageName: string, amount: number, status: string, reason?: string) {

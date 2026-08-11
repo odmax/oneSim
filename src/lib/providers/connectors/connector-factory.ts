@@ -105,6 +105,11 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
     : {}
   const mergedFieldMappings = { ...configFm, ...directFm }
 
+  // Choice defaults: activationPayloadType = CHOICE_ADD_BUNDLE_FROM_POOL when adapterStrategy is CHOICE
+  if (provider.adapterStrategy === 'CHOICE' && !mergedFieldMappings.activationPayloadType) {
+    mergedFieldMappings.activationPayloadType = 'CHOICE_ADD_BUNDLE_FROM_POOL'
+  }
+
   console.log(`[buildConnector] fieldMappings keys: ${Object.keys(mergedFieldMappings).join(', ') || '(none)'}`)
   if (mergedFieldMappings.activationPayloadType) {
     console.log(`[buildConnector] activationPayloadType=${mergedFieldMappings.activationPayloadType} userId=${mergedFieldMappings.userId || '(not set)'}`)
