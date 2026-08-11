@@ -75,9 +75,9 @@ export default async function ProviderBundlesPage() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {bundles.map(b => (
+              {              bundles.map(b => (
                 <tr key={b.id} className="hover:bg-gray-50">
-                  <td className="px-3 py-2.5 font-medium text-gray-900">{b.bundleName}</td>
+                  <td className="px-3 py-2.5 font-medium text-gray-900"><Link href={`/admin/providers/bundles/${b.id}`} className="hover:text-cyan-600">{b.bundleName}</Link></td>
                   <td className="px-3 py-2.5 font-mono text-[10px] text-gray-500">{b.externalSku || b.bundleCode || '-'}</td>
                   <td className="px-3 py-2.5 text-gray-500">{b['provider.name']}</td>
                   <td className="px-3 py-2.5">

@@ -245,7 +245,35 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
           </div>
         )}
       </Section>
+
+      {/* Bundle Management */}
+      <BundleDiagnostics providerId={d.id} providerCode={d.code} adapterStrategy={d.adapterStrategy} />
+
     </div>
+  )
+}
+
+async function BundleDiagnostics({ providerId, providerCode, adapterStrategy }: { providerId: string; providerCode: string | null; adapterStrategy: string | null }) {
+  const hasBundleCap = (adapterStrategy === 'CHOICE' || providerCode === 'CHOICE')
+  if (!hasBundleCap) return null
+
+  const stats = await prisma.$queryRawUnsafe<{ created: number; active: number; failed: number }[]>(
+    `SELECT COUNT(*)::int as created, COUNT(*) FILTER (WHERE status='ACTIVE')::int as active, COUNT(*) FILTER (WHERE status='FAILED')::int as failed
+     FROM provider_bundle_definitions WHERE "providerId"=$1`, providerId
+  ).catch(() => [{ created: 0, active: 0, failed: 0 }])
+
+  const s = stats[0]
+  if ((s.created || 0) === 0) return null
+
+  return (
+    <Section title="Bundle Management">
+      <div className="grid grid-cols-4 gap-3 text-center">
+        <div className="rounded-lg bg-gray-50 p-2"><p className="text-lg font-bold text-gray-900">{s.created}</p><p className="text-[10px] text-gray-500">Created</p></div>
+        <div className="rounded-lg bg-emerald-50 p-2"><p className="text-lg font-bold text-emerald-700">{s.active}</p><p className="text-[10px] text-gray-500">Active</p></div>
+        <div className="rounded-lg bg-red-50 p-2"><p className="text-lg font-bold text-red-600">{s.failed}</p><p className="text-[10px] text-gray-500">Failed</p></div>
+        <div className="rounded-lg bg-gray-50 p-2"><p className="text-lg font-bold text-gray-400">0</p><p className="text-[10px] text-gray-500">Unmapped</p></div>
+      </div>
+    </Section>
   )
 }
 
