@@ -619,6 +619,11 @@ model ESIM {
   activationDetectedAt   DateTime?
   lastUsageSyncAt        DateTime?
   lastStatusSyncAt       DateTime?
+  /// Installation/QR reconciliation
+  installationStatus      String?   @default("PENDING")
+  installationRetryCount  Int       @default(0)
+  installationLastCheckedAt DateTime?
+  installationLastError   String?
   sharedAt               DateTime?
   sharedToEmail          String?
   packageSnapshot        Json?
