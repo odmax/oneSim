@@ -652,12 +652,12 @@ export class UrlTokenConnector extends RestCatalogConnector {
     }
     const payloadType = this.fieldMappings.activationPayloadType
     if (!payloadType) {
-      return { valid: false, reason: `Required field mapping "activationPayloadType" is missing. Set it to "CHOICE_ADD_BUNDLE_FROM_POOL" in the provider fieldMappings.` }
+      return { valid: false, reason: `Choice activation payload type is not configured.` }
     }
-    // userId defaults to 'onesim' if not configured (see activateESIM body)
-    const effectiveUserId = this.fieldMappings.userId || 'onesim'
+    // Resolve effective userId — never defaults to "onesim"
+    const effectiveUserId = this.fieldMappings.userId || (this.config as any)?.userId || ''
     if (!effectiveUserId) {
-      return { valid: false, reason: `Choice user/account identifier could not be resolved.` }
+      return { valid: false, reason: `Choice user_id could not be resolved from the authenticated account. Re-authenticate or select a Choice account.` }
     }
     return { valid: true }
   }
@@ -672,9 +672,10 @@ export class UrlTokenConnector extends RestCatalogConnector {
     let maskedBody: Record<string, any>
 
     if (payloadType === 'CHOICE_ADD_BUNDLE_FROM_POOL') {
+      const effectiveUserId = this.fieldMappings.userId || (this.config as any)?.userId || ''
       body = {
         sku: params.planId,
-        user_id: this.fieldMappings.userId || 'onesim',
+        user_id: effectiveUserId || undefined,
         eu_email_address: params.subscriber.email || undefined,
       }
 

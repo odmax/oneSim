@@ -13,6 +13,7 @@ function makeChoiceConfig(overrides: any = {}) {
     authUrl: overrides.authUrl ?? 'https://psa.virtuolink.org/WebService/accounts/getaccounts',
     environment: overrides.environment ?? 'staging',
     fieldMappings: overrides.fieldMappings ?? {},
+    userId: overrides.userId,
     balancePath: overrides.balancePath,
     suspendPath: overrides.suspendPath,
     resumePath: overrides.resumePath,
@@ -447,18 +448,18 @@ describe('UrlTokenConnector', () => {
 
     it('returns invalid when activationPayloadType is missing', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
-        fieldMappings: {},
+        fieldMappings: { userId: 'test-user' },
       }))
       const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
       expect(result.valid).toBe(false)
-      expect(result.reason).toContain('activationPayloadType')
+      expect(result.reason).toContain('payload type')
     })
 
     it('returns invalid when apiBaseUrl is missing', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', {
         apiBaseUrl: '',
         apiToken: 'tok',
-        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' },
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'test-user' },
       })
       const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
       expect(result.valid).toBe(false)
@@ -469,20 +470,29 @@ describe('UrlTokenConnector', () => {
       const c = new UrlTokenConnector('c1', 'Choice', {
         apiBaseUrl: 'https://api.example.com',
         apiToken: '',
-        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' },
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'test-user' },
       })
       const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
       expect(result.valid).toBe(false)
       expect(result.reason).toContain('token')
     })
 
-    it('userId defaults to onesim when missing from fieldMappings', async () => {
+    it('returns invalid when userId cannot be resolved', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
         fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL' },
       }))
       const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
+      expect(result.valid).toBe(false)
+      expect(result.reason).toContain('user_id')
+    })
+
+    it('resolves userId from config when not in fieldMappings', async () => {
+      const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL' },
+        userId: 'account-123',
+      }))
+      const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
       expect(result.valid).toBe(true)
-      // userId defaults to 'onesim' — same as activateESIM body fallback
     })
   })
 

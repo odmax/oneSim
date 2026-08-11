@@ -110,7 +110,6 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
     mergedFieldMappings.activationPayloadType = 'CHOICE_ADD_BUNDLE_FROM_POOL'
   }
   if (provider.adapterStrategy === 'CHOICE' && !mergedFieldMappings.userId) {
-    // Read from provider.config.userId (set by auth) or config fields
     const cfg = (provider.config as any) || {}
     mergedFieldMappings.userId = cfg.userId || cfg.selectedAccountId || ''
   }
