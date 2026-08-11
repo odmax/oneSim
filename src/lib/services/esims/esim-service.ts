@@ -109,6 +109,11 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
   const providerId = esim.purchase.package.providerId
   if (!providerId) return { success: false, error: 'No linked provider' }
 
+  const { isCapabilityExposedToPortal } = await import('@/lib/providers/capabilities/exposure')
+  if (!await isCapabilityExposedToPortal(providerId, 'USAGE' as any)) {
+    return { success: false, error: 'capability_not_available' }
+  }
+
   const adapter = await getAdapterForProvider(providerId)
   if (!adapter) return { success: false, error: 'Provider adapter unavailable' }
 
@@ -208,6 +213,12 @@ async function runEsimLifecycle(action: 'SUSPEND' | 'RESUME', esimId: string): P
   const providerId = esim.purchase.package.providerId
   if (!providerId) return { success: false, error: 'No linked provider' }
 
+  const { isCapabilityExposedToPortal } = await import('@/lib/providers/capabilities/exposure')
+  const cap = action === 'SUSPEND' ? 'SUSPEND' as any : 'RESUME' as any
+  if (!await isCapabilityExposedToPortal(providerId, cap)) {
+    return { success: false, error: 'capability_not_available' }
+  }
+
   const adapter = await getAdapterForProvider(providerId)
   if (!adapter) return { success: false, error: 'Provider adapter unavailable' }
 
@@ -289,6 +300,12 @@ export async function topUpEsimWithWallet(esimId: string, businessId: string, us
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider || !provider.supportsTopUp) return { success: false, error: 'Provider does not support top-up' }
+
+  // Check Portal exposure
+  const { isCapabilityExposedToPortal } = await import('@/lib/providers/capabilities/exposure')
+  if (!await isCapabilityExposedToPortal(providerId, 'TOP_UP' as any)) {
+    return { success: false, error: 'capability_not_available' }
+  }
 
   const amount = parseFloat(topUpPkg.priceUSD.toString()) * quantity
 
