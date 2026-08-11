@@ -15,6 +15,11 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.SUSPEND,
     ProviderCapability.RESUME,
     ProviderCapability.BALANCE,
+    ProviderCapability.CREATE_BUNDLE,
+    ProviderCapability.UPDATE_BUNDLE,
+    ProviderCapability.LIST_BUNDLES,
+    ProviderCapability.EVENT_LOGS,
+    ProviderCapability.RATE_LIST,
   ],
 
   // AirHub — full eSIM lifecycle (auth, catalog, purchase, status, QR)

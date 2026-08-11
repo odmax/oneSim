@@ -1235,4 +1235,100 @@ export class UrlTokenConnector extends RestCatalogConnector {
       return { success: true, data: { rates: Array.isArray(json.rates || json) ? (json.rates || json) : [] } }
     } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
   }
+
+  /** POST /account/v03_09/add_imsi/{token} — create/add IMSI bundle */
+  async addImsi(params: { sku: string; user_id?: string; [key: string]: any }): Promise<ConnectorResult<any>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    const path = `/account/v03_09/add_imsi/${token}`
+    const body = JSON.stringify(params)
+    try {
+      const { text, error, status } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers, body })
+      if (error) return { success: false, error }
+      return { success: true, data: JSON.parse(text || '{}') }
+    } catch (e: any) {
+      return { success: false, error: { code: 'CHOICE_ADD_IMSI_FAILED', message: e.message } }
+    }
+  }
+
+  /** GET /account/v03_09/imsi_list/{token} — list bundles for account/IMSI */
+  async getImsiList(imsi?: string): Promise<ConnectorResult<{ items: any[] }>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    const params = imsi ? `?imsi=${encodeURIComponent(imsi)}` : ''
+    const path = `/account/v03_09/imsi_list/${token}${params}`
+    try {
+      const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })
+      if (error) return { success: false, error }
+      const json = JSON.parse(text || '{}')
+      return { success: true, data: { items: Array.isArray(json) ? json : (json.data || json.imsi_list || []) } }
+    } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
+  }
+
+  /** POST /account/v03_09/create_bundle_template/{token} — create SKU/bundle template */
+  async createBundleTemplate(params: {
+    sku: string; bundle_name: string; pool: number | string; user_id?: string
+    rate_group_allow_days?: number; rate_group_occurrences?: number; allow_throttle?: boolean
+    allow_tethering?: boolean; roaming_profile_id?: string; serving_networks?: string
+    rate_groups?: any[]; [key: string]: any
+  }): Promise<ConnectorResult<{ sku: string; template_version?: string }>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    const path = `/account/v03_09/create_bundle_template/${token}`
+    const body = JSON.stringify(params)
+    try {
+      const { text, error } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers, body })
+      if (error) return { success: false, error }
+      const json = JSON.parse(text || '{}')
+      return { success: true, data: { sku: params.sku, template_version: json.template_version || json.version || json.data?.template_version } }
+    } catch (e: any) {
+      return { success: false, error: { code: 'CHOICE_CREATE_BUNDLE_FAILED', message: e.message } }
+    }
+  }
+
+  /** POST /account/v03_09/update_bundle_template/{token} — update an SKU; creates new version */
+  async updateBundleTemplate(params: {
+    sku: string; bundle_name?: string; pool?: number | string; user_id?: string
+    [key: string]: any
+  }): Promise<ConnectorResult<{ sku: string; template_version?: string; previous_version?: string }>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    let previousVersion = ''
+    try {
+      const v = await this.getImsiVersion({})
+      if (v.success && v.data) previousVersion = v.data.imsiVersion
+    } catch {}
+    const path = `/account/v03_09/update_bundle_template/${token}`
+    const body = JSON.stringify(params)
+    try {
+      const { text, error } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers, body })
+      if (error) return { success: false, error }
+      const json = JSON.parse(text || '{}')
+      return { success: true, data: { sku: params.sku, template_version: json.template_version || json.version, previous_version: previousVersion } }
+    } catch (e: any) {
+      return { success: false, error: { code: 'CHOICE_UPDATE_BUNDLE_FAILED', message: e.message } }
+    }
+  }
+
+  /** POST /template/v03_09/add_bundle_using_template/{token} — non-pool purchase with explicit IMSI/ICCID */
+  async addBundleUsingTemplate(params: {
+    user_id: string; sku: string; imsi?: string; iccid?: string; template_version?: string
+  }): Promise<ConnectorResult<any>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    const path = `/template/v03_09/add_bundle_using_template/${token}`
+    const body = JSON.stringify(params)
+    try {
+      const { text, error, status } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers, body })
+      if (error) return { success: false, error }
+      return { success: true, data: JSON.parse(text || '{}') }
+    } catch (e: any) {
+      return { success: false, error: { code: 'CHOICE_TEMPLATE_PURCHASE_FAILED', message: e.message } }
+    }
+  }
 }

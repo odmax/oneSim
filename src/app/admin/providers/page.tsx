@@ -60,6 +60,7 @@ export default async function AdminProvidersPage({ searchParams }: { searchParam
         </div>
         <div className="flex items-center gap-2">
           <Link href="/admin/providers/diagnostics" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Diagnostics</Link>
+          <Link href="/admin/providers/bundles" className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Bundles</Link>
           <ProviderSearchBar />
           <Link
             href="/admin/providers/new"

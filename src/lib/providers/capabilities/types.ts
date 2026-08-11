@@ -17,6 +17,13 @@ export const ProviderCapability = {
   INVENTORY: 'INVENTORY',
   PCR_PROFILE: 'PCR_PROFILE',
   BALANCE: 'BALANCE',
+  CREATE_BUNDLE: 'CREATE_BUNDLE',
+  UPDATE_BUNDLE: 'UPDATE_BUNDLE',
+  LIST_BUNDLES: 'LIST_BUNDLES',
+  NON_POOL_PURCHASE: 'NON_POOL_PURCHASE',
+  DIRECT_IMSI_CREATE: 'DIRECT_IMSI_CREATE',
+  EVENT_LOGS: 'EVENT_LOGS',
+  RATE_LIST: 'RATE_LIST',
 } as const
 
 export type ProviderCapability = (typeof ProviderCapability)[keyof typeof ProviderCapability]
@@ -40,6 +47,13 @@ export const CAPABILITY_LABELS: Record<ProviderCapability, string> = {
   INVENTORY: 'Inventory',
   PCR_PROFILE: 'PCR Profile',
   BALANCE: 'Balance',
+  CREATE_BUNDLE: 'Create Bundle',
+  UPDATE_BUNDLE: 'Update Bundle',
+  LIST_BUNDLES: 'List Bundles',
+  NON_POOL_PURCHASE: 'Non-Pool Purchase',
+  DIRECT_IMSI_CREATE: 'Direct IMSI Create',
+  EVENT_LOGS: 'Event Logs',
+  RATE_LIST: 'Rate List',
 }
 
 export const CAPABILITY_COLORS: Record<ProviderCapability, string> = {
@@ -61,4 +75,11 @@ export const CAPABILITY_COLORS: Record<ProviderCapability, string> = {
   INVENTORY: 'bg-gray-100 text-gray-700',
   PCR_PROFILE: 'bg-violet-100 text-violet-700',
   BALANCE: 'bg-sky-100 text-sky-700',
+  CREATE_BUNDLE: 'bg-emerald-100 text-emerald-700',
+  UPDATE_BUNDLE: 'bg-cyan-100 text-cyan-700',
+  LIST_BUNDLES: 'bg-blue-100 text-blue-700',
+  NON_POOL_PURCHASE: 'bg-gray-100 text-gray-700',
+  DIRECT_IMSI_CREATE: 'bg-gray-100 text-gray-700',
+  EVENT_LOGS: 'bg-violet-100 text-violet-700',
+  RATE_LIST: 'bg-amber-100 text-amber-700',
 }
