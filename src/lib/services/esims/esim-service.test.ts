@@ -5,6 +5,7 @@ vi.mock('@/lib/prisma', () => ({
     eSIM: { findUnique: vi.fn(), update: vi.fn() },
     provider: { findUnique: vi.fn() },
     usageRecord: { create: vi.fn() },
+    $queryRawUnsafe: vi.fn().mockResolvedValue([]),
   },
 }))
 

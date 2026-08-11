@@ -14,6 +14,7 @@ const DEFAULT_EXPOSED_CAPABILITIES = new Set<string>([
 ])
 
 export async function isCapabilityExposedToPortal(providerId: string, capability: ProviderCapability): Promise<boolean> {
+  if (!providerId) return DEFAULT_EXPOSED_CAPABILITIES.has(capability)
   const row = await prisma.$queryRawUnsafe<{ clientPortalEnabled: boolean }[]>(
     `SELECT "clientPortalEnabled" FROM provider_capability_exposure WHERE "providerId"=$1 AND capability=$2`, providerId, capability
   ).catch(() => [])
@@ -22,6 +23,7 @@ export async function isCapabilityExposedToPortal(providerId: string, capability
 }
 
 export async function isCapabilityExposedToApi(providerId: string, capability: ProviderCapability): Promise<boolean> {
+  if (!providerId) return DEFAULT_EXPOSED_CAPABILITIES.has(capability)
   const row = await prisma.$queryRawUnsafe<{ clientApiEnabled: boolean }[]>(
     `SELECT "clientApiEnabled" FROM provider_capability_exposure WHERE "providerId"=$1 AND capability=$2`, providerId, capability
   ).catch(() => [])
