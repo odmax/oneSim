@@ -1160,4 +1160,79 @@ export class UrlTokenConnector extends RestCatalogConnector {
       sku: String(id), templateVersion: String(version), raw_data: item,
     }
   }
+
+  // ── Additional Choice API endpoints ──
+
+  /** GET /account/v03_09/imsis_from_iccid/{token}?iccid=... */
+  async getImsisFromIccid(iccid: string): Promise<ConnectorResult<{ imsis: string[] }>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    const path = `/account/v03_09/imsis_from_iccid/${token}?iccid=${encodeURIComponent(iccid)}`
+    const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    if (error) return { success: false, error }
+    try {
+      const json = JSON.parse(text || '{}')
+      return { success: true, data: { imsis: Array.isArray(json.imsis || json.data) ? (json.imsis || json.data) : [] } }
+    } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
+  }
+
+  /** GET /account/v03_09/allocated_imsi_list/{token} — inventory diagnostics */
+  async getAllocatedImsiList(): Promise<ConnectorResult<{ items: any[] }>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    const path = `/account/v03_09/allocated_imsi_list/${token}`
+    const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    if (error) return { success: false, error }
+    try {
+      const json = JSON.parse(text || '{}')
+      return { success: true, data: { items: Array.isArray(json) ? json : (json.data || json.allocated_list || []) } }
+    } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
+  }
+
+  /** GET /account/v03_09/imsi_version/{token}?imsi=...&iccid=... */
+  async getImsiVersion(identifier: { imsi?: string; iccid?: string }): Promise<ConnectorResult<{ imsiVersion: string }>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    const params = new URLSearchParams()
+    if (identifier.imsi) params.set('imsi', identifier.imsi)
+    if (identifier.iccid) params.set('iccid', identifier.iccid)
+    const path = `/account/v03_09/imsi_version/${token}?${params}`
+    const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    if (error) return { success: false, error }
+    try {
+      const json = JSON.parse(text || '{}')
+      return { success: true, data: { imsiVersion: String(json.imsi_version || json.version || json.data?.imsi_version || '') } }
+    } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
+  }
+
+  /** GET /account/v03_09/event_logs/{token} — provider event history */
+  async getEventLogs(limit = 50): Promise<ConnectorResult<{ events: any[] }>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    const path = `/account/v03_09/event_logs/${token}?limit=${limit}`
+    const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    if (error) return { success: false, error }
+    try {
+      const json = JSON.parse(text || '{}')
+      return { success: true, data: { events: Array.isArray(json.events || json) ? (json.events || json) : [] } }
+    } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
+  }
+
+  /** GET /account/v03_09/prepaid_rates_list/{token} — rate intelligence */
+  async getPrepaidRatesList(): Promise<ConnectorResult<{ rates: any[] }>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    const path = `/account/v03_09/prepaid_rates_list/${token}`
+    const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    if (error) return { success: false, error }
+    try {
+      const json = JSON.parse(text || '{}')
+      return { success: true, data: { rates: Array.isArray(json.rates || json) ? (json.rates || json) : [] } }
+    } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
+  }
 }
