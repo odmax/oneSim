@@ -235,8 +235,19 @@ export async function syncEsimStatusAction(esimId: string) {
   if (!isAdmin) {
     const esim = await prisma.eSIM.findFirst({
       where: { id: esimId, purchase: { businessId: session.user.businessId! } },
+      include: { purchase: { select: { package: { select: { providerId: true } } } } },
     })
     if (!esim) { redirect('/business/esims?error=permission') }
+
+    // Check STATUS capability exposure to portal
+    const providerId = esim.purchase.package.providerId
+    if (providerId) {
+      const { isCapabilityExposedToPortal } = await import('@/lib/providers/capabilities/exposure')
+      const { ProviderCapability } = await import('@/lib/providers/capabilities/types')
+      if (!await isCapabilityExposedToPortal(providerId, ProviderCapability.STATUS)) {
+        redirect('/business/esims?error=capability_not_available')
+      }
+    }
   }
 
   const { syncESIMStatus } = await import('@/lib/services/esims/sync-esim-status')

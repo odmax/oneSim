@@ -19,8 +19,8 @@ export default async function BuyESIMPage({
     redirect('/login')
   }
 
-  // Shared query — identical to /api/v1/packages
-  const readyPackages = await queryPurchasablePackages()
+  // Shared query — identical to /api/v1/packages, filtered by Portal PURCHASE exposure
+  const readyPackages = await queryPurchasablePackages('portal')
 
   const packagesWithRequirement = readyPackages.map(pkg => {
     const searchText = buildPackageSearchText(pkg)

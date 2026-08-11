@@ -11,8 +11,8 @@ export async function GET(request: NextRequest) {
   const { authError, businessId, apiKeyId, rateLimit } = await authenticateAndCheck(request, startTime)
   if (authError) return authError
 
-  // Shared query — identical to /business/buy-esim
-  const readyPackages = await queryPurchasablePackages()
+  // Shared query — filtered by API PURCHASE exposure
+  const readyPackages = await queryPurchasablePackages('api')
 
   const sanitized = readyPackages.map(pkg => {
     const base = stripPackageProviderFields(pkg) as any
