@@ -60,15 +60,30 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
   if (failureRate > 0.3 && total >= 5) await upsertProviderAlert(providerId, { code: 'PROVIDER_HIGH_FAILURE_RATE', severity: 'ERROR', message: `${Math.round(failureRate * 100)}% (${fail}/${total})` })
   else await resolveProviderAlert(providerId, 'PROVIDER_HIGH_FAILURE_RATE')
 
-  // 3. API availability (15 points)
-  const telemetry = await prisma.$queryRawUnsafe<{ totalCalls: number; totalSuccesses: number }[]>(
-    `SELECT SUM("totalCalls")::int as "totalCalls", SUM("totalSuccesses")::int as "totalSuccesses" FROM provider_endpoint_calls WHERE "providerId"=$1`, providerId
-  ).catch(() => [{ totalCalls: 0, totalSuccesses: 0 }])
-  const apiTotal = telemetry[0]?.totalCalls || 0
-  const apiOk = telemetry[0]?.totalSuccesses || 0
+  // 3. API availability (15 points) — with latency check
+  const telemetry = await prisma.$queryRawUnsafe<{ totalCalls: number; totalSuccesses: number; totalLatencyMs: number | null; consecutiveFailures: number | null; lastLatencyMs: number | null }[]>(
+    `SELECT SUM("totalCalls")::int as "totalCalls", SUM("totalSuccesses")::int as "totalSuccesses",
+            SUM("totalLatencyMs")::bigint as "totalLatencyMs", MAX("consecutiveFailures")::int as "consecutiveFailures",
+            MAX("lastLatencyMs")::int as "lastLatencyMs"
+     FROM provider_endpoint_calls WHERE "providerId"=$1`, providerId
+  ).catch(() => [{ totalCalls: 0, totalSuccesses: 0, totalLatencyMs: null, consecutiveFailures: null, lastLatencyMs: null }])
+  const t = telemetry[0]
+  const apiTotal = t?.totalCalls || 0
+  const apiOk = t?.totalSuccesses || 0
   const apiRate = apiTotal > 0 ? apiOk / apiTotal : 1
   let apiScore = Math.round(15 * apiRate)
   let apiReason = apiTotal > 0 ? `${Math.round(apiRate * 100)}%` : 'No calls'
+
+  // Latency alert — requires sustained evidence, not one slow call
+  const avgLatency = (t?.totalLatencyMs != null && apiTotal > 0) ? Math.round(Number(t.totalLatencyMs) / apiTotal) : 0
+  const latencyTrigger = cfg.latencyTriggerMs || 3000
+  const latencyRecover = cfg.latencyRecoverMs || 2000
+  if (apiTotal >= 5 && avgLatency > latencyTrigger) {
+    await upsertProviderAlert(providerId, { code: 'PROVIDER_HIGH_LATENCY', severity: 'WARNING', message: `Avg ${avgLatency}ms (threshold ${latencyTrigger}ms)` })
+    if (apiScore > 10) apiScore = Math.max(8, apiScore - 3)
+  } else if (avgLatency > 0 && avgLatency <= latencyRecover) {
+    await resolveProviderAlert(providerId, 'PROVIDER_HIGH_LATENCY')
+  }
 
   // 4. Circuit (10 points)
   const circuit = cfg.circuitBreaker || {}

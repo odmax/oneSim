@@ -26,21 +26,26 @@ async function releaseProviderHeal(providerId: string) {
   await prisma.provider.update({ where: { id: providerId }, data: { selfHealLeaseUntil: null } as any }).catch(() => {})
 }
 
-async function safeProbe(p: any): Promise<{ success: boolean; errorCode?: string }> {
+async function safeProbe(p: any): Promise<{ success: boolean; errorCode?: string; probeUnavailable?: boolean }> {
   const cfg = (p.config as any) || {}
-  const caps = (p.enabledCapabilities || []) as string[]
   const circuitState = cfg.circuitBreaker?.state || 'CLOSED'
   if (circuitState !== 'HALF_OPEN') return { success: true }
 
   try {
-    // Use testConnection (non-billable) as probe
     const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
     const connector = await buildConnectorFromProvider(p.id) as any
+
+    // Probe preference order: testConnection → balance → inventory → status
     if (connector?.testConnection) {
       const result = await connector.testConnection()
       return { success: result.success, errorCode: result.error?.code }
     }
-    return { success: true }
+    if (connector?.getBalance) {
+      const result = await connector.getBalance()
+      return { success: result.success, errorCode: result.error?.code }
+    }
+    // No safe probe available — do NOT close circuit
+    return { success: false, errorCode: 'PROBE_UNAVAILABLE', probeUnavailable: true }
   } catch (e: any) {
     return { success: false, errorCode: e.code || 'PROBE_FAILED' }
   }
@@ -101,6 +106,8 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
       const probe = await safeProbe(p)
       cfg.circuitBreaker = cfg.circuitBreaker || {}
       cfg.circuitBreaker.lastCircuitProbeAt = new Date().toISOString()
+      cfg.circuitBreaker.lastCircuitProbeResult = probe.probeUnavailable ? 'UNAVAILABLE' : probe.success ? 'SUCCESS' : 'FAILED'
+      cfg.circuitBreaker.lastCircuitProbeErrorCode = probe.errorCode || null
 
       if (probe.success) {
         cfg.circuitBreaker.state = 'CLOSED'
@@ -110,10 +117,14 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
         recovered++
         await recordHealEvent(p.id, 'CIRCUIT_PROBE', 'success')
         alerts.push(`${p.name}: circuit → CLOSED`)
+      } else if (probe.probeUnavailable) {
+        // No safe probe — keep HALF_OPEN, do not close or open
+        await prisma.provider.update({ where: { id: p.id }, data: { config: cfg as any } }).catch(() => {})
+        await recordHealEvent(p.id, 'CIRCUIT_PROBE', 'unavailable')
+        alerts.push(`${p.name}: circuit probe unavailable — staying HALF_OPEN`)
       } else {
         cfg.circuitBreaker.state = 'OPEN'
         cfg.circuitBreaker.openedAt = new Date().toISOString()
-        cfg.circuitBreaker.lastCircuitProbeErrorCode = probe.errorCode
         await prisma.provider.update({ where: { id: p.id }, data: { config: cfg as any } }).catch(() => {})
         await recordHealEvent(p.id, 'CIRCUIT_PROBE', 'failure', probe.errorCode)
         alerts.push(`${p.name}: circuit probe failed → OPEN`)
