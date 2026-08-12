@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { getProviderDiagnosticsOverview, type SeverityLevel } from '@/lib/services/operations/provider-diagnostics'
+import { computeProviderHealth } from '@/lib/services/operations/provider-health-score'
 
 const SEVERITY_COLORS: Record<SeverityLevel, string> = {
   HEALTHY: 'bg-emerald-100 text-emerald-800 border-emerald-200',
@@ -27,10 +28,14 @@ export default async function ProviderDiagnosticsPage() {
 
   const providers = await getProviderDiagnosticsOverview()
 
-  const healthyCount = providers.filter(p => p.severity === 'HEALTHY').length
-  const degradedCount = providers.filter(p => p.severity === 'DEGRADED').length
-  const unhealthyCount = providers.filter(p => p.severity === 'OFFLINE' || p.severity === 'UNHEALTHY').length
-  const alertProviders = providers.filter(p => p.alertCount > 0).length
+  // Compute health scores and sort worst-first
+  const hp = await Promise.all(providers.map(async p => ({ ...p, _health: await computeProviderHealth(p.id) })))
+  hp.sort((a, b) => a._health.score - b._health.score)
+
+  const healthyCount = hp.filter(p => p._health.health === 'HEALTHY').length
+  const degradedCount = hp.filter(p => p._health.health === 'DEGRADED' || p._health.health === 'RECOVERING').length
+  const unhealthyCount = hp.filter(p => p._health.health === 'UNAVAILABLE' || p.severity === 'OFFLINE').length
+  const alertProviders = hp.filter(p => p._health.activeAlerts > 0).length
 
   return (
     <div className="p-6 space-y-6">
@@ -47,7 +52,7 @@ export default async function ProviderDiagnosticsPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {providers.map(p => (
+        {hp.map(p => (
           <Link key={p.id} href={`/admin/providers/diagnostics/${p.id}`}
             className="rounded-xl border bg-white p-5 shadow-sm hover:shadow-md transition-shadow block">
             <div className="flex items-start justify-between mb-3">
@@ -55,9 +60,12 @@ export default async function ProviderDiagnosticsPage() {
                 <h3 className="font-semibold text-gray-900">{p.name}</h3>
                 <p className="text-xs text-gray-400">{p.code} · {p.adapterStrategy || p.type}</p>
               </div>
-              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${SEVERITY_COLORS[p.severity]}`}>
-                {p.severity}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className={`text-lg font-bold ${p._health.score >= 85 ? 'text-emerald-600' : p._health.score >= 60 ? 'text-amber-600' : 'text-red-600'}`}>{p._health.score}</span>
+                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${SEVERITY_COLORS[p.severity]}`}>
+                  {p._health.health}
+                </span>
+              </div>
             </div>
 
             <div className="space-y-1.5 text-xs">
@@ -72,9 +80,9 @@ export default async function ProviderDiagnosticsPage() {
               <Row label="Last Sync" value={p.lastSyncAt ? new Date(p.lastSyncAt).toLocaleDateString() : 'Never'} />
             </div>
 
-            {p.alertCount > 0 && (
+            {p._health.activeAlerts > 0 && (
               <div className="mt-3 pt-3 border-t border-gray-100">
-                <span className="text-[10px] font-medium text-orange-600">{p.alertCount} alert{p.alertCount > 1 ? 's' : ''}</span>
+                <span className="text-[10px] font-medium text-orange-600">{p._health.activeAlerts} alert{p._health.activeAlerts > 1 ? 's' : ''}</span>
               </div>
             )}
           </Link>

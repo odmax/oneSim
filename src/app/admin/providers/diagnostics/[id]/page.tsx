@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { getProviderDiagnosticsDetail } from '@/lib/services/operations/provider-diagnostics'
+import { computeProviderHealth } from '@/lib/services/operations/provider-health-score'
 import { prisma } from '@/lib/prisma'
 import { getChoiceEndpointCoverage, getDocumentedUnusedEndpoints } from '@/lib/providers/telemetry/endpoint-telemetry'
 
@@ -36,12 +37,15 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
   const d = await getProviderDiagnosticsDetail(params.id)
   if (!d) return <div className="p-6"><p className="text-red-600">Provider not found.</p></div>
 
+  const health = await computeProviderHealth(params.id)
+
   return (
     <div className="p-6 space-y-6 max-w-5xl">
       <div className="flex items-center gap-3">
         <Link href="/admin/providers/diagnostics" className="text-sm text-gray-400 hover:text-gray-600">← Back</Link>
         <h2 className="text-2xl font-bold text-gray-900">{d.name}</h2>
         <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${SEVERITY_COLORS[d.severity]}`}>{d.severity}</span>
+        <span className={`text-sm font-bold ${health.score >= 85 ? 'text-emerald-600' : health.score >= 60 ? 'text-amber-600' : 'text-red-600'}`}>Score: {health.score}/100</span>
         <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${VERDICT_COLORS[d.verdict]}`}>Purchase: {d.verdict}</span>
         <span className="text-xs text-gray-400">{d.verdictReason}</span>
       </div>
