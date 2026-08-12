@@ -4,6 +4,7 @@ const RECURRING_JOBS = [
   { type: 'ESIM_STATUS_SYNC', intervalMs: 60_000, description: 'Auto-sync eSIM statuses' },
   { type: 'ESIM_USAGE_SYNC', intervalMs: 60_000, description: 'Auto-sync eSIM usage data' },
   { type: 'INSTALLATION_RECONCILIATION', intervalMs: 60_000, description: 'QR/installation data reconciliation' },
+  { type: 'PROVIDER_SELF_HEAL', intervalMs: 300_000, description: 'Provider health evaluation + safe recovery' },
 ]
 
 /**

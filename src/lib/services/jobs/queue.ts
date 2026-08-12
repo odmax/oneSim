@@ -121,6 +121,8 @@ async function executeJob(job: { id: string; type: string; payload: any }) {
       return executeProviderOperation(job.payload)
     case 'INSTALLATION_RECONCILIATION':
       return (await import('./handlers/installation-reconciliation')).executeInstallationReconciliation()
+    case 'PROVIDER_SELF_HEAL':
+      return (await import('./handlers/provider-self-heal')).executeProviderSelfHeal()
     case 'ESIM_STATUS_SYNC':
       return (await import('./handlers/esim-sync-batch')).executeStatusSynchronization().then(r => ({ completed: true, result: r }))
     case 'ESIM_USAGE_SYNC':
