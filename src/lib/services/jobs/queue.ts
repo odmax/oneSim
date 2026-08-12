@@ -61,10 +61,16 @@ async function markProcessing(jobId: string) {
 }
 
 async function markCompleted(jobId: string) {
+  const job = await prisma.backgroundJob.findUnique({ where: { id: jobId } })
   await prisma.backgroundJob.update({
     where: { id: jobId },
-    data: { status: 'COMPLETED' },
+    data: { status: 'COMPLETED' as any },
   })
+  // Reschedule recurring jobs
+  if (job && ['ESIM_STATUS_SYNC', 'ESIM_USAGE_SYNC', 'INSTALLATION_RECONCILIATION'].includes(job.type)) {
+    const { rescheduleAfterCompletion } = await import('./recurring-jobs')
+    await rescheduleAfterCompletion(job.type)
+  }
 }
 
 async function markFailedWithRetry(jobId: string, error: string) {

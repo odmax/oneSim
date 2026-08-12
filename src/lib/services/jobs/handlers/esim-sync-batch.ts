@@ -1,10 +1,32 @@
 import { prisma } from '@/lib/prisma'
 import { getStatusNextSync, getUsageNextSync, shouldStopRetrying } from '../sync-policy'
+import { claimEsimForSync } from '../recurring-jobs'
 import type { IProviderConnector } from '@/lib/providers/connectors/connector-interface'
 
 async function getConnector(providerId: string): Promise<IProviderConnector | null> {
   const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
   return buildConnectorFromProvider(providerId) as any
+}
+
+/** Backfill null sync schedules for existing eSIMs. Idempotent. */
+export async function backfillEsimSyncSchedules(): Promise<void> {
+  const now = new Date()
+  await prisma.eSIM.updateMany({
+    where: { statusNextSyncAt: null, status: { in: ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'RESERVED'] }, createdAt: { gte: new Date(now.getTime() - 86400000) } },
+    data: { statusNextSyncAt: new Date(now.getTime() + 60000) },
+  }).catch(() => {})
+  await prisma.eSIM.updateMany({
+    where: { statusNextSyncAt: null, status: { in: ['ACTIVE', 'INSTALLED', 'INSTALLING'] } },
+    data: { statusNextSyncAt: new Date(now.getTime() + 3600000) },
+  }).catch(() => {})
+  await prisma.eSIM.updateMany({
+    where: { usageNextSyncAt: null, status: { in: ['ACTIVE', 'INSTALLED'] }, dataTotalMB: null },
+    data: { usageNextSyncAt: new Date(now.getTime() + 3600000) },
+  }).catch(() => {})
+  await prisma.eSIM.updateMany({
+    where: { status: { in: ['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'] }, statusNextSyncAt: { not: null } },
+    data: { statusNextSyncAt: null, usageNextSyncAt: null },
+  }).catch(() => {})
 }
 
 export async function executeStatusSynchronization(batchSize = 20): Promise<{ processed: number; updated: number; failed: number; skipped: number }> {
@@ -22,6 +44,8 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
   let updated = 0; let failed = 0; let skipped = 0
 
   for (const esim of esims) {
+    if (!await claimEsimForSync(esim.id, 'statusNextSyncAt')) continue
+
     const providerId = esim.purchase?.package?.providerId
     if (!providerId) { skipped++; continue }
 
@@ -89,6 +113,8 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
   let updated = 0; let failed = 0; let skipped = 0
 
   for (const esim of esims) {
+    if (!await claimEsimForSync(esim.id, 'usageNextSyncAt')) continue
+
     const providerId = esim.purchase?.package?.providerId
     if (!providerId) { skipped++; continue }
 
