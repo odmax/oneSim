@@ -50,6 +50,42 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
         <span className="text-xs text-gray-400">{d.verdictReason}</span>
       </div>
 
+      {/* Health Score Breakdown */}
+      <Section title="Health Score">
+        <div className="grid grid-cols-2 gap-3">
+          <div className={`rounded-lg p-3 ${health.components.auth.score >= 15 ? 'bg-emerald-50' : health.components.auth.score >= 10 ? 'bg-amber-50' : 'bg-red-50'}`}>
+            <div className="flex justify-between"><span className="text-xs text-gray-500">Authentication</span><span className="text-xs font-bold">{health.components.auth.score}/20</span></div>
+            <p className="text-[10px] text-gray-400 mt-0.5">{health.components.auth.reason}</p>
+          </div>
+          <div className={`rounded-lg p-3 ${health.components.purchase.score >= 20 ? 'bg-emerald-50' : health.components.purchase.score >= 12 ? 'bg-amber-50' : 'bg-red-50'}`}>
+            <div className="flex justify-between"><span className="text-xs text-gray-500">Purchase</span><span className="text-xs font-bold">{health.components.purchase.score}/25</span></div>
+            <p className="text-[10px] text-gray-400 mt-0.5">{health.components.purchase.reason}</p>
+          </div>
+          <div className={`rounded-lg p-3 ${health.components.apiAvailability.score >= 12 ? 'bg-emerald-50' : health.components.apiAvailability.score >= 8 ? 'bg-amber-50' : 'bg-red-50'}`}>
+            <div className="flex justify-between"><span className="text-xs text-gray-500">API</span><span className="text-xs font-bold">{health.components.apiAvailability.score}/15</span></div>
+            <p className="text-[10px] text-gray-400 mt-0.5">{health.components.apiAvailability.reason}</p>
+          </div>
+          <div className={`rounded-lg p-3 ${health.components.circuit.score >= 10 ? 'bg-emerald-50' : health.components.circuit.score >= 5 ? 'bg-amber-50' : 'bg-red-50'}`}>
+            <div className="flex justify-between"><span className="text-xs text-gray-500">Circuit</span><span className="text-xs font-bold">{health.components.circuit.score}/10</span></div>
+            <p className="text-[10px] text-gray-400 mt-0.5">{health.components.circuit.reason}</p>
+          </div>
+          <div className={`rounded-lg p-3 ${health.components.catalog.score >= 6 ? 'bg-emerald-50' : health.components.catalog.score >= 3 ? 'bg-amber-50' : 'bg-red-50'}`}>
+            <div className="flex justify-between"><span className="text-xs text-gray-500">Catalog</span><span className="text-xs font-bold">{health.components.catalog.score}/10</span></div>
+            <p className="text-[10px] text-gray-400 mt-0.5">{health.components.catalog.reason}</p>
+          </div>
+          <div className={`rounded-lg p-3 ${health.components.balanceOrInventory.score >= 6 ? 'bg-emerald-50' : health.components.balanceOrInventory.score >= 3 ? 'bg-amber-50' : 'bg-red-50'}`}>
+            <div className="flex justify-between"><span className="text-xs text-gray-500">Balance/Inv</span><span className="text-xs font-bold">{health.components.balanceOrInventory.score}/10</span></div>
+            <p className="text-[10px] text-gray-400 mt-0.5">{health.components.balanceOrInventory.reason}</p>
+          </div>
+          <div className={`rounded-lg p-3 ${health.components.webhookSync.score >= 6 ? 'bg-emerald-50' : health.components.webhookSync.score >= 3 ? 'bg-amber-50' : 'bg-red-50'}`} style={{ gridColumn: 'span 2' }}>
+            <div className="flex justify-between"><span className="text-xs text-gray-500">Webhook/Sync</span><span className="text-xs font-bold">{health.components.webhookSync.score}/10</span></div>
+            <p className="text-[10px] text-gray-400 mt-0.5">{health.components.webhookSync.reason}</p>
+          </div>
+        </div>
+        {health.stuckOrders > 0 && <p className="mt-2 text-[10px] text-amber-600">{health.stuckOrders} stuck/reconciling orders</p>}
+        {health.activeAlerts > 0 && <p className="mt-2 text-[10px] text-orange-600">{health.activeAlerts} active alert{health.activeAlerts > 1 ? 's' : ''}</p>}
+      </Section>
+
       {d.recommendations.length > 0 && (
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 space-y-2">
           <p className="text-sm font-semibold text-blue-800">Recommended Actions</p>
