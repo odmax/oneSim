@@ -3,7 +3,8 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { deriveOperationalState, deriveWalletOperationalSummary, deriveFulfillmentOperationalSummary } from '@/lib/services/operations/operational-classifier'
+import { deriveOperationalState } from '@/lib/services/operations/operational-classifier'
+import { computeProviderHealth } from '@/lib/services/operations/provider-health-score'
 
 function SeverityBadge({ severity }: { severity: string }) {
   const colors: Record<string, string> = {
@@ -60,7 +61,31 @@ export default async function OperationsDashboardPage() {
     }),
   ])
 
-  // Rough critical count: orders needing manual intervention from recent set
+  // Provider health scores
+  const providers = await prisma.provider.findMany({ where: { status: { not: 'ARCHIVED' } }, take: 20 })
+  const hp = await Promise.all(providers.map(async p => ({ ...p, health: await computeProviderHealth(p.id) })))
+  hp.sort((a, b) => a.health.score - b.health.score)
+  const healthyProv = hp.filter(p => p.health.health === 'HEALTHY').length
+  const degradedProv = hp.filter(p => p.health.health === 'DEGRADED' || p.health.health === 'RECOVERING').length
+  const unavailableProv = hp.filter(p => p.health.health === 'UNAVAILABLE').length
+  const criticalAlerts = hp.reduce((sum, p) => sum + p.health.activeAlerts, 0)
+
+  // System health score
+  const systemScore = () => {
+    if (unavailableProv > 0 || criticalAlerts > 5) return { level: 'CRITICAL', label: 'CRITICAL' }
+    if (degradedProv > 0 || reconcilingCount > 5 || failedJobs24h > 3) return { level: 'DEGRADED', label: 'DEGRADED' }
+    if (processingCount > 20 || deadLetterCallbacks > 0 || unprocessedWebhooks > 0) return { level: 'DEGRADED', label: 'DEGRADED' }
+    return { level: 'HEALTHY', label: 'HEALTHY' }
+  }
+  const sysHealth = systemScore()
+
+  // Job stats
+  const jobStats = await prisma.backgroundJob.groupBy({
+    by: ['type', 'status'],
+    _count: true,
+    where: { status: { in: ['PENDING', 'FAILED'] as any } },
+  }).catch(() => [])
+
   const interventionCount = criticalOrders.filter(o => {
     const state = deriveOperationalState({
       orderStatus: o.status, orderAgeMinutes: 60,
@@ -79,6 +104,9 @@ export default async function OperationsDashboardPage() {
       <div>
         <h2 className="text-2xl font-bold text-gray-900">Operations</h2>
         <p className="mt-1 text-sm text-gray-500">System overview and operational health</p>
+        <span className={`inline-flex rounded-full px-2.5 py-0.5 mt-2 text-xs font-bold ${sysHealth.level === 'HEALTHY' ? 'bg-emerald-100 text-emerald-800' : sysHealth.level === 'DEGRADED' ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800'}`}>
+          System: {sysHealth.label}
+        </span>
       </div>
 
       {/* Summary cards */}
@@ -91,6 +119,7 @@ export default async function OperationsDashboardPage() {
         <CountCard label="Dead-Letter Callbacks" count={deadLetterCallbacks} severity={deadLetterCallbacks > 0 ? 'ERROR' : 'INFO'} />
         <CountCard label="Unprocessed Webhooks" count={unprocessedWebhooks} severity={unprocessedWebhooks > 0 ? 'ERROR' : 'INFO'} />
         <CountCard label="Unhealthy Providers" count={unhealthyProviders} severity={unhealthyProviders > 0 ? 'ERROR' : 'INFO'} />
+        <CountCard label="Active Alerts" count={criticalAlerts} severity={criticalAlerts > 0 ? 'CRITICAL' : 'INFO'} />
         <CountCard label="Provider Diagnostics" count={null as any} href="/admin/providers/diagnostics" severity="INFO" />
         <CountCard label="Stale Inventory" count={staleInventory} severity={staleInventory > 0 ? 'WARNING' : 'INFO'} />
         <CountCard label="Failed Jobs (24h)" count={failedJobs24h} href="/admin/jobs" severity={failedJobs24h > 0 ? 'ERROR' : 'INFO'} />
@@ -149,17 +178,58 @@ export default async function OperationsDashboardPage() {
       {/* Job health */}
       <div className="rounded-xl border bg-white shadow-sm">
         <div className="px-5 py-3 border-b">
-          <h3 className="text-base font-semibold text-gray-900">Job Health</h3>
+          <h3 className="text-base font-semibold text-gray-900">Background Jobs</h3>
         </div>
         <div className="px-5 py-3">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {['order-recovery', 'order-callback-delivery', 'inventory-reservation-sweep', 'exchange-rate-refresh'].map(name => (
-              <div key={name} className="rounded-lg border p-3">
-                <p className="text-xs font-medium text-gray-700">{name}</p>
-                <p className="mt-1 text-xs text-gray-400">Feature: {process.env[name.toUpperCase().replace(/-/g, '_') + '_ENABLED'] ? 'Enabled' : 'Default'}</p>
-              </div>
-            ))}
+            {['ESIM_STATUS_SYNC', 'ESIM_USAGE_SYNC', 'INSTALLATION_RECONCILIATION', 'PROVIDER_SELF_HEAL'].map(type => {
+              const pending = jobStats.filter(j => j.type === type && j.status === 'PENDING').reduce((s, j) => s + j._count, 0)
+              const failed = jobStats.filter(j => j.type === type && j.status === 'FAILED').reduce((s, j) => s + j._count, 0)
+              return (
+                <div key={type} className="rounded-lg border p-3">
+                  <p className="text-xs font-medium text-gray-700">{type.replace(/_/g, ' ')}</p>
+                  <div className="mt-1 flex gap-3 text-xs">
+                    <span className="text-gray-400">Pending: {pending}</span>
+                    {failed > 0 && <span className="text-red-500">Failed: {failed}</span>}
+                  </div>
+                </div>
+              )
+            })}
           </div>
+        </div>
+      </div>
+
+      {/* Provider Health */}
+      <div className="rounded-xl border bg-white shadow-sm">
+        <div className="px-5 py-3 border-b flex items-center justify-between">
+          <h3 className="text-base font-semibold text-gray-900">Provider Health</h3>
+          <div className="flex gap-3 text-xs">
+            <span className="text-emerald-600">{healthyProv} Healthy</span>
+            <span className="text-amber-600">{degradedProv} Degraded</span>
+            <span className="text-red-600">{unavailableProv} Unavailable</span>
+            <span className="text-orange-600">{criticalAlerts} Alerts</span>
+          </div>
+        </div>
+        <div className="px-5 py-3 max-h-80 overflow-y-auto">
+          <table className="w-full text-xs">
+            <thead className="text-left text-gray-400"><tr><th className="pb-2 pr-2">Provider</th><th className="pb-2 pr-2 w-12">Score</th><th className="pb-2 pr-2">Health</th><th className="pb-2 pr-2">Circuit</th><th className="pb-2 pr-2">Alerts</th></tr></thead>
+            <tbody className="divide-y">
+              {hp.slice(0, 10).map(p => {
+                const cfg = (p.config as any) || {}
+                const circuit = cfg.circuitBreaker?.state || 'CLOSED'
+                const color = circuit === 'OPEN' ? 'text-red-600' : circuit === 'HALF_OPEN' ? 'text-amber-600' : 'text-emerald-600'
+                return (
+                  <tr key={p.id} className="hover:bg-gray-50">
+                    <td className="py-1.5 pr-2"><Link href={`/admin/providers/diagnostics/${p.id}`} className="text-cyan-600 hover:underline font-medium">{p.name}</Link></td>
+                    <td className={`py-1.5 pr-2 font-bold ${p.health.score >= 85 ? 'text-emerald-600' : p.health.score >= 60 ? 'text-amber-600' : 'text-red-600'}`}>{p.health.score}</td>
+                    <td className="py-1.5 pr-2">{p.health.health}</td>
+                    <td className={`py-1.5 pr-2 ${color}`}>{circuit}</td>
+                    <td className="py-1.5 text-orange-500">{p.health.activeAlerts || 0}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
 
