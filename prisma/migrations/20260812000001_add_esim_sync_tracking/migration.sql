@@ -1,0 +1,5 @@
+-- Auto-sync tracking fields on eSIM
+ALTER TABLE "esims" ADD COLUMN IF NOT EXISTS "statusNextSyncAt" TIMESTAMP(3);
+ALTER TABLE "esims" ADD COLUMN IF NOT EXISTS "usageNextSyncAt" TIMESTAMP(3);
+ALTER TABLE "esims" ADD COLUMN IF NOT EXISTS "statusSyncRetryCount" INTEGER DEFAULT 0;
+ALTER TABLE "esims" ADD COLUMN IF NOT EXISTS "usageSyncRetryCount" INTEGER DEFAULT 0;

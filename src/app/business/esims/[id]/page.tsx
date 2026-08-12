@@ -19,6 +19,16 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
   )
 }
 
+function timeAgo(date: Date): string {
+  const mins = Math.floor((Date.now() - date.getTime()) / 60000)
+  if (mins < 1) return 'Just now'
+  if (mins < 60) return `${mins} minute${mins > 1 ? 's' : ''} ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`
+  const days = Math.floor(hours / 24)
+  return `${days} day${days > 1 ? 's' : ''} ago`
+}
+
 function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } | null {
   if (!raw) return null
   try { const d = typeof raw === 'string' ? JSON.parse(raw) : raw; return d && typeof d === 'object' ? { lpaValue: d.lpa || d.LPA || undefined, smdpAddress: d.smdp || d.SMDP || undefined } : null } catch { return null }
@@ -87,6 +97,7 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
               <dt className="text-xs text-gray-500">Status</dt>
               <dd><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses}`}>{statusLabel.label}</span></dd>
             </div>
+            {esim.lastStatusSyncAt && <DetailRow label="Last Updated" value={timeAgo(esim.lastStatusSyncAt)} />}
             <div className="flex justify-between py-1.5">
               <dt className="text-xs text-gray-500">Package</dt>
               <dd className="text-xs font-medium text-gray-900 text-right">{getPackageDisplayName(esim)}</dd>
@@ -136,6 +147,7 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
         <div className="rounded-xl border bg-white p-6 shadow-sm">
           <h3 className="mb-4 text-base font-semibold text-gray-900">Usage</h3>
           {hasUsageSnapshot ? (
+            <>
             <UsageSummary
               dataUsedMB={esim.dataUsedMB}
               dataTotalMB={esim.dataTotalMB}
@@ -145,6 +157,8 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
               expiresAt={esim.expiresAt}
               status={esim.status}
             />
+            {esim.lastUsageSyncAt && <p className="mt-2 text-[10px] text-gray-400">Last updated {timeAgo(esim.lastUsageSyncAt)}</p>}
+            </>
           ) : (
             <p className="text-xs text-gray-400">Usage data has not been retrieved yet.</p>
           )}

@@ -40,8 +40,9 @@ export async function processDueJobs(limit = 10) {
         await markCompleted(job.id)
         results.push({ id: job.id, type: job.type, status: 'COMPLETED' })
       } else {
-        await markFailedWithRetry(job.id, result.error || 'Unknown error')
-        results.push({ id: job.id, type: job.type, status: 'FAILED', error: result.error })
+        const err = (result as any).error || 'Unknown error'
+        await markFailedWithRetry(job.id, err)
+        results.push({ id: job.id, type: job.type, status: 'FAILED', error: err })
       }
     } catch (error: any) {
       await markFailedWithRetry(job.id, error.message || 'Unknown error')
@@ -114,6 +115,10 @@ async function executeJob(job: { id: string; type: string; payload: any }) {
       return executeProviderOperation(job.payload)
     case 'INSTALLATION_RECONCILIATION':
       return (await import('./handlers/installation-reconciliation')).executeInstallationReconciliation()
+    case 'ESIM_STATUS_SYNC':
+      return (await import('./handlers/esim-sync-batch')).executeStatusSynchronization().then(r => ({ completed: true, result: r }))
+    case 'ESIM_USAGE_SYNC':
+      return (await import('./handlers/esim-sync-batch')).executeUsageSynchronization().then(r => ({ completed: true, result: r }))
     default:
       return { completed: false, error: `Unknown job type: ${job.type}` }
   }

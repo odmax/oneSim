@@ -624,6 +624,11 @@ model ESIM {
   installationRetryCount  Int       @default(0)
   installationLastCheckedAt DateTime?
   installationLastError   String?
+  /// Auto-sync scheduling
+  statusNextSyncAt       DateTime?
+  usageNextSyncAt        DateTime?
+  statusSyncRetryCount   Int        @default(0)
+  usageSyncRetryCount    Int        @default(0)
   sharedAt               DateTime?
   sharedToEmail          String?
   packageSnapshot        Json?
