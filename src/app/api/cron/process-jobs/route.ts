@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { processDueJobs } from '@/lib/services/jobs/queue'
+import { seedRecurringJobs } from '@/lib/services/jobs/recurring-jobs'
 
 async function getCronSecret(): Promise<string> {
   const fromEnv = process.env.CRON_SECRET
@@ -48,6 +49,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // Idempotent: seeds recurring jobs before processing due jobs
+    await seedRecurringJobs()
     const results = await processDueJobs(20)
 
     const completed = results.filter(r => r.status === 'COMPLETED').length
