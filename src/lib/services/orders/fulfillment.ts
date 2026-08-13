@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { captureReservedFunds } from '@/lib/services/orders/wallet-actions'
 import { createTimelineEvent, transitionOrder } from '@/lib/services/orders/order-state-machine'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
+import { hasUsableInstallData, type InstallDataFields } from '@/lib/esim/installation-data'
 
 // ─────────────────────────────────────────────
 // Types
@@ -13,7 +14,10 @@ export interface ProviderFulfillmentResult {
   providerReservationId?: string | null
   providerStatus?: string | null
   qrCodeUrl?: string | null
+  qrCode?: string | null
   activationCode?: string | null
+  smdpAddress?: string | null
+  matchingId?: string | null
   providerResponse?: any
   rawMetadata?: any
 }
@@ -65,12 +69,21 @@ export interface FinalizeOutput {
  */
 export async function persistProviderFulfillment(input: PersistFulfillmentInput): Promise<PersistFulfillmentOutput> {
   const { orderId, providerResult, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays = 30 } = input
-  const { iccids, providerFulfillId, providerReservationId, providerStatus, qrCodeUrl, activationCode, rawMetadata } = providerResult
+  const { iccids, providerFulfillId, providerReservationId, providerStatus, qrCodeUrl, qrCode, activationCode, smdpAddress, matchingId, rawMetadata } = providerResult
+
+  const installFields: InstallDataFields = { activationCode, qrCodeUrl, qrCode, smdpAddress, matchingId }
+  const installWrite = {
+    ...(activationCode ? { activationCode } : {}),
+    ...(qrCodeUrl ? { qrCodeUrl } : {}),
+    ...(qrCode ? { qrCode } : {}),
+    ...(smdpAddress ? { smdpAddress } : {}),
+    ...(matchingId ? { matchingId } : {}),
+  }
 
   // Load existing eSIMs for this order
   const existingEsims = await prisma.eSIM.findMany({
     where: { purchaseId: orderId },
-    select: { id: true, iccid: true, status: true, activationCode: true, qrCodeUrl: true },
+    select: { id: true, iccid: true, status: true, activationCode: true, qrCodeUrl: true, qrCode: true, smdpAddress: true, matchingId: true, installationStatus: true },
   })
   const existingIccids = new Set(existingEsims.map(e => e.iccid))
 
@@ -108,6 +121,12 @@ export async function persistProviderFulfillment(input: PersistFulfillmentInput)
         // Never overwrite valid data with null
         if (activationCode && !esim.activationCode) updateData.activationCode = activationCode
         if (qrCodeUrl && !esim.qrCodeUrl) updateData.qrCodeUrl = qrCodeUrl
+        if (qrCode && !esim.qrCode) updateData.qrCode = qrCode
+        if (smdpAddress && !esim.smdpAddress) updateData.smdpAddress = smdpAddress
+        if (matchingId && !esim.matchingId) updateData.matchingId = matchingId
+        if (hasUsableInstallData({ activationCode: esim.activationCode || activationCode, qrCodeUrl: esim.qrCodeUrl || qrCodeUrl, qrCode: esim.qrCode || qrCode, smdpAddress: esim.smdpAddress || smdpAddress, matchingId: esim.matchingId || matchingId })) {
+          updateData.installationStatus = 'READY'
+        }
 
         await prisma.eSIM.update({ where: { id: esim.id }, data: updateData })
       } else {
@@ -120,8 +139,8 @@ export async function persistProviderFulfillment(input: PersistFulfillmentInput)
             providerActivationId: providerFulfillId || '',
             providerSubscriptionId: providerReservationId || null,
             providerStatus: providerStatus || 'ACTIVE',
-            activationCode: activationCode || null,
-            qrCodeUrl: qrCodeUrl || null,
+            ...installWrite,
+            ...(hasUsableInstallData(installFields) ? { installationStatus: 'READY' } : {}),
             expiresAt: new Date(Date.now() + (pkg?.validityDays || validityDays) * 86400000),
             packageSnapshot: snap ?? undefined,
             packageName: pName,
@@ -138,7 +157,7 @@ export async function persistProviderFulfillment(input: PersistFulfillmentInput)
       if (e.code === 'P2002' || /unique.*iccid/i.test(e.message || '')) {
         const existing = existingIccids.has(cleanIccid)
           ? null
-          : await prisma.eSIM.findUnique({ where: { iccid: cleanIccid }, select: { id: true, status: true, activationCode: true, qrCodeUrl: true } })
+          : await prisma.eSIM.findUnique({ where: { iccid: cleanIccid }, select: { id: true, status: true, activationCode: true, qrCodeUrl: true, qrCode: true, smdpAddress: true, matchingId: true, installationStatus: true } })
         if (existing) {
           // ICCID exists in DB (possibly from a different order) — update this order's fields
           const updateData: any = {
@@ -146,7 +165,13 @@ export async function persistProviderFulfillment(input: PersistFulfillmentInput)
             providerStatus: providerStatus || 'ACTIVE',
             ...(activationCode && !existing.activationCode ? { activationCode } : {}),
             ...(qrCodeUrl && !existing.qrCodeUrl ? { qrCodeUrl } : {}),
+            ...(qrCode && !existing.qrCode ? { qrCode } : {}),
+            ...(smdpAddress && !existing.smdpAddress ? { smdpAddress } : {}),
+            ...(matchingId && !existing.matchingId ? { matchingId } : {}),
             ...(rawMetadata ? { providerResponse: rawMetadata } : {}),
+          }
+          if (hasUsableInstallData({ activationCode: existing.activationCode || activationCode, qrCodeUrl: existing.qrCodeUrl || qrCodeUrl, qrCode: existing.qrCode || qrCode, smdpAddress: existing.smdpAddress || smdpAddress, matchingId: existing.matchingId || matchingId })) {
+            updateData.installationStatus = 'READY'
           }
           await prisma.eSIM.update({ where: { id: existing.id }, data: updateData }).catch(() => {})
           persistedCount++

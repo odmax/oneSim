@@ -125,7 +125,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                             <QrCodeButton esim={{
                               esimId: esim.id, iccid: esim.iccid,
                               activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
-                              providerResponse: safeProviderLPA(esim.providerResponse),
+                              qrCode: esim.qrCode, smdpAddress: esim.smdpAddress || safeProviderLPA(esim.providerResponse)?.smdpAddress || undefined, matchingId: esim.matchingId,
                               status: esim.status,
                               customerName: null,
                             }} />

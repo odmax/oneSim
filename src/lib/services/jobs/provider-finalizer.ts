@@ -17,8 +17,14 @@ export async function completeProviderOperation(params: {
   packageName?: string
   packageDataGB?: number
   packageValidityDays?: number
+  qrCodeUrl?: string | null
+  qrCode?: string | null
+  activationCode?: string | null
+  smdpAddress?: string | null
+  matchingId?: string | null
+  rawMetadata?: any
 }) {
-  const { orderId, businessId, providerId, providerRef, providerName, totalAmount, iccids, userId, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays } = params
+  const { orderId, businessId, providerId, providerRef, providerName, totalAmount, iccids, userId, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays, qrCodeUrl, qrCode, activationCode, smdpAddress, matchingId, rawMetadata } = params
 
   const order = await prisma.eSIMPurchase.findUnique({ where: { id: orderId } })
   if (!order) return { success: false, error: 'Order not found' }
@@ -28,6 +34,12 @@ export async function completeProviderOperation(params: {
     iccids,
     providerFulfillId: providerRef,
     providerStatus: 'ACTIVE',
+    ...(qrCodeUrl ? { qrCodeUrl } : {}),
+    ...(qrCode ? { qrCode } : {}),
+    ...(activationCode ? { activationCode } : {}),
+    ...(smdpAddress ? { smdpAddress } : {}),
+    ...(matchingId ? { matchingId } : {}),
+    ...(rawMetadata ? { rawMetadata } : {}),
   }
 
   const result = await completeProviderFinalization({

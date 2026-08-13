@@ -36,6 +36,16 @@ export interface ActivateESIMResult {
   status?: string
   /** Reservation ID for two-step purchase workflows */
   reservationId?: string
+  /** Raw QR payload (data URI) as returned by the provider. */
+  qrCode?: string
+  /** SM-DP+ address for manual LPA-based installation. */
+  smdpAddress?: string
+  /** Matching ID for manual LPA-based installation. */
+  matchingId?: string
+  /** Upstream SIM/ICCID identifier when the provider returns simID instead of iccids. */
+  iccidOrSimId?: string
+  /** Sanitized upstream purchase metadata (no secrets). */
+  rawMetadata?: Record<string, any>
 }
 
 export interface UsageResult {
@@ -155,6 +165,12 @@ export interface ProviderAdapter {
     packageName?: string
     expiresAt?: string
     rawMetadata?: Record<string, any>
+    activationCode?: string
+    activationCodes?: string[]
+    qrCodeUrl?: string
+    qrCode?: string
+    smdpAddress?: string
+    matchingId?: string
   }>>
 
   suspendESIM(subscriptionId: string | import('./connectors/connector-interface').StatusLookupIdentifier): Promise<ProviderResult<import('./connectors/connector-interface').EsimLifecycleResult>>

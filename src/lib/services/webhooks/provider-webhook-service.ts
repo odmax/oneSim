@@ -46,6 +46,8 @@ export async function processProviderWebhook(providerId: string, event: Normaliz
         providerName: providerName || provider.name,
         totalAmount, userId: match.userId || undefined,
         iccids: event.iccids || [],
+        qrCodeUrl: event.qrCode || undefined,
+        activationCode: event.activationCode || undefined,
         packageSnapshot: (match.packageSnapshot as any) ?? undefined,
         packageName: match.packageName || undefined,
         packageDataGB: (match.packageDataGB ?? undefined) as number | undefined,

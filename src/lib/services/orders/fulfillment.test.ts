@@ -157,6 +157,92 @@ describe('persistProviderFulfillment — idempotent eSIM persistence', () => {
     expect(result.success).toBe(false)
     expect(result.failedItems).toHaveLength(1)
   })
+
+  it('8. persists qrCode/smdpAddress/matchingId and marks READY on create', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([])
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
+    mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
+
+    await persistProviderFulfillment({
+      orderId: 'order-1', businessId: 'biz-1',
+      providerResult: {
+        iccids: ['89012345678901234567'],
+        activationCode: 'LPA:1$smdp.example.com$matching',
+        qrCode: 'data:image/png;base64,AAAA',
+        smdpAddress: 'smdp.example.com',
+        matchingId: 'matching-123',
+      },
+    })
+
+    expect(mockPrisma.eSIM.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        activationCode: 'LPA:1$smdp.example.com$matching',
+        qrCode: 'data:image/png;base64,AAAA',
+        smdpAddress: 'smdp.example.com',
+        matchingId: 'matching-123',
+        installationStatus: 'READY',
+      }),
+    }))
+  })
+
+  it('9. leaves installationStatus PENDING on create when no install data', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([])
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
+    mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
+
+    await persistProviderFulfillment({
+      orderId: 'order-1', businessId: 'biz-1',
+      providerResult: { iccids: ['89012345678901234567'] },
+    })
+
+    const createCall = mockPrisma.eSIM.create.mock.calls[0]
+    expect(createCall[0].data.installationStatus).toBeUndefined()
+  })
+
+  it('10. fills missing install columns on existing eSIM and sets READY', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ iccid: '89012345678901234567', smdpAddress: null, matchingId: null })])
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+
+    await persistProviderFulfillment({
+      orderId: 'order-1', businessId: 'biz-1',
+      providerResult: { iccids: ['89012345678901234567'], smdpAddress: 'smdp.example.com', matchingId: 'matching-123' },
+    })
+
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0]
+    expect(updateCall[0].data.smdpAddress).toBe('smdp.example.com')
+    expect(updateCall[0].data.matchingId).toBe('matching-123')
+    expect(updateCall[0].data.installationStatus).toBe('READY')
+  })
+
+  it('11. does not overwrite existing qrCode/smdpAddress/matchingId with null', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ iccid: '89012345678901234567', qrCode: 'data:image/png;base64,KEEP', smdpAddress: 'smdp.example.com', matchingId: 'keep-id' })])
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+
+    await persistProviderFulfillment({
+      orderId: 'order-1', businessId: 'biz-1',
+      providerResult: { iccids: ['89012345678901234567'], qrCode: null, smdpAddress: null, matchingId: null },
+    })
+
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0]
+    expect(updateCall[0].data.qrCode).toBeUndefined()
+    expect(updateCall[0].data.smdpAddress).toBeUndefined()
+    expect(updateCall[0].data.matchingId).toBeUndefined()
+  })
+
+  it('12. marks READY from smdpAddress+matchingId manual-install pair alone', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ iccid: '89012345678901234567' })])
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+
+    await persistProviderFulfillment({
+      orderId: 'order-1', businessId: 'biz-1',
+      providerResult: { iccids: ['89012345678901234567'], smdpAddress: 'smdp.example.com', matchingId: 'matching-123' },
+    })
+
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0]
+    expect(updateCall[0].data.installationStatus).toBe('READY')
+  })
 })
 
 describe('completeProviderFinalization', () => {

@@ -127,6 +127,17 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
       iccids.push(extractString(data.iccids?.[i]) || extractString(data.imsis?.[i])?.replace(/[^0-9]/g, '') || '')
     }
 
+    // Normalized install payload from the connector result (per-user eSIM data).
+    const raw = data as any
+    const installData = {
+      activationCode: extractString(data.activationCodes?.[0]) || extractString(raw.activationCode) || undefined,
+      qrCodeUrl: extractString(data.qrCodeUrl) || extractString(raw.qrCodeUrls?.[0]) || undefined,
+      qrCode: extractString(data.qrCode) || undefined,
+      smdpAddress: extractString(data.smdpAddress) || undefined,
+      matchingId: extractString(data.matchingId) || undefined,
+      rawMetadata: raw.rawMetadata && typeof raw.rawMetadata === 'object' ? raw.rawMetadata : undefined,
+    }
+
     if (iccids.some(e => !e)) {
       await prisma.providerAttempt.update({ where: { id: attempt.id }, data: { status: 'FAILED', completedAt: new Date(), latencyMs, retryClassification: 'RETRYABLE', errorCode: 'INCOMPLETE_RESPONSE', errorMessage: 'No ICCID in response' } })
       return { success: false, status: 'RETRYABLE', errorCode: 'INCOMPLETE_RESPONSE' }
@@ -137,6 +148,7 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
       totalAmount, iccids, userId: order.userId || undefined,
       packageSnapshot: order.packageSnapshot as any, packageName: order.packageName || '',
       packageDataGB: order.packageDataGB ?? undefined, packageValidityDays: order.packageValidityDays ?? undefined,
+      ...installData,
     })
 
     await prisma.providerAttempt.update({

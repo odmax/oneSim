@@ -7,9 +7,11 @@ interface QREsimProps {
   iccid: string
   activationCode: string | null
   qrCodeUrl: string | null
+  qrCode?: string | null
   providerResponse?: any
   lpaValue?: string
-  smdpAddress?: string
+  smdpAddress?: string | null
+  matchingId?: string | null
   status: string
   customerName: string | null
 }
@@ -17,7 +19,7 @@ interface QREsimProps {
 export function QrCodeButton({ esim }: { esim: QREsimProps }) {
   const [open, setOpen] = useState(false)
 
-  const hasQR = !!(esim.qrCodeUrl || esim.activationCode)
+  const hasQR = !!(esim.qrCodeUrl || esim.qrCode || esim.activationCode || (esim.smdpAddress && esim.matchingId))
   if (!hasQR) return null
 
   return (
@@ -41,6 +43,7 @@ function QrCodeModal({ esim, onClose }: { esim: QREsimProps; onClose: () => void
 
   const lpaValue = esim.lpaValue || resolveLPA(esim.providerResponse)
   const smdpAddress = esim.smdpAddress || extractSMDP(esim.providerResponse, lpaValue)
+  const matchingId = esim.matchingId
   const displayActivationCode = esim.activationCode || extractActivationCode(lpaValue)
 
   const handleEsc = useCallback((e: KeyboardEvent) => {
@@ -156,6 +159,10 @@ function QrCodeModal({ esim, onClose }: { esim: QREsimProps; onClose: () => void
                 </div>
               )}
             </div>
+          ) : esim.qrCode ? (
+            <div className="flex justify-center">
+              <img src={esim.qrCode} alt="eSIM QR Code" className="w-48 h-48 rounded-lg border" />
+            </div>
           ) : displayActivationCode ? (
             <div className="rounded-lg bg-gray-50 p-4 text-center">
               <p className="text-sm text-gray-500">QR code available via LPA</p>
@@ -174,6 +181,9 @@ function QrCodeModal({ esim, onClose }: { esim: QREsimProps; onClose: () => void
             )}
             {smdpAddress && (
               <DetailRow label="SM-DP+ Address" value={smdpAddress} onCopy={() => copyText(smdpAddress)} />
+            )}
+            {matchingId && (
+              <DetailRow label="Matching ID" value={matchingId} onCopy={() => copyText(matchingId)} />
             )}
             {esim.customerName && (
               <div className="flex justify-between items-center py-1">

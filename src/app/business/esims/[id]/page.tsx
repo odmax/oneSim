@@ -9,6 +9,7 @@ import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 import { syncEsimStatusAction } from '@/lib/actions/esim'
 import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -64,8 +65,10 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
   const toneClasses = statusLabel.tone === 'success' ? 'bg-green-100 text-green-800' : statusLabel.tone === 'warn' ? 'bg-yellow-100 text-yellow-800' : statusLabel.tone === 'danger' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'
   const hasUsageSnapshot = esim.dataTotalMB != null || esim.dataRemainingMB != null
   const installStatus = esim.installationStatus || 'READY'
-  const hasInstallData = !!(esim.qrCodeUrl || esim.activationCode)
+  const installFields = { activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl, qrCode: esim.qrCode, smdpAddress: esim.smdpAddress, matchingId: esim.matchingId }
+  const hasInstallData = hasUsableInstallData(installFields)
   const lpa = safeProviderLPA(esim.providerResponse)
+  const displaySmdp = esim.smdpAddress || lpa?.smdpAddress
 
   return (
     <div className="space-y-6">
@@ -114,25 +117,35 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
           <h3 className="mb-4 text-base font-semibold text-gray-900">Installation</h3>
           {installStatus === 'READY' && hasInstallData ? (
             <>
-              {esim.qrCodeUrl && (
+              {esim.qrCodeUrl ? (
                 <div className="mb-4 text-center">
                   <img src={esim.qrCodeUrl} alt="eSIM QR Code" className="mx-auto h-36 w-36 rounded-lg border" />
                   <a href={esim.qrCodeUrl} target="_blank" className="mt-2 inline-block text-xs text-cyan-600 hover:underline">Open QR Code</a>
                 </div>
-              )}
+              ) : esim.qrCode ? (
+                <div className="mb-4 text-center">
+                  <img src={esim.qrCode} alt="eSIM QR Code" className="mx-auto h-36 w-36 rounded-lg border" />
+                </div>
+              ) : null}
               {esim.activationCode && (
                 <div className="mb-4 rounded-lg bg-gray-50 p-3">
                   <p className="text-[10px] text-gray-400 mb-1">Activation Code</p>
                   <p className="font-mono text-xs text-gray-900 break-all">{esim.activationCode}</p>
                 </div>
               )}
-              {lpa?.smdpAddress && (
+              {displaySmdp && (
                 <div className="mb-4 rounded-lg bg-gray-50 p-3">
                   <p className="text-[10px] text-gray-400 mb-1">SM-DP+ Address</p>
-                  <p className="font-mono text-xs text-gray-900 break-all">{lpa.smdpAddress}</p>
+                  <p className="font-mono text-xs text-gray-900 break-all">{displaySmdp}</p>
                 </div>
               )}
-              {!esim.qrCodeUrl && esim.activationCode && (
+              {esim.matchingId && (
+                <div className="mb-4 rounded-lg bg-gray-50 p-3">
+                  <p className="text-[10px] text-gray-400 mb-1">Matching ID</p>
+                  <p className="font-mono text-xs text-gray-900 break-all">{esim.matchingId}</p>
+                </div>
+              )}
+              {!esim.qrCodeUrl && !esim.qrCode && esim.activationCode && (
                 <p className="text-xs text-gray-500">Use the activation code above for manual eSIM installation.</p>
               )}
             </>
@@ -181,7 +194,7 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
             <QrCodeButton esim={{
               esimId: esim.id, iccid: esim.iccid,
               activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl,
-              lpaValue: lpa?.lpaValue, smdpAddress: lpa?.smdpAddress,
+              qrCode: esim.qrCode, smdpAddress: displaySmdp, matchingId: esim.matchingId,
               status: esim.status, customerName: null,
             }} />
           )}

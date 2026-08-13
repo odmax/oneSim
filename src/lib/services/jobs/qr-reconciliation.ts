@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
+import { hasUsableInstallData, extractInstallDataFromProviderResponse, type InstallDataFields } from '@/lib/esim/installation-data'
 
 const RETRY_WINDOWS = [
   { maxMinutes: 10, intervalMinutes: 1 },
@@ -53,7 +54,7 @@ export async function reconcileMissingInstallationDetails(batchSize = 10): Promi
     }
 
     // Check if installation data already present from providerResponse
-    if (esim.activationCode && esim.qrCodeUrl) {
+    if (hasUsableInstallData(esim)) {
       await prisma.eSIM.update({ where: { id: esim.id }, data: { installationStatus: 'READY', installationLastCheckedAt: new Date() } })
       updated++
       continue
@@ -76,31 +77,48 @@ export async function reconcileMissingInstallationDetails(batchSize = 10): Promi
         })
         if (adapter?.getQRCode) {
           const qrResult = await adapter.getQRCode(esim.iccid)
-          if (qrResult.success && qrResult.data?.qrCodeUrl) {
-            await prisma.eSIM.update({
-              where: { id: esim.id },
-              data: {
-                qrCodeUrl: qrResult.data.qrCodeUrl,
-                ...(qrResult.data as any).activationCode ? { activationCode: (qrResult.data as any).activationCode } : {},
-                installationStatus: 'READY', installationLastCheckedAt: new Date(),
-              },
-            })
-            found = true
-            updated++
+          if (qrResult.success && (qrResult.data?.qrCodeUrl || (qrResult.data as any)?.activationCode)) {
+            const qrData = qrResult.data as any
+            const installData: InstallDataFields = {
+              qrCodeUrl: qrData.qrCodeUrl || undefined,
+              qrCode: qrData.qrCode || undefined,
+              activationCode: qrData.activationCode || undefined,
+              smdpAddress: qrData.smdpAddress || undefined,
+              matchingId: qrData.matchingId || undefined,
+            }
+            const merged = { activationCode: esim.activationCode || installData.activationCode, qrCodeUrl: esim.qrCodeUrl || installData.qrCodeUrl, qrCode: esim.qrCode || installData.qrCode, smdpAddress: esim.smdpAddress || installData.smdpAddress, matchingId: esim.matchingId || installData.matchingId }
+            if (hasUsableInstallData(merged)) {
+              await prisma.eSIM.update({
+                where: { id: esim.id },
+                data: {
+                  ...(installData.qrCodeUrl && !esim.qrCodeUrl ? { qrCodeUrl: installData.qrCodeUrl } : {}),
+                  ...(installData.qrCode && !esim.qrCode ? { qrCode: installData.qrCode } : {}),
+                  ...(installData.activationCode && !esim.activationCode ? { activationCode: installData.activationCode } : {}),
+                  ...(installData.smdpAddress && !esim.smdpAddress ? { smdpAddress: installData.smdpAddress } : {}),
+                  ...(installData.matchingId && !esim.matchingId ? { matchingId: installData.matchingId } : {}),
+                  installationStatus: 'READY', installationLastCheckedAt: new Date(),
+                },
+              })
+              found = true
+              updated++
+            }
           }
         }
       }
 
       // Check providerResponse for already-stored activation data
       if (!found) {
-        const resp = (esim.providerResponse as any) || {}
-        if (resp.lpa || resp.smdp || resp.activationCode || resp.qrCodeUrl) {
+        const extracted = extractInstallDataFromProviderResponse(esim.providerResponse)
+        const merged = { activationCode: esim.activationCode || extracted.activationCode, qrCodeUrl: esim.qrCodeUrl || extracted.qrCodeUrl, qrCode: esim.qrCode || extracted.qrCode, smdpAddress: esim.smdpAddress || extracted.smdpAddress, matchingId: esim.matchingId || extracted.matchingId }
+        if (hasUsableInstallData(merged)) {
           await prisma.eSIM.update({
             where: { id: esim.id },
             data: {
-              ...(resp.lpa ? { activationCode: resp.lpa } : {}),
-              ...(resp.smdp ? { activationCode: esim.activationCode || resp.smdp } : {}),
-              ...(resp.qrCodeUrl ? { qrCodeUrl: resp.qrCodeUrl } : {}),
+              ...(extracted.activationCode && !esim.activationCode ? { activationCode: extracted.activationCode } : {}),
+              ...(extracted.qrCodeUrl && !esim.qrCodeUrl ? { qrCodeUrl: extracted.qrCodeUrl } : {}),
+              ...(extracted.qrCode && !esim.qrCode ? { qrCode: extracted.qrCode } : {}),
+              ...(extracted.smdpAddress && !esim.smdpAddress ? { smdpAddress: extracted.smdpAddress } : {}),
+              ...(extracted.matchingId && !esim.matchingId ? { matchingId: extracted.matchingId } : {}),
               installationStatus: 'READY', installationLastCheckedAt: new Date(),
             },
           })

@@ -71,6 +71,35 @@ describe('provider-finalizer', () => {
       expect(mockCompleteFulfill).not.toHaveBeenCalled()
     })
 
+    it('forwards normalized install data into providerResult', async () => {
+      mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({ id: ORDER_ID, businessId: 'b1', userId: 'u1', status: 'CREATED', totalAmount: { toString: () => '5' } } as any)
+      mockCompleteFulfill.mockResolvedValue({ success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true })
+
+      const result = await completeProviderOperation({
+        orderId: ORDER_ID, businessId: 'b1', providerId: 'p-1', providerRef: PROVIDER_REF, providerName: 'iBASIS', totalAmount: 5,
+        iccids: ['89012345678901234567'],
+        activationCode: 'LPA:1$smdp.example.com$mid',
+        qrCodeUrl: 'https://qr.example/q.png',
+        qrCode: 'data:image/png;base64,AAAA',
+        smdpAddress: 'smdp.example.com',
+        matchingId: 'mid-1',
+        rawMetadata: { orderId: PROVIDER_REF },
+      })
+
+      expect(result.success).toBe(true)
+      expect(mockCompleteFulfill).toHaveBeenCalledWith(expect.objectContaining({
+        providerResult: expect.objectContaining({
+          iccids: ['89012345678901234567'],
+          activationCode: 'LPA:1$smdp.example.com$mid',
+          qrCodeUrl: 'https://qr.example/q.png',
+          qrCode: 'data:image/png;base64,AAAA',
+          smdpAddress: 'smdp.example.com',
+          matchingId: 'mid-1',
+          rawMetadata: { orderId: PROVIDER_REF },
+        }),
+      }))
+    })
+
     it('returns error when order is not found', async () => {
       mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(null as any)
       const result = await completeProviderOperation({ orderId: 'missing', businessId: 'b1', providerId: 'p-1', providerRef: PROVIDER_REF, providerName: 'iBASIS', totalAmount: 5, iccids: ['89012345678901234567'] })
