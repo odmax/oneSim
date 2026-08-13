@@ -7,6 +7,7 @@ import { apiError } from '@/lib/api/error-contract'
 import { stripPackageProviderFields, stripEsimProviderFields } from '@/lib/analytics/safe-fields'
 import { getActivationInstructions } from '@/lib/esim/activation-instructions'
 import { getPackageDisplayName, getPackageDataGB, PurchaseSnapshot } from '@/lib/packages/snapshot-utils'
+import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 
 export async function GET(
   request: NextRequest,
@@ -65,11 +66,7 @@ export async function GET(
       iccid: safeEsim.iccid,
       imsi: safeEsim.imsi || undefined,
       status: esim.status,
-      statusLabel: esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' :
-                    esim.status === 'ACTIVE' ? 'Activated on device' :
-                    esim.status === 'EXPIRED' ? 'Expired' :
-                    esim.status === 'SUSPENDED' ? 'Suspended' :
-                    esim.status === 'FAILED' ? 'Provisioning failed' : esim.status,
+      statusLabel: getEsimStatusLabel(esim.status).label,
       qrCodeUrl: safeEsim.qrCodeUrl,
       activationCode: safeEsim.activationCode || undefined,
       activatedAt: esim.activatedAt,

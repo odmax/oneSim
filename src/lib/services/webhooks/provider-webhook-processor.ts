@@ -78,7 +78,9 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
   }
 
   try {
-    const normalized = normalizeProviderWebhook(event.providerType, event.payload as any)
+    const stored = event.payload as any
+    const rawPayload = stored && typeof stored === 'object' && 'body' in stored ? stored.body : stored
+    const normalized = normalizeProviderWebhook(event.providerType, rawPayload)
 
     let esimId = event.esimId
     let businessId = event.businessId
