@@ -1601,10 +1601,54 @@ describe('UrlTokenConnector', () => {
   })
 
   describe('getQRCode', () => {
-    it('returns NOT_SUPPORTED (QR is inline in purchase)', async () => {
-      const result = await connector.getQRCode('any-iccid')
+    it('calls the exact Choice package_detail endpoint with an iccid query', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', qr_code_link: 'https://qr.example/link' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getQRCode('89012345678901234567')
+      expect(result.success).toBe(true)
+      expect(result.data?.qrCodeUrl).toBe('https://qr.example/link')
+
+      const [url, init] = mockFetch.mock.calls[0]
+      expect(init.method).toBe('GET')
+      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/package_detail/test-token-abc123?iccid=89012345678901234567')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('extracts activation_code from package detail', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { qr_code_url: 'https://qr.example/url', activation_code: 'LPA:1$smdp.example$abc' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getQRCode('89012345678901234567')
+      expect(result.success).toBe(true)
+      expect(result.data?.qrCodeUrl).toBe('https://qr.example/url')
+      expect(result.data?.activationCode).toBe('LPA:1$smdp.example$abc')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('rejects before HTTP when no ICCID is present', async () => {
+      const mockFetch = vi.fn()
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getQRCode('')
       expect(result.success).toBe(false)
-      expect(result.error?.code).toBe('NOT_SUPPORTED')
+      expect(result.error?.code).toBe('MISSING_ICCID')
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns NO_QR_CODE when package detail has no QR link', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', status: 'active' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getQRCode('89012345678901234567')
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NO_QR_CODE')
+
+      vi.unstubAllGlobals()
     })
   })
 

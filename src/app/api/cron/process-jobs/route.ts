@@ -51,6 +51,8 @@ export async function GET(request: NextRequest) {
   try {
     // Idempotent: seeds recurring jobs before processing due jobs
     await seedRecurringJobs()
+    const { backfillEsimSyncSchedules } = await import('@/lib/services/jobs/handlers/esim-sync-batch')
+    await backfillEsimSyncSchedules()
     const results = await processDueJobs(20)
 
     const completed = results.filter(r => r.status === 'COMPLETED').length

@@ -67,7 +67,7 @@ async function markCompleted(jobId: string) {
     data: { status: 'COMPLETED' as any },
   })
   // Reschedule recurring jobs
-  if (job && ['ESIM_STATUS_SYNC', 'ESIM_USAGE_SYNC', 'INSTALLATION_RECONCILIATION'].includes(job.type)) {
+  if (job && ['ESIM_STATUS_SYNC', 'ESIM_USAGE_SYNC', 'INSTALLATION_RECONCILIATION', 'PROVIDER_SELF_HEAL'].includes(job.type)) {
     const { rescheduleAfterCompletion } = await import('./recurring-jobs')
     await rescheduleAfterCompletion(job.type)
   }

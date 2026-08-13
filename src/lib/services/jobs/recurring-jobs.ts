@@ -8,15 +8,17 @@ const RECURRING_JOBS = [
 ]
 
 /**
- * Seed recurring background jobs. Idempotent — upserts by type.
- * Call on startup. Creates one PENDING job per type if none exists.
+ * Seed recurring background jobs. Idempotent — creates one job per type.
+ * Call on startup. `background_jobs` has no unique index on `type`, so the
+ * guard is a NOT EXISTS check rather than ON CONFLICT (which would never
+ * conflict and would duplicate rows on every cron tick).
  */
 export async function seedRecurringJobs(): Promise<void> {
   for (const job of RECURRING_JOBS) {
     await prisma.$executeRawUnsafe(`
       INSERT INTO background_jobs ("id", "type", "payload", "status", "attempts", "maxAttempts", "runAt", "createdAt", "updatedAt")
-      VALUES (gen_random_uuid(), $1, '{}'::jsonb, 'PENDING', 0, 999, NOW(), NOW(), NOW())
-      ON CONFLICT DO NOTHING
+      SELECT gen_random_uuid(), $1::"JobType", '{}'::jsonb, 'PENDING', 0, 999, NOW(), NOW(), NOW()
+      WHERE NOT EXISTS (SELECT 1 FROM background_jobs WHERE "type" = $1::"JobType")
     `, job.type as any).catch(() => {})
   }
 }
