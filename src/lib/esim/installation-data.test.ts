@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hasUsableInstallData, installationStatusFromData, extractInstallDataFromProviderResponse, mergeInstallData } from './installation-data'
+import { hasUsableInstallData, installationStatusFromData, extractInstallDataFromProviderResponse, mergeInstallData, normalizeConnectorInstallData } from './installation-data'
 
 describe('hasUsableInstallData', () => {
   it('is true for qrCode alone', () => {
@@ -62,6 +62,18 @@ describe('extractInstallDataFromProviderResponse', () => {
     })
   })
 
+  it('reads lpaProfile from a nested activationData object', () => {
+    const out = extractInstallDataFromProviderResponse({
+      activationData: { lpaProfile: 'LPA:1$nested$mid' },
+    })
+    expect(out).toEqual({ activationCode: 'LPA:1$nested$mid' })
+  })
+
+  it('maps qr_code_link to qrCodeUrl', () => {
+    const out = extractInstallDataFromProviderResponse({ qr_code_link: 'https://qr.example/q.png' })
+    expect(out).toEqual({ qrCodeUrl: 'https://qr.example/q.png' })
+  })
+
   it('parses a JSON string payload', () => {
     const out = extractInstallDataFromProviderResponse(JSON.stringify({ qrCodeUrl: 'https://qr.example/q.png' }))
     expect(out.qrCodeUrl).toBe('https://qr.example/q.png')
@@ -78,5 +90,44 @@ describe('mergeInstallData', () => {
   it('fills missing values only, never overwrites existing data', () => {
     const out = mergeInstallData({ activationCode: 'KEEP' }, { activationCode: 'NEW', smdpAddress: 'smdp.example.com' })
     expect(out).toEqual({ smdpAddress: 'smdp.example.com' })
+  })
+})
+
+describe('normalizeConnectorInstallData', () => {
+  it('reconciles plural arrays and singular fields into the canonical shape', () => {
+    expect(normalizeConnectorInstallData({
+      activationCodes: ['LPA:1$smdp.example.com$mid'],
+      qrCodeUrls: ['https://qr.example/q.png'],
+      smdpAddress: 'smdp.example.com',
+      matchingId: 'mid-1',
+    })).toEqual({
+      activationCode: 'LPA:1$smdp.example.com$mid',
+      qrCodeUrl: 'https://qr.example/q.png',
+      smdpAddress: 'smdp.example.com',
+      matchingId: 'mid-1',
+    })
+  })
+
+  it('prefers the first plural activationCodes entry but singular qrCodeUrl', () => {
+    expect(normalizeConnectorInstallData({ activationCodes: ['A', 'B'], activationCode: 'C' }).activationCode).toBe('A')
+    expect(normalizeConnectorInstallData({ qrCodeUrls: ['https://a/q.png', 'https://b/q.png'], qrCodeUrl: 'https://c/q.png' }).qrCodeUrl).toBe('https://c/q.png')
+  })
+
+  it('drops empty/falsy values and never invents fields', () => {
+    expect(normalizeConnectorInstallData({ activationCode: '', qrCode: undefined, smdpAddress: null, matchingId: '' }))
+      .toEqual({})
+  })
+
+  it('never moves a field into a semantically different column', () => {
+    const out = normalizeConnectorInstallData({ smdpAddress: 'smdp.example.com', qrCodeUrl: 'https://qr.example/q.png', qrCode: 'data:image/png;base64,AAAA' })
+    expect(out.activationCode).toBeUndefined()
+    expect(out.smdpAddress).toBe('smdp.example.com')
+    expect(out.qrCodeUrl).toBe('https://qr.example/q.png')
+    expect(out.qrCode).toBe('data:image/png;base64,AAAA')
+  })
+
+  it('handles null/undefined input', () => {
+    expect(normalizeConnectorInstallData(null)).toEqual({})
+    expect(normalizeConnectorInstallData(undefined)).toEqual({})
   })
 })

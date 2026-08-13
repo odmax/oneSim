@@ -133,6 +133,18 @@ export interface RateResult {
   validityDays?: number
 }
 
+/**
+ * Canonical result of a delayed QR/install-data lookup. Mirrors the normalized
+ * ESIM installation columns; only these fields may be persisted.
+ */
+export interface QRCodeResult {
+  qrCodeUrl?: string
+  qrCode?: string
+  activationCode?: string
+  smdpAddress?: string
+  matchingId?: string
+}
+
 export interface DiagnosticInfo {
   connectorClass: string
   method: string
@@ -225,7 +237,7 @@ export interface IProviderConnector {
   suspendESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>>
   resumeESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>>
   getRates(): Promise<ConnectorResult<RateResult[]>>
-  getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>>
+  getQRCode(iccid: string): Promise<ConnectorResult<QRCodeResult>>
   topUpESIM(params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>>
   /**
    * Validate that the connector is configured for purchase.

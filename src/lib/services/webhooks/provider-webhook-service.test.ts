@@ -55,7 +55,7 @@ describe('processProviderWebhook — install data forwarding', () => {
     expect(mockComplete).toHaveBeenCalledWith(expect.objectContaining({
       orderId: 'order-1',
       iccids: ['89012345678901234567'],
-      qrCodeUrl: 'data:image/png;base64,AAAA',
+      qrCode: 'data:image/png;base64,AAAA',
       activationCode: 'LPA:1$smdp.example.com$mid',
     }))
   })
@@ -70,7 +70,22 @@ describe('processProviderWebhook — install data forwarding', () => {
     })
 
     const callArgs = mockComplete.mock.calls[0][0] as any
+    expect(callArgs.qrCode).toBeUndefined()
     expect(callArgs.qrCodeUrl).toBeUndefined()
     expect(callArgs.activationCode).toBeUndefined()
+  })
+
+  it('never maps an empty qrCode string into a stored install field', async () => {
+    await processProviderWebhook('p-1', {
+      eventId: 'evt-3',
+      eventType: 'ORDER_COMPLETED',
+      status: 'COMPLETED',
+      providerReference: 'res-1',
+      iccids: ['89012345678901234567'],
+      qrCode: '',
+    })
+
+    const callArgs = mockComplete.mock.calls[0][0] as any
+    expect(callArgs.qrCode).toBeUndefined()
   })
 })

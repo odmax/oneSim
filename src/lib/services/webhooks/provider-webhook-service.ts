@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { completeProviderOperation, failProviderOperation } from '@/lib/services/jobs/provider-finalizer'
+import { normalizeConnectorInstallData } from '@/lib/esim/installation-data'
 
 export interface NormalizedWebhookEvent {
   eventId?: string
@@ -40,14 +41,14 @@ export async function processProviderWebhook(providerId: string, event: Normaliz
 
   try {
     if (event.status === 'COMPLETED') {
+      const installData = normalizeConnectorInstallData({ qrCode: event.qrCode, activationCode: event.activationCode })
       await completeProviderOperation({
         orderId, businessId, providerId: provider.id,
         providerRef: providerRef || event.providerReference || '',
         providerName: providerName || provider.name,
         totalAmount, userId: match.userId || undefined,
         iccids: event.iccids || [],
-        qrCodeUrl: event.qrCode || undefined,
-        activationCode: event.activationCode || undefined,
+        ...installData,
         packageSnapshot: (match.packageSnapshot as any) ?? undefined,
         packageName: match.packageName || undefined,
         packageDataGB: (match.packageDataGB ?? undefined) as number | undefined,

@@ -3,6 +3,7 @@ import { getAdapterForType } from '@/lib/providers/adapter-manager'
 import { classifyRetry } from '@/lib/services/routing/provider-failover-engine'
 import { completeProviderOperation, failProviderOperation } from '@/lib/services/jobs/provider-finalizer'
 import { createTimelineEvent } from '@/lib/services/orders/order-state-machine'
+import { normalizeConnectorInstallData } from '@/lib/esim/installation-data'
 import type { ProviderScore } from '@/lib/services/routing/provider-routing-engine'
 
 export type AttemptSource = 'PURCHASE' | 'POLLING' | 'WEBHOOK'
@@ -130,11 +131,7 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
     // Normalized install payload from the connector result (per-user eSIM data).
     const raw = data as any
     const installData = {
-      activationCode: extractString(data.activationCodes?.[0]) || extractString(raw.activationCode) || undefined,
-      qrCodeUrl: extractString(data.qrCodeUrl) || extractString(raw.qrCodeUrls?.[0]) || undefined,
-      qrCode: extractString(data.qrCode) || undefined,
-      smdpAddress: extractString(data.smdpAddress) || undefined,
-      matchingId: extractString(data.matchingId) || undefined,
+      ...normalizeConnectorInstallData(data),
       rawMetadata: raw.rawMetadata && typeof raw.rawMetadata === 'object' ? raw.rawMetadata : undefined,
     }
 

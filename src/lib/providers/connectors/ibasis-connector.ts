@@ -11,6 +11,7 @@ import type {
   IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo,
   ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult,
   RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult,
+  QRCodeResult,
 } from './connector-interface'
 
 /**
@@ -1066,20 +1067,27 @@ export class IbasisConnector implements IProviderConnector {
     return { success: false, error: { code: 'UNSUPPORTED', message: 'iBASIS does not expose a standalone rates endpoint' } }
   }
 
-  async getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string; activationCode?: string }>> {
-    // iBASIS does not expose QR URLs directly. Return activationCode from inventory/subscription if available,
-    // as this is the primary install mechanism (LPA/SM-DP+ based activation).
+  async getQRCode(iccid: string): Promise<ConnectorResult<QRCodeResult>> {
+    // iBASIS does not expose QR URLs directly. Recover whatever install data was
+    // stored at purchase time. `lpa` is a full LPA activation string
+    // (LPA:1$smdp$matchingId) — a genuine activationCode. `smdp` is only the
+    // SM-DP+ host — never an activation code; it is returned as smdpAddress and
+    // only usable together with a matching id.
     const config = await this.loadConfig()
     if (!config) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured' } }
     // Try subscription status for any stored activation data
     const esim = await prisma.eSIM.findFirst({ where: { iccid }, select: { providerResponse: true, activationCode: true, providerSubscriptionId: true } })
     if (esim?.activationCode) {
-      return { success: true, data: { qrCodeUrl: '', activationCode: esim.activationCode } }
+      return { success: true, data: { activationCode: esim.activationCode } }
     }
-    // Check providerResponse for LPA/SM-DP data
+    // Check providerResponse for LPA / SM-DP+ / matching-id data
     const resp = (esim?.providerResponse as any) || {}
-    if (resp.lpa || resp.smdp) {
-      return { success: true, data: { qrCodeUrl: '', activationCode: resp.lpa || resp.smdp } }
+    const lpa = typeof resp.lpa === 'string' && resp.lpa ? resp.lpa : (typeof resp.lpaProfile === 'string' && resp.lpaProfile ? resp.lpaProfile : undefined)
+    if (lpa) return { success: true, data: { activationCode: lpa } }
+    const smdp = typeof resp.smdp === 'string' && resp.smdp ? resp.smdp : (typeof resp.smdp_address === 'string' ? resp.smdp_address : undefined)
+    const matchingId = typeof resp.matching_id === 'string' && resp.matching_id ? resp.matching_id : (typeof resp.matchingId === 'string' ? resp.matchingId : undefined)
+    if (smdp || matchingId) {
+      return { success: true, data: { ...(smdp ? { smdpAddress: smdp } : {}), ...(matchingId ? { matchingId } : {}) } }
     }
     return { success: false, error: { code: 'NOT_AVAILABLE', message: 'iBASIS does not support delayed QR retrieval' } }
   }

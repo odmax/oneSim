@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
 import { completeProviderOperation, failProviderOperation } from '../provider-finalizer'
+import { normalizeConnectorInstallData, type ProviderInstallData } from '@/lib/esim/installation-data'
 
 export async function executeProviderOperation(payload: any): Promise<{ completed: boolean; error?: string }> {
   const { orderId, businessId, providerId, providerRef, totalAmount } = payload
@@ -25,21 +26,14 @@ export async function executeProviderOperation(payload: any): Promise<{ complete
 
     let providerStatus = 'PENDING'
     let providerIccids: string[] = []
-    let installData: { qrCodeUrl?: string; qrCode?: string; activationCode?: string; smdpAddress?: string; matchingId?: string } = {}
+    let installData: ProviderInstallData = {}
 
     if (typeof adapter.getActivationStatus === 'function' && providerRef) {
       const r = await adapter.getActivationStatus(providerRef)
       if (r?.success && r.data) {
         providerStatus = r.data.status || 'PENDING'
         providerIccids = r.data.iccids || []
-        const d = r.data as any
-        installData = {
-          ...(d.qrCodeUrl ? { qrCodeUrl: String(d.qrCodeUrl) } : {}),
-          ...(d.qrCode ? { qrCode: String(d.qrCode) } : {}),
-          ...((d.activationCode || d.activationCodes?.[0]) ? { activationCode: String(d.activationCode || d.activationCodes[0]) } : {}),
-          ...(d.smdpAddress ? { smdpAddress: String(d.smdpAddress) } : {}),
-          ...(d.matchingId ? { matchingId: String(d.matchingId) } : {}),
-        }
+        installData = normalizeConnectorInstallData(r.data)
       }
     }
 

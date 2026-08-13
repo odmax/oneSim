@@ -3,7 +3,7 @@ import { encryptToken, decryptToken } from '@/lib/encryption'
 import { prisma } from '@/lib/prisma'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import { normalizeTravelDateRequirement, isValidTravelDate, withTravelDateMarker } from '@/lib/providers/travel-date-utils'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult, QRCodeResult } from './connector-interface'
 import { describeDiagnosticValue, parseMonetaryValue } from '@/lib/providers/balance/monetary'
 
 export { describeDiagnosticValue } from '@/lib/providers/balance/monetary'
@@ -1038,7 +1038,7 @@ export class AirHubConnector implements IProviderConnector {
     }
   }
 
-  async getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>> {
+  async getQRCode(iccid: string): Promise<ConnectorResult<QRCodeResult>> {
     const correlationId = `airhub-qr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { apiBaseUrl: true, apiToken: true, config: true } })
     if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }

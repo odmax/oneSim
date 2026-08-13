@@ -1,5 +1,5 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, UsageResult, EsimLifecycleResult } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, UsageResult, EsimLifecycleResult, QRCodeResult } from './connector-interface'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
 interface UrlTokenConfig extends RestCatalogConfig {
@@ -1336,7 +1336,7 @@ export class UrlTokenConnector extends RestCatalogConnector {
   }
 
   /** Override getQRCode — use package_detail endpoint for delayed installation lookup */
-  async getQRCode(iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string; activationCode?: string }>> {
+  async getQRCode(iccid: string): Promise<ConnectorResult<QRCodeResult>> {
     await this.ensureAuthenticated()
     if (!iccid) return { success: false, error: { code: 'MISSING_ICCID', message: 'No ICCID available' } }
     const { text, error } = await fetchText(this.baseUrl(`/account/v03_09/package_detail/${this.config.apiToken}?iccid=${encodeURIComponent(iccid)}`), { headers: this.headers })

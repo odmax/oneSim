@@ -20,7 +20,7 @@
  */
 
 import { prisma } from '../src/lib/prisma'
-import { hasUsableInstallData, extractInstallDataFromProviderResponse, mergeInstallData, type InstallDataFields } from '../src/lib/esim/installation-data'
+import { hasUsableInstallData, extractInstallDataFromProviderResponse, mergeInstallData, normalizeConnectorInstallData, type InstallDataFields } from '../src/lib/esim/installation-data'
 import { getAdapterForType } from '../src/lib/providers/adapter-manager'
 
 function getFlag(name: string): string | undefined {
@@ -111,14 +111,7 @@ async function main() {
           if (adapter?.getQRCode) {
             const qrResult = await adapter.getQRCode(esim.iccid)
             if (qrResult.success && qrResult.data) {
-              const d = qrResult.data as any
-              merged = mergeInstallData(merged, {
-                qrCodeUrl: d.qrCodeUrl || undefined,
-                qrCode: d.qrCode || undefined,
-                activationCode: d.activationCode || undefined,
-                smdpAddress: d.smdpAddress || undefined,
-                matchingId: d.matchingId || undefined,
-              })
+              merged = mergeInstallData(merged, normalizeConnectorInstallData(qrResult.data))
             }
           }
         } catch (e: any) {

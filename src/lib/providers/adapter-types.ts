@@ -181,7 +181,7 @@ export interface ProviderAdapter {
 
   getRates(): Promise<ProviderResult<RateResult[]>>
 
-  getQRCode(iccid: string): Promise<ProviderResult<{ qrCodeUrl: string }>>
+  getQRCode(iccid: string): Promise<ProviderResult<import('./connectors/connector-interface').QRCodeResult>>
 
   handleWebhook(payload: WebhookPayload): Promise<ProviderResult<{ handled: boolean; action?: string }>>
   topUpESIM(params: TopUpESIMParams): Promise<ProviderResult<TopUpESIMResult>>

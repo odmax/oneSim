@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
-import { hasUsableInstallData, extractInstallDataFromProviderResponse, type InstallDataFields } from '@/lib/esim/installation-data'
+import { hasUsableInstallData, extractInstallDataFromProviderResponse, normalizeConnectorInstallData, mergeInstallData } from '@/lib/esim/installation-data'
 
 const RETRY_WINDOWS = [
   { maxMinutes: 10, intervalMinutes: 1 },
@@ -77,31 +77,22 @@ export async function reconcileMissingInstallationDetails(batchSize = 10): Promi
         })
         if (adapter?.getQRCode) {
           const qrResult = await adapter.getQRCode(esim.iccid)
-          if (qrResult.success && (qrResult.data?.qrCodeUrl || (qrResult.data as any)?.activationCode)) {
-            const qrData = qrResult.data as any
-            const installData: InstallDataFields = {
-              qrCodeUrl: qrData.qrCodeUrl || undefined,
-              qrCode: qrData.qrCode || undefined,
-              activationCode: qrData.activationCode || undefined,
-              smdpAddress: qrData.smdpAddress || undefined,
-              matchingId: qrData.matchingId || undefined,
-            }
-            const merged = { activationCode: esim.activationCode || installData.activationCode, qrCodeUrl: esim.qrCodeUrl || installData.qrCodeUrl, qrCode: esim.qrCode || installData.qrCode, smdpAddress: esim.smdpAddress || installData.smdpAddress, matchingId: esim.matchingId || installData.matchingId }
-            if (hasUsableInstallData(merged)) {
-              await prisma.eSIM.update({
-                where: { id: esim.id },
-                data: {
-                  ...(installData.qrCodeUrl && !esim.qrCodeUrl ? { qrCodeUrl: installData.qrCodeUrl } : {}),
-                  ...(installData.qrCode && !esim.qrCode ? { qrCode: installData.qrCode } : {}),
-                  ...(installData.activationCode && !esim.activationCode ? { activationCode: installData.activationCode } : {}),
-                  ...(installData.smdpAddress && !esim.smdpAddress ? { smdpAddress: installData.smdpAddress } : {}),
-                  ...(installData.matchingId && !esim.matchingId ? { matchingId: installData.matchingId } : {}),
-                  installationStatus: 'READY', installationLastCheckedAt: new Date(),
-                },
-              })
-              found = true
-              updated++
-            }
+          const installData = normalizeConnectorInstallData(qrResult.data)
+          const merged = mergeInstallData(esim, installData)
+          if (qrResult.success && hasUsableInstallData(merged)) {
+            await prisma.eSIM.update({
+              where: { id: esim.id },
+              data: {
+                ...(installData.qrCodeUrl && !esim.qrCodeUrl ? { qrCodeUrl: installData.qrCodeUrl } : {}),
+                ...(installData.qrCode && !esim.qrCode ? { qrCode: installData.qrCode } : {}),
+                ...(installData.activationCode && !esim.activationCode ? { activationCode: installData.activationCode } : {}),
+                ...(installData.smdpAddress && !esim.smdpAddress ? { smdpAddress: installData.smdpAddress } : {}),
+                ...(installData.matchingId && !esim.matchingId ? { matchingId: installData.matchingId } : {}),
+                installationStatus: 'READY', installationLastCheckedAt: new Date(),
+              },
+            })
+            found = true
+            updated++
           }
         }
       }
@@ -109,7 +100,7 @@ export async function reconcileMissingInstallationDetails(batchSize = 10): Promi
       // Check providerResponse for already-stored activation data
       if (!found) {
         const extracted = extractInstallDataFromProviderResponse(esim.providerResponse)
-        const merged = { activationCode: esim.activationCode || extracted.activationCode, qrCodeUrl: esim.qrCodeUrl || extracted.qrCodeUrl, qrCode: esim.qrCode || extracted.qrCode, smdpAddress: esim.smdpAddress || extracted.smdpAddress, matchingId: esim.matchingId || extracted.matchingId }
+        const merged = mergeInstallData(esim, extracted)
         if (hasUsableInstallData(merged)) {
           await prisma.eSIM.update({
             where: { id: esim.id },

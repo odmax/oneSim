@@ -1177,4 +1177,66 @@ describe('IbasisConnector Phase 4 — purchase & provisioning', () => {
       expect(result.data?.iccids).toEqual([ICCID])
     })
   })
+
+  describe('getQRCode', () => {
+    beforeEach(() => {
+      vi.clearAllMocks()
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
+      mockPrisma.eSIM.findFirst.mockResolvedValue(null)
+      connector = new IbasisConnector('ibasis-1')
+    })
+
+    it('returns the stored activationCode when present', async () => {
+      mockPrisma.eSIM.findFirst.mockResolvedValue({
+        providerResponse: null, activationCode: 'FKE: 0$CUST-111$555', providerSubscriptionId: 'sub-1',
+      } as any)
+
+      const result = await connector.getQRCode(ICCID)
+      expect(result.success).toBe(true)
+      expect(result.data).toEqual({ activationCode: 'FKE: 0$CUST-111$555' })
+      expect(result.data?.smdpAddress).toBeUndefined()
+    })
+
+    it('returns a full LPA string from providerResponse.lpa as activationCode', async () => {
+      mockPrisma.eSIM.findFirst.mockResolvedValue({
+        providerResponse: { lpa: 'LPA:1$smdp.example.com$mid-1' }, activationCode: null, providerSubscriptionId: 'sub-1',
+      } as any)
+
+      const result = await connector.getQRCode(ICCID)
+      expect(result.success).toBe(true)
+      expect(result.data?.activationCode).toBe('LPA:1$smdp.example.com$mid-1')
+      expect(result.data?.smdpAddress).toBeUndefined()
+    })
+
+    it('NEVER maps an SM-DP+ address (smdp) into activationCode', async () => {
+      mockPrisma.eSIM.findFirst.mockResolvedValue({
+        providerResponse: { smdp: 'smdp.example.com' }, activationCode: null, providerSubscriptionId: 'sub-1',
+      } as any)
+
+      const result = await connector.getQRCode(ICCID)
+      expect(result.success).toBe(true)
+      expect(result.data?.activationCode).toBeUndefined()
+      expect(result.data?.smdpAddress).toBe('smdp.example.com')
+      // A bare SM-DP+ address without a matching id is NOT a usable install path.
+      expect(result.data?.matchingId).toBeUndefined()
+    })
+
+    it('returns smdp+matching_id as a manual-install pair', async () => {
+      mockPrisma.eSIM.findFirst.mockResolvedValue({
+        providerResponse: { smdp: 'smdp.example.com', matching_id: 'mid-7' }, activationCode: null, providerSubscriptionId: 'sub-1',
+      } as any)
+
+      const result = await connector.getQRCode(ICCID)
+      expect(result.success).toBe(true)
+      expect(result.data?.smdpAddress).toBe('smdp.example.com')
+      expect(result.data?.matchingId).toBe('mid-7')
+      expect(result.data?.activationCode).toBeUndefined()
+    })
+
+    it('returns NOT_AVAILABLE when no install data exists', async () => {
+      const result = await connector.getQRCode(ICCID)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_AVAILABLE')
+    })
+  })
 })

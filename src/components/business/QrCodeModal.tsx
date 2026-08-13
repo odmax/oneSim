@@ -8,7 +8,6 @@ interface QREsimProps {
   activationCode: string | null
   qrCodeUrl: string | null
   qrCode?: string | null
-  providerResponse?: any
   lpaValue?: string
   smdpAddress?: string | null
   matchingId?: string | null
@@ -41,10 +40,10 @@ function QrCodeModal({ esim, onClose }: { esim: QREsimProps; onClose: () => void
   const [imgLoading, setImgLoading] = useState(!!esim.qrCodeUrl)
   const [imgError, setImgError] = useState(false)
 
-  const lpaValue = esim.lpaValue || resolveLPA(esim.providerResponse)
-  const smdpAddress = esim.smdpAddress || extractSMDP(esim.providerResponse, lpaValue)
+  const lpaValue = esim.lpaValue
+  const smdpAddress = esim.smdpAddress
   const matchingId = esim.matchingId
-  const displayActivationCode = esim.activationCode || extractActivationCode(lpaValue)
+  const displayActivationCode = esim.activationCode || extractActivationCode(lpaValue ?? null)
 
   const handleEsc = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Escape') onClose()
@@ -243,29 +242,6 @@ function DetailRow({ label, value, onCopy }: { label: string; value: string; onC
       </div>
     </div>
   )
-}
-
-function resolveLPA(providerResponse: any): string | null {
-  if (!providerResponse) return null
-  try {
-    const data = typeof providerResponse === 'string' ? JSON.parse(providerResponse) : providerResponse
-    if (data?.lpa) return data.lpa
-    if (data?.qrCodeValue) return data.qrCodeValue
-    if (data?.activationData?.lpa) return data.activationData.lpa
-    return null
-  } catch { return null }
-}
-
-function extractSMDP(providerResponse: any, lpaValue: string | null): string | null {
-  if (lpaValue && lpaValue.startsWith('LPA:')) {
-    const parts = lpaValue.split('$')
-    return parts[1] || null
-  }
-  if (!providerResponse) return null
-  try {
-    const data = typeof providerResponse === 'string' ? JSON.parse(providerResponse) : providerResponse
-    return data?.smdpAddress || data?.smdp || data?.activationData?.smdpAddress || null
-  } catch { return null }
 }
 
 function extractActivationCode(lpaValue: string | null): string | null {

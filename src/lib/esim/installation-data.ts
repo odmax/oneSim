@@ -25,7 +25,46 @@ export interface ProviderInstallData {
   matchingId?: string
 }
 
+/**
+ * Input shape for install data already normalized by a connector/adapter/webhook
+ * layer. Provider-specific field names must be normalized before this point;
+ * this helper only reconciles plural/singular and strips falsy values.
+ */
+export interface ConnectorInstallDataInput {
+  activationCode?: unknown
+  activationCodes?: unknown
+  qrCodeUrl?: unknown
+  qrCodeUrls?: unknown
+  qrCode?: unknown
+  smdpAddress?: unknown
+  matchingId?: unknown
+}
+
 const str = (v: unknown): string | undefined => v == null ? undefined : String(v)
+const firstOf = (v: unknown): unknown => Array.isArray(v) && v.length > 0 ? v[0] : undefined
+
+/**
+ * Normalize connector/webhook install data into the canonical shape. Reads only
+ * the five canonical keys (plus the plural `activationCodes`/`qrCodeUrls`
+ * arrays) and drops empty values. Never maps a field into a semantically
+ * different column — e.g. an SM-DP+ address stays `smdpAddress` and a QR URL
+ * stays `qrCodeUrl`.
+ */
+export function normalizeConnectorInstallData(raw: ConnectorInstallDataInput | null | undefined): ProviderInstallData {
+  if (!raw || typeof raw !== 'object') return {}
+  const out: ProviderInstallData = {}
+  const activationCode = str(firstOf(raw.activationCodes)) || str(raw.activationCode)
+  if (activationCode) out.activationCode = activationCode
+  const qrCodeUrl = str(raw.qrCodeUrl) || str(firstOf(raw.qrCodeUrls))
+  if (qrCodeUrl) out.qrCodeUrl = qrCodeUrl
+  const qrCode = str(raw.qrCode)
+  if (qrCode) out.qrCode = qrCode
+  const smdpAddress = str(raw.smdpAddress)
+  if (smdpAddress) out.smdpAddress = smdpAddress
+  const matchingId = str(raw.matchingId)
+  if (matchingId) out.matchingId = matchingId
+  return out
+}
 
 /**
  * True when the eSIM carries any usable install payload: a QR payload, a QR
@@ -59,14 +98,14 @@ export function extractInstallDataFromProviderResponse(raw: unknown): ProviderIn
 
   const activationCode = str(data.activationCode) || str(data.activation_code)
   const lpa = str(data.lpa) || str(data.LPA) || str(data.lpaProfile)
-  const qrCodeUrl = str(data.qrCodeUrl) || str(data.qr_code_url)
+  const qrCodeUrl = str(data.qrCodeUrl) || str(data.qr_code_url) || str(data.qr_code_link)
   const qrCode = str(data.qrCode) || str(data.qr_code) || str(data.qrCodeValue) || str(data.qrCodeData)
   const smdpAddress = str(data.smdpAddress) || str(data.smdp_address) || str(data.smdp) || str(data.SMDP)
   const matchingId = str(data.matchingId) || str(data.matching_id) || str(data.matchingid)
 
   const nested = data.activationData && typeof data.activationData === 'object' ? data.activationData : undefined
   const resolvedCode = activationCode || lpa
-    || (nested && (str(nested.activationCode) || str(nested.activation_code) || str(nested.lpa) || str(nested.LPA)))
+    || (nested && (str(nested.activationCode) || str(nested.activation_code) || str(nested.lpa) || str(nested.LPA) || str(nested.lpaProfile)))
 
   const result: ProviderInstallData = {}
   if (resolvedCode) result.activationCode = String(resolvedCode)
