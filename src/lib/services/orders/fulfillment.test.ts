@@ -8,7 +8,7 @@ vi.mock('@/lib/prisma', () => ({
     },
     eSIMPurchase: { findUnique: vi.fn(), update: vi.fn(), findFirst: vi.fn(), create: vi.fn() },
     eSIMPackage: { findUnique: vi.fn() },
-    walletTransaction: { findFirst: vi.fn(), create: vi.fn() },
+    walletTransaction: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
     providerAttempt: { create: vi.fn(), update: vi.fn(), count: vi.fn() },
     business: { findUnique: vi.fn(), update: vi.fn() },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
@@ -29,6 +29,19 @@ const { releaseReservedFunds, captureReservedFunds } = await import('./wallet-ac
 const mockPrisma = vi.mocked(prisma)
 const mockTimeline = vi.mocked(createTimelineEvent)
 const mockTransition = vi.mocked(transitionOrder)
+
+// Interactive-transaction mock: the wallet capture helpers run inside
+// prisma.$transaction((tx) => ...). Delegate tx wallet reads/writes to the
+// shared prisma mocks so per-test stubs (rejections, capture state) apply.
+const txMock = {
+  walletTransaction: {
+    findFirst: (...a: any[]) => (mockPrisma.walletTransaction.findFirst as any)(...a),
+    findMany: (...a: any[]) => (mockPrisma.walletTransaction.findMany as any)(...a),
+    create: (...a: any[]) => (mockPrisma.walletTransaction.create as any)(...a),
+  },
+}
+;(mockPrisma as any).$transaction = vi.fn(async (cb: any) => cb(txMock))
+mockPrisma.walletTransaction.findMany.mockResolvedValue([])
 
 function mockEsim(overrides: any = {}) {
   return { id: 'esim-1', iccid: '89012345678901234567', status: 'PENDING_ACTIVATION', activationCode: null, qrCodeUrl: null, ...overrides }
@@ -255,7 +268,7 @@ describe('completeProviderFinalization', () => {
     mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
     mockPrisma.eSIM.count.mockResolvedValue(1)
     mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
-      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1' })
+      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1', amount: -10 })
       return Promise.resolve(null)
     })
     mockPrisma.walletTransaction.create.mockResolvedValue({})
@@ -332,7 +345,7 @@ describe('completeProviderFinalization', () => {
     mockPrisma.eSIM.create.mockImplementation(() => { callOrder.push('create-esim'); return Promise.resolve(mockEsim()) })
     mockPrisma.eSIM.count.mockResolvedValue(1)
     mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
-      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1' })
+      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1', amount: -10 })
       return Promise.resolve(null)
     })
     mockPrisma.walletTransaction.create.mockResolvedValue({})
@@ -358,7 +371,7 @@ describe('completeProviderFinalization', () => {
     mockPrisma.eSIMPurchase.update.mockResolvedValue({})
     // Wallet: reserve exists but capture fails
     mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
-      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1' })
+      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1', amount: -10 })
       return Promise.resolve(null)
     })
     mockPrisma.walletTransaction.create.mockRejectedValue(new Error('Capture failed'))
@@ -374,13 +387,30 @@ describe('completeProviderFinalization', () => {
     expect(result.recoveryRequired).toBe(true)
   })
 
-  it('14. fewer eSIMs than order quantity does NOT capture and returns recoveryRequired', async () => {
-    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder({ quantity: 2 }))
+  it('14. fewer eSIMs than order quantity → PARTIALLY_FULFILLED, captures per fulfilled unit', async () => {
+    const order = mockOrder({
+      quantity: 2, quotedQuantity: 2,
+      quotedUnitPrice: { toString: () => '5' }, packageUnitPrice: { toString: () => '5' },
+      totalAmount: 10, fulfilledQuantity: 0,
+    })
+    mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
+      // After persistence the order has 1 of 2 eSIMs (provider delivered fewer units).
+      if (args?.include?.esims || args?.include?.business) {
+        return Promise.resolve({ ...order, esims: [{ id: 'esim-1', iccid: '89012345678901234567' }] })
+      }
+      return Promise.resolve(order)
+    })
     mockPrisma.eSIM.findMany.mockResolvedValue([])
     mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
     mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
     mockPrisma.eSIM.count.mockResolvedValue(1) // only 1 eSIM created
     mockPrisma.eSIMPurchase.update.mockResolvedValue({})
+    mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
+      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1', amount: -10 })
+      return Promise.resolve(null)
+    })
+    mockPrisma.walletTransaction.create.mockResolvedValue({})
+    mockTransition.mockResolvedValue({ success: true })
 
     const result = await completeProviderFinalization({
       orderId: 'order-1', businessId: 'biz-1', providerId: 'prov-1',
@@ -388,9 +418,12 @@ describe('completeProviderFinalization', () => {
       providerResult: { iccids: ['89012345678901234567'] },
     })
 
-    expect(result.success).toBe(false)
-    expect(result.walletCaptured).toBe(false)
-    expect(result.recoveryRequired).toBe(true)
+    // Charge-per-successful-unit (F3): 1 of 2 units at $5 → capture $5, not $10.
+    expect(result.success).toBe(true)
+    expect(result.orderStatus).toBe('PARTIALLY_FULFILLED')
+    expect(result.walletCaptured).toBe(true)
+    expect(mockPrisma.walletTransaction.create).toHaveBeenCalledWith({ data: expect.objectContaining({ amount: 5, type: 'WALLET_CAPTURE' }) })
+    expect(mockTransition).toHaveBeenCalledWith('order-1', 'PARTIALLY_FULFILLED')
   })
 })
 
@@ -456,7 +489,7 @@ describe('resumeProviderFinalization', () => {
     mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
     mockPrisma.eSIM.count.mockResolvedValue(1)
     mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
-      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-r' })
+      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-r', amount: -10 })
       if (type === 'WALLET_CAPTURE') return Promise.resolve(null)
       if (type === 'WALLET_RELEASE') return Promise.resolve(null)
       return Promise.resolve(null)
@@ -484,7 +517,7 @@ describe('resumeProviderFinalization', () => {
     mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
     mockPrisma.eSIM.count.mockResolvedValue(1)
     mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
-      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-r' })
+      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-r', amount: -10 })
       if (type === 'WALLET_CAPTURE') return Promise.resolve(null)
       if (type === 'WALLET_RELEASE') return Promise.resolve(null)
       return Promise.resolve(null)
@@ -538,7 +571,7 @@ describe('timeline events — idempotent and deduplicated', () => {
     mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
     mockPrisma.eSIM.count.mockResolvedValue(1)
     mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
-      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1' })
+      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1', amount: -10 })
       return Promise.resolve(null)
     })
     mockPrisma.walletTransaction.create.mockResolvedValue({})
@@ -581,7 +614,7 @@ describe('timeline events — idempotent and deduplicated', () => {
     mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
     mockPrisma.eSIM.count.mockResolvedValue(1)
     mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
-      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-r' })
+      if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-r', amount: -10 })
       if (type === 'WALLET_CAPTURE') return Promise.resolve(null)
       if (type === 'WALLET_RELEASE') return Promise.resolve(null)
       return Promise.resolve(null)

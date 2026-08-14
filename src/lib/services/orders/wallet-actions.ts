@@ -74,6 +74,58 @@ export async function captureReservedFunds(orderId: string, businessId: string, 
 }
 
 /**
+ * Internal tx-aware capture that caps the TOTAL captured for an order at `amount`.
+ * Used for partial fulfillment where units arrive in batches: each call captures
+ * only the delta (amount − alreadyCaptured), never exceeding the reservation.
+ * Idempotent — repeated calls with the same `amount` are no-ops.
+ */
+async function captureReservedFundsUpToInternal(client: any, orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; alreadyCaptured?: boolean }> {
+  const reserve = await client.walletTransaction.findFirst({
+    where: { orderId, type: 'WALLET_RESERVE' },
+  })
+  if (!reserve) return { success: false, error: 'No reservation found. Reserve wallet funds first.' }
+
+  const captures = await client.walletTransaction.findMany({
+    where: { orderId, type: 'WALLET_CAPTURE' },
+    select: { amount: true },
+  })
+  const alreadyCaptured = captures.reduce((s: number, c: any) => s + Math.abs(Number(c.amount || 0)), 0)
+  if (alreadyCaptured >= amount) return { success: true, alreadyCaptured: true }
+
+  const reserved = Math.abs(Number(reserve.amount || 0))
+  const delta = Math.min(amount - alreadyCaptured, Math.max(0, reserved - alreadyCaptured))
+  if (delta <= 0) return { success: true, alreadyCaptured: true }
+
+  await client.walletTransaction.create({
+    data: { businessId, orderId, amount: delta, type: 'WALLET_CAPTURE', description: `Captured ${delta} for order ${orderId}` },
+  })
+  return { success: true }
+}
+
+/**
+ * Capture reserved funds up to a cumulative total (partial-fulfillment aware).
+ * Never captures more than the reservation; idempotent per target amount.
+ */
+export async function captureReservedFundsUpTo(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; alreadyCaptured?: boolean }> {
+  try {
+    const result = await prisma.$transaction((tx) => captureReservedFundsUpToInternal(tx, orderId, businessId, amount))
+    if (!result.success) return result
+
+    await createTimelineEvent(orderId, { eventType: 'WALLET_CAPTURED', message: `Wallet captured: ${amount}` })
+    return { success: true, alreadyCaptured: result.alreadyCaptured }
+  } catch (e: any) {
+    return { success: false, error: e.message || 'Capture failed' }
+  }
+}
+
+/** Tx-aware variant for callers that need capture atomic with their own transaction. */
+export function captureReservedFundsUpToInTx(client: any, orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; alreadyCaptured?: boolean }> {
+  return captureReservedFundsUpToInternal(client, orderId, businessId, amount)
+}
+
+
+
+/**
  * Release reserved funds (on provider rejection/failure).
  * Refunds the reserved amount back to wallet balance.
  *
@@ -129,6 +181,52 @@ export async function releaseReservedFunds(orderId: string, businessId: string, 
 
     await createTimelineEvent(orderId, { eventType: 'WALLET_RELEASED', message: `Wallet released: ${amount}` })
     return { success: true }
+  } catch (e: any) {
+    return { success: false, error: e.message || 'Release failed' }
+  }
+}
+
+/**
+ * Release reserved funds up to a cumulative total — partial-fulfillment aware.
+ *
+ * Used when an order is partially fulfilled: captured units stay charged while the
+ * un-captured remainder of the reservation is returned to the wallet exactly once.
+ * Never releases more than `reserved − captured − alreadyReleased`, so the sum of
+ * (captured + released) can never exceed the reservation. Idempotent per target.
+ */
+export async function releaseReservedFundsUpTo(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; released?: number }> {
+  try {
+    const reserve = await prisma.walletTransaction.findFirst({
+      where: { orderId, type: 'WALLET_RESERVE' },
+    })
+    if (!reserve) return { success: true, released: 0 }
+
+    const reserved = Math.abs(Number(reserve.amount || 0))
+    const [captures, releases, refunds] = await Promise.all([
+      prisma.walletTransaction.findMany({ where: { orderId, type: 'WALLET_CAPTURE' }, select: { amount: true } }),
+      prisma.walletTransaction.findMany({ where: { orderId, type: 'WALLET_RELEASE' }, select: { amount: true } }),
+      prisma.walletTransaction.findMany({ where: { orderId, type: 'WALLET_REFUND' }, select: { amount: true } }),
+    ])
+    const captured = captures.reduce((s, c) => s + Math.abs(Number(c.amount || 0)), 0)
+    const alreadyReleased = releases.reduce((s, c) => s + Math.abs(Number(c.amount || 0)), 0) +
+      refunds.reduce((s, c) => s + Math.abs(Number(c.amount || 0)), 0)
+
+    const available = Math.max(0, reserved - captured - alreadyReleased)
+    const delta = Math.min(Math.max(0, amount - alreadyReleased), available)
+    if (delta <= 0) return { success: true, released: 0 }
+
+    await prisma.$transaction([
+      prisma.business.update({
+        where: { id: businessId },
+        data: { walletBalance: { increment: delta } },
+      }),
+      prisma.walletTransaction.create({
+        data: { businessId, orderId, amount: delta, type: 'WALLET_RELEASE', description: `Released ${delta} for order ${orderId}` },
+      }),
+    ])
+
+    await createTimelineEvent(orderId, { eventType: 'WALLET_RELEASED', message: `Wallet released: ${delta}` })
+    return { success: true, released: delta }
   } catch (e: any) {
     return { success: false, error: e.message || 'Release failed' }
   }

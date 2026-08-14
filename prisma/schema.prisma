@@ -565,7 +565,6 @@ model ESIMPurchase {
   invoice            Invoice?
   events             OrderTimelineEvent[]
   provider           Provider?            @relation(fields: [providerId], references: [id], onDelete: SetNull)
-  walletTransactions WalletTransaction[]
   billingRecords     BillingRecord[]      @relation("BillingRecordOrder")
   purchaseQuote      PurchaseQuote?       @relation(fields: [purchaseQuoteId], references: [id], onDelete: SetNull)
   packagePriceSnapshot PackagePriceSnapshot? @relation(fields: [packagePriceSnapshotId], references: [id], onDelete: SetNull)
@@ -664,6 +663,18 @@ model ESIMTopUp {
   amount            Decimal
   currency          String          @default("USD")
   status            ESIMTopUpStatus @default(PENDING)
+  /// Immutable pricing copied from the top-up quote at creation.
+  /// These are the financial source of truth — the provider response never
+  /// changes the customer charge.
+  quotedUnitPrice      Decimal?
+  quotedTotalAmount    Decimal?
+  quotedCurrency       String?
+  quotedQuantity       Int?
+  pricingEngineVersion String?
+  requestedQuantity    Int          @default(1)
+  /// Deduplication key — one logical top-up may only be created once.
+  idempotencyKey       String?      @unique
+  errorMessage         String?
   dataAddedMB       Int?
   validityDaysAdded Int?
   providerResponse  Json?
@@ -781,14 +792,15 @@ model Invoice {
 model WalletTransaction {
   id          String   @id @default(cuid())
   businessId  String
+  /// Opaque billing key — references an ESIMPurchase.id for purchases or an ESIMTopUp.id for top-ups.
+  /// Kept as a plain string so each top-up can hold its own reserve/capture/release identity.
   orderId     String?
   amount      Decimal
   type        String
   description String?
   createdAt   DateTime @default(now())
 
-  business Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  order    ESIMPurchase? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@map("wallet_transactions")
 }
@@ -855,6 +867,8 @@ enum PaymentMethod {
 
 enum ESIMTopUpStatus {
   PENDING
+  /// Provider outcome unknown (timeout/network) — funds stay reserved for review.
+  PENDING_REVIEW
   COMPLETED
   FAILED
 }

@@ -28,7 +28,9 @@ vi.mock('@/lib/services/orders/order-state-machine', () => ({
 vi.mock('@/lib/services/orders/wallet-actions', () => ({
   reserveWalletFunds: vi.fn(),
   captureReservedFunds: vi.fn(),
+  captureReservedFundsUpTo: vi.fn(),
   releaseReservedFunds: vi.fn(),
+  releaseReservedFundsUpTo: vi.fn(),
   refundCapturedFunds: vi.fn(),
 }))
 
@@ -41,11 +43,11 @@ const { prisma } = await import('@/lib/prisma')
 const { getAdapterForType } = await import('@/lib/providers/adapter-manager')
 const { createTimelineEvent, transitionOrder, failOrder } = await import('@/lib/services/orders/order-state-machine')
 const { reconcileProviderOrder, getReconciliationDelay, isRedispatchAllowed } = await import('./reconciliation')
-const { releaseReservedFunds } = await import('@/lib/services/orders/wallet-actions')
+const { releaseReservedFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
 
 const mockPrisma = vi.mocked(prisma)
 const mockAdapter = vi.mocked(getAdapterForType)
-const mockRelease = vi.mocked(releaseReservedFunds)
+const mockRelease = vi.mocked(releaseReservedFundsUpTo)
 const mockTransition = vi.mocked(transitionOrder)
 
 function mockOrder(overrides: any = {}) {

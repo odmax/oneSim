@@ -1,7 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
 import { createTimelineEvent } from '@/lib/services/orders/order-state-machine'
-import { captureReservedFunds, releaseReservedFunds, reserveWalletFunds } from '@/lib/services/orders/wallet-actions'
 import type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
 import { buildChoiceStatusLookup, hasChoiceIdentifier, extractChoiceImsiVersion } from './choice-lookup'
 import { deriveEsimLifecycleStatus } from './lifecycle-status'
@@ -307,78 +306,23 @@ export async function topUpEsimWithWallet(esimId: string, businessId: string, us
     return { success: false, error: 'capability_not_available' }
   }
 
-  const amount = parseFloat(topUpPkg.priceUSD.toString()) * quantity
-
-  // Reserve wallet
-  const reserve = await reserveWalletFunds(esim.purchaseId, businessId, amount)
-  if (!reserve.success) return { success: false, error: reserve.error || 'Wallet reserve failed' }
-
-  const orderId = esim.purchaseId
-
-  // Call provider
-  const adapter = await getAdapterForProvider(providerId)
-  if (!adapter) {
-    await releaseReservedFunds(orderId, businessId, amount)
-    return { success: false, error: 'Provider adapter unavailable' }
-  }
-
-  const providerResult = await adapter.topUpESIM({
-    iccid: esim.iccid,
-    imsi: esim.imsi,
-    planId: topUpPkg.providerPlanId || topUpPkg.id,
-    sku: topUpPkg.sku || topUpPkg.packageCode || undefined,
-    packageName: topUpPkg.displayName || topUpPkg.name,
+  // Delegate to the unified billing engine — one implementation for portal + API.
+  // The core snapshots an immutable quote, reserves wallet funds keyed by the
+  // top-up itself, dispatches the provider, and captures/releases exactly once
+  // (F1: top-ups are never free; F2: retries never double-charge).
+  const { createTopUpOrder } = await import('@/lib/services/orders/top-up-order')
+  const result = await createTopUpOrder({
+    businessId,
+    userId,
+    esimId,
+    topUpPackageId,
     quantity,
   })
 
-  if (!providerResult.success) {
-    await releaseReservedFunds(orderId, businessId, amount)
-    await createTimelineEvent(orderId, { eventType: 'TOPUP_FAILED', message: providerResult.error?.message || 'Provider top-up failed' })
-    return { success: false, error: providerResult.error?.message || 'Provider top-up failed' }
-  }
-
-  const topUpData = providerResult.data!
-  const dataAddedMB = topUpData.dataAddedMB ?? (topUpPkg.dataGB ? topUpPkg.dataGB * 1024 : undefined)
-  const validityDaysAdded = topUpData.validityDaysAdded ?? topUpPkg.validityDays ?? undefined
-
-  // Create top-up record and update eSIM
-  try {
-    await prisma.$transaction(async (tx) => {
-      const topUp = await tx.eSIMTopUp.create({
-        data: {
-          businessId, esimId, packageId: topUpPackageId, providerId,
-          providerReference: topUpData.providerReference || null,
-          amount, currency: topUpPkg.currency || 'USD', status: 'COMPLETED',
-          dataAddedMB: dataAddedMB || null, validityDaysAdded: validityDaysAdded || null,
-          providerResponse: topUpData as any, completedAt: new Date(),
-        },
-      })
-
-      const updateData: any = {}
-      if (validityDaysAdded && esim.expiresAt) {
-        updateData.expiresAt = new Date(esim.expiresAt.getTime() + validityDaysAdded * 24 * 60 * 60 * 1000)
-      } else if (validityDaysAdded) {
-        updateData.expiresAt = new Date(Date.now() + validityDaysAdded * 24 * 60 * 60 * 1000)
-      }
-      if (topUpData.newDataTotalMB) updateData.dataTotalMB = topUpData.newDataTotalMB
-      if (topUpData.newDataRemainingMB) updateData.dataRemainingMB = topUpData.newDataRemainingMB
-
-      if (Object.keys(updateData).length > 0) {
-        await tx.eSIM.update({ where: { id: esimId }, data: updateData })
-      }
-
-      return topUp
-    })
-
-    // Capture wallet
-    await captureReservedFunds(orderId, businessId, amount)
-    await createTimelineEvent(orderId, { eventType: 'TOPUP_COMPLETED', message: `Top-up: ${topUpPkg.displayName || topUpPkg.name} (${esim.iccid.slice(-8)})` })
-
-    return { success: true }
-  } catch (e: any) {
-    await releaseReservedFunds(orderId, businessId, amount)
-    await createTimelineEvent(orderId, { eventType: 'TOPUP_FAILED', message: e.message || 'Transaction failed' })
-    return { success: false, error: e.message || 'Transaction failed' }
+  return {
+    success: result.success,
+    topUpId: result.topUpId,
+    error: result.error,
   }
 }
 

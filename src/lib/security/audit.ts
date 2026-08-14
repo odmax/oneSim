@@ -52,11 +52,15 @@ export async function checkProviderCertifiedForLive(providerId: string): Promise
 export async function checkRefundSafe(orderId: string): Promise<{ safe: boolean; reason?: string }> {
   const order = await prisma.eSIMPurchase.findUnique({
     where: { id: orderId },
-    include: { walletTransactions: { where: { type: 'WALLET_CAPTURE' } } },
+    select: { id: true },
   })
   if (!order) return { safe: false, reason: 'Order not found' }
 
-  if (order.walletTransactions.length === 0) {
+  const captured = await prisma.walletTransaction.findFirst({
+    where: { orderId, type: 'WALLET_CAPTURE' },
+  })
+
+  if (!captured) {
     return { safe: false, reason: 'No captured payment to refund. Only captured orders can be refunded.' }
   }
 

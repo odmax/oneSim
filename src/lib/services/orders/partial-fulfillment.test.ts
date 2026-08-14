@@ -18,11 +18,21 @@ vi.mock('@/lib/services/orders/order-state-machine', () => ({
   failOrder: vi.fn(),
 }))
 
+vi.mock('@/lib/services/orders/wallet-actions', () => ({
+  captureReservedFundsUpTo: vi.fn().mockResolvedValue({ success: true }),
+  captureReservedFundsUpToInTx: vi.fn().mockResolvedValue({ success: true }),
+  captureReservedFunds: vi.fn().mockResolvedValue({ success: true }),
+  releaseReservedFundsUpTo: vi.fn().mockResolvedValue({ success: true, released: 0 }),
+  reserveWalletFunds: vi.fn().mockResolvedValue({ success: true }),
+}))
+
 const { prisma } = await import('@/lib/prisma')
 const { createTimelineEvent, transitionOrder } = await import('@/lib/services/orders/order-state-machine')
+const { captureReservedFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
 const { deriveOrderFulfillmentQuantities, processPartialFulfillment, persistProviderFulfillment } = await import('./fulfillment')
 const mockPrisma = vi.mocked(prisma)
 const mockTransition = vi.mocked(transitionOrder)
+const mockCaptureUpTo = vi.mocked(captureReservedFundsUpTo)
 
 function mockOrder(overrides: any = {}) {
   return {
@@ -127,6 +137,8 @@ describe('partial fulfillment flow', () => {
 
     expect(mockTransition).toHaveBeenCalledWith('order-1', 'PARTIALLY_FULFILLED')
     expect(createTimelineEvent).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'PARTIAL_FULFILLMENT_RECORDED' }))
+    // Charge-per-successful-unit (F3): 3 units × $10 → capture up to $30 cumulative.
+    expect(mockCaptureUpTo).toHaveBeenCalledWith('order-1', 'biz-1', 30)
   })
 
   it('6. fulfilled eSIMs remain valid after remaining failure (no FAILED status forced)', async () => {
@@ -150,18 +162,60 @@ describe('partial fulfillment flow', () => {
 })
 
 describe('wallet partial capture invariants', () => {
-  it('10. total captured never exceeds reserved amount', () => {
-    // processPartialFulfillment calculates captureAmount = unitPrice × newlyFulfilled
-    // and caps to remainingToCapture
-    expect(true).toBe(true)
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('10. capture is incremental — a later batch captures only its new units', async () => {
+    // First batch: 3 of 5 units delivered (already covered by test 5 → capture up to 30).
+    const order = mockOrder({ quantity: 5, quotedQuantity: 5, fulfilledQuantity: 3 })
+    mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
+      if (args?.include?.esims || args?.include?.business) {
+        return Promise.resolve({ ...order, esims: [{ iccid: 'a' }, { iccid: 'b' }, { iccid: 'c' }, { iccid: 'd' }, { iccid: 'e' }] })
+      }
+      return Promise.resolve(order)
+    })
+    mockPrisma.eSIM.findMany.mockResolvedValue([])
+    mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
+    mockPrisma.eSIM.create.mockResolvedValue({} as any)
+    mockPrisma.walletTransaction.findMany.mockResolvedValue([])
+
+    await processPartialFulfillment({
+      orderId: 'order-1', businessId: 'biz-1', providerId: 'p1',
+      providerRef: 'ref-1', providerName: 'TestProv', totalAmount: 50,
+      providerResult: { iccids: ['a', 'b', 'c', 'd', 'e'] },
+    })
+
+    // newlyFulfilled = 5 − 3 = 2 → capture up to $20, NOT the full $50 again.
+    expect(mockCaptureUpTo).toHaveBeenCalledWith('order-1', 'biz-1', 20)
   })
 
-  it('11. duplicate batch does not capture twice', () => {
-    // check existing captures before re-capturing
-    expect(true).toBe(true)
+  it('11. duplicate batch does not capture twice (cumulative idempotency)', async () => {
+    // processPartialFulfillment must call captureReservedFundsUpTo with the same
+    // cumulative target it already captured. The helper is idempotent per target,
+    // so the same order + amount never creates a second capture.
+    const order = mockOrder({ quantity: 3, quotedQuantity: 3, fulfilledQuantity: 3 })
+    mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
+      if (args?.include?.esims || args?.include?.business) {
+        return Promise.resolve({ ...order, esims: [{ iccid: 'a' }, { iccid: 'b' }, { iccid: 'c' }] })
+      }
+      return Promise.resolve(order)
+    })
+    mockPrisma.eSIM.findMany.mockResolvedValue([])
+    mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
+    mockPrisma.eSIM.create.mockResolvedValue({} as any)
+    mockPrisma.walletTransaction.findMany.mockResolvedValue([{ amount: 30 }])
+
+    await processPartialFulfillment({
+      orderId: 'order-1', businessId: 'biz-1', providerId: 'p1',
+      providerRef: 'ref-1', providerName: 'TestProv', totalAmount: 30,
+      providerResult: { iccids: ['a', 'b', 'c'] },
+    })
+
+    // newlyFulfilled = 0 → no capture for the duplicate batch.
+    expect(mockCaptureUpTo).not.toHaveBeenCalled()
   })
 
-  it('12. capture plus release never exceeds reserve', () => {
+  it('12. capture plus release never exceeds reserve — enforced by wallet-actions helpers', async () => {
+    // Real ledger invariants are covered in wallet-actions-partial.test.ts.
     expect(true).toBe(true)
   })
 })

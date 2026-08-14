@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/prisma'
-import { captureReservedFunds } from '@/lib/services/orders/wallet-actions'
+import { captureReservedFunds, captureReservedFundsUpTo } from '@/lib/services/orders/wallet-actions'
 import { createTimelineEvent, transitionOrder } from '@/lib/services/orders/order-state-machine'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import { hasUsableInstallData, type InstallDataFields } from '@/lib/esim/installation-data'
@@ -277,24 +277,48 @@ export async function completeProviderFinalization(input: {
   }
 
   // Step 4: Verify we have all requested ICCIDs
+  const requestedQty = order.quotedQuantity ?? order.quantity ?? 1
   const currentEsims = await prisma.eSIM.count({ where: { purchaseId: orderId } })
-  if (currentEsims < order.quantity) {
+  if (currentEsims < requestedQty) {
+    if (currentEsims > 0) {
+      // Partial fulfillment — charge per successful unit and keep the reservation
+      // for the remainder (F3: partial capture). Reconcile the rest later.
+      await createTimelineEvent(orderId, {
+        eventType: 'PARTIAL_FULFILLMENT_RECORDED',
+        message: `Provider delivered ${currentEsims} of ${requestedQty} eSIMs — billing partial fulfillment`,
+      })
+      return await processPartialFulfillment({
+        orderId,
+        businessId: businessId || order.businessId,
+        providerId,
+        providerRef,
+        providerName,
+        totalAmount: totalAmount || Number(order.totalAmount),
+        providerResult,
+        userId,
+        packageSnapshot,
+        packageName,
+        packageDataGB,
+        packageValidityDays,
+        validityDays,
+      })
+    }
     await createTimelineEvent(orderId, {
       eventType: 'LOCAL_FINALIZATION_FAILED',
-      message: `Quantity mismatch: have ${currentEsims} eSIMs, need ${order.quantity}`,
+      message: `Quantity mismatch: have ${currentEsims} eSIMs, need ${requestedQty}`,
     })
     return {
       success: false,
       orderStatus: order.status,
       walletCaptured: false,
       eSIMsPersisted: true,
-      error: `Quantity mismatch: ${currentEsims}/${order.quantity}`,
+      error: `Quantity mismatch: ${currentEsims}/${requestedQty}`,
       recoveryRequired: true,
     }
   }
 
-  // Step 5: Capture wallet idempotently
-  const captureResult = await captureReservedFunds(orderId, businessId || order.businessId, totalAmount || Number(order.totalAmount))
+  // Step 5: Capture wallet idempotently (cumulative — never re-captures)
+  const captureResult = await captureReservedFundsUpTo(orderId, businessId || order.businessId, totalAmount || Number(order.totalAmount))
   if (!captureResult.success) {
     await createTimelineEvent(orderId, { eventType: 'LOCAL_FINALIZATION_FAILED', message: `Wallet capture failed: ${captureResult.error}` })
     return {
@@ -527,18 +551,14 @@ export async function processPartialFulfillment(input: {
 
   let walletCaptured = false
   if (newlyFulfilled > 0 && captureAmount > 0) {
-    const existingCaptures = await prisma.walletTransaction.findMany({
-      where: { orderId, type: 'WALLET_CAPTURE' },
-    })
-    const alreadyCaptured = existingCaptures.reduce((s, c) => s + Math.abs(Number(c.amount || 0)), 0)
-    const remainingToCapture = qtys.capturedAmount - alreadyCaptured
-
-    if (remainingToCapture > 0) {
-      const captureResult = await captureReservedFunds(orderId, businessId, remainingToCapture)
-      if (captureResult.success) {
-        walletCaptured = true
-        await createTimelineEvent(orderId, { eventType: 'PARTIAL_WALLET_CAPTURED', message: `Captured ${remainingToCapture} for ${newlyFulfilled} new eSIMs` })
-      }
+    // Charge per successful unit, cumulative across batches: capture up to the
+    // total value of units fulfilled so far (unitPrice × fulfilledQuantity).
+    // captureReservedFundsUpTo is idempotent and never exceeds the reservation,
+    // so re-deliveries/reconciliation cannot double-charge.
+    const captureResult = await captureReservedFundsUpTo(orderId, businessId, captureAmount)
+    if (captureResult.success) {
+      walletCaptured = true
+      await createTimelineEvent(orderId, { eventType: 'PARTIAL_WALLET_CAPTURED', message: `Captured ${captureAmount} for ${newlyFulfilled} new eSIMs` })
     }
   }
 

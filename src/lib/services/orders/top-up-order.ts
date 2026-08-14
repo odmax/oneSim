@@ -1,5 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
+import { reserveWalletFunds, captureReservedFundsUpToInTx, releaseReservedFundsUpTo } from './wallet-actions'
+import { createTimelineEvent } from './order-state-machine'
 
 export interface TopUpOrderParams {
   businessId: string
@@ -7,6 +9,8 @@ export interface TopUpOrderParams {
   esimId: string
   topUpPackageId: string
   quantity?: number
+  /** Optional client-supplied dedup key. One logical top-up is only processed once. */
+  idempotencyKey?: string
 }
 
 export interface TopUpOrderResult {
@@ -19,10 +23,67 @@ export interface TopUpOrderResult {
   validityDaysAdded?: number
   error?: string
   errorStatus?: number
+  alreadyCompleted?: boolean
 }
 
+/**
+ * Outcome classification for a provider top-up response.
+ * UNCERTAIN (timeout/network) keeps the reservation and waits for reconciliation —
+ * it is NEVER treated as a definite failure and NEVER blindly retried (F2).
+ */
+const UNCERTAIN_OUTCOME_HINTS = ['timeout', 'timed out', 'network', 'econnrefused', 'econnreset', 'socket hang up', '503', '502', '504']
+
+function isUncertainOutcome(error?: { message?: string }): boolean {
+  const msg = (error?.message || '').toLowerCase()
+  return UNCERTAIN_OUTCOME_HINTS.some((hint) => msg.includes(hint))
+}
+
+/**
+ * Unified top-up billing engine (single implementation for portal + API).
+ *
+ * Billing invariants:
+ * - ONE immutable price source: the quote is snapshotted from the package BEFORE
+ *   any wallet mutation or provider dispatch. The provider response NEVER changes
+ *   the customer charge (F1).
+ * - Each ESIMTopUp is its own wallet billing identity: wallet RESERVE/CAPTURE/
+ *   RELEASE entries are keyed by the top-up id, not the purchase id, so a top-up
+ *   can never short-circuit against the purchase's ledger (F1).
+ * - Reserve BEFORE provider dispatch; capture only after confirmed success;
+ *   release on definite failure; keep reserved on UNCERTAIN outcomes (F2).
+ * - Idempotent by `idempotencyKey`: a retried request returns the existing record
+ *   without re-dispatching the provider or re-deducting the wallet (F2).
+ */
 export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpOrderResult> {
-  const { businessId, userId, esimId, topUpPackageId, quantity = 1 } = params
+  const { businessId, userId, esimId, topUpPackageId, quantity = 1, idempotencyKey } = params
+
+  const returnExisting = (topUp: { id: string; status: string; amount: any; currency: string; dataAddedMB: number | null; validityDaysAdded: number | null }) => {
+    if (topUp.status === 'COMPLETED') {
+      return {
+        success: true,
+        topUpId: topUp.id,
+        status: topUp.status,
+        amount: Number(topUp.amount),
+        currency: topUp.currency,
+        dataAddedMB: topUp.dataAddedMB ?? undefined,
+        validityDaysAdded: topUp.validityDaysAdded ?? undefined,
+        alreadyCompleted: true,
+      }
+    }
+    return {
+      success: false,
+      topUpId: topUp.id,
+      status: topUp.status,
+      error: topUp.status === 'PENDING_REVIEW' ? 'Top-up outcome pending review — funds are reserved' : 'Top-up already processed',
+      errorStatus: 409,
+      alreadyCompleted: true,
+    }
+  }
+
+  // Idempotency: a previously processed logical top-up is never re-executed.
+  if (idempotencyKey) {
+    const existing = await prisma.eSIMTopUp.findUnique({ where: { idempotencyKey } })
+    if (existing) return returnExisting(existing)
+  }
 
   // Fetch eSIM with relations
   const esim = await prisma.eSIM.findUnique({
@@ -60,19 +121,68 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
     return { success: false, error: 'Provider does not support top-up', errorStatus: 400 }
   }
 
-  // Check wallet
+  // Check business
   const business = await prisma.business.findUnique({ where: { id: businessId } })
   if (!business) return { success: false, error: 'Business not found', errorStatus: 404 }
   if (business.status === 'SUSPENDED') return { success: false, error: 'Business account is suspended', errorStatus: 403 }
 
-  const amount = parseFloat(topUpPkg.priceUSD.toString()) * quantity
-  if (parseFloat(business.walletBalance.toString()) < amount) {
-    return { success: false, error: 'Insufficient wallet balance', errorStatus: 402 }
+  // ── Immutable quote — the single source of truth for the charge (F1) ──
+  const quotedUnitPrice = Number(topUpPkg.priceUSD)
+  const amount = quotedUnitPrice * quantity
+  const currency = topUpPkg.currency || 'USD'
+  if (!(amount > 0)) return { success: false, error: 'Invalid top-up amount', errorStatus: 400 }
+
+  // ── Create the PENDING top-up record with the quote snapshot ──
+  // Its id becomes the wallet orderId, giving every top-up its own reservation
+  // (F1: the purchase ledger can no longer short-circuit top-up billing).
+  let topUp
+  try {
+    topUp = await prisma.eSIMTopUp.create({
+      data: {
+        businessId,
+        esimId,
+        packageId: topUpPackageId,
+        providerId,
+        amount,
+        currency,
+        status: 'PENDING',
+        requestedQuantity: quantity,
+        quotedUnitPrice,
+        quotedTotalAmount: amount,
+        quotedCurrency: currency,
+        quotedQuantity: quantity,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      },
+    })
+  } catch (e: any) {
+    // Unique-key race on idempotencyKey — the request was already processed.
+    if (e?.code === 'P2002' && idempotencyKey) {
+      const existing = await prisma.eSIMTopUp.findUnique({ where: { idempotencyKey } })
+      if (existing) return returnExisting(existing)
+    }
+    throw e
   }
 
-  // Call provider top-up
+  // ── Reserve wallet (atomic + idempotent, keyed by this top-up) ──
+  const reserve = await reserveWalletFunds(topUp.id, businessId, amount)
+  if (!reserve.success) {
+    await prisma.eSIMTopUp.update({
+      where: { id: topUp.id },
+      data: { status: 'FAILED', errorMessage: (reserve.error || 'Wallet reserve failed').slice(0, 500), completedAt: new Date() },
+    })
+    return { success: false, error: reserve.error || 'Insufficient wallet balance', errorStatus: 402 }
+  }
+
+  // ── Dispatch provider ──
   const adapter = await getAdapterForProvider(providerId)
-  if (!adapter) return { success: false, error: 'Provider adapter unavailable', errorStatus: 502 }
+  if (!adapter) {
+    await releaseReservedFundsUpTo(topUp.id, businessId, amount)
+    await prisma.eSIMTopUp.update({
+      where: { id: topUp.id },
+      data: { status: 'FAILED', errorMessage: 'Provider adapter unavailable', completedAt: new Date() },
+    })
+    return { success: false, error: 'Provider adapter unavailable', errorStatus: 502 }
+  }
 
   const providerResult = await adapter.topUpESIM({
     iccid: esim.iccid,
@@ -83,42 +193,60 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
     quantity,
   })
 
+  // ── UNCERTAIN outcome (timeout/network): keep funds reserved, hold for review ──
+  if (!providerResult.success && isUncertainOutcome(providerResult.error)) {
+    await prisma.eSIMTopUp.update({
+      where: { id: topUp.id },
+      data: { status: 'PENDING_REVIEW', errorMessage: (providerResult.error?.message || 'Provider outcome unknown').slice(0, 500) },
+    })
+    await createTimelineEvent(esim.purchaseId, {
+      eventType: 'TOPUP_PENDING_REVIEW',
+      message: `Top-up outcome unknown — funds reserved for reconciliation (${providerResult.error?.message?.slice(0, 120) || 'timeout'})`,
+    })
+    return { success: false, error: 'Provider top-up outcome unknown — funds reserved for review', errorStatus: 502 }
+  }
+
+  // ── DEFINITE FAILURE: release the reservation once, mark FAILED ──
   if (!providerResult.success) {
+    const errorMessage = providerResult.error?.message || 'Provider top-up failed'
+    await releaseReservedFundsUpTo(topUp.id, businessId, amount)
+    await prisma.eSIMTopUp.update({
+      where: { id: topUp.id },
+      data: { status: 'FAILED', errorMessage: errorMessage.slice(0, 500), completedAt: new Date() },
+    })
+    await createTimelineEvent(esim.purchaseId, { eventType: 'TOPUP_FAILED', message: errorMessage.slice(0, 200) })
     ;(async () => {
       try {
         const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
         await enqueueBusinessWebhooks(businessId, 'topup.failed', {
-          esimId: params.esimId, iccid: esim.iccid,
-          topUpPackageId, error: providerResult.error?.message,
+          esimId, iccid: esim.iccid, topUpPackageId, error: errorMessage,
         })
-      } catch { }
+      } catch { /* non-fatal */ }
     })()
-    return { success: false, error: providerResult.error?.message || 'Provider top-up failed', errorStatus: 502 }
+    return { success: false, error: errorMessage, errorStatus: 502 }
   }
 
+  // ── DEFINITE SUCCESS: atomic completion + capture ──
   const topUpData = providerResult.data!
-
-  // Determine added data/validity
   const dataAddedMB = topUpData.dataAddedMB ?? (topUpPkg.dataGB ? topUpPkg.dataGB * 1024 : undefined)
   const validityDaysAdded = topUpData.validityDaysAdded ?? topUpPkg.validityDays ?? undefined
 
-  // Atomic transaction
   try {
-    const result = await prisma.$transaction(async (tx) => {
-      const topUp = await tx.eSIMTopUp.create({
+    await prisma.$transaction(async (tx) => {
+      // Capture exactly the quoted amount, once, inside the completion transaction.
+      // Cumulative + idempotent — concurrent/repeated completion can never double-charge.
+      const capture = await captureReservedFundsUpToInTx(tx, topUp.id, businessId, amount)
+      if (!capture.success) throw new Error(capture.error || 'Wallet capture failed')
+
+      await tx.eSIMTopUp.update({
+        where: { id: topUp.id },
         data: {
-          businessId,
-          esimId,
-          packageId: topUpPackageId,
-          providerId,
-          providerReference: topUpData.providerReference || null,
-          amount,
-          currency: topUpPkg.currency || 'USD',
           status: 'COMPLETED',
+          completedAt: new Date(),
+          providerReference: topUpData.providerReference || null,
           dataAddedMB: dataAddedMB || null,
           validityDaysAdded: validityDaysAdded || null,
           providerResponse: topUpData as any,
-          completedAt: new Date(),
         },
       })
 
@@ -136,21 +264,6 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
         await tx.eSIM.update({ where: { id: esimId }, data: updateData })
       }
 
-      // Deduct wallet
-      await tx.business.update({
-        where: { id: businessId },
-        data: { walletBalance: { decrement: amount } },
-      })
-
-      await tx.walletTransaction.create({
-        data: {
-          businessId,
-          amount: -amount,
-          type: 'TOPUP_ESIM',
-          description: `Top-up: ${topUpPkg.displayName || topUpPkg.name} for eSIM ${esim.iccid}`,
-        },
-      })
-
       const ts = Date.now().toString(36).toUpperCase()
       const rand = Math.random().toString(36).substring(2, 6).toUpperCase()
 
@@ -161,7 +274,7 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
           topUpId: topUp.id,
           type: 'TOPUP',
           amount,
-          currency: topUpPkg.currency || 'USD',
+          currency,
           status: 'PAID',
           paidAt: new Date(),
         },
@@ -173,33 +286,44 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
           action: 'ESIM_TOPUP',
           entity: 'ESIMTopUp',
           entityId: topUp.id,
-          details: `Top-up: ${topUpPkg.displayName || topUpPkg.name} on ${esim.iccid} for $${amount}`,
+          details: JSON.stringify({ topUpId: topUp.id, businessId, esimId, iccid: esim.iccid, packageId: topUpPackageId, amount, currency, status: 'COMPLETED' }),
         },
       })
-
-      return topUp
     })
 
+    await createTimelineEvent(esim.purchaseId, {
+      eventType: 'TOPUP_COMPLETED',
+      message: `Top-up: ${topUpPkg.displayName || topUpPkg.name} (${esim.iccid.slice(-8)})`,
+    })
     ;(async () => {
       try {
         const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
         await enqueueBusinessWebhooks(businessId, 'topup.completed', {
-          topUpId: result.id, esimId: params.esimId, iccid: esim.iccid,
-          topUpPackageId, amount, dataAddedMB, validityDaysAdded,
+          topUpId: topUp.id, esimId, iccid: esim.iccid, topUpPackageId, amount, dataAddedMB, validityDaysAdded,
         })
-      } catch { }
+      } catch { /* non-fatal */ }
     })()
 
     return {
       success: true,
-      topUpId: result.id,
+      topUpId: topUp.id,
       status: 'COMPLETED',
       amount,
-      currency: topUpPkg.currency || 'USD',
+      currency,
       dataAddedMB: dataAddedMB || undefined,
       validityDaysAdded: validityDaysAdded || undefined,
     }
   } catch (error: any) {
+    // Provider succeeded but local completion failed — the reservation is KEPT
+    // so the top-up can be resumed without losing funds or re-charging.
+    await prisma.eSIMTopUp.update({
+      where: { id: topUp.id },
+      data: { errorMessage: (error.message || 'Completion failed').slice(0, 500) },
+    }).catch(() => {})
+    await createTimelineEvent(esim.purchaseId, {
+      eventType: 'TOPUP_COMPLETION_FAILED',
+      message: `Top-up delivered but local completion failed: ${(error.message || '').slice(0, 200)}`,
+    })
     return { success: false, error: `Transaction failed: ${error.message || 'Unknown error'}`, errorStatus: 500 }
   }
 }

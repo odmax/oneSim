@@ -2,7 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
 import { createTimelineEvent, transitionOrder } from './order-state-machine'
 import { completeProviderFinalization } from './fulfillment'
-import { releaseReservedFunds } from './wallet-actions'
+import { releaseReservedFundsUpTo } from './wallet-actions'
 import { failOrder } from './order-state-machine'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 
@@ -137,7 +137,9 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
 
     case 'FOUND_FAILURE': {
       await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION_FAILED', message: result.message })
-      await releaseReservedFunds(orderId, order.businessId, Number(order.totalAmount))
+      // Release ONLY the un-captured remainder. For partially fulfilled orders the
+      // captured units stay charged; for untouched orders the full reservation returns.
+      await releaseReservedFundsUpTo(orderId, order.businessId, Number(order.totalAmount))
       await failOrder(orderId, `Provider confirmed failure: ${result.message}`)
       return { ...result, action: 'FAILED', status: 'FAILED' }
     }

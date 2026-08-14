@@ -43,10 +43,14 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
     let body: any
     try { body = await request.json() } catch { return respond(request, makeError('INVALID_JSON', 'Invalid JSON body'), 400, startTime, businessId, { errorMessage: 'Invalid JSON', rateLimit }) }
 
-    const { packageId, sku, packageCode, quantity = 1 } = body
+    const { packageId, sku, packageCode, quantity = 1, idempotencyKey } = body
 
     if (!packageId && !sku && !packageCode) {
       return respond(request, makeError('MISSING_PACKAGE_ID', 'One of packageId, sku, or packageCode is required'), 400, startTime, businessId, { errorMessage: 'Missing package identifier', rateLimit })
+    }
+
+    if (idempotencyKey !== undefined && (typeof idempotencyKey !== 'string' || idempotencyKey.length < 8 || idempotencyKey.length > 128)) {
+      return respond(request, makeError('INVALID_IDEMPOTENCY_KEY', 'idempotencyKey must be a string between 8 and 128 characters'), 400, startTime, businessId, { errorMessage: 'Invalid idempotencyKey', rateLimit })
     }
 
     const { resolvePackageIdentifier } = await import('@/lib/packages/resolve-package')
@@ -89,6 +93,7 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
       esimId: params.esimId,
       topUpPackageId: resolution.package.id,
       quantity,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
     })
 
     if (!result.success) {
@@ -110,7 +115,7 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
       success: true,
       topUp: {
         id: result.topUpId,
-        status: 'COMPLETED',
+        status: result.status || 'COMPLETED',
         amount: result.amount,
         currency: result.currency || 'USD',
         dataAddedMB: result.dataAddedMB,

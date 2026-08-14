@@ -27,10 +27,16 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
     include: {
       business: true, user: true, package: true, provider: true,
       esims: true, events: { orderBy: { createdAt: 'desc' } },
-      walletTransactions: { orderBy: { createdAt: 'desc' } },
     },
   })
   if (!order) redirect('/admin/orders')
+
+  // Wallet ledger is keyed by a plain orderId string (covers purchases AND top-ups),
+  // not a relation on the order.
+  const walletTransactions = await prisma.walletTransaction.findMany({
+    where: { orderId: params.id },
+    orderBy: { createdAt: 'desc' },
+  })
 
   const esim = order.esims[0]
   const canRetry = order.status === 'FAILED' && order.retryCount < order.maxRetries
@@ -171,11 +177,11 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
       {/* Wallet Ledger */}
       <div className="rounded-xl border bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-900 mb-3">Wallet Ledger</h3>
-        {order.walletTransactions.length === 0 ? (
+        {walletTransactions.length === 0 ? (
           <p className="text-sm text-gray-400">No wallet transactions</p>
         ) : (
           <div className="space-y-1">
-            {order.walletTransactions.map(wt => (
+            {walletTransactions.map(wt => (
               <div key={wt.id} className="flex items-center justify-between text-sm">
                 <div><span className="font-mono text-xs text-gray-500">{wt.type}</span><span className="text-gray-400 ml-2">{wt.description}</span></div>
                 <span className={`font-mono text-sm ${Number(wt.amount) > 0 ? 'text-emerald-600' : 'text-red-500'}`}>{Number(wt.amount) > 0 ? '+' : ''}${Math.abs(Number(wt.amount)).toFixed(2)}</span>
