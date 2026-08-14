@@ -43,6 +43,7 @@ export default async function OperationsDashboardPage() {
     deadLetterCallbacks, unprocessedWebhooks, unhealthyProviders,
     openCircuits, staleInventory, failedJobs24h,
     criticalOrders,
+    pendingTopUpReview,
   ] = await Promise.all([
     prisma.eSIMPurchase.count({ where: { status: { in: ['PENDING_PROVIDER', 'PROVIDER_ACCEPTED', 'RESERVED', 'FULFILLING'] } } }),
     prisma.eSIMPurchase.count({ where: { status: 'PROVIDER_RECONCILIATION' } }),
@@ -59,6 +60,7 @@ export default async function OperationsDashboardPage() {
       select: { id: true, status: true, fulfilledQuantity: true, quantity: true },
       orderBy: { updatedAt: 'desc' }, take: 50,
     }),
+    prisma.eSIMTopUp.count({ where: { status: 'PENDING_REVIEW' } }),
   ])
 
   // Provider health scores
@@ -125,6 +127,7 @@ export default async function OperationsDashboardPage() {
         <CountCard label="Failed Jobs (24h)" count={failedJobs24h} href="/admin/jobs" severity={failedJobs24h > 0 ? 'ERROR' : 'INFO'} />
         <CountCard label="Callback Retries Due" count={deadLetterCallbacks} href="/admin/operations/callbacks?status=DEAD_LETTERED" severity={deadLetterCallbacks > 0 ? 'ERROR' : 'INFO'} />
         <CountCard label="Unprocessed Webhooks" count={unprocessedWebhooks} href="/admin/operations/webhooks?status=RECEIVED" severity={unprocessedWebhooks > 0 ? 'ERROR' : 'INFO'} />
+        <CountCard label="Top-Ups In Review" count={pendingTopUpReview} href="/admin/operations/topups" severity={pendingTopUpReview > 0 ? 'WARNING' : 'INFO'} />
       </div>
 
       {/* Manual intervention table */}
@@ -182,7 +185,7 @@ export default async function OperationsDashboardPage() {
         </div>
         <div className="px-5 py-3">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {['ESIM_STATUS_SYNC', 'ESIM_USAGE_SYNC', 'INSTALLATION_RECONCILIATION', 'PROVIDER_SELF_HEAL'].map(type => {
+            {['ESIM_STATUS_SYNC', 'ESIM_USAGE_SYNC', 'INSTALLATION_RECONCILIATION', 'TOPUP_RECONCILIATION', 'PROVIDER_SELF_HEAL'].map(type => {
               const pending = jobStats.filter(j => j.type === type && j.status === 'PENDING').reduce((s, j) => s + j._count, 0)
               const failed = jobStats.filter(j => j.type === type && j.status === 'FAILED').reduce((s, j) => s + j._count, 0)
               return (

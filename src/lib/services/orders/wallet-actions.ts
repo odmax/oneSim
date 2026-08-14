@@ -337,6 +337,11 @@ export async function releaseTopUpFundsUpTo(topUpId: string, businessId: string,
   }
 }
 
+/** Tx-aware top-up release variant for callers that release inside their own transaction. */
+export function releaseTopUpFundsUpToInTx(client: any, topUpId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; released?: number }> {
+  return releaseUpToCore(client, { topUpId }, businessId, amount)
+}
+
 /** Refund captured top-up funds (post-capture top-up refund). */
 export async function refundTopUpFunds(topUpId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string }> {
   try {

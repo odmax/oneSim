@@ -43,7 +43,8 @@ const mockReleaseUpTo = vi.mocked(releaseTopUpFundsUpTo)
 const txMock = {
   eSIMTopUp: { update: vi.fn().mockResolvedValue({}) },
   eSIM: { update: vi.fn().mockResolvedValue({}) },
-  invoice: { create: vi.fn().mockResolvedValue({}) },
+  invoice: { create: vi.fn().mockResolvedValue({ id: 'inv-1' }) },
+  billingRecord: { create: vi.fn().mockResolvedValue({}) },
   auditLog: { create: vi.fn().mockResolvedValue({}) },
 }
 
@@ -119,6 +120,16 @@ describe('F1 — top-ups are never free', () => {
     // priceUSD=10 × quantity=2 → reserve and capture both use 20.
     expect(mockReserve).toHaveBeenCalledWith('topup-1', 'biz-1', 20)
     expect(mockCaptureUpToInTx).toHaveBeenCalledWith(expect.anything(), 'topup-1', 'biz-1', 20)
+  })
+
+  it('records a TOPUP billing record for finance P&L when the top-up completes', async () => {
+    await createTopUpOrder({ businessId: 'biz-1', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1 })
+
+    // The P&L contract (billing-service) includes TOPUP revenue; a billingRecord
+    // must be created from the immutable quote (10), linked to the top-up invoice.
+    expect(txMock.billingRecord.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ type: 'TOPUP', amount: 10, esimId: 'esim-1', invoiceId: 'inv-1', businessId: 'biz-1' }),
+    }))
   })
 })
 

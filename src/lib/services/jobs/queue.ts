@@ -67,7 +67,7 @@ async function markCompleted(jobId: string) {
     data: { status: 'COMPLETED' as any },
   })
   // Reschedule recurring jobs
-  if (job && ['ESIM_STATUS_SYNC', 'ESIM_USAGE_SYNC', 'INSTALLATION_RECONCILIATION', 'PROVIDER_SELF_HEAL'].includes(job.type)) {
+  if (job && ['ESIM_STATUS_SYNC', 'ESIM_USAGE_SYNC', 'INSTALLATION_RECONCILIATION', 'TOPUP_RECONCILIATION', 'PROVIDER_SELF_HEAL'].includes(job.type)) {
     const { rescheduleAfterCompletion } = await import('./recurring-jobs')
     await rescheduleAfterCompletion(job.type)
   }
@@ -121,6 +121,8 @@ async function executeJob(job: { id: string; type: string; payload: any }) {
       return executeProviderOperation(job.payload)
     case 'INSTALLATION_RECONCILIATION':
       return (await import('./handlers/installation-reconciliation')).executeInstallationReconciliation()
+    case 'TOPUP_RECONCILIATION':
+      return (await import('./handlers/top-up-reconciliation')).executeTopUpReconciliation()
     case 'PROVIDER_SELF_HEAL':
       return (await import('./handlers/provider-self-heal')).executeProviderSelfHeal()
     case 'ESIM_STATUS_SYNC':

@@ -682,6 +682,16 @@ model ESIMTopUp {
   providerResponse  Json?
   createdAt         DateTime        @default(now())
   completedAt       DateTime?
+  /// PENDING_REVIEW reconciliation tracking. These are additive metadata only —
+  /// the wallet reserve stays untouched until a resolution path captures or
+  /// releases it. No provider mutation is ever re-dispatched from reconciliation.
+  reconciliationAttempts    Int       @default(0)
+  nextReconcileAt          DateTime?
+  lastReconcileAt          DateTime?
+  lastReconcileErrorCode   String?
+  reconcileLockedAt        DateTime?
+  reconcileLockOwner       String?
+  reconciliationEscalatedAt DateTime?
 
   business           Business             @relation("BusinessESIMTopUps", fields: [businessId], references: [id], onDelete: Cascade)
   esim               ESIM                 @relation("ESIMTopUps", fields: [esimId], references: [id], onDelete: Restrict)
@@ -1104,6 +1114,7 @@ enum JobType {
   ESIM_STATUS_SYNC
   ESIM_USAGE_SYNC
   INSTALLATION_RECONCILIATION
+  TOPUP_RECONCILIATION
   PROVIDER_SELF_HEAL
 }
 

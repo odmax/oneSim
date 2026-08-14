@@ -268,7 +268,7 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
       const ts = Date.now().toString(36).toUpperCase()
       const rand = Math.random().toString(36).substring(2, 6).toUpperCase()
 
-      await tx.invoice.create({
+      const invoice = await tx.invoice.create({
         data: {
           invoiceNumber: `TOP-${ts}-${rand}`,
           businessId,
@@ -278,6 +278,22 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
           currency,
           status: 'PAID',
           paidAt: new Date(),
+        },
+      })
+
+      // Finance P&L: record the top-up as TOPUP revenue. The billing-service P&L
+      // (getBillingStats / by-provider / by-business) already includes TOPUP in its
+      // revenue contract — this is the missing record. Idempotent per invoice.
+      await tx.billingRecord.create({
+        data: {
+          businessId,
+          esimId,
+          invoiceId: invoice.id,
+          type: 'TOPUP',
+          amount,
+          currency,
+          providerId: topUp.providerId,
+          description: `Top-up completed (${esim.iccid})`,
         },
       })
 
