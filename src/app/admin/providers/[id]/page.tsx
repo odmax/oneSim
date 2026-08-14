@@ -34,6 +34,35 @@ function maskApiToken(token: string | null): string {
   return '••••••••'
 }
 
+const SENSITIVE_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  'password',
+  'apiKey',
+  'apiToken',
+  'authToken',
+  'accessToken',
+  'refreshToken',
+  'clientSecret',
+  'secret',
+  'hmacSecret',
+  'bearerToken',
+  'token',
+  'authAccounts',
+  'credentials',
+  'webhookAuth',
+])
+
+function redactSensitiveConfig(config: unknown): unknown {
+  if (Array.isArray(config)) return config.map(redactSensitiveConfig)
+  if (config && typeof config === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(config as Record<string, unknown>)) {
+      out[k] = SENSITIVE_CONFIG_KEYS.has(k) ? '••••••••' : redactSensitiveConfig(v)
+    }
+    return out
+  }
+  return config
+}
+
 function healthEventIcon(type: string): string {
   switch (type) {
     case 'AUTH_FAILURE': return '🔴'
@@ -58,10 +87,12 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   const healthLogs: HealthEvent[] = await getRecentHealthLogs(provider.id, 10).catch(() => [])
 
   // Safely normalize provider config for rendering
+  // (sensitive keys are never shipped to the client bundle)
   const safeConfig: Record<string, string> = {}
   const rawConfig = (provider.config || {}) as Record<string, unknown>
   try {
     for (const [k, v] of Object.entries(rawConfig || {})) {
+      if (SENSITIVE_CONFIG_KEYS.has(k)) continue
       safeConfig[k] = typeof v === 'string' ? v : String(v ?? '')
     }
   } catch { /* malformed config */ }
@@ -246,7 +277,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
             <div className="flex justify-between"><dt className="text-gray-500">Auth URL</dt><dd className="font-mono text-sm text-gray-900">{provider.authUrl || <span className="text-gray-400">Same as API Base URL</span>}</dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">API Token</dt><dd className="font-mono text-sm text-gray-500">{maskApiToken(provider.apiToken) || <span className="text-gray-400">Not set</span>}</dd></div>
             {provider.config && (
-              <div className="flex justify-between"><dt className="text-gray-500">Config</dt><dd className="font-mono text-xs text-gray-500 max-w-[200px] truncate" title={JSON.stringify(provider.config)}>{JSON.stringify(provider.config)}</dd></div>
+              <div className="flex justify-between"><dt className="text-gray-500">Config</dt><dd className="font-mono text-xs text-gray-500 max-w-[200px] truncate" title={JSON.stringify(redactSensitiveConfig(provider.config))}>{JSON.stringify(redactSensitiveConfig(provider.config))}</dd></div>
             )}
             <div className="flex justify-between"><dt className="text-gray-500">Linked Packages</dt><dd className="font-medium text-gray-900">{packageCount}</dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">Created</dt><dd className="text-gray-600">{provider.createdAt.toLocaleDateString()}</dd></div>

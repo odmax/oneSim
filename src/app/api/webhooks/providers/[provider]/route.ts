@@ -10,14 +10,12 @@ function getSecret(providerType: string): string {
 
 function verifySecret(request: NextRequest, providerType: string): boolean {
   const secret = getSecret(providerType)
-  if (!secret) return true
+  // Fail closed in production: ingesting webhooks without a configured secret
+  // would accept any unauthenticated payload.
+  if (!secret) return process.env.NODE_ENV !== 'production'
 
   const headerSecret = request.headers.get('x-webhook-secret')
   if (headerSecret === secret) return true
-
-  const { searchParams } = new URL(request.url)
-  const querySecret = searchParams.get('secret')
-  if (querySecret === secret) return true
 
   return false
 }

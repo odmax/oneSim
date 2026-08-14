@@ -8,27 +8,35 @@ import { createTimelineEvent } from './order-state-machine'
  */
 export async function reserveWalletFunds(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string }> {
   try {
-    // Check for existing reserve (idempotent)
-    const existing = await prisma.walletTransaction.findFirst({
-      where: { orderId, type: 'WALLET_RESERVE' },
-    })
-    if (existing) return { success: true }
+    // Atomic reserve: the balance check and the decrement run inside one
+    // transaction with a conditional update, closing the read-then-write race
+    // that could let concurrent purchases overdraw the wallet.
+    const result = await prisma.$transaction(async (tx) => {
+      // Idempotency: an existing reserve means this order already holds the funds.
+      const existing = await tx.walletTransaction.findFirst({
+        where: { orderId, type: 'WALLET_RESERVE' },
+      })
+      if (existing) return { success: true }
 
-    const business = await prisma.business.findUnique({ where: { id: businessId } })
-    if (!business) return { success: false, error: 'Business not found' }
+      const business = await tx.business.findUnique({ where: { id: businessId }, select: { walletBalance: true } })
+      if (!business) return { success: false, error: 'Business not found' }
 
-    const balance = Number(business.walletBalance)
-    if (balance < amount) return { success: false, error: `Insufficient wallet balance. Required: ${amount}, Available: ${balance}` }
-
-    await prisma.$transaction([
-      prisma.business.update({
-        where: { id: businessId },
+      const updated = await tx.business.updateMany({
+        where: { id: businessId, walletBalance: { gte: amount } },
         data: { walletBalance: { decrement: amount } },
-      }),
-      prisma.walletTransaction.create({
+      })
+      if (updated.count === 0) {
+        const balance = Number(business.walletBalance)
+        return { success: false, error: `Insufficient wallet balance. Required: ${amount}, Available: ${balance}` }
+      }
+
+      await tx.walletTransaction.create({
         data: { businessId, orderId, amount: -amount, type: 'WALLET_RESERVE', description: `Reserved ${amount} for order ${orderId}` },
-      }),
-    ])
+      })
+      return { success: true }
+    })
+
+    if (!result.success) return result
 
     await createTimelineEvent(orderId, { eventType: 'WALLET_RESERVED', message: `Wallet reserved: ${amount}` })
     return { success: true }
