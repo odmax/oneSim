@@ -164,8 +164,11 @@ describe('partial fulfillment flow', () => {
 describe('wallet partial capture invariants', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  it('10. capture is incremental — a later batch captures only its new units', async () => {
-    // First batch: 3 of 5 units delivered (already covered by test 5 → capture up to 30).
+  it('10. capture is cumulative — a later batch captures only its new units', async () => {
+    // First batch delivered 3 of 5 units (captured up to $30). This batch brings the
+    // cumulative total to 5 → processPartialFulfillment calls captureReservedFundsUpTo
+    // with the CUMULATIVE target $50; the helper captures only the delta ($20) because
+    // it is idempotent per cumulative target. It must NOT be called with the delta ($20).
     const order = mockOrder({ quantity: 5, quotedQuantity: 5, fulfilledQuantity: 3 })
     mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
       if (args?.include?.esims || args?.include?.business) {
@@ -184,14 +187,15 @@ describe('wallet partial capture invariants', () => {
       providerResult: { iccids: ['a', 'b', 'c', 'd', 'e'] },
     })
 
-    // newlyFulfilled = 5 − 3 = 2 → capture up to $20, NOT the full $50 again.
-    expect(mockCaptureUpTo).toHaveBeenCalledWith('order-1', 'biz-1', 20)
+    // Cumulative target = 5 units × $10 = $50 (helper captures the $20 delta internally).
+    expect(mockCaptureUpTo).toHaveBeenCalledWith('order-1', 'biz-1', 50)
+    expect(mockCaptureUpTo).not.toHaveBeenCalledWith('order-1', 'biz-1', 20)
   })
 
   it('11. duplicate batch does not capture twice (cumulative idempotency)', async () => {
-    // processPartialFulfillment must call captureReservedFundsUpTo with the same
-    // cumulative target it already captured. The helper is idempotent per target,
-    // so the same order + amount never creates a second capture.
+    // processPartialFulfillment calls captureReservedFundsUpTo only when newlyFulfilled > 0.
+    // A duplicate batch (fulfilledQuantity already 3, no new units) never calls it again;
+    // and if it did, the helper is idempotent per cumulative target.
     const order = mockOrder({ quantity: 3, quotedQuantity: 3, fulfilledQuantity: 3 })
     mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
       if (args?.include?.esims || args?.include?.business) {

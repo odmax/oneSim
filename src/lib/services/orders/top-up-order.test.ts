@@ -6,7 +6,7 @@ vi.mock('@/lib/prisma', () => ({
     eSIMPackage: { findUnique: vi.fn() },
     provider: { findUnique: vi.fn() },
     business: { findUnique: vi.fn() },
-    eSIMTopUp: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn().mockResolvedValue({}) },
+    eSIMTopUp: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn().mockResolvedValue({}) },
     invoice: { create: vi.fn().mockResolvedValue({}) },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
   },
@@ -17,9 +17,9 @@ vi.mock('@/lib/providers/adapter-manager', () => ({
 }))
 
 vi.mock('@/lib/services/orders/wallet-actions', () => ({
-  reserveWalletFunds: vi.fn().mockResolvedValue({ success: true }),
-  captureReservedFundsUpToInTx: vi.fn().mockResolvedValue({ success: true }),
-  releaseReservedFundsUpTo: vi.fn().mockResolvedValue({ success: true, released: 0 }),
+  reserveTopUpFunds: vi.fn().mockResolvedValue({ success: true }),
+  captureTopUpFundsUpToInTx: vi.fn().mockResolvedValue({ success: true }),
+  releaseTopUpFundsUpTo: vi.fn().mockResolvedValue({ success: true, released: 0 }),
 }))
 
 vi.mock('@/lib/services/orders/order-state-machine', () => ({
@@ -32,13 +32,13 @@ vi.mock('@/lib/services/business-webhooks/dispatcher', () => ({
 
 const { prisma } = await import('@/lib/prisma')
 const { getAdapterForProvider } = await import('@/lib/providers/adapter-manager')
-const { reserveWalletFunds, captureReservedFundsUpToInTx, releaseReservedFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
+const { reserveTopUpFunds, captureTopUpFundsUpToInTx, releaseTopUpFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
 const { createTopUpOrder } = await import('./top-up-order')
 
 const mockPrisma = vi.mocked(prisma)
-const mockReserve = vi.mocked(reserveWalletFunds)
-const mockCaptureUpToInTx = vi.mocked(captureReservedFundsUpToInTx)
-const mockReleaseUpTo = vi.mocked(releaseReservedFundsUpTo)
+const mockReserve = vi.mocked(reserveTopUpFunds)
+const mockCaptureUpToInTx = vi.mocked(captureTopUpFundsUpToInTx)
+const mockReleaseUpTo = vi.mocked(releaseTopUpFundsUpTo)
 
 const txMock = {
   eSIMTopUp: { update: vi.fn().mockResolvedValue({}) },
@@ -80,7 +80,7 @@ beforeEach(() => {
   mockPrisma.provider.findUnique.mockResolvedValue(provider as any)
   mockPrisma.business.findUnique.mockResolvedValue(business as any)
   mockPrisma.eSIMTopUp.create.mockResolvedValue({ id: 'topup-1', status: 'PENDING', amount: 10, currency: 'USD' } as any)
-  mockPrisma.eSIMTopUp.findUnique.mockResolvedValue(null)
+  mockPrisma.eSIMTopUp.findFirst.mockResolvedValue(null)
   ;(getAdapterForProvider as any).mockResolvedValue(adapter)
   adapter.topUpESIM.mockResolvedValue({
     success: true,
@@ -124,7 +124,7 @@ describe('F1 — top-ups are never free', () => {
 
 describe('F2 — no double provider charge / double debit on retry', () => {
   it('idempotencyKey dedups: a retried request is never re-executed', async () => {
-    mockPrisma.eSIMTopUp.findUnique.mockResolvedValue({ id: 'topup-1', status: 'COMPLETED', amount: 10, currency: 'USD', dataAddedMB: 1000, validityDaysAdded: 30 } as any)
+    mockPrisma.eSIMTopUp.findFirst.mockResolvedValue({ id: 'topup-1', status: 'COMPLETED', amount: 10, currency: 'USD', dataAddedMB: 1000, validityDaysAdded: 30 } as any)
 
     const result = await createTopUpOrder({ businessId: 'biz-1', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1, idempotencyKey: 'key-123456789' })
 
@@ -132,6 +132,49 @@ describe('F2 — no double provider charge / double debit on retry', () => {
     expect(result.alreadyCompleted).toBe(true)
     expect(result.topUpId).toBe('topup-1')
     expect(mockPrisma.eSIMTopUp.create).not.toHaveBeenCalled()
+    expect(adapter.topUpESIM).not.toHaveBeenCalled()
+  })
+
+  it('PENDING_REVIEW retry is never re-dispatched — it returns 409 with funds kept reserved', async () => {
+    mockPrisma.eSIMTopUp.findFirst.mockResolvedValue({ id: 'topup-1', status: 'PENDING_REVIEW', amount: 10, currency: 'USD', dataAddedMB: null, validityDaysAdded: null } as any)
+
+    const result = await createTopUpOrder({ businessId: 'biz-1', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1, idempotencyKey: 'key-123456789' })
+
+    expect(result.success).toBe(false)
+    expect(result.errorStatus).toBe(409)
+    expect(result.error).toContain('pending review')
+    expect(mockPrisma.eSIMTopUp.create).not.toHaveBeenCalled()
+    expect(adapter.topUpESIM).not.toHaveBeenCalled()
+    expect(mockReleaseUpTo).not.toHaveBeenCalled()
+  })
+
+  it('idempotencyKey is scoped per business — the dedup lookup queries businessId + key', async () => {
+    mockPrisma.eSIM.findUnique
+      .mockResolvedValueOnce(esim as any)
+      .mockResolvedValueOnce({ ...esim, purchase: { ...esim.purchase, businessId: 'biz-2' } } as any)
+
+    await createTopUpOrder({ businessId: 'biz-1', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1, idempotencyKey: 'key-123456789' })
+    expect(mockPrisma.eSIMTopUp.findFirst).toHaveBeenCalledWith({ where: { businessId: 'biz-1', idempotencyKey: 'key-123456789' } })
+
+    // A different business reusing the same key finds no match → its own top-up is created.
+    await createTopUpOrder({ businessId: 'biz-2', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1, idempotencyKey: 'key-123456789' })
+    expect(mockPrisma.eSIMTopUp.findFirst).toHaveBeenCalledWith({ where: { businessId: 'biz-2', idempotencyKey: 'key-123456789' } })
+    expect(mockPrisma.eSIMTopUp.create).toHaveBeenCalledTimes(2)
+  })
+
+  it('the same business reusing the same key is deduplicated even after a create race (P2002)', async () => {
+    // Pre-check finds nothing, create races with a concurrent request, P2002 fires,
+    // the recovery lookup then finds the winner and returns it without re-dispatching.
+    mockPrisma.eSIMTopUp.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'topup-9', status: 'COMPLETED', amount: 10, currency: 'USD', dataAddedMB: 1000, validityDaysAdded: 30 } as any)
+    mockPrisma.eSIMTopUp.create.mockRejectedValueOnce({ code: 'P2002' })
+
+    const result = await createTopUpOrder({ businessId: 'biz-1', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1, idempotencyKey: 'key-123456789' })
+
+    expect(result.success).toBe(true)
+    expect(result.topUpId).toBe('topup-9')
+    expect(result.alreadyCompleted).toBe(true)
     expect(adapter.topUpESIM).not.toHaveBeenCalled()
   })
 

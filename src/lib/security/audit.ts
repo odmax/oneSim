@@ -49,6 +49,12 @@ export async function checkProviderCertifiedForLive(providerId: string): Promise
   return { allowed: true }
 }
 
+/**
+ * Purchase-refund safety: verifies the id is a real ESIMPurchase and that the
+ * purchase has a CAPTURE ledger entry (keyed by orderId). Because it first
+ * resolves the id against esim_purchases, a top-up id can never be mistaken for
+ * a purchase here — top-up refunds go through checkTopUpRefundSafe.
+ */
 export async function checkRefundSafe(orderId: string): Promise<{ safe: boolean; reason?: string }> {
   const order = await prisma.eSIMPurchase.findUnique({
     where: { id: orderId },
@@ -62,6 +68,29 @@ export async function checkRefundSafe(orderId: string): Promise<{ safe: boolean;
 
   if (!captured) {
     return { safe: false, reason: 'No captured payment to refund. Only captured orders can be refunded.' }
+  }
+
+  return { safe: true }
+}
+
+/**
+ * Top-up refund safety: verifies the id is a real ESIMTopUp and that the top-up
+ * has a CAPTURE ledger entry keyed by topUpId. Distinct from purchase refunds so
+ * a top-up id can never be resolved against the purchase ledger.
+ */
+export async function checkTopUpRefundSafe(topUpId: string): Promise<{ safe: boolean; reason?: string }> {
+  const topUp = await prisma.eSIMTopUp.findUnique({
+    where: { id: topUpId },
+    select: { id: true },
+  })
+  if (!topUp) return { safe: false, reason: 'Top-up not found' }
+
+  const captured = await prisma.walletTransaction.findFirst({
+    where: { topUpId, type: 'WALLET_CAPTURE' },
+  })
+
+  if (!captured) {
+    return { safe: false, reason: 'No captured payment to refund. Only captured top-ups can be refunded.' }
   }
 
   return { safe: true }

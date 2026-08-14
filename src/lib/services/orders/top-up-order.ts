@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
-import { reserveWalletFunds, captureReservedFundsUpToInTx, releaseReservedFundsUpTo } from './wallet-actions'
+import { reserveTopUpFunds, captureTopUpFundsUpToInTx, releaseTopUpFundsUpTo } from './wallet-actions'
 import { createTimelineEvent } from './order-state-machine'
 
 export interface TopUpOrderParams {
@@ -80,8 +80,9 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
   }
 
   // Idempotency: a previously processed logical top-up is never re-executed.
+  // The key is scoped per business — two businesses may safely reuse the same key.
   if (idempotencyKey) {
-    const existing = await prisma.eSIMTopUp.findUnique({ where: { idempotencyKey } })
+    const existing = await prisma.eSIMTopUp.findFirst({ where: { businessId, idempotencyKey } })
     if (existing) return returnExisting(existing)
   }
 
@@ -133,7 +134,7 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
   if (!(amount > 0)) return { success: false, error: 'Invalid top-up amount', errorStatus: 400 }
 
   // ── Create the PENDING top-up record with the quote snapshot ──
-  // Its id becomes the wallet orderId, giving every top-up its own reservation
+  // Its id becomes the wallet topUpId, giving every top-up its own reservation
   // (F1: the purchase ledger can no longer short-circuit top-up billing).
   let topUp
   try {
@@ -155,16 +156,16 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
       },
     })
   } catch (e: any) {
-    // Unique-key race on idempotencyKey — the request was already processed.
+    // Unique-key race on (businessId, idempotencyKey) — already processed.
     if (e?.code === 'P2002' && idempotencyKey) {
-      const existing = await prisma.eSIMTopUp.findUnique({ where: { idempotencyKey } })
+      const existing = await prisma.eSIMTopUp.findFirst({ where: { businessId, idempotencyKey } })
       if (existing) return returnExisting(existing)
     }
     throw e
   }
 
-  // ── Reserve wallet (atomic + idempotent, keyed by this top-up) ──
-  const reserve = await reserveWalletFunds(topUp.id, businessId, amount)
+  // ── Reserve wallet (atomic + idempotent, keyed by this top-up's topUpId) ──
+  const reserve = await reserveTopUpFunds(topUp.id, businessId, amount)
   if (!reserve.success) {
     await prisma.eSIMTopUp.update({
       where: { id: topUp.id },
@@ -176,7 +177,7 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
   // ── Dispatch provider ──
   const adapter = await getAdapterForProvider(providerId)
   if (!adapter) {
-    await releaseReservedFundsUpTo(topUp.id, businessId, amount)
+    await releaseTopUpFundsUpTo(topUp.id, businessId, amount)
     await prisma.eSIMTopUp.update({
       where: { id: topUp.id },
       data: { status: 'FAILED', errorMessage: 'Provider adapter unavailable', completedAt: new Date() },
@@ -209,7 +210,7 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
   // ── DEFINITE FAILURE: release the reservation once, mark FAILED ──
   if (!providerResult.success) {
     const errorMessage = providerResult.error?.message || 'Provider top-up failed'
-    await releaseReservedFundsUpTo(topUp.id, businessId, amount)
+    await releaseTopUpFundsUpTo(topUp.id, businessId, amount)
     await prisma.eSIMTopUp.update({
       where: { id: topUp.id },
       data: { status: 'FAILED', errorMessage: errorMessage.slice(0, 500), completedAt: new Date() },
@@ -235,7 +236,7 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
     await prisma.$transaction(async (tx) => {
       // Capture exactly the quoted amount, once, inside the completion transaction.
       // Cumulative + idempotent — concurrent/repeated completion can never double-charge.
-      const capture = await captureReservedFundsUpToInTx(tx, topUp.id, businessId, amount)
+      const capture = await captureTopUpFundsUpToInTx(tx, topUp.id, businessId, amount)
       if (!capture.success) throw new Error(capture.error || 'Wallet capture failed')
 
       await tx.eSIMTopUp.update({

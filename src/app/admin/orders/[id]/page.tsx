@@ -31,8 +31,9 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
   })
   if (!order) redirect('/admin/orders')
 
-  // Wallet ledger is keyed by a plain orderId string (covers purchases AND top-ups),
-  // not a relation on the order.
+  // Purchase wallet ledger — keyed by orderId (FK → ESIMPurchase.id).
+  // Top-up ledger entries are keyed separately by topUpId and are shown on the
+  // eSIM / top-up views; they never populate the purchase orderId.
   const walletTransactions = await prisma.walletTransaction.findMany({
     where: { orderId: params.id },
     orderBy: { createdAt: 'desc' },

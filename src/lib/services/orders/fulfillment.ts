@@ -542,7 +542,11 @@ export async function processPartialFulfillment(input: {
   const qtys = await deriveOrderFulfillmentQuantities(orderId)
   const newlyFulfilled = Math.max(0, qtys.fulfilledQuantity - (order.fulfilledQuantity ?? 0))
   const unitPrice = Number(order.quotedUnitPrice ?? order.packageUnitPrice ?? 0)
-  const captureAmount = unitPrice * newlyFulfilled
+  // CUMULATIVE capture target — the value of all units fulfilled so far.
+  // captureReservedFundsUpTo treats its arg as a cumulative cap and captures only
+  // the delta, so a later batch (fulfilled 3 → 4) captures the +1 unit delta and a
+  // re-delivered duplicate batch (cumulative unchanged) captures nothing.
+  const cumulativeCaptureTarget = unitPrice * qtys.fulfilledQuantity
 
   await prisma.eSIMPurchase.update({
     where: { id: orderId },
@@ -550,15 +554,15 @@ export async function processPartialFulfillment(input: {
   })
 
   let walletCaptured = false
-  if (newlyFulfilled > 0 && captureAmount > 0) {
+  if (newlyFulfilled > 0 && cumulativeCaptureTarget > 0) {
     // Charge per successful unit, cumulative across batches: capture up to the
     // total value of units fulfilled so far (unitPrice × fulfilledQuantity).
     // captureReservedFundsUpTo is idempotent and never exceeds the reservation,
     // so re-deliveries/reconciliation cannot double-charge.
-    const captureResult = await captureReservedFundsUpTo(orderId, businessId, captureAmount)
+    const captureResult = await captureReservedFundsUpTo(orderId, businessId, cumulativeCaptureTarget)
     if (captureResult.success) {
       walletCaptured = true
-      await createTimelineEvent(orderId, { eventType: 'PARTIAL_WALLET_CAPTURED', message: `Captured ${captureAmount} for ${newlyFulfilled} new eSIMs` })
+      await createTimelineEvent(orderId, { eventType: 'PARTIAL_WALLET_CAPTURED', message: `Captured up to ${cumulativeCaptureTarget} for ${qtys.fulfilledQuantity} eSIMs (${newlyFulfilled} new)` })
     }
   }
 

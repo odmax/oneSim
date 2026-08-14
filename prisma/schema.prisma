@@ -570,6 +570,7 @@ model ESIMPurchase {
   packagePriceSnapshot PackagePriceSnapshot? @relation(fields: [packagePriceSnapshotId], references: [id], onDelete: SetNull)
   inventoryReservations ProviderInventoryReservation[]
   callbackDeliveries    OrderCallbackDelivery[]
+  walletTransactions    WalletTransaction[]      @relation("WalletOrderTx")
 
   @@map("esim_purchases")
 }
@@ -672,8 +673,9 @@ model ESIMTopUp {
   quotedQuantity       Int?
   pricingEngineVersion String?
   requestedQuantity    Int          @default(1)
-  /// Deduplication key — one logical top-up may only be created once.
-  idempotencyKey       String?      @unique
+  /// Dedup key scoped to the business — one logical top-up per business may only
+  /// be created once. A key supplied by Business A never collides with Business B.
+  idempotencyKey       String?
   errorMessage         String?
   dataAddedMB       Int?
   validityDaysAdded Int?
@@ -681,12 +683,14 @@ model ESIMTopUp {
   createdAt         DateTime        @default(now())
   completedAt       DateTime?
 
-  business Business    @relation("BusinessESIMTopUps", fields: [businessId], references: [id], onDelete: Cascade)
-  esim     ESIM        @relation("ESIMTopUps", fields: [esimId], references: [id], onDelete: Restrict)
-  package  ESIMPackage @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  Invoice  Invoice?
-  customer Customer?   @relation(fields: [customerId], references: [id])
+  business           Business             @relation("BusinessESIMTopUps", fields: [businessId], references: [id], onDelete: Cascade)
+  esim               ESIM                 @relation("ESIMTopUps", fields: [esimId], references: [id], onDelete: Restrict)
+  package            ESIMPackage          @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  Invoice            Invoice?
+  customer           Customer?            @relation(fields: [customerId], references: [id])
+  walletTransactions WalletTransaction[]  @relation("WalletTopUpTx")
 
+  @@unique([businessId, idempotencyKey])
   @@map("esim_top_ups")
 }
 
@@ -792,16 +796,24 @@ model Invoice {
 model WalletTransaction {
   id          String   @id @default(cuid())
   businessId  String
-  /// Opaque billing key — references an ESIMPurchase.id for purchases or an ESIMTopUp.id for top-ups.
-  /// Kept as a plain string so each top-up can hold its own reserve/capture/release identity.
+  /// Billing reference for PURCHASE ledger entries — FK to ESIMPurchase.id.
+  /// Exactly one of orderId/topUpId is set; they are never both populated.
   orderId     String?
+  /// Billing reference for TOP-UP ledger entries — FK to ESIMTopUp.id.
+  /// Top-ups hold their own reserve/capture/release identity and never
+  /// masquerade as an ESIMPurchase (F1).
+  topUpId     String?
   amount      Decimal
   type        String
   description String?
   createdAt   DateTime @default(now())
 
-  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  business Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  order    ESIMPurchase? @relation("WalletOrderTx", fields: [orderId], references: [id], onDelete: SetNull)
+  topUp    ESIMTopUp?    @relation("WalletTopUpTx", fields: [topUpId], references: [id], onDelete: SetNull)
 
+  @@index([orderId, type])
+  @@index([topUpId, type])
   @@map("wallet_transactions")
 }
 
