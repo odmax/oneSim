@@ -1155,9 +1155,17 @@ export class UrlTokenConnector extends RestCatalogConnector {
 
   /**
    * Canonical Choice installation lookup — read-only package_detail.
-   * Whitelist parser: never serializes an arbitrary provider payload. Extracts
-   * from the package object (root / json.package / json.data.package) and from
-   * data.imsis[] (activation_code / qr_code_link). Classifies state safely.
+   *
+   * IMPORTANT SEMANTIC: live package_detail returns STATUS/PACKAGE metadata only
+   * (account_id, iccid, imsi_version, package_status, package_name, ...) — it
+   * does NOT carry qr_code_link / activation_code / lpa / smdp / matching_id /
+   * imsis[]. The actual Choice installation data source is the ACTIVATION
+   * response (`POST add_bundle_using_template_from_pool` → data.imsis[].activation_code
+   * / qr_code_link), which is consumed at PURCHASE time and cannot be re-called
+   * read-only. Therefore a NO-install-data result from package_detail is NOT
+   * proof that QR is unavailable — the diagnostics.note and errorCode make this
+   * explicit so reconciliation keeps the row retrying (never NOT_SUPPORTED/FAILED
+   * on this evidence).
    */
   async lookupInstallationData(input: InstallationLookupInput): Promise<InstallationLookupResult> {
     const token = this.config.apiToken || ''
@@ -1181,9 +1189,6 @@ export class UrlTokenConnector extends RestCatalogConnector {
     if (error) {
       if (status === 401 || status === 403) {
         return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'PROVIDER_AUTH_FAILED', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
-      }
-      if (status === 429) {
-        return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'PROVIDER_HTTP_ERROR', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
       }
       return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: error.code === 'TIMEOUT' || error.code === 'NETWORK_ERROR' ? 'PROVIDER_TIMEOUT' : 'PROVIDER_HTTP_ERROR', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
     }
@@ -1218,7 +1223,19 @@ export class UrlTokenConnector extends RestCatalogConnector {
     if (hasUsableInstallData(data)) {
       return { success: true, state: 'READY', data, diagnostics: diag }
     }
-    return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'NO_QR_CODE', diagnostics: diag }
+
+    // package_detail is status/package metadata only — NOT the installation
+    // source. A missing QR/activation here is NOT proof QR is unavailable; the
+    // install source is the activation response (not re-callable read-only).
+    return {
+      success: false,
+      state: 'NOT_AVAILABLE_YET',
+      errorCode: 'NO_INSTALL_DATA',
+      diagnostics: {
+        ...diag,
+        note: 'package_detail is status/package metadata only; install source is the activation response (data.imsis[]) which is not re-callable read-only. NO_QR_CODE from this endpoint is NOT proof QR is unavailable.',
+      },
+    }
   }
 
   async topUpESIM(params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
@@ -1503,7 +1520,10 @@ export class UrlTokenConnector extends RestCatalogConnector {
     if (!iccid) return { success: false, error: { code: 'MISSING_ICCID', message: 'No ICCID available' } }
     const result = await this.lookupInstallationData({ iccid })
     if (!result.success || !result.data) {
-      return { success: false, error: { code: result.errorCode || 'NO_QR_CODE', message: `Installation lookup: ${result.state}` } }
+      // Legacy contract keeps NO_QR_CODE; the canonical lookup now reports
+      // NO_INSTALL_DATA + a note clarifying package_detail is status-only.
+      const code = result.errorCode === 'NO_INSTALL_DATA' ? 'NO_QR_CODE' : (result.errorCode || 'NO_QR_CODE')
+      return { success: false, error: { code, message: `Installation lookup: ${result.state}` } }
     }
     return { success: true, data: { ...result.data } }
   }

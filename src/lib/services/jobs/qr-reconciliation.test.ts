@@ -131,9 +131,9 @@ describe('canonical lookup state handling', () => {
     }))
   })
 
-  it('NOT_AVAILABLE_YET → retry increment + checked timestamp + meaningful lastError', async () => {
+  it('NOT_AVAILABLE_YET → retry increment + checked timestamp + meaningful lastError (never terminal)', async () => {
     mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim()])
-    mockLookup.mockResolvedValue({ esimId: 'esim-1', success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'NO_QR_CODE' } as any)
+    mockLookup.mockResolvedValue({ esimId: 'esim-1', success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'NO_INSTALL_DATA', diagnostics: { note: 'package_detail is status-only; NOT proof QR is unavailable' } } as any)
 
     const result = await reconcileMissingInstallationDetails(10)
 
@@ -141,7 +141,8 @@ describe('canonical lookup state handling', () => {
     const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
     expect(updateCall.data.installationRetryCount).toEqual({ increment: 1 })
     expect(updateCall.data.installationLastCheckedAt).toBeInstanceOf(Date)
-    expect(updateCall.data.installationLastError).toBe('NO_QR_CODE')
+    expect(updateCall.data.installationLastError).toBe('NO_INSTALL_DATA')
+    expect(updateCall.data.installationStatus).toBeUndefined() // stays PENDING, not NOT_SUPPORTED/FAILED
   })
 
   it('NOT_SUPPORTED is terminal', async () => {

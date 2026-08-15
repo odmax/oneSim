@@ -132,6 +132,12 @@ export interface InstallationLookupDiagnostics {
   durationMs?: number
   /** Response object keys only — never values, never a raw payload. */
   responseKeys?: string[]
+  /**
+   * Free-form SAFE note (no secrets). Used to clarify semantics, e.g. that the
+   * queried endpoint is status/package metadata only and therefore a missing
+   * QR/activation field is NOT proof the provider lacks installation data.
+   */
+  note?: string
 }
 
 export interface InstallationLookupResult {

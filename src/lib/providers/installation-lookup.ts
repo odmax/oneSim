@@ -158,6 +158,9 @@ export async function recordLookupDiagnostic(
   if (d.responseKeys && d.responseKeys.length > 0) {
     console.log(`[INSTALLATION_LOOKUP_KEYS] esimId=${esimId} keys=${d.responseKeys.join(',')}`)
   }
+  if (d.note) {
+    console.log(`[INSTALLATION_LOOKUP_NOTE] esimId=${esimId} note=${d.note.slice(0, 300)}`)
+  }
 }
 
 /** Apply lookup data onto an eSIM via the canonical fill-only merge; returns the persisted fields. */

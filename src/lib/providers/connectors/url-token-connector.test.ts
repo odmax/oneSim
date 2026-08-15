@@ -2291,12 +2291,25 @@ describe('Choice lookupInstallationData — canonical installation contract', ()
     vi.unstubAllGlobals()
   })
 
-  it('no install fields → NOT_AVAILABLE_YET with NO_QR_CODE', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: ICCID, status: 'active' } }))
+  it('no install fields → NOT_AVAILABLE_YET with NO_INSTALL_DATA and a status-only note (NOT proof QR is unavailable)', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: ICCID, status: 'active', package_status: 'active', account_id: '217' } }))
     vi.stubGlobal('fetch', mockFetch)
     const result = await c().lookupInstallationData({ iccid: ICCID })
     expect(result.state).toBe('NOT_AVAILABLE_YET')
-    expect(result.errorCode).toBe('NO_QR_CODE')
+    expect(result.errorCode).toBe('NO_INSTALL_DATA')
+    expect(result.diagnostics?.note).toContain('package_detail is status/package metadata only')
+    expect(result.diagnostics?.note).toContain('NOT proof QR is unavailable')
+    // response keys (safe, no values) captured for operators
+    expect(result.diagnostics?.responseKeys).toBeTruthy()
+    vi.unstubAllGlobals()
+  })
+
+  it('legacy getQRCode maps the status-only lookup back to NO_QR_CODE', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: ICCID, status: 'active' } }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().getQRCode(ICCID)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NO_QR_CODE')
     vi.unstubAllGlobals()
   })
 
