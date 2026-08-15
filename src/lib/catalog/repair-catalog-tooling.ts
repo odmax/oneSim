@@ -22,6 +22,8 @@ export interface RepairFilters {
   packageId?: string
   requireRetailLink: boolean
   all: boolean
+  /** Explicit historical retail-cost recovery. Never part of normal runtime precedence. */
+  recoverCostFromRetail: boolean
 }
 
 export interface ParsedRepairArgs {
@@ -34,7 +36,7 @@ export interface ParsedRepairArgs {
 export const VALID_PUBLISH_STATUSES = ['DRAFT', 'READY', 'PUBLISHED', 'HIDDEN', 'ARCHIVED']
 
 function emptyFilters(): RepairFilters {
-  return { provider: undefined, publishStatus: undefined, publishedOnly: false, packageId: undefined, requireRetailLink: false, all: false }
+  return { provider: undefined, publishStatus: undefined, publishedOnly: false, packageId: undefined, requireRetailLink: false, all: false, recoverCostFromRetail: false }
 }
 
 function fail(error: string, mode: RepairMode = 'dry-run', filters: RepairFilters = emptyFilters()): ParsedRepairArgs {
@@ -54,7 +56,8 @@ function fail(error: string, mode: RepairMode = 'dry-run', filters: RepairFilter
  *     silently ignored).
  */
 export function parseRepairArgs(argv: string[]): ParsedRepairArgs {
-  const flags = new Set(argv.filter(a => a === '--dry-run' || a === '--apply' || a === '--published-only' || a === '--require-retail-link' || a === '--all'))
+  const flagNames = new Set(['--dry-run', '--apply', '--published-only', '--require-retail-link', '--all', '--recover-cost-from-retail'])
+  const flags = new Set(argv.filter(a => flagNames.has(a)))
   const kv: Record<string, string> = {}
   for (const a of argv) {
     const eq = a.indexOf('=')
@@ -101,8 +104,9 @@ export function parseRepairArgs(argv: string[]): ParsedRepairArgs {
 
   const requireRetailLink = flags.has('--require-retail-link')
   const all = flags.has('--all')
+  const recoverCostFromRetail = flags.has('--recover-cost-from-retail')
 
-  const filters: RepairFilters = { provider, publishStatus, publishedOnly, packageId, requireRetailLink, all }
+  const filters: RepairFilters = { provider, publishStatus, publishedOnly, packageId, requireRetailLink, all, recoverCostFromRetail }
   const hasTargetingFilter = Boolean(provider || publishStatus || packageId)
 
   // Broad-apply protection: refuse unfiltered --apply unless --all.
@@ -128,14 +132,50 @@ export function buildRepairWhere(filters: RepairFilters): Record<string, unknown
   return where
 }
 
+export type RepairCostSource = 'ADMIN' | 'PROVIDER' | 'RETAIL_RECOVERY' | 'MISSING'
+
 export interface RepairClassifiedPackage {
   id: string
   name: string
   providerCode: string | null
   ready: boolean
+  /** Normal repairable: provider/admin cost present (without relying on retail recovery). */
   repairable: boolean
+  /** Explicit historical retail-cost recovery available (flag enabled). */
+  recoverableRetailCost: boolean
+  /** No recoverable cost anywhere (PP cost, admin cost, and retail cost all absent). */
+  missingCostSource: boolean
   missingRetailLink: boolean
+  costSource: RepairCostSource
+  /** Historical retail cost (publishedAs.costPriceUSD) when present — the recovery input. */
+  retailCost?: number | null
   reasons: string[]
+}
+
+/**
+ * Provider-neutral recoverable-cost resolution for repair tooling.
+ *
+ * Normal runtime precedence (NEVER changed by this flag):
+ *   adminCostPrice > 0  → ADMIN override wins
+ *   else costPrice > 0  → provider cost
+ *   else                → MISSING
+ *
+ * ONLY when `recoverCostFromRetail` is explicitly requested, a final fallback
+ * is allowed: linked ESIMPackage.costPriceUSD > 0 → historical retail cost.
+ * Cost is NEVER derived from sellingPrice/priceUSD/markupPercent/name/raw guesses.
+ */
+export function resolveRepairCostSource(pp: {
+  adminCostPrice?: unknown
+  costPrice?: unknown
+  publishedAs?: { costPriceUSD?: unknown } | null
+}, opts: { recoverCostFromRetail: boolean }): { costSource: RepairCostSource; retailCost: number | null } {
+  const admin = pp.adminCostPrice ? Number(pp.adminCostPrice) : 0
+  const provider = pp.costPrice ? Number(pp.costPrice) : 0
+  if (admin > 0) return { costSource: 'ADMIN', retailCost: null }
+  if (provider > 0) return { costSource: 'PROVIDER', retailCost: null }
+  const retail = pp.publishedAs?.costPriceUSD ? Number(pp.publishedAs.costPriceUSD) : 0
+  if (opts.recoverCostFromRetail && retail > 0) return { costSource: 'RETAIL_RECOVERY', retailCost: retail }
+  return { costSource: 'MISSING', retailCost: null }
 }
 
 /**
@@ -151,26 +191,35 @@ export function classifyRepairPackage(
     costPrice?: unknown
     adminCostPrice?: unknown
     sellingPrice?: unknown
-    publishedAs?: { id?: string } | null
+    publishedAs?: { id?: string; costPriceUSD?: unknown } | null
     provider?: { code?: string | null; status?: string | null; enabledCapabilities?: unknown } | null
   },
-  opts: { requireRetailLink: boolean },
+  opts: { requireRetailLink: boolean; recoverCostFromRetail: boolean },
 ): RepairClassifiedPackage {
   const readiness = getPackagePurchaseReadiness({
     providerPkg: pp as any,
     provider: pp.provider ? { status: pp.provider.status || '', enabledCapabilities: pp.provider.enabledCapabilities, code: pp.provider.code || null } : null,
   })
-  const hasCost = Number(pp.costPrice || 0) > 0 || (pp.adminCostPrice ? Number(pp.adminCostPrice) > 0 : false)
+  const { costSource, retailCost } = resolveRepairCostSource(pp, { recoverCostFromRetail: opts.recoverCostFromRetail })
   const hasSellPrice = Number(pp.sellingPrice || 0) > 0
   const missingRetailLink = opts.requireRetailLink && !pp.publishedAs
+
+  const base = !readiness.ready && hasSellPrice && !missingRetailLink
+  const repairable = base && (costSource === 'ADMIN' || costSource === 'PROVIDER')
+  const recoverableRetailCost = base && costSource === 'RETAIL_RECOVERY'
+  const missingCostSource = base && costSource === 'MISSING'
 
   return {
     id: pp.id,
     name: pp.name,
     providerCode: pp.provider?.code || null,
     ready: readiness.ready,
-    repairable: !readiness.ready && hasCost && hasSellPrice && !missingRetailLink,
+    repairable,
+    recoverableRetailCost,
+    missingCostSource,
     missingRetailLink,
+    costSource,
+    retailCost: retailCost ?? null,
     reasons: readiness.ready ? [] : readiness.reasons,
   }
 }
@@ -192,6 +241,8 @@ export interface RepairReport {
   ready: number
   repairable: number
   notRepairable: number
+  recoverableRetailCost: number
+  missingCostSource: number
   skippedMissingRetailLink: number
   attempted: number
   repaired: number
@@ -203,7 +254,7 @@ export interface RepairReport {
 }
 
 export function emptyRepairReport(): RepairReport {
-  return { matched: 0, ready: 0, repairable: 0, notRepairable: 0, skippedMissingRetailLink: 0, attempted: 0, repaired: 0, stillBlocked: 0, skipped: 0, failed: 0, beforeReasons: [], afterReasons: [] }
+  return { matched: 0, ready: 0, repairable: 0, notRepairable: 0, recoverableRetailCost: 0, missingCostSource: 0, skippedMissingRetailLink: 0, attempted: 0, repaired: 0, stillBlocked: 0, skipped: 0, failed: 0, beforeReasons: [], afterReasons: [] }
 }
 
 /** Build the report header lines with the active filters (safe — no secrets). */
@@ -215,6 +266,7 @@ export function formatRepairHeader(mode: RepairMode, filters: RepairFilters): st
     `PUBLISH_STATUS_FILTER: ${filters.publishStatus || '(none)'}`,
     `PACKAGE_ID_FILTER: ${filters.packageId || '(none)'}`,
     `REQUIRE_RETAIL_LINK: ${filters.requireRetailLink ? 'true' : 'false'}`,
+    `RECOVER_COST_FROM_RETAIL: ${filters.recoverCostFromRetail ? 'true' : 'false'}`,
     `ALL: ${filters.all ? 'true' : 'false'}`,
     '',
   ]
@@ -225,6 +277,8 @@ export function formatRepairReport(report: RepairReport): string[] {
   lines.push(`Matched: ${report.matched}`)
   lines.push(`Already ready: ${report.ready}`)
   lines.push(`Repairable: ${report.repairable}`)
+  lines.push(`Recoverable retail cost: ${report.recoverableRetailCost}`)
+  lines.push(`Missing cost source: ${report.missingCostSource}`)
   lines.push(`Not repairable: ${report.notRepairable}`)
   lines.push(`Skipped missing retail link: ${report.skippedMissingRetailLink}`)
   lines.push('')

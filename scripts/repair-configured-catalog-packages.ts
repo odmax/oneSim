@@ -17,6 +17,9 @@
  *   --published-only              alias for --publish-status=PUBLISHED
  *   --package-id=<ProviderPackage.id>
  *   --require-retail-link         skip + report packages with no linked ESIMPackage
+ *   --recover-cost-from-retail    explicit historical retail-cost recovery:
+ *                                 use publishedAs.costPriceUSD ONLY when PP/admin
+ *                                 cost is absent (never normal runtime precedence)
  *   --all                         explicitly allow broad (unfiltered) apply
  *
  * Safety:
@@ -49,7 +52,7 @@ async function main() {
   const parsed = parseRepairArgs(process.argv.slice(2))
   if (parsed.error) {
     console.error(parsed.error)
-    console.error('Usage: --dry-run | --apply [--provider=CODE] [--publish-status=STATUS|--published-only] [--package-id=ID] [--require-retail-link] [--all]')
+    console.error('Usage: --dry-run | --apply [--provider=CODE] [--publish-status=STATUS|--published-only] [--package-id=ID] [--require-retail-link] [--recover-cost-from-retail] [--all]')
     process.exit(2)
   }
 
@@ -61,7 +64,7 @@ async function main() {
     where,
     include: {
       provider: { select: { status: true, enabledCapabilities: true, code: true, name: true } },
-      publishedAs: { select: { id: true } },
+      publishedAs: { select: { id: true, costPriceUSD: true } },
     },
     orderBy: { name: 'asc' },
   })
@@ -86,7 +89,7 @@ async function main() {
   const afterReasons: string[][] = []
 
   for (const pp of packages) {
-    const c = classifyRepairPackage(pp, { requireRetailLink: filters.requireRetailLink })
+    const c = classifyRepairPackage(pp, { requireRetailLink: filters.requireRetailLink, recoverCostFromRetail: filters.recoverCostFromRetail })
     classified.push(c)
     beforeReasons.push(c.ready ? [] : c.reasons)
 
@@ -111,6 +114,52 @@ async function main() {
           console.log(`    -> FAILED at ${result.failedStage}: ${result.error}`)
         }
       }
+    } else if (c.recoverableRetailCost) {
+      report.recoverableRetailCost++
+      console.log(`  [RECOVERABLE RETAIL COST] ${c.providerCode || '?'} | ${c.name} (${c.id.slice(-8)}): PP cost=${pp.costPrice ?? 'null'} retail cost=${c.retailCost ?? 'null'} selling=${pp.sellingPrice ?? 'null'}`)
+      console.log(`    reasons: ${c.reasons.join('; ')}`)
+
+      if (mode === 'apply') {
+        report.attempted++
+        // Re-read safely to confirm the cost is still absent and the retail link +
+        // retail cost still exist before using the recovered historical cost.
+        const fresh = await prisma.providerPackage.findUnique({
+          where: { id: c.id },
+          include: { publishedAs: { select: { id: true, costPriceUSD: true } } },
+        })
+        const freshAdmin = fresh?.adminCostPrice ? Number(fresh.adminCostPrice) : 0
+        const freshProvider = fresh?.costPrice ? Number(fresh.costPrice) : 0
+        const retailCost = fresh?.publishedAs?.costPriceUSD ? Number(fresh.publishedAs.costPriceUSD) : 0
+        const stillAbsent = freshAdmin <= 0 && freshProvider <= 0
+        const retailStillPresent = !!fresh?.publishedAs && retailCost > 0
+
+        if (!stillAbsent || !retailStillPresent) {
+          report.skipped++
+          console.log(`    -> SKIPPED (cost/admin appeared or retail cost changed during run)`)
+        } else {
+          // Migrated historical provider-origin cost: write the recovered retail
+          // cost into ProviderPackage.costPrice so the CANONICAL finalizer
+          // (computeEffectiveCost → recalculatePackagePrice → snapshot → readiness)
+          // derives costSource=PROVIDER, costStatus=VALID, and creates the snapshot.
+          await prisma.providerPackage.update({
+            where: { id: c.id },
+            data: { costPrice: retailCost },
+          })
+          const result = await finalizeCatalogPackageConfiguration(c.id, { reason: 'REPAIR_RETAIL_COST_RECOVERY' })
+          if (result.success) {
+            report.repaired++
+            console.log(`    -> REPAIRED via retail cost ${retailCost}: snapshot=${result.snapshotId}`)
+          } else {
+            report.failed++
+            console.log(`    -> FAILED at ${result.failedStage}: ${result.error}`)
+          }
+        }
+      }
+    } else if (c.missingCostSource) {
+      report.missingCostSource++
+      console.log(`  [MISSING COST SOURCE] ${c.providerCode || '?'} | ${c.name} (${c.id.slice(-8)}) — no cost anywhere; requires explicit admin cost`)
+      console.log(`    reasons: ${c.reasons.join('; ')}`)
+      // Never repaired automatically.
     } else {
       report.notRepairable++
       console.log(`  [NOT REPAIRABLE] ${c.providerCode || '?'} | ${c.name} (${c.id.slice(-8)}): ${c.reasons.join('; ')}`)
@@ -131,14 +180,14 @@ async function main() {
 
   // After verification (apply only) — re-read repaired candidates.
   if (mode === 'apply') {
-    const repairedIds = classified.filter(c => c.repairable).map(c => c.id)
-    if (repairedIds.length > 0) {
+    const attemptedIds = classified.filter(c => c.repairable || c.recoverableRetailCost).map(c => c.id)
+    if (attemptedIds.length > 0) {
       const refreshed = await prisma.providerPackage.findMany({
-        where: { id: { in: repairedIds } },
-        include: { provider: { select: { status: true, enabledCapabilities: true, code: true } }, publishedAs: { select: { id: true } } },
+        where: { id: { in: attemptedIds } },
+        include: { provider: { select: { status: true, enabledCapabilities: true, code: true } }, publishedAs: { select: { id: true, costPriceUSD: true } } },
       })
       for (const pp of refreshed) {
-        const after = classifyRepairPackage(pp, { requireRetailLink: filters.requireRetailLink })
+        const after = classifyRepairPackage(pp, { requireRetailLink: filters.requireRetailLink, recoverCostFromRetail: filters.recoverCostFromRetail })
         afterReasons.push(after.ready ? [] : after.reasons)
         if (after.ready) {
           console.log(`  [AFTER: READY] ${after.providerCode || '?'} | ${after.name} (${after.id.slice(-8)})`)
