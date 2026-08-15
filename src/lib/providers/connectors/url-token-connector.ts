@@ -1143,6 +1143,8 @@ export class UrlTokenConnector extends RestCatalogConnector {
   /** Choice connector-declared internal capabilities (runtime truth). */
   capabilities: ConnectorCapabilities = {
     installationLookup: true,
+    installationDataAtPurchase: true, // activation response carries data.imsis[].activation_code / qr_code_link
+    installationLookupHistorical: false, // no verified read-only recovery endpoint for existing ICCIDs
     statusLookup: true,
     usageLookup: true,
     topUp: true,
@@ -1154,88 +1156,39 @@ export class UrlTokenConnector extends RestCatalogConnector {
   }
 
   /**
-   * Canonical Choice installation lookup — read-only package_detail.
+   * Canonical Choice installation lookup.
    *
-   * IMPORTANT SEMANTIC: live package_detail returns STATUS/PACKAGE metadata only
-   * (account_id, iccid, imsi_version, package_status, package_name, ...) — it
-   * does NOT carry qr_code_link / activation_code / lpa / smdp / matching_id /
-   * imsis[]. The actual Choice installation data source is the ACTIVATION
-   * response (`POST add_bundle_using_template_from_pool` → data.imsis[].activation_code
-   * / qr_code_link), which is consumed at PURCHASE time and cannot be re-called
-   * read-only. Therefore a NO-install-data result from package_detail is NOT
-   * proof that QR is unavailable — the diagnostics.note and errorCode make this
-   * explicit so reconciliation keeps the row retrying (never NOT_SUPPORTED/FAILED
-   * on this evidence).
+   * Choice captures install data at PURCHASE time from the activation response
+   * (`POST add_bundle_using_template_from_pool` → data.imsis[].activation_code /
+   * qr_code_link). Live package_detail returns STATUS/PACKAGE metadata only and
+   * is NOT an install endpoint, and no verified read-only recovery endpoint for
+   * an existing ICCID exists in the repo. Therefore historical recovery is
+   * classified NOT_RECOVERABLE (never NOT_SUPPORTED — new purchases still carry
+   * install data; never NOT_AVAILABLE_YET — package_detail must not be endlessly
+   * retried for QR).
    */
   async lookupInstallationData(input: InstallationLookupInput): Promise<InstallationLookupResult> {
-    const token = this.config.apiToken || ''
-    if (!input.iccid && !input.imsi && input.imsiVersion == null) {
-      return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'IDENTIFIER_MISSING', diagnostics: { methodUsed: 'package_detail', identifierType: 'none' } }
+    const identifierKey = input.iccid ? 'iccid' : input.imsi ? 'imsi' : (input.imsiVersion != null ? 'imsi_version' : 'none')
+    if (identifierKey === 'none') {
+      return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'IDENTIFIER_MISSING', diagnostics: { methodUsed: 'none', identifierType: 'none' } }
     }
-    const identifierKey = input.iccid ? 'iccid' : input.imsi ? 'imsi' : 'imsi_version'
-    const identifierValue = input.iccid || input.imsi || String(input.imsiVersion)
-
-    const auth = await this.ensureAuthenticated()
-    if (!auth.success) {
-      return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'PROVIDER_AUTH_FAILED', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey } }
-    }
-
-    const started = Date.now()
-    const path = '/account/v03_09/package_detail'
-    const url = `${this.baseUrl(`${path}/${encodeURIComponent(token)}`)}?${identifierKey}=${encodeURIComponent(String(identifierValue))}`
-    const { text, error, status } = await fetchText(url, { headers: { Accept: 'application/json' }, timeoutMs: this.config.timeoutMs })
-    const durationMs = Date.now() - started
-
-    if (error) {
-      if (status === 401 || status === 403) {
-        return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'PROVIDER_AUTH_FAILED', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
+    if (!this.capabilities.installationLookupHistorical) {
+      return {
+        success: false,
+        state: 'NOT_RECOVERABLE',
+        errorCode: 'INSTALL_DATA_NOT_RECOVERABLE',
+        diagnostics: {
+          methodUsed: 'none',
+          identifierType: identifierKey,
+          note: 'Choice captures install data at purchase from the activation response (data.imsis[]); package_detail is status-only and no verified read-only recovery endpoint exists. New purchases supply install data; historical recovery is unavailable.',
+        },
       }
-      return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: error.code === 'TIMEOUT' || error.code === 'NETWORK_ERROR' ? 'PROVIDER_TIMEOUT' : 'PROVIDER_HTTP_ERROR', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
     }
-
-    let json: any
-    try {
-      json = JSON.parse(text || '{}')
-    } catch {
-      return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'PROVIDER_RESPONSE_UNMAPPED', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
-    }
-
-    const pkg = json?.package || json?.data?.package || json
-    const imsis = Array.isArray(json?.data?.imsis) ? json.data.imsis : []
-    const data = parseChoiceInstallData(pkg, imsis)
-
-    const keys = {
-      topLevelKeys: Object.keys(json || {}).slice(0, 30),
-      dataKeys: json?.data && typeof json.data === 'object' ? Object.keys(json.data).slice(0, 30) : [],
-      imsisCount: imsis.length,
-      firstImsiKeys: imsis.length > 0 && typeof imsis[0] === 'object' ? Object.keys(imsis[0]).slice(0, 30) : [],
-    }
-    const diag: InstallationLookupDiagnostics = {
-      methodUsed: 'package_detail',
-      identifierType: identifierKey,
-      httpMethod: 'GET',
-      endpointName: 'package_detail',
-      httpStatus: status,
-      durationMs,
-      responseKeys: [...new Set([...keys.topLevelKeys, ...(keys.dataKeys.length ? ['data:' + keys.dataKeys.join(',')] : []), ...(imsis.length ? [`imsis[${imsis.length}]:` + keys.firstImsiKeys.join(',')] : [])])].slice(0, 20),
-    }
-
-    if (hasUsableInstallData(data)) {
-      return { success: true, state: 'READY', data, diagnostics: diag }
-    }
-
-    // package_detail is status/package metadata only — NOT the installation
-    // source. A missing QR/activation here is NOT proof QR is unavailable; the
-    // install source is the activation response (not re-callable read-only).
-    return {
-      success: false,
-      state: 'NOT_AVAILABLE_YET',
-      errorCode: 'NO_INSTALL_DATA',
-      diagnostics: {
-        ...diag,
-        note: 'package_detail is status/package metadata only; install source is the activation response (data.imsis[]) which is not re-callable read-only. NO_QR_CODE from this endpoint is NOT proof QR is unavailable.',
-      },
-    }
+    // Future: when a verified read-only recovery endpoint exists, set
+    // installationLookupHistorical=true and implement it here with a whitelist
+    // parser for the exact verified response shape. Never re-call the purchase
+    // endpoint.
+    return { success: false, state: 'NOT_RECOVERABLE', errorCode: 'INSTALL_DATA_NOT_RECOVERABLE' }
   }
 
   async topUpESIM(params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
@@ -1515,14 +1468,16 @@ export class UrlTokenConnector extends RestCatalogConnector {
     }
   }
 
-  /** Override getQRCode — use package_detail endpoint for delayed installation lookup */
+  /** Override getQRCode — Choice has no verified read-only recovery endpoint, so this returns NO_QR_CODE without a network call (historical recovery is NOT_RECOVERABLE). */
   async getQRCode(iccid: string): Promise<ConnectorResult<QRCodeResult>> {
     if (!iccid) return { success: false, error: { code: 'MISSING_ICCID', message: 'No ICCID available' } }
     const result = await this.lookupInstallationData({ iccid })
     if (!result.success || !result.data) {
-      // Legacy contract keeps NO_QR_CODE; the canonical lookup now reports
-      // NO_INSTALL_DATA + a note clarifying package_detail is status-only.
-      const code = result.errorCode === 'NO_INSTALL_DATA' ? 'NO_QR_CODE' : (result.errorCode || 'NO_QR_CODE')
+      // Legacy contract keeps NO_QR_CODE; the canonical lookup reports
+      // INSTALL_DATA_NOT_RECOVERABLE / NO_INSTALL_DATA with a clarifying note.
+      const code = result.errorCode === 'INSTALL_DATA_NOT_RECOVERABLE' || result.errorCode === 'NO_INSTALL_DATA'
+        ? 'NO_QR_CODE'
+        : (result.errorCode || 'NO_QR_CODE')
       return { success: false, error: { code, message: `Installation lookup: ${result.state}` } }
     }
     return { success: true, data: { ...result.data } }

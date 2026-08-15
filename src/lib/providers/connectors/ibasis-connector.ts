@@ -1019,6 +1019,8 @@ export class IbasisConnector implements IProviderConnector {
   /** iBASIS connector-declared internal capabilities (stored/read-only install lookup). */
   capabilities: ConnectorCapabilities = {
     installationLookup: true,
+    installationDataAtPurchase: true,
+    installationLookupHistorical: false, // stored data only; no live read-only recovery
     statusLookup: true,
     usageLookup: false,
     topUp: false,

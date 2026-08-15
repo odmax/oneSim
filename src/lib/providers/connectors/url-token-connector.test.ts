@@ -4,7 +4,7 @@ import { resolveConnectorType, createConnector } from './connector-factory'
 import { DEFAULT_PROVIDER_CAPABILITIES } from '../capabilities/defaults'
 
 import { UrlTokenConnector } from './url-token-connector'
-import { convertChoiceUsageToMB, parseChoiceUtcTimestamp, selectChoiceUsageRateGroups, normalizeChoiceUsage } from './url-token-connector'
+import { convertChoiceUsageToMB, parseChoiceUtcTimestamp, selectChoiceUsageRateGroups, normalizeChoiceUsage, parseChoiceInstallData } from './url-token-connector'
 
 function makeChoiceConfig(overrides: any = {}) {
   return {
@@ -1600,34 +1600,7 @@ describe('UrlTokenConnector', () => {
     })
   })
 
-  describe('getQRCode', () => {
-    it('calls the exact Choice package_detail endpoint with an iccid query', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', qr_code_link: 'https://qr.example/link' } }))
-      vi.stubGlobal('fetch', mockFetch)
-
-      const result = await connector.getQRCode('89012345678901234567')
-      expect(result.success).toBe(true)
-      expect(result.data?.qrCodeUrl).toBe('https://qr.example/link')
-
-      const [url, init] = mockFetch.mock.calls[0]
-      expect(init.method).toBe('GET')
-      expect(url).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/package_detail/test-token-abc123?iccid=89012345678901234567')
-
-      vi.unstubAllGlobals()
-    })
-
-    it('extracts activation_code from package detail', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { qr_code_url: 'https://qr.example/url', activation_code: 'LPA:1$smdp.example$abc' } }))
-      vi.stubGlobal('fetch', mockFetch)
-
-      const result = await connector.getQRCode('89012345678901234567')
-      expect(result.success).toBe(true)
-      expect(result.data?.qrCodeUrl).toBe('https://qr.example/url')
-      expect(result.data?.activationCode).toBe('LPA:1$smdp.example$abc')
-
-      vi.unstubAllGlobals()
-    })
-
+  describe('getQRCode (legacy)', () => {
     it('rejects before HTTP when no ICCID is present', async () => {
       const mockFetch = vi.fn()
       vi.stubGlobal('fetch', mockFetch)
@@ -1640,48 +1613,15 @@ describe('UrlTokenConnector', () => {
       vi.unstubAllGlobals()
     })
 
-    it('returns NO_QR_CODE when package detail has no QR link', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: '89012345678901234567', status: 'active' } }))
+    it('returns NO_QR_CODE without a network call (no verified read-only recovery endpoint)', async () => {
+      const mockFetch = vi.fn()
       vi.stubGlobal('fetch', mockFetch)
 
       const result = await connector.getQRCode('89012345678901234567')
       expect(result.success).toBe(false)
       expect(result.error?.code).toBe('NO_QR_CODE')
-
-      vi.unstubAllGlobals()
-    })
-
-    it('succeeds with an activation-code-only package (LPA string is installable data)', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { activation_code: 'LPA:1$smdp.example$abc', qr_code_link: '' } }))
-      vi.stubGlobal('fetch', mockFetch)
-
-      const result = await connector.getQRCode('89012345678901234567')
-      expect(result.success).toBe(true)
-      expect(result.data?.activationCode).toBe('LPA:1$smdp.example$abc')
-
-      vi.unstubAllGlobals()
-    })
-
-    it('maps smdpAddress and matchingId from package detail', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { smdp_address: 'smdp.example.com', matching_id: 'mid-123', qr_code_link: '' } }))
-      vi.stubGlobal('fetch', mockFetch)
-
-      const result = await connector.getQRCode('89012345678901234567')
-      expect(result.success).toBe(true)
-      expect(result.data?.smdpAddress).toBe('smdp.example.com')
-      expect(result.data?.matchingId).toBe('mid-123')
-
-      vi.unstubAllGlobals()
-    })
-
-    it('stays read-only — only GET package_detail is issued, never a mutation', async () => {
-      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { qr_code_link: 'https://qr.example/link', activation_code: 'LPA:1$smdp$c' } }))
-      vi.stubGlobal('fetch', mockFetch)
-
-      await connector.getQRCode('89012345678901234567')
-      expect(mockFetch).toHaveBeenCalledTimes(1)
-      expect(mockFetch.mock.calls[0][1].method).toBe('GET')
-      expect(mockFetch.mock.calls[0][0]).toContain('/account/v03_09/package_detail/')
+      // package_detail is status-only; no re-probe for QR.
+      expect(mockFetch).not.toHaveBeenCalled()
 
       vi.unstubAllGlobals()
     })
@@ -2231,127 +2171,21 @@ describe('Choice lookupInstallationData — canonical installation contract', ()
 
   function c() { return makeConnector() }
 
-  it('declares installationLookup capability = true', () => {
-    expect(c().capabilities?.installationLookup).toBe(true)
+  it('declares capabilities: installationLookup + installationDataAtPurchase true, installationLookupHistorical false', () => {
+    const caps = c().capabilities!
+    expect(caps.installationLookup).toBe(true)
+    expect(caps.installationDataAtPurchase).toBe(true)
+    expect(caps.installationLookupHistorical).toBe(false)
   })
 
-  it('extracts root qr_code_link → READY', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ qr_code_link: 'https://qr.example/root' }))
+  it('historical lookup → NOT_RECOVERABLE (distinct from NOT_SUPPORTED), no network call', async () => {
+    const mockFetch = vi.fn()
     vi.stubGlobal('fetch', mockFetch)
     const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('READY')
-    expect(result.data?.qrCodeUrl).toBe('https://qr.example/root')
-    vi.unstubAllGlobals()
-  })
-
-  it('extracts data.package qr_code_url → READY', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, data: { package: { qr_code_url: 'https://qr.example/nested' } } }))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('READY')
-    expect(result.data?.qrCodeUrl).toBe('https://qr.example/nested')
-    vi.unstubAllGlobals()
-  })
-
-  it('extracts imsis[] activation_code and qr_code_link → READY', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: ICCID, activation_code: 'LPA:1$s$c', qr_code_link: 'https://qr.example/imsi' }] } }))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('READY')
-    expect(result.data?.activationCode).toBe('LPA:1$s$c')
-    expect(result.data?.qrCodeUrl).toBe('https://qr.example/imsi')
-    vi.unstubAllGlobals()
-  })
-
-  it('activation_code only → READY', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ package: { activation_code: 'LPA:1$smdp.example$abc' } }))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('READY')
-    expect(result.data?.activationCode).toBe('LPA:1$smdp.example$abc')
-    vi.unstubAllGlobals()
-  })
-
-  it('LPA-only field → READY activationCode', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ package: { lpa: 'LPA:1$smdp.example$mid' } }))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('READY')
-    expect(result.data?.activationCode).toBe('LPA:1$smdp.example$mid')
-    vi.unstubAllGlobals()
-  })
-
-  it('SM-DP + matchingId → READY', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ package: { smdp_address: 'smdp.example.com', matching_id: 'mid-123' } }))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('READY')
-    expect(result.data?.smdpAddress).toBe('smdp.example.com')
-    expect(result.data?.matchingId).toBe('mid-123')
-    vi.unstubAllGlobals()
-  })
-
-  it('no install fields → NOT_AVAILABLE_YET with NO_INSTALL_DATA and a status-only note (NOT proof QR is unavailable)', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: ICCID, status: 'active', package_status: 'active', account_id: '217' } }))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('NOT_AVAILABLE_YET')
-    expect(result.errorCode).toBe('NO_INSTALL_DATA')
-    expect(result.diagnostics?.note).toContain('package_detail is status/package metadata only')
-    expect(result.diagnostics?.note).toContain('NOT proof QR is unavailable')
-    // response keys (safe, no values) captured for operators
-    expect(result.diagnostics?.responseKeys).toBeTruthy()
-    vi.unstubAllGlobals()
-  })
-
-  it('legacy getQRCode maps the status-only lookup back to NO_QR_CODE', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: ICCID, status: 'active' } }))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().getQRCode(ICCID)
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NO_QR_CODE')
-    vi.unstubAllGlobals()
-  })
-
-  it('unexpected nesting is safely classified (no throw, no data)', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(okJson({ payload: { foo: { bar: 'x' } }, list: [1, 2] }))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('NOT_AVAILABLE_YET')
-    vi.unstubAllGlobals()
-  })
-
-  it('HTTP 401 → PERMANENT_FAILURE PROVIDER_AUTH_FAILED', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(errorResponse(401))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('PERMANENT_FAILURE')
-    expect(result.errorCode).toBe('PROVIDER_AUTH_FAILED')
-    vi.unstubAllGlobals()
-  })
-
-  it('HTTP 429 → NOT_AVAILABLE_YET (retryable)', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(errorResponse(429))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('NOT_AVAILABLE_YET')
-    vi.unstubAllGlobals()
-  })
-
-  it('HTTP 500 → NOT_AVAILABLE_YET (retryable)', async () => {
-    const mockFetch = vi.fn().mockResolvedValue(errorResponse(500))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('NOT_AVAILABLE_YET')
-    vi.unstubAllGlobals()
-  })
-
-  it('timeout → NOT_AVAILABLE_YET PROVIDER_TIMEOUT', async () => {
-    const mockFetch = vi.fn().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }))
-    vi.stubGlobal('fetch', mockFetch)
-    const result = await c().lookupInstallationData({ iccid: ICCID })
-    expect(result.state).toBe('NOT_AVAILABLE_YET')
-    expect(result.errorCode).toBe('PROVIDER_TIMEOUT')
+    expect(result.state).toBe('NOT_RECOVERABLE')
+    expect(result.errorCode).toBe('INSTALL_DATA_NOT_RECOVERABLE')
+    expect(result.diagnostics?.note).toContain('package_detail is status-only')
+    expect(mockFetch).not.toHaveBeenCalled() // no billable/read-only re-probe
     vi.unstubAllGlobals()
   })
 
@@ -2363,5 +2197,49 @@ describe('Choice lookupInstallationData — canonical installation contract', ()
     expect(result.errorCode).toBe('IDENTIFIER_MISSING')
     expect(mockFetch).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
+  })
+
+  it('legacy getQRCode returns NO_QR_CODE without a network call (no read-only recovery)', async () => {
+    const mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().getQRCode(ICCID)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NO_QR_CODE')
+    expect(mockFetch).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('parseChoiceInstallData — whitelist parser (activation-response install shape)', () => {
+  it('extracts root qr_code_link', () => {
+    const data = parseChoiceInstallData({ qr_code_link: 'https://qr.example/root' })
+    expect(data.qrCodeUrl).toBe('https://qr.example/root')
+  })
+
+  it('extracts imsis[] activation_code and qr_code_link (activation-response shape)', () => {
+    const data = parseChoiceInstallData({}, [{ iccid: '89012345678901234567', activation_code: 'LPA:1$s$c', qr_code_link: 'https://qr.example/imsi' }])
+    expect(data.activationCode).toBe('LPA:1$s$c')
+    expect(data.qrCodeUrl).toBe('https://qr.example/imsi')
+  })
+
+  it('extracts activation_code / lpa only', () => {
+    expect(parseChoiceInstallData({ activation_code: 'LPA:1$smdp$abc' }).activationCode).toBe('LPA:1$smdp$abc')
+    expect(parseChoiceInstallData({ lpa: 'LPA:1$smdp$mid' }).activationCode).toBe('LPA:1$smdp$mid')
+  })
+
+  it('extracts SM-DP + matchingId', () => {
+    const data = parseChoiceInstallData({ smdp_address: 'smdp.example.com', matching_id: 'mid-123' })
+    expect(data.smdpAddress).toBe('smdp.example.com')
+    expect(data.matchingId).toBe('mid-123')
+  })
+
+  it('never serializes arbitrary provider fields', () => {
+    const data = parseChoiceInstallData({ random_secret: 'secret', nested: { value: 'x' } })
+    expect(Object.keys(data).length).toBe(0)
+  })
+
+  it('fill-only across sources (first non-empty wins)', () => {
+    const data = parseChoiceInstallData({ activation_code: 'LPA:1$first$c' }, [{ activation_code: 'LPA:1$second$c' }])
+    expect(data.activationCode).toBe('LPA:1$first$c')
   })
 })

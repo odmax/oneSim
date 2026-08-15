@@ -1252,8 +1252,11 @@ describe('IbasisConnector lookupInstallationData (canonical, stored/read-only)',
     connector = new IbasisConnector('ibasis-1')
   })
 
-  it('declares installationLookup capability = true', () => {
-    expect(connector.capabilities?.installationLookup).toBe(true)
+  it('declares installation capabilities (at-purchase yes, historical stored-only no)', () => {
+    const caps = connector.capabilities!
+    expect(caps.installationLookup).toBe(true)
+    expect(caps.installationDataAtPurchase).toBe(true)
+    expect(caps.installationLookupHistorical).toBe(false) // stored data only
   })
 
   it('reads stored activation code ? READY', async () => {

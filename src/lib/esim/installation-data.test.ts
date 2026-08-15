@@ -113,6 +113,24 @@ describe('normalizeConnectorInstallData', () => {
     expect(normalizeConnectorInstallData({ qrCodeUrls: ['https://a/q.png', 'https://b/q.png'], qrCodeUrl: 'https://c/q.png' }).qrCodeUrl).toBe('https://c/q.png')
   })
 
+  it('maps a Choice activateESIM result (data.imsis[].activation_code / qr_code_link) into install fields', () => {
+    // Choice activateESIM maps data.imsis[].activation_code → activationCodes and
+    // data.imsis[0].qr_code_link → qrCodeUrl. The canonical normalizer then
+    // produces the persisted ESIM fields.
+    const out = normalizeConnectorInstallData({
+      activationId: 'txn-1',
+      iccids: ['89012345678901234567'],
+      imsis: ['310410123456789'],
+      activationCodes: ['LPA:1$smdp.example.com$mid'],
+      qrCodeUrl: 'https://qr.example/q.png',
+      status: 'ACTIVATED',
+    })
+    expect(out.activationCode).toBe('LPA:1$smdp.example.com$mid')
+    expect(out.qrCodeUrl).toBe('https://qr.example/q.png')
+    expect(out).not.toHaveProperty('activationId')
+    expect(out).not.toHaveProperty('status')
+  })
+
   it('drops empty/falsy values and never invents fields', () => {
     expect(normalizeConnectorInstallData({ activationCode: '', qrCode: undefined, smdpAddress: null, matchingId: '' }))
       .toEqual({})

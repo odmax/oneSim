@@ -154,6 +154,18 @@ export async function reconcileMissingInstallationDetails(batchSize = 10): Promi
         notSupported++
         break
       }
+      case 'NOT_RECOVERABLE': {
+        // Historical install data cannot be recovered read-only (e.g. Choice:
+        // install data comes from the activation response, not package_detail).
+        // This is a DISTINCT terminal state — the provider is NOT globally
+        // NOT_SUPPORTED because NEW purchases still capture install data.
+        await prisma.eSIM.update({
+          where: { id: esim.id },
+          data: { installationStatus: 'NOT_RECOVERABLE', installationLastCheckedAt: new Date(), installationLastError: lookup.errorCode || 'INSTALL_DATA_NOT_RECOVERABLE' },
+        })
+        failed++
+        break
+      }
       case 'PERMANENT_FAILURE': {
         await prisma.eSIM.update({
           where: { id: esim.id },

@@ -29,7 +29,7 @@ beforeEach(() => {
   mockPrisma.provider.findUnique.mockResolvedValue(choiceProvider() as any)
   mockBuild.mockResolvedValue({
     name: 'Choice Wireless',
-    capabilities: { installationLookup: true, statusLookup: true, usageLookup: true, topUp: true, suspend: true, resume: true, balance: true, inventory: false, webhooks: false },
+    capabilities: { installationLookup: true, installationDataAtPurchase: true, installationLookupHistorical: false, statusLookup: true, usageLookup: true, topUp: true, suspend: true, resume: true, balance: true, inventory: false, webhooks: false },
   } as any)
 })
 
@@ -54,7 +54,7 @@ describe('getProviderCapabilityProfile', () => {
     mockPrisma.provider.findUnique.mockResolvedValue({ ...choiceProvider(), supportsQRCode: false } as any)
     mockBuild.mockResolvedValue({
       name: 'Generic',
-      capabilities: { installationLookup: false, statusLookup: true, usageLookup: false, topUp: false, suspend: false, resume: false, balance: false, inventory: false, webhooks: false },
+      capabilities: { installationLookup: false, installationDataAtPurchase: false, installationLookupHistorical: false, statusLookup: true, usageLookup: false, topUp: false, suspend: false, resume: false, balance: false, inventory: false, webhooks: false },
     } as any)
     const profile = await getProviderCapabilityProfile('p-1')
     const row = profile.matrix.find(r => r.capability === 'installationLookup')

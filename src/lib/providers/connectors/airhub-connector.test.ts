@@ -2040,8 +2040,11 @@ describe('AirHubConnector', () => {
 })
 
 describe('AirHubConnector lookupInstallationData (canonical)', () => {
-  it('declares installationLookup capability = true', () => {
-    expect(new AirHubConnector('airhub-1', 'test-token').capabilities?.installationLookup).toBe(true)
+  it('declares installation capabilities (lookup + at-purchase + historical read-only)', () => {
+    const caps = new AirHubConnector('airhub-1', 'test-token').capabilities!
+    expect(caps.installationLookup).toBe(true)
+    expect(caps.installationDataAtPurchase).toBe(true)
+    expect(caps.installationLookupHistorical).toBe(true) // read-only GetActivationCode
   })
 
   it('maps GetActivationCode QR URL into the canonical contract (READY)', async () => {

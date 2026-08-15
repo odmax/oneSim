@@ -62,6 +62,14 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
                 <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationLookup ? 'text-emerald-600' : 'text-red-600'}`}>{profile.connector?.capabilities.installationLookup ? 'YES' : 'NO'}</p>
               </div>
               <div className="rounded-lg border p-3">
+                <p className="font-medium text-gray-700">Installation data at purchase</p>
+                <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationDataAtPurchase ? 'text-emerald-600' : 'text-gray-400'}`}>{profile.connector?.capabilities.installationDataAtPurchase ? 'SUPPORTED' : 'UNKNOWN'}</p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="font-medium text-gray-700">Historical installation lookup</p>
+                <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationLookupHistorical ? 'text-emerald-600' : 'text-amber-600'}`}>{profile.connector?.capabilities.installationLookupHistorical ? 'SUPPORTED' : 'UNSUPPORTED'}</p>
+              </div>
+              <div className="rounded-lg border p-3">
                 <p className="font-medium text-gray-700">Provider DB flag supportsQRCode</p>
                 <p className={`mt-1 font-bold ${profile.configured.supportsQRCode ? 'text-emerald-600' : 'text-amber-600'}`}>{profile.configured.supportsQRCode ? 'YES' : 'NO'}</p>
               </div>

@@ -145,6 +145,18 @@ describe('canonical lookup state handling', () => {
     expect(updateCall.data.installationStatus).toBeUndefined() // stays PENDING, not NOT_SUPPORTED/FAILED
   })
 
+  it('NOT_RECOVERABLE marks a DISTINCT terminal state (not NOT_SUPPORTED)', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim()])
+    mockLookup.mockResolvedValue({ esimId: 'esim-1', success: false, state: 'NOT_RECOVERABLE', errorCode: 'INSTALL_DATA_NOT_RECOVERABLE' } as any)
+
+    const result = await reconcileMissingInstallationDetails(10)
+
+    expect(result.failed).toBe(1)
+    expect(mockPrisma.eSIM.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ installationStatus: 'NOT_RECOVERABLE', installationLastError: 'INSTALL_DATA_NOT_RECOVERABLE' }),
+    }))
+  })
+
   it('NOT_SUPPORTED is terminal', async () => {
     mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim()])
     mockLookup.mockResolvedValue({ esimId: 'esim-1', success: false, state: 'NOT_SUPPORTED', errorCode: 'LOOKUP_NOT_SUPPORTED' } as any)

@@ -1051,6 +1051,8 @@ export class AirHubConnector implements IProviderConnector {
   /** AirHub connector-declared internal capabilities. */
   capabilities: ConnectorCapabilities = {
     installationLookup: true,
+    installationDataAtPurchase: true,
+    installationLookupHistorical: true, // read-only GetActivationCode by ICCID
     statusLookup: true,
     usageLookup: false,
     topUp: false,

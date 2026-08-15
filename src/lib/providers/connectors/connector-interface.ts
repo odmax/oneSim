@@ -106,7 +106,7 @@ export interface StatusLookupEsim {
   providerActivationId?: string | null
 }
 
-export type InstallationLookupState = 'READY' | 'NOT_AVAILABLE_YET' | 'NOT_SUPPORTED' | 'PERMANENT_FAILURE'
+export type InstallationLookupState = 'READY' | 'NOT_AVAILABLE_YET' | 'NOT_SUPPORTED' | 'NOT_RECOVERABLE' | 'PERMANENT_FAILURE'
 
 /**
  * Canonical installation-lookup contract. The input is provider-owned
@@ -162,9 +162,16 @@ export interface ConnectorInstallDataOutput {
  * for what a connector can actually do (from its implementation), independent
  * of the provider DB capability booleans, the internal enable flags, and the
  * client portal/API exposure system.
+ *
+ * `installationDataAtPurchase` and `installationLookupHistorical` are declared
+ * SEPARATELY: a provider may capture install data during NEW purchases (from
+ * the activation response) while having NO verified read-only way to recover it
+ * for already-provisioned eSIMs.
  */
 export interface ConnectorCapabilities {
   installationLookup: boolean
+  installationDataAtPurchase: boolean
+  installationLookupHistorical: boolean
   statusLookup: boolean
   usageLookup: boolean
   topUp: boolean
@@ -177,6 +184,8 @@ export interface ConnectorCapabilities {
 
 export const DEFAULT_CONNECTOR_CAPABILITIES: ConnectorCapabilities = {
   installationLookup: false,
+  installationDataAtPurchase: false,
+  installationLookupHistorical: false,
   statusLookup: false,
   usageLookup: false,
   topUp: false,

@@ -44,6 +44,8 @@ export interface ProviderCapabilityProfile {
 
 const CAP_TO_DB: Record<keyof ConnectorCapabilities, { db: keyof ProviderCapabilityProfile['configured'] }> = {
   installationLookup: { db: 'supportsQRCode' },
+  installationDataAtPurchase: { db: 'supportsESIM' },
+  installationLookupHistorical: { db: 'supportsQRCode' },
   statusLookup: { db: 'supportsESIM' },
   usageLookup: { db: 'supportsUsage' },
   topUp: { db: 'supportsTopUp' },
@@ -96,6 +98,8 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
 
   const exposureByCap: Record<keyof ConnectorCapabilities, { portal: boolean; api: boolean }> = {
     installationLookup: { portal: installPortal, api: installApi },
+    installationDataAtPurchase: { portal: installPortal, api: installApi },
+    installationLookupHistorical: { portal: installPortal, api: installApi },
     statusLookup: { portal: statusPortal, api: statusApi },
     usageLookup: { portal: usagePortal, api: usageApi },
     topUp: { portal: topUpPortal, api: topUpApi },
