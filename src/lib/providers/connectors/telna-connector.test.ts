@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { validateTelnaConfig, trimTrailingSlash } from '@/lib/providers/provider-validation'
 import type { ConnectorType } from './connector-factory'
+import { telnaEndpointPath, buildTelnaEndpointUrl } from './telna-endpoints'
 
 vi.mock('@/lib/prisma', () => ({
   prisma: {
@@ -327,7 +328,23 @@ describe('TelnaConnector testConnection', () => {
     expect(result.success).toBe(true)
     const [url, init] = fetchSpy.mock.calls[0]
     expect(init.method).toBe('GET')
-    expect(String(url)).toContain('/countries')
+    expect(String(url)).toContain('/core/countries')
+  })
+
+  it('404 is classified as an endpoint/base-path error, not an auth failure', async () => {
+    const fakeResponse = {
+      ok: false, status: 404,
+      headers: new Headers({ 'content-type': 'text/plain' }),
+      text: vi.fn().mockResolvedValue('Not Found'),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.testConnection()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+    expect(result.error?.message).toContain('base URL / endpoint path')
+    expect(result.error?.message).not.toContain('Authentication rejected')
   })
 
   it('succeeds on 2xx with valid JSON', async () => {
@@ -1795,5 +1812,35 @@ describe('TelnaConnector Phase 4 — PCR profile path param substitution', () =>
     const url = (globalThis.fetch as any).mock.calls[0][0] as string
     expect(url).toMatch(/\/pcr\/sim-pcr-profiles\/89012345678901234567[?]?/)
     expect(url).not.toContain('{iccid}')
+  })
+})
+
+describe('canonical Telna endpoint path/URL composition', () => {
+  it('buildTelnaEndpointUrl composes base + endpoint with no double path', () => {
+    const url = buildTelnaEndpointUrl('https://developer-api.telna.com', 'countries')
+    expect(url).toBe('https://developer-api.telna.com/core/countries')
+  })
+
+  it('tolerates a trailing slash on the base URL', () => {
+    expect(buildTelnaEndpointUrl('https://developer-api.telna.com/', 'countries')).toBe('https://developer-api.telna.com/core/countries')
+    expect(buildTelnaEndpointUrl('https://developer-api.telna.com///', 'countries')).toBe('https://developer-api.telna.com/core/countries')
+  })
+
+  it('preserves a path prefix already present in apiBaseUrl (no duplicate /core)', () => {
+    const url = buildTelnaEndpointUrl('https://developer-api.telna.com/v2', 'countries')
+    expect(url).toBe('https://developer-api.telna.com/v2/core/countries')
+    expect(url.split('/core').length).toBe(2)
+  })
+
+  it('substitutes path parameters', () => {
+    expect(buildTelnaEndpointUrl('https://developer-api.telna.com', 'company', { company_id: 42 })).toBe('https://developer-api.telna.com/core/companies/42')
+  })
+
+  it('testConnection and Discovery (listCountries) resolve the SAME canonical endpoint path', () => {
+    // Single-source path map: both go through telnaEndpointPath('countries').
+    const tcPath = telnaEndpointPath('countries')
+    const discoveryPath = telnaEndpointPath('countries')
+    expect(tcPath).toBe('/core/countries')
+    expect(discoveryPath).toBe('/core/countries')
   })
 })

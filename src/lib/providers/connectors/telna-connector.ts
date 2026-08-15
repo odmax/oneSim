@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
-import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption } from './telna-endpoints'
+import { telnaEndpointPath, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption } from './telna-endpoints'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile } from './connector-interface'
 
 interface TelnaRequestOptions {
@@ -95,15 +95,10 @@ export class TelnaConnector implements IProviderConnector {
 
     const { apiBaseUrl, keyId, authorizationMode } = providerConfig
     const method = opts.method || 'GET'
-    let path: string = TELNA_ENDPOINTS[opts.endpoint]
-    if (opts.pathParams) {
-      for (const [key, value] of Object.entries(opts.pathParams)) {
-        path = path.replace(`{${key}}`, String(value))
-      }
-    }
+    // Canonical, single-source path/URL composition (shared with Discovery).
+    const path = telnaEndpointPath(opts.endpoint)
+    let url = buildTelnaEndpointUrl(apiBaseUrl, opts.endpoint, opts.pathParams)
     const timeoutMs = opts.timeoutMs || 15000
-
-    let url = `${apiBaseUrl}${path}`
 
     if (opts.query) {
       const params = new URLSearchParams()
@@ -157,7 +152,7 @@ export class TelnaConnector implements IProviderConnector {
         return { success: false, status, error: { code: 'HTTP_403', message: 'KeyID lacks permission for this resource' }, latencyMs, requestId }
       }
       if (status === 404) {
-        return { success: false, status, error: { code: 'HTTP_404', message: 'Resource not found' }, latencyMs, requestId }
+        return { success: false, status, error: { code: 'HTTP_404', message: 'Resource not found — verify Telna API base URL / endpoint path for this API version (not an authentication failure)' }, latencyMs, requestId }
       }
       if (status === 429) {
         return { success: false, status, error: { code: 'HTTP_429', message: 'Rate limited — too many requests' }, latencyMs, requestId }

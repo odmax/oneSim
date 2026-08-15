@@ -24,6 +24,36 @@ export const TELNA_ENDPOINTS = {
 
 export type TelnaEndpoint = keyof typeof TELNA_ENDPOINTS
 
+/**
+ * Single source of truth for a Telna endpoint PATH (relative). Every Telna
+ * request — testConnection, Discovery (listCountries/getCompany/...), and all
+ * other connector operations — resolves its path through this getter so there
+ * is exactly one canonical path per endpoint.
+ */
+export function telnaEndpointPath(endpoint: TelnaEndpoint): string {
+  return TELNA_ENDPOINTS[endpoint]
+}
+
+/**
+ * Compose the absolute Telna URL for an endpoint, preserving any path prefix the
+ * configured apiBaseUrl already carries (never duplicated) and tolerating a
+ * trailing slash on the base URL. Path parameters are substituted last.
+ */
+export function buildTelnaEndpointUrl(
+  apiBaseUrl: string,
+  endpoint: TelnaEndpoint,
+  pathParams?: Record<string, string | number>,
+): string {
+  const base = String(apiBaseUrl || '').replace(/\/+$/, '')
+  let path: string = TELNA_ENDPOINTS[endpoint]
+  if (pathParams) {
+    for (const [key, value] of Object.entries(pathParams)) {
+      path = path.replace(`{${key}}`, String(value))
+    }
+  }
+  return `${base}${path}`
+}
+
 export interface TelnaPaginatedResponse<T> {
   data: T[]
   total: number
