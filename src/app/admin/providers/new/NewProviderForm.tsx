@@ -112,7 +112,7 @@ const BUILTIN_TEMPLATES: Record<string, BuiltInTemplate> = {
     presets: {
       adapterStrategy: 'IBASIS',
       authType: 'api_token',
-      apiBaseUrl: '',
+      apiBaseUrl: 'https://staging.2mobilesconnect.com/api/v1',
       environment: 'staging',
       name: 'iBASIS',
       code: 'IBASIS',
@@ -350,8 +350,9 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
       {resolvedAdapterStrategy === 'IBASIS' && (
         <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-3">
           <p className="text-xs text-cyan-800">
-            Use the iBASIS Reseller Gateway API token. OneSIM sends it as <code className="bg-cyan-100 px-1 rounded">Authorization: Token &amp;lt;token&amp;gt;</code>.
-            The API base URL and token are required.
+            iBASIS Reseller Gateway — static API token sent as <code className="bg-cyan-100 px-1 rounded">Authorization: Token &amp;lt;token&amp;gt;</code>.
+            The API base URL already includes <code className="bg-cyan-100 px-1 rounded">/api/v1</code> (staging <code className="bg-cyan-100 px-1 rounded">https://staging.2mobilesconnect.com/api/v1</code>).
+            Connection is verified with the read-only <code className="bg-cyan-100 px-1 rounded">GET /plans</code> endpoint.
           </p>
         </div>
       )}

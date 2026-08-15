@@ -16,18 +16,33 @@ import type {
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 /**
- * iBASIS Consumer Offer API connector.
+ * iBASIS Reseller Gateway API connector.
  *
- * Phase 1 scope: authentication via a static API token and safe connection
- * testing against the inventory endpoint. Purchasing, plan sync, status,
- * suspend/resume and QR retrieval are declared capabilities but are wired in
- * later phases.
+ * April 2025 contract (data-only; no voice/SMS):
+ *   STAGING    https://staging.2mobilesconnect.com/api/v1
+ *   PRODUCTION https://api.2mobilesconnect.com/api/v1
  *
- * Authentication is done by sending the configured token in an
- * `Authorization: Token <token>` header (never `Bearer`).
+ * The base URL ALREADY CONTAINS `/api/v1`. The connector normalizes the
+ * configured base (strips a trailing `/api/v\d+`) and always composes versioned
+ * paths (`/plans`, `/inventory/sims`, `/subscriptions/activations`, ...), so a
+ * base configured either with or without `/api/v1` produces the SAME final URL —
+ * never a duplicated `/api/v1/api/v1`.
  *
- * The base URL and all behavior come from provider database configuration
- * (provider.config / provider.apiBaseUrl / provider.apiToken) — nothing is
+ * Authentication is a pre-issued static token sent as
+ * `Authorization: Token <token>` (exactly "Token", never "Bearer"). There is no
+ * documented login/token-exchange endpoint, so the connector declares a
+ * STATIC_API_KEY auth profile (no runtime login → admin UI shows "Save & Verify").
+ *
+ * Read-only operations: GET /plans (+ /plans/{plan_id}), GET /inventory/sims
+ * (type/status/iccid/carrier/after filters; results/count/next/previous),
+ * GET /subscriptions/activations/{activation_id}, GET /subscriptions/{id}.
+ * The safe connection test is GET /plans (read-only; never a made-up /health).
+ *
+ * Mutating/billable endpoints (POST /subscriptions/activations, PUT suspend/
+ * restore, DELETE) exist only as documented provider contracts and are NEVER
+ * invoked by the connection test.
+ *
+ * All behavior comes from provider database configuration — nothing is
  * hard-coded in source.
  */
 
@@ -74,6 +89,8 @@ export interface IbasisInventoryPage {
 export interface IbasisInventoryQuery {
   type?: string
   status?: string
+  iccid?: string
+  carrier?: string
   after?: string
   limit?: number
   /** When provided, fetches this absolute pagination URL directly (from a previous `next`/`previous`). */
@@ -98,7 +115,7 @@ export interface IbasisRetailPlan {
 
 const DEFAULT_INVENTORY_PATH = '/api/v1/inventory/sims'
 const DEFAULT_RETAIL_PLANS_PATH = '/api/v1/plans'
-const DEFAULT_RETAIL_PLAN_DETAIL_PATH = '/api/v1/plans/{plan id}'
+const DEFAULT_RETAIL_PLAN_DETAIL_PATH = '/api/v1/plans/{plan_id}'
 const DEFAULT_SUBSCRIBERS_PATH = '/api/v1/subscribers'
 const DEFAULT_SUBSCRIPTIONS_PATH = '/api/v1/subscriptions'
 const DEFAULT_SUBSCRIPTION_ACTIVATIONS_PATH = '/api/v1/subscriptions/activations'
@@ -108,6 +125,23 @@ const DEFAULT_RETAIL_PAGE_SIZE = 50
 const DEFAULT_SYNC_TIMEOUT_MS = 30000
 const MAX_RETAIL_PLANS = 500
 const TOKEN_HEADER_PREFIX = 'Token '
+
+/**
+ * Normalizes an iBASIS base URL so path composition NEVER duplicates the API
+ * version prefix. The documented base URL already contains `/api/v1`:
+ *
+ *   https://staging.2mobilesconnect.com/api/v1   (staging)
+ *   https://api.2mobilesconnect.com/api/v1       (production)
+ *
+ * A trailing `/api/v\d+` segment is stripped from the base; documented paths
+ * carry the version themselves (`/api/v1/plans`), so a base configured either
+ * with or without `/api/v1` composes to the same final URL — never
+ * `/api/v1/api/v1/plans`.
+ */
+export function normalizeBaseUrl(base: string): string {
+  const cleaned = base.replace(/\/+$/, '')
+  return cleaned.replace(/\/api\/v\d+$/i, '')
+}
 
 function generateCorrelationId(): string {
   return `ibs-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`
@@ -174,7 +208,7 @@ export class IbasisConnector implements IProviderConnector {
     const cfg = (provider.config as any) || {}
     const apiToken = provider.apiToken ? decryptToken(provider.apiToken) : cfg.apiToken || null
     if (!apiToken) return null
-    const baseUrl = (cfg.baseUrl || provider.apiBaseUrl || '').replace(/\/+$/, '')
+    const baseUrl = normalizeBaseUrl(cfg.baseUrl || provider.apiBaseUrl || '')
     if (!baseUrl) return null
     return {
       baseUrl,
@@ -315,7 +349,9 @@ export class IbasisConnector implements IProviderConnector {
       return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not configured (baseUrl and apiToken required)' } }
     }
 
-    const result = await this.request(config.inventoryPath, { queryParams: { limit: config.inventoryPageSize } })
+    // Safe, documented read-only endpoint: GET /api/v1/plans. Never a made-up
+    // /health endpoint or a login call.
+    const result = await this.request(config.retailPlansPath)
 
     await recordHealthEvent(this.providerId, { eventType: 'CONNECTION_TEST', success: result.success, message: result.error?.message || 'Connected', durationMs: result.latencyMs }).catch(() => {})
 
@@ -349,9 +385,9 @@ export class IbasisConnector implements IProviderConnector {
       }
     }
 
-    const path = config.inventoryPath
+    const path = config.retailPlansPath
     const finalUrl = `${config.baseUrl}${path}`
-    const result = await this.request(path, { queryParams: { limit: config.inventoryPageSize } })
+    const result = await this.request(path)
 
     return {
       success: result.success,
@@ -387,6 +423,8 @@ export class IbasisConnector implements IProviderConnector {
             limit: query.limit ?? config.inventoryPageSize,
             ...(query.type ? { type: query.type } : {}),
             ...(query.status ? { status: query.status } : {}),
+            ...(query.iccid ? { iccid: query.iccid } : {}),
+            ...(query.carrier ? { carrier: query.carrier } : {}),
             ...(query.after ? { after: query.after } : {}),
           },
         })
@@ -478,8 +516,9 @@ export class IbasisConnector implements IProviderConnector {
     const failures: string[] = []
 
     for (const planId of planIds) {
+      // Detail path supports both `{plan_id}` (documented) and legacy `{plan id}`.
       const detailResult = await this.request(
-        config.retailPlanDetailPath.replace('{plan id}', encodeURIComponent(planId)),
+        config.retailPlanDetailPath.replace('{plan_id}', encodeURIComponent(planId)).replace('{plan id}', encodeURIComponent(planId)),
       )
       if (!detailResult.success) {
         failures.push(planId)
@@ -606,7 +645,7 @@ export class IbasisConnector implements IProviderConnector {
   async createSubscription(params: {
     subscriberId: string
     retailPlanId: string
-    devices: Array<{ device: string; type: 'iccid' | 'imei' }>
+    devices: Array<{ device: string; type: 'iccid' | 'imsi' }>
     activationType?: 'immediate' | 'scheduled'
     serviceAddressId?: string
   }): Promise<ConnectorResult<{ activationId: string; status: string }>> {
@@ -802,7 +841,7 @@ export class IbasisConnector implements IProviderConnector {
   async activateSubscription(params: {
     subscriberId: string
     retailPlanId: string
-    devices: Array<{ device: string; type: 'iccid' | 'imei' }>
+    devices: Array<{ device: string; type: 'iccid' | 'imsi' }>
     activationType?: 'immediate' | 'scheduled'
     serviceAddressId?: string
   }): Promise<ConnectorResult<{ activationId: string; status: string }>> {
@@ -1016,34 +1055,52 @@ export class IbasisConnector implements IProviderConnector {
     return esim.providerActivationId || esim.providerSubscriptionId || null
   }
 
-  /** iBASIS connector-declared internal capabilities (stored/read-only install lookup). */
+  /** iBASIS connector-declared internal capabilities (runtime truth from the implementation). */
   capabilities: ConnectorCapabilities = {
     installationLookup: true,
     installationDataAtPurchase: true,
-    installationLookupHistorical: false, // stored data only; no live read-only recovery
+    installationLookupHistorical: true, // read-only GET /inventory/sims?iccid=… may carry stored activation_code
     statusLookup: true,
-    usageLookup: false,
+    usageLookup: false, // no usage path established by the April 2025 contract; usage arrives via webhooks
     topUp: false,
     suspend: true,
     resume: true,
-    balance: false,
-    inventory: false,
-    webhooks: false,
+    balance: false, // no wallet concept in the documented contract
+    inventory: true, // GET /inventory/sims
+    webhooks: true, // iBASIS notification normalizer is wired in provider-webhook-processor
   }
 
-  /** iBASIS uses runtime credentials → token. */
+  /**
+   * iBASIS uses a pre-issued static API token (`Authorization: Token <token>`),
+   * no login endpoint. STATIC_API_KEY profile → generic admin UI shows
+   * "Save & Verify" and verifies via the read-only GET /plans connection test —
+   * never a fake runtime login.
+   */
   authProfile: ConnectorAuthProfile = {
-    mode: 'LOGIN_TOKEN',
-    requiresRuntimeAuthentication: true,
+    mode: 'STATIC_API_KEY',
+    requiresRuntimeAuthentication: false,
     canVerifyCredentials: true,
-    supportsRefresh: true,
+    supportsRefresh: false,
+    credentialField: 'apiToken',
+    actionLabel: 'Save & Verify',
   }
 
-  /** Canonical iBASIS installation lookup — stored/read-only only (no billable call). */
+  /**
+   * Canonical iBASIS installation lookup — read-only only (no billable call).
+   *
+   * 1. Stored install data from the purchase (activation_code persisted locally).
+   * 2. Historical recovery via the documented read-only `GET /inventory/sims?iccid=…`,
+   *    whose SIM records may carry an optional `activation_code`. The activation code
+   *    is mapped to `activationCode` (NOT a QR URL / SM-DP+ / matchingId — those are
+   *    never invented). A code absent/not shaped like an LPA-style string stays
+   *    NOT_AVAILABLE_YET (the code is only reported as usable when present).
+   */
   async lookupInstallationData(input: InstallationLookupInput): Promise<InstallationLookupResult> {
     if (!input.iccid) {
       return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'IDENTIFIER_MISSING', diagnostics: { methodUsed: 'stored', identifierType: 'none' } }
     }
+
+    // 1. Stored data from purchase (no upstream call).
     const result = await this.getQRCode(input.iccid)
     if (result.success && result.data) {
       const data: ConnectorInstallDataOutput = {
@@ -1055,7 +1112,49 @@ export class IbasisConnector implements IProviderConnector {
         return { success: true, state: 'READY', data, diagnostics: { methodUsed: 'stored', identifierType: 'iccid' } }
       }
     }
-    return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: result.error?.code === 'NOT_AVAILABLE' ? 'NO_INSTALL_DATA' : (result.error?.code || 'NO_INSTALL_DATA'), diagnostics: { methodUsed: 'stored', identifierType: 'iccid' } }
+
+    // 2. Historical recovery via documented read-only inventory lookup.
+    const inventory = await this.listInventorySims({ iccid: input.iccid, limit: 100 })
+    if (inventory.success && inventory.data) {
+      const sim = inventory.data.items.find((s) => s.iccid === input.iccid)
+      const code = sim?.activation_code
+      if (code && typeof code === 'string' && code.trim() !== '') {
+        return {
+          success: true,
+          state: 'READY',
+          data: { activationCode: code.trim() },
+          diagnostics: {
+            methodUsed: 'inventory',
+            identifierType: 'iccid',
+            httpMethod: 'GET',
+            endpointName: 'inventory/sims',
+            httpStatus: 200,
+            responseKeys: Object.keys(sim || {}),
+          },
+        }
+      }
+      return {
+        success: false,
+        state: 'NOT_AVAILABLE_YET',
+        errorCode: 'NO_INSTALL_DATA',
+        diagnostics: {
+          methodUsed: 'inventory',
+          identifierType: 'iccid',
+          httpMethod: 'GET',
+          endpointName: 'inventory/sims',
+          httpStatus: 200,
+          responseKeys: Object.keys(sim || {}),
+          note: 'Inventory record found but has no activation_code; provider contract lists it as optional.',
+        },
+      }
+    }
+
+    return {
+      success: false,
+      state: 'NOT_AVAILABLE_YET',
+      errorCode: result.error?.code === 'NOT_AVAILABLE' ? 'NO_INSTALL_DATA' : (result.error?.code || 'NO_INSTALL_DATA'),
+      diagnostics: { methodUsed: 'stored', identifierType: 'iccid' },
+    }
   }
 
   async getUsage(_iccid: string): Promise<ConnectorResult<UsageResult>> {

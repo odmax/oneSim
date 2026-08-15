@@ -196,26 +196,36 @@ describe('IbasisConnector', () => {
       expect(authHeader).not.toContain('Bearer')
     })
 
-    it('uses the configured base URL and inventory path', async () => {
+    it('uses the configured base URL and documented plans path', async () => {
       fetchSpy.mockResolvedValue(mockFetchSuccess({ data: [] }, 200))
       await connector.testConnection()
       const url = fetchSpy.mock.calls[0][0]
-      expect(String(url)).toContain('https://api.ibasis.example.com/api/v1/inventory/sims')
+      expect(String(url)).toContain('https://api.ibasis.example.com/api/v1/plans')
     })
 
-    it('limits the request with page size query param', async () => {
-      fetchSpy.mockResolvedValue(mockFetchSuccess({ data: [] }, 200))
+    it('never duplicates the /api/v1 prefix when base already contains it', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ config: { baseUrl: 'https://staging.2mobilesconnect.com/api/v1', requestTimeoutMs: 15000 } }))
+      fetchSpy.mockResolvedValue(mockFetchSuccess({ plans: [] }, 200))
       await connector.testConnection()
       const url = String(fetchSpy.mock.calls[0][0])
-      expect(url).toContain('limit=1')
+      expect(url).toContain('https://staging.2mobilesconnect.com/api/v1/plans')
+      expect(url).not.toContain('/api/v1/api/v1')
     })
 
-    it('uses configured inventoryPath override when provided', async () => {
-      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ config: { baseUrl: 'https://api.ibasis.example.com', inventoryPath: '/custom/inventory', requestTimeoutMs: 15000 } }))
-      fetchSpy.mockResolvedValue(mockFetchSuccess({ data: [] }, 200))
+    it('trailing slash on base is safe', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ config: { baseUrl: 'https://staging.2mobilesconnect.com/api/v1/', requestTimeoutMs: 15000 } }))
+      fetchSpy.mockResolvedValue(mockFetchSuccess({ plans: [] }, 200))
       await connector.testConnection()
       const url = String(fetchSpy.mock.calls[0][0])
-      expect(url).toContain('/custom/inventory')
+      expect(url).toBe('https://staging.2mobilesconnect.com/api/v1/plans')
+    })
+
+    it('uses configured retailPlansPath override when provided', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ config: { baseUrl: 'https://api.ibasis.example.com', retailPlansPath: '/custom/plans', requestTimeoutMs: 15000 } }))
+      fetchSpy.mockResolvedValue(mockFetchSuccess({ plans: [] }, 200))
+      await connector.testConnection()
+      const url = String(fetchSpy.mock.calls[0][0])
+      expect(url).toContain('/custom/plans')
     })
 
     it('succeeds on valid JSON response', async () => {
@@ -326,7 +336,7 @@ describe('IbasisConnector', () => {
       expect(result.data?.connectorClass).toBe('IbasisConnector')
       expect(result.data?.authType).toBe('API_TOKEN')
       expect(result.data?.tokenPlacement).toBe('HEADER')
-      expect(result.data?.finalUrl).toContain('/api/v1/inventory/sims')
+      expect(result.data?.finalUrl).toContain('/api/v1/plans')
     })
 
     it('redacts activation codes from the diagnostic response body', async () => {
@@ -1241,46 +1251,115 @@ describe('IbasisConnector Phase 4 — purchase & provisioning', () => {
   })
 })
 
-describe('IbasisConnector lookupInstallationData (canonical, stored/read-only)', () => {
-  const ICCID = '89012345678901234567'
+describe('IbasisConnector — provider-neutral auth profile & capabilities', () => {
   let connector: IbasisConnector
 
   beforeEach(() => {
     vi.clearAllMocks()
     mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
-    mockPrisma.eSIM.findFirst.mockResolvedValue(null)
     connector = new IbasisConnector('ibasis-1')
   })
 
-  it('declares installation capabilities (at-purchase yes, historical stored-only no)', () => {
+  it('declares STATIC_API_KEY auth (static token, no runtime login, Save & Verify)', () => {
+    const profile = connector.authProfile!
+    expect(profile.mode).toBe('STATIC_API_KEY')
+    expect(profile.requiresRuntimeAuthentication).toBe(false)
+    expect(profile.canVerifyCredentials).toBe(true)
+    expect(profile.supportsRefresh).toBe(false)
+    expect(profile.credentialField).toBe('apiToken')
+    expect(profile.actionLabel).toBe('Save & Verify')
+  })
+
+  it('declares capabilities from the April 2025 contract (inventory + webhooks + historical install lookup)', () => {
+    const caps = connector.capabilities!
+    expect(caps.statusLookup).toBe(true)
+    expect(caps.suspend).toBe(true)
+    expect(caps.resume).toBe(true)
+    expect(caps.inventory).toBe(true) // GET /inventory/sims
+    expect(caps.webhooks).toBe(true) // iBASIS notification normalizer wired
+    expect(caps.installationDataAtPurchase).toBe(true)
+    expect(caps.installationLookupHistorical).toBe(true) // GET /inventory/sims?iccid=…
+    expect(caps.usageLookup).toBe(false)
+    expect(caps.topUp).toBe(false)
+    expect(caps.balance).toBe(false)
+  })
+
+  it('does not require refreshAuthentication (static token)', async () => {
+    expect(await connector.refreshAuthentication()).toBe(false)
+  })
+})
+
+describe('IbasisConnector lookupInstallationData (canonical, read-only)', () => {
+  const ICCID = '89012345678901234567'
+  let connector: IbasisConnector
+  let fetchSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
+    mockPrisma.eSIM.findFirst.mockResolvedValue(null)
+    fetchSpy = vi.fn()
+    globalThis.fetch = fetchSpy as any
+    connector = new IbasisConnector('ibasis-1')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('declares installation capabilities (at-purchase yes, historical yes via read-only inventory)', () => {
     const caps = connector.capabilities!
     expect(caps.installationLookup).toBe(true)
     expect(caps.installationDataAtPurchase).toBe(true)
-    expect(caps.installationLookupHistorical).toBe(false) // stored data only
+    expect(caps.installationLookupHistorical).toBe(true) // GET /inventory/sims?iccid=…
   })
 
-  it('reads stored activation code ? READY', async () => {
+  it('reads stored activation code → READY', async () => {
     mockPrisma.eSIM.findFirst.mockResolvedValue({ providerResponse: null, activationCode: 'FKE: 0$CUST-111-V4$555', providerSubscriptionId: null } as any)
     const result = await connector.lookupInstallationData({ iccid: ICCID })
     expect(result.state).toBe('READY')
     expect(result.data?.activationCode).toBe('FKE: 0$CUST-111-V4$555')
+    expect(fetchSpy).not.toHaveBeenCalled() // stored path never calls upstream
   })
 
-  it('reads LPA from stored providerResponse ? READY', async () => {
+  it('reads LPA from stored providerResponse → READY', async () => {
     mockPrisma.eSIM.findFirst.mockResolvedValue({ providerResponse: { lpa: 'LPA:1$smdp.example.com$mid' }, activationCode: null, providerSubscriptionId: null } as any)
     const result = await connector.lookupInstallationData({ iccid: ICCID })
     expect(result.state).toBe('READY')
     expect(result.data?.activationCode).toBe('LPA:1$smdp.example.com$mid')
   })
 
-  it('no stored data ? NOT_AVAILABLE_YET NO_INSTALL_DATA (no billable call)', async () => {
+  it('no stored data → recovers activation_code from documented inventory endpoint → READY', async () => {
     mockPrisma.eSIM.findFirst.mockResolvedValue({ providerResponse: null, activationCode: null, providerSubscriptionId: null } as any)
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 1, next: null, previous: null, results: [{ iccid: ICCID, type: 'esim', carrier: 'AT&T', status: 'active', activation_code: 'FKE: 0$CUST-111-V4$555' }] }, 200))
+    const result = await connector.lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('READY')
+    expect(result.data?.activationCode).toBe('FKE: 0$CUST-111-V4$555')
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('/api/v1/inventory/sims')
+    expect(url).toContain('iccid=89012345678901234567')
+    expect(result.diagnostics?.methodUsed).toBe('inventory')
+    expect(result.diagnostics?.endpointName).toBe('inventory/sims')
+  })
+
+  it('no stored data + inventory record without activation_code → NOT_AVAILABLE_YET (never invented)', async () => {
+    mockPrisma.eSIM.findFirst.mockResolvedValue({ providerResponse: null, activationCode: null, providerSubscriptionId: null } as any)
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 1, next: null, previous: null, results: [{ iccid: ICCID, type: 'esim', status: 'active' }] }, 200))
+    const result = await connector.lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('NOT_AVAILABLE_YET')
+    expect(result.errorCode).toBe('NO_INSTALL_DATA')
+    expect(result.data).toBeUndefined()
+  })
+
+  it('no stored data + no inventory match → NOT_AVAILABLE_YET NO_INSTALL_DATA (no billable call)', async () => {
+    mockPrisma.eSIM.findFirst.mockResolvedValue({ providerResponse: null, activationCode: null, providerSubscriptionId: null } as any)
+    fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 0, next: null, previous: null, results: [] }, 200))
     const result = await connector.lookupInstallationData({ iccid: ICCID })
     expect(result.state).toBe('NOT_AVAILABLE_YET')
     expect(result.errorCode).toBe('NO_INSTALL_DATA')
   })
 
-  it('identifier missing ? IDENTIFIER_MISSING', async () => {
+  it('identifier missing → IDENTIFIER_MISSING', async () => {
     const result = await connector.lookupInstallationData({})
     expect(result.state).toBe('PERMANENT_FAILURE')
     expect(result.errorCode).toBe('IDENTIFIER_MISSING')

@@ -45,7 +45,8 @@ async function main() {
 
   const cfg = (provider.config || {}) as any
   console.log(`Inventory path:    ${cfg.inventoryPath || '/api/v1/inventory/sims'}`)
-  console.log(`Plans path:        ${cfg.plansPath || '/api/v1/plans'}`)
+  console.log(`Plans path:        ${cfg.retailPlansPath || '/api/v1/plans'}`)
+  console.log(`Plan detail path:  ${cfg.retailPlanDetailPath || '/api/v1/plans/{plan_id}'}`)
   console.log(`Subscribers path:  ${cfg.subscribersPath || '/api/v1/subscribers'}`)
   console.log(`Subscriptions path: ${cfg.subscriptionsPath || '/api/v1/subscriptions'}`)
   console.log(`Activations path:  ${cfg.activationsPath || '/api/v1/subscriptions/activations'}`)
