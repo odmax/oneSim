@@ -20,11 +20,15 @@ export interface PublishToRetailResult {
  *
  * Required flow:
  * 1. Load ProviderPackage + provider.
- * 2. Run finalizeCatalogPackageConfiguration() (creates snapshot, sets pricingStatus=READY).
- * 3. Create or update ESIMPackage with correct source/active/visible fields.
- * 4. Link providerPackageId on the retail package.
- * 5. Verify getPackagePurchaseReadiness() returns ready=true.
- * 6. Only then set ProviderPackage.publishStatus=PUBLISHED.
+ * 2. Run finalizeCatalogPackageConfiguration() in PRE_PUBLISH mode (creates
+ *    snapshot, sets pricingStatus=READY, verifies eligibility + readiness
+ *    WITHOUT requiring PUBLISHED).
+ * 3. Create or update the retail ESIMPackage (first-time publish creates it).
+ * 4. Transition ProviderPackage → PUBLISHED (same transaction as retail so
+ *    there is no partial state where PUBLISHED but retail creation failed).
+ * 5. Perform STRICT PURCHASE readiness verification on the final state —
+ *    this requires publishStatus === PUBLISHED.
+ * 6. Return success only when the final state is genuinely purchasable.
  *
  * This is the ONLY path that may set publishStatus=PUBLISHED.
  */
@@ -43,16 +47,18 @@ export async function publishProviderPackageToRetailCatalog(
     return { success: false, providerPackageId, created: false, updated: false, publishStatusSet: false, ready: false, readinessReasons: [], failedStage: 'PROVIDER_PACKAGE_NOT_FOUND', error: 'Provider package not found' }
   }
 
-  // Step 2: Finalize — create snapshot + pricing
+  // Step 2: Finalize — create snapshot + pricing (PRE_PUBLISH readiness)
   const finalized = await finalizeCatalogPackageConfiguration(providerPackageId, { reason })
   if (!finalized.success) {
     return { success: false, providerPackageId, created: false, updated: false, publishStatusSet: false, ready: false, readinessReasons: finalized.readinessReasons, failedStage: 'FINALIZATION_FAILED', error: finalized.error || 'Finalization failed' }
   }
 
-  // Step 3: Create or update the retail ESIMPackage
+  // Step 3 + 4: Create/update the retail ESIMPackage AND transition to
+  // PUBLISHED in the same transaction so a partial state can never exist.
   let retailPackageId: string | undefined
   let created = false
   let updated = false
+  let publishStatusSet = false
 
   const sellPrice = Number(pp.sellingPrice || 0)
 
@@ -119,12 +125,21 @@ export async function publishProviderPackageToRetailCatalog(
         retailPackageId = retail.id
         created = true
       }
+
+      // Transition to PUBLISHED in the same transaction as retail create/update.
+      await tx.providerPackage.update({
+        where: { id: providerPackageId },
+        data: { publishStatus: 'PUBLISHED' },
+      })
+      publishStatusSet = true
     })
   } catch (e: any) {
     return { success: false, providerPackageId, created, updated, publishStatusSet: false, ready: false, readinessReasons: [], failedStage: 'TRANSACTION_FAILED', error: e.message || 'Retail package creation failed' }
   }
 
-  // Step 4: Verify readiness with the newly created/updated retail package
+  // Step 5: STRICT PURCHASE readiness verification on the final state.
+  // PUBLISHED was already set inside the transaction, so this genuinely
+  // verifies the package is purchasable by clients (publishStatus === PUBLISHED).
   const retail = await prisma.eSIMPackage.findUnique({
     where: { id: retailPackageId },
     include: {
@@ -137,6 +152,7 @@ export async function publishProviderPackageToRetailCatalog(
     return { success: false, providerPackageId, retailPackageId, created, updated, publishStatusSet: false, ready: false, readinessReasons: ['Retail package not found after creation'], failedStage: 'RETAIL_READINESS_FAILED' }
   }
 
+  // Default mode is PURCHASE (strict): requires publishStatus === PUBLISHED.
   const readiness = getPackagePurchaseReadiness({
     pkg: { isActive: retail.isActive, hiddenFromCatalog: retail.hiddenFromCatalog, archivedAt: retail.archivedAt, source: retail.source, providerPackageId: retail.providerPackageId },
     providerPkg: retail.providerPackage,
@@ -146,12 +162,6 @@ export async function publishProviderPackageToRetailCatalog(
   if (!readiness.ready) {
     return { success: false, providerPackageId, retailPackageId, created, updated, publishStatusSet: false, ready: false, readinessReasons: readiness.reasons, failedStage: 'RETAIL_READINESS_FAILED', error: readiness.reasons[0] }
   }
-
-  // Step 5: Set PUBLISHED — only after all checks pass
-  await prisma.providerPackage.update({
-    where: { id: providerPackageId },
-    data: { publishStatus: 'PUBLISHED' },
-  })
 
   return { success: true, providerPackageId, retailPackageId, created, updated, publishStatusSet: true, ready: true, readinessReasons: [] }
 }

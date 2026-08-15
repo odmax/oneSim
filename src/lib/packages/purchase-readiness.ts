@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { DEFAULT_PROVIDER_CAPABILITIES } from '@/lib/providers/capabilities/defaults'
+import { isPackagePublishEligible } from '@/lib/catalog/publish-eligibility'
 
 // ─────────────────────────────────────────────
 // Normalized purchase-ready package contract
@@ -29,6 +30,21 @@ export interface PackageReadiness {
 }
 
 /**
+ * Readiness semantics.
+ *
+ * - 'PURCHASE'   (DEFAULT, strict): the package must already be PUBLISHED and
+ *                 safe for a client to purchase. Used by every client-facing
+ *                 flow: portal/API queries, purchase, quote, top-up.
+ * - 'PRE_PUBLISH': the package is valid enough to TRANSITION into PUBLISHED.
+ *                 Requires the same pricing/config/provider/snapshot
+ *                 guarantees, but does NOT require PUBLISHED already; instead
+ *                 it enforces the shared publication eligibility contract
+ *                 (CONFIGURED/AUTO_CONFIGURED/READY; never HIDDEN/ARCHIVED/
+ *                 UNCONFIGURED-without-READY).
+ */
+export type PurchaseReadinessMode = 'PURCHASE' | 'PRE_PUBLISH'
+
+/**
  * Centralized purchase readiness check.
  * Evaluates generic conditions only — never checks provider code.
  */
@@ -54,9 +70,10 @@ export function getPackagePurchaseReadiness(params: {
     enabledCapabilities: any
     code: string | null
   } | null
+  mode?: PurchaseReadinessMode
 }): PackageReadiness {
   const reasons: string[] = []
-  const { pkg = {}, providerPkg, provider } = params
+  const { pkg = {}, providerPkg, provider, mode = 'PURCHASE' } = params
 
   if (pkg.isActive === false) reasons.push('Package is inactive')
   if (pkg.hiddenFromCatalog) reasons.push('Package is hidden from catalog')
@@ -72,8 +89,19 @@ export function getPackagePurchaseReadiness(params: {
   const validCostStatuses = ['VALID', 'OVERRIDDEN']
   if (!validCostStatuses.includes(providerPkg.costStatus ?? '')) reasons.push(`Cost status is ${providerPkg.costStatus || 'MISSING'} — admin cost override needed`)
   if (providerPkg.pricingStatus !== 'READY') reasons.push(`Pricing status is ${providerPkg.pricingStatus || 'COST_UNAVAILABLE'}`)
-  if (providerPkg.publishStatus !== 'PUBLISHED') reasons.push(`Package not published (${providerPkg.publishStatus})`)
-  if (providerPkg.configurationStatus !== 'CONFIGURED' && providerPkg.configurationStatus !== 'AUTO_CONFIGURED') reasons.push(`Configuration incomplete (${providerPkg.configurationStatus})`)
+
+  if (mode === 'PURCHASE') {
+    if (providerPkg.publishStatus !== 'PUBLISHED') reasons.push(`Package not published (${providerPkg.publishStatus})`)
+    if (providerPkg.configurationStatus !== 'CONFIGURED' && providerPkg.configurationStatus !== 'AUTO_CONFIGURED') reasons.push(`Configuration incomplete (${providerPkg.configurationStatus})`)
+  } else {
+    // PRE_PUBLISH: enforce the shared publication eligibility contract instead
+    // of requiring PUBLISHED. Source states allowed to transition into PUBLISHED:
+    // CONFIGURED / AUTO_CONFIGURED / READY. HIDDEN, ARCHIVED, and
+    // UNCONFIGURED-without-READY fail closed. Provider-neutral.
+    if (!isPackagePublishEligible({ configurationStatus: providerPkg.configurationStatus, publishStatus: providerPkg.publishStatus })) {
+      reasons.push('Package is not eligible for publication (must be CONFIGURED, AUTO_CONFIGURED, or READY)')
+    }
+  }
 
   const sellingPrice = Number(providerPkg.sellingPrice || 0)
   if (sellingPrice <= 0) reasons.push('No valid selling price')

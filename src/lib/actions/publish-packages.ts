@@ -42,12 +42,23 @@ async function generateOneSimSku(tx: any, pp: {
   return `${base}-${pp.id.slice(-8).toUpperCase()}`
 }
 
+export type PublishToCatalogStatus = 'SUCCESS' | 'PARTIAL' | 'FAILED'
+
+export interface PublishSkippedDetail {
+  packageId: string
+  name: string
+  reason: string
+  failedStage?: string
+  readinessReasons?: string[]
+}
+
 export async function publishToCatalog(packageIds: string[]): Promise<{
   success: boolean
+  status?: PublishToCatalogStatus
   created?: number
   updated?: number
   skipped?: number
-  skippedDetails?: { packageId: string; name: string; reason: string }[]
+  skippedDetails?: PublishSkippedDetail[]
   error?: string
 }> {
   const session = await getServerSession(authOptions)
@@ -72,7 +83,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
   let created = 0
   let updated = 0
   let skipped = 0
-  const skippedDetails: { packageId: string; name: string; reason: string }[] = []
+  const skippedDetails: PublishSkippedDetail[] = []
 
   const qualified: typeof providerPackages = []
   for (const pp of providerPackages) {
@@ -114,7 +125,13 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
 
       if (!result.success) {
         skipped++
-        skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `publish failed: ${result.error || 'unknown'} (stage: ${result.failedStage})` })
+        skippedDetails.push({
+          packageId: pp.id,
+          name: pp.name,
+          reason: `publish failed: ${result.error || 'unknown'}`,
+          failedStage: result.failedStage,
+          readinessReasons: result.readinessReasons,
+        })
         continue
       }
 
@@ -160,7 +177,20 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
 
   await revalidateCatalogRoutes()
 
-  return { success: true, created, updated, skipped, skippedDetails }
+  // Explicit result semantics: never success=true when nothing was published.
+  const status: PublishToCatalogStatus =
+    created + updated === 0 && skipped > 0 ? 'FAILED'
+    : skipped > 0 ? 'PARTIAL'
+    : 'SUCCESS'
+
+  return {
+    success: status !== 'FAILED',
+    status,
+    created,
+    updated,
+    skipped,
+    skippedDetails,
+  }
 }
 
 export async function bulkSetPublishStatus(packageIds: string[], status: 'HIDDEN' | 'ARCHIVED'): Promise<{ success: boolean; updated?: number; error?: string }> {

@@ -190,6 +190,55 @@ describe('publishToCatalog', () => {
     expect(result.success).toBe(true)
     expect(mockPublishToRetail).toHaveBeenCalled()
   })
+
+  it('all packages blocked → status FAILED, success=false (never success=true when nothing published)', async () => {
+    mockPublishToRetail.mockResolvedValue({ success: false, providerPackageId: 'pp-1', created: false, updated: false, publishStatusSet: false, ready: false, readinessReasons: ['Package not published (READY)'], error: 'Finalization failed', failedStage: 'FINALIZATION_FAILED' })
+    const pp = makeProviderPackage()
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([pp] as any)
+
+    const result = await publishToCatalog(['pp-1'])
+    expect(result.success).toBe(false)
+    expect(result.status).toBe('FAILED')
+    expect(result.created).toBe(0)
+    expect(result.updated).toBe(0)
+    expect(result.skipped).toBe(1)
+    expect(result.skippedDetails?.[0]).toMatchObject({
+      packageId: 'pp-1',
+      name: 'Test Plan 5GB',
+      failedStage: 'FINALIZATION_FAILED',
+      readinessReasons: ['Package not published (READY)'],
+    })
+  })
+
+  it('partial publish → status PARTIAL, success=true with details', async () => {
+    mockPublishToRetail
+      .mockResolvedValueOnce({ success: true, providerPackageId: 'pp-1', retailPackageId: 'esim-1', created: true, updated: false, publishStatusSet: true, ready: true, readinessReasons: [] })
+      .mockResolvedValueOnce({ success: false, providerPackageId: 'pp-2', created: false, updated: false, publishStatusSet: false, ready: false, readinessReasons: ['No active price snapshot'], error: 'Publish failed', failedStage: 'RETAIL_READINESS_FAILED' })
+
+    const pp1 = makeProviderPackage({ id: 'pp-1' })
+    const pp2 = makeProviderPackage({ id: 'pp-2' })
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([pp1, pp2] as any)
+
+    const result = await publishToCatalog(['pp-1', 'pp-2'])
+    expect(result.success).toBe(true)
+    expect(result.status).toBe('PARTIAL')
+    expect(result.created).toBe(1)
+    expect(result.skipped).toBe(1)
+    expect(result.skippedDetails?.[0].readinessReasons).toEqual(['No active price snapshot'])
+  })
+
+  it('all publish successfully → status SUCCESS', async () => {
+    mockPublishToRetail.mockResolvedValue({ success: true, providerPackageId: 'pp-1', retailPackageId: 'esim-1', created: true, updated: false, publishStatusSet: true, ready: true, readinessReasons: [] })
+    const pp1 = makeProviderPackage({ id: 'pp-1' })
+    const pp2 = makeProviderPackage({ id: 'pp-2' })
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([pp1, pp2] as any)
+
+    const result = await publishToCatalog(['pp-1', 'pp-2'])
+    expect(result.success).toBe(true)
+    expect(result.status).toBe('SUCCESS')
+    expect(result.skipped).toBe(0)
+    expect(result.created + (result.updated || 0)).toBe(2)
+  })
 })
 
 describe('bulkSetPublishStatus', () => {

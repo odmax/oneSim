@@ -160,3 +160,100 @@ describe('getPackagePurchaseReadiness', () => {
     expect(r.reasons.length).toBeGreaterThanOrEqual(4)
   })
 })
+
+describe('getPackagePurchaseReadiness — mode semantics (PURCHASE default vs PRE_PUBLISH)', () => {
+  const base = (overrides: Record<string, any> = {}) => makeProviderPkg({ publishStatus: 'READY', ...overrides })
+
+  it('default mode is PURCHASE (strict): READY package is NOT purchasable', () => {
+    const r = getPackagePurchaseReadiness({ providerPkg: base(), provider: makeProvider() })
+    expect(r.ready).toBe(false)
+    expect(r.reasons.some(x => x.includes('not published'))).toBe(true)
+  })
+
+  it('explicit PURCHASE mode requires PUBLISHED', () => {
+    const r = getPackagePurchaseReadiness({ providerPkg: base(), provider: makeProvider(), mode: 'PURCHASE' })
+    expect(r.ready).toBe(false)
+    expect(r.reasons.some(x => x.includes('not published'))).toBe(true)
+  })
+
+  it('PRE_PUBLISH mode accepts READY (source state allowed to transition)', () => {
+    const r = getPackagePurchaseReadiness({ providerPkg: base(), provider: makeProvider(), mode: 'PRE_PUBLISH' })
+    expect(r.ready).toBe(true)
+    expect(r.reasons).toHaveLength(0)
+  })
+
+  it('PRE_PUBLISH mode accepts CONFIGURED + DRAFT (eligibility contract)', () => {
+    const r = getPackagePurchaseReadiness({ providerPkg: base({ publishStatus: 'DRAFT', configurationStatus: 'CONFIGURED' }), provider: makeProvider(), mode: 'PRE_PUBLISH' })
+    expect(r.ready).toBe(true)
+  })
+
+  it('PRE_PUBLISH mode accepts AUTO_CONFIGURED + DRAFT (eligibility contract)', () => {
+    const r = getPackagePurchaseReadiness({ providerPkg: base({ publishStatus: 'DRAFT', configurationStatus: 'AUTO_CONFIGURED' }), provider: makeProvider(), mode: 'PRE_PUBLISH' })
+    expect(r.ready).toBe(true)
+  })
+
+  it('PRE_PUBLISH mode accepts UNCONFIGURED + READY (eligibility contract allows READY source)', () => {
+    const r = getPackagePurchaseReadiness({ providerPkg: base({ configurationStatus: 'UNCONFIGURED' }), provider: makeProvider(), mode: 'PRE_PUBLISH' })
+    expect(r.ready).toBe(true)
+  })
+
+  it('PRE_PUBLISH mode blocks UNCONFIGURED + DRAFT', () => {
+    const r = getPackagePurchaseReadiness({ providerPkg: base({ publishStatus: 'DRAFT', configurationStatus: 'UNCONFIGURED' }), provider: makeProvider(), mode: 'PRE_PUBLISH' })
+    expect(r.ready).toBe(false)
+    expect(r.reasons.some(x => x.includes('not eligible for publication'))).toBe(true)
+  })
+
+  it('PRE_PUBLISH mode blocks HIDDEN regardless of configuration', () => {
+    const r = getPackagePurchaseReadiness({ providerPkg: base({ publishStatus: 'HIDDEN', configurationStatus: 'CONFIGURED' }), provider: makeProvider(), mode: 'PRE_PUBLISH' })
+    expect(r.ready).toBe(false)
+  })
+
+  it('PRE_PUBLISH mode blocks ARCHIVED regardless of configuration', () => {
+    const r = getPackagePurchaseReadiness({ providerPkg: base({ publishStatus: 'ARCHIVED', configurationStatus: 'CONFIGURED' }), provider: makeProvider(), mode: 'PRE_PUBLISH' })
+    expect(r.ready).toBe(false)
+  })
+
+  it('PRE_PUBLISH mode still enforces cost/pricing/snapshot/selling/provider requirements', () => {
+    // Missing cost → not ready even in PRE_PUBLISH.
+    expect(getPackagePurchaseReadiness({ providerPkg: base({ costStatus: 'MISSING' }), mode: 'PRE_PUBLISH' }).ready).toBe(false)
+    // Pricing not ready → blocked.
+    expect(getPackagePurchaseReadiness({ providerPkg: base({ pricingStatus: 'COST_UNAVAILABLE' }), mode: 'PRE_PUBLISH' }).ready).toBe(false)
+    // No snapshot → blocked.
+    expect(getPackagePurchaseReadiness({ providerPkg: base({ activePriceSnapshotId: null }), mode: 'PRE_PUBLISH' }).ready).toBe(false)
+    // No selling price → blocked.
+    expect(getPackagePurchaseReadiness({ providerPkg: base({ sellingPrice: '0' }), mode: 'PRE_PUBLISH' }).ready).toBe(false)
+    // Inactive provider → blocked.
+    expect(getPackagePurchaseReadiness({ providerPkg: base(), provider: makeProvider({ status: 'INACTIVE' }), mode: 'PRE_PUBLISH' }).ready).toBe(false)
+    // Missing PURCHASE capability → blocked.
+    expect(getPackagePurchaseReadiness({ providerPkg: base(), provider: makeProvider({ enabledCapabilities: ['STATUS'] }), mode: 'PRE_PUBLISH' }).ready).toBe(false)
+  })
+
+  it('PRE_PUBLISH mode is provider-neutral (USMATRIX/CHOICE/AIRHUB/IBASIS identical)', () => {
+    for (const code of ['USMATRIX', 'CHOICE', 'AIRHUB', 'IBASIS']) {
+      const ready = getPackagePurchaseReadiness({ providerPkg: base(), provider: makeProvider({ code }), mode: 'PRE_PUBLISH' })
+      expect(ready.ready).toBe(true)
+      expect(ready.reasons).toHaveLength(0)
+    }
+  })
+
+  it('PURCHASE mode stays provider-neutral and strict', () => {
+    for (const code of ['USMATRIX', 'CHOICE', 'AIRHUB', 'IBASIS']) {
+      const blocked = getPackagePurchaseReadiness({ providerPkg: base(), provider: makeProvider({ code }), mode: 'PURCHASE' })
+      expect(blocked.ready).toBe(false)
+      expect(blocked.reasons.some(x => x.includes('not published'))).toBe(true)
+      const ok = getPackagePurchaseReadiness({ providerPkg: makeProviderPkg(), provider: makeProvider({ code }), mode: 'PURCHASE' })
+      expect(ok.ready).toBe(true)
+    }
+  })
+
+  it('client-facing callers stay strict: PURCHASE rejects READY even when otherwise valid', () => {
+    // Simulates queryPurchasablePackages / purchase / quote flows which pass no mode.
+    const r = getPackagePurchaseReadiness({
+      pkg: { isActive: true, hiddenFromCatalog: false, archivedAt: null, source: 'CATALOG_PRODUCT', providerPackageId: 'pp_01' },
+      providerPkg: base(),
+      provider: makeProvider(),
+    })
+    expect(r.ready).toBe(false)
+    expect(r.reasons).toContain('Package not published (READY)')
+  })
+})

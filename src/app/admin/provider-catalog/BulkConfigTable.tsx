@@ -74,7 +74,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
   const [editPkg, setEditPkg] = useState<Package | null>(null)
   const [editForm, setEditForm] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
-  const [result, setResult] = useState<{ success?: boolean; updated?: number; created?: number; skipped?: number; error?: string } | null>(null)
+  const [result, setResult] = useState<{ success?: boolean; status?: 'SUCCESS' | 'PARTIAL' | 'FAILED'; updated?: number; created?: number; skipped?: number; error?: string; skippedDetails?: { packageId: string; name: string; reason: string; failedStage?: string; readinessReasons?: string[] }[] } | null>(null)
   const [showApplyPanel, setShowApplyPanel] = useState(false)
 
   // Form state
@@ -148,7 +148,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
     setShowConfirm(false)
     setPublishSummary(null)
     const res = await publishToCatalog(Array.from(selected))
-    setResult({ success: res.success, created: res.created, updated: res.updated, skipped: res.skipped, error: res.error })
+    setResult({ success: res.success, status: res.status, created: res.created, updated: res.updated, skipped: res.skipped, error: res.error, skippedDetails: res.skippedDetails })
     if (res.success) {
       setSelected(new Set())
       setTimeout(() => router.refresh(), 2000)
@@ -285,10 +285,39 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
     <div>
       {/* Result alert */}
       {result && (
-        <div className={`mb-4 rounded-lg p-4 text-sm ${result.success ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-          {result.created != null
+        <div className={`mb-4 rounded-lg p-4 text-sm ${result.status === 'SUCCESS' ? 'bg-green-50 text-green-700 border border-green-200' : result.status === 'PARTIAL' ? 'bg-amber-50 text-amber-800 border border-amber-200' : result.status === 'FAILED' ? 'bg-red-50 text-red-700 border border-red-200' : result.success ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+          {result.status === 'SUCCESS' && (
+            <div>
+              <p className="font-medium">Published {result.created || 0} new, {result.updated || 0} updated.</p>
+            </div>
+          )}
+          {result.status === 'PARTIAL' && (
+            <div>
+              <p className="font-medium">Published {result.created || 0} new, {result.updated || 0} updated. {result.skipped || 0} package{result.skipped === 1 ? ' was' : 's were'} skipped.</p>
+              {result.skippedDetails?.map(d => (
+                <p key={d.packageId} className="mt-1 text-xs text-amber-700">
+                  {d.name}: {d.reason}
+                  {d.readinessReasons?.length ? ` — ${d.readinessReasons.join('; ')}` : ''}
+                  {d.failedStage ? ` (stage: ${d.failedStage})` : ''}
+                </p>
+              ))}
+            </div>
+          )}
+          {result.status === 'FAILED' && (
+            <div>
+              <p className="font-medium">Publication failed. {result.skipped || 0} package{result.skipped === 1 ? ' was' : 's were'} not published.</p>
+              {result.skippedDetails?.map(d => (
+                <p key={d.packageId} className="mt-1 text-xs text-red-700">
+                  {d.name}: {d.reason}
+                  {d.readinessReasons?.length ? ` — ${d.readinessReasons.join('; ')}` : ''}
+                  {d.failedStage ? ` (stage: ${d.failedStage})` : ''}
+                </p>
+              ))}
+            </div>
+          )}
+          {!result.status && result.created != null
             ? `Published ${result.created} new, ${result.updated || 0} updated${result.skipped ? `, ${result.skipped} skipped` : ''}. Refreshing...`
-            : result.success ? `Updated ${result.updated} packages. Refreshing...` : result.error}
+            : !result.status && result.success ? `Updated ${result.updated} packages. Refreshing...` : result.error}
         </div>
       )}
 

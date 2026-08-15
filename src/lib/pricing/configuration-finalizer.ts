@@ -91,7 +91,12 @@ export async function finalizeCatalogPackageConfiguration(
     }
   }
 
-  // Step 5: Run centralized purchase readiness
+  // Step 5: Run centralized readiness in PRE_PUBLISH mode.
+  // This proves the package is valid enough to TRANSITION into PUBLISHED
+  // (cost normalized, pricing READY, snapshot ACTIVE, configuration valid,
+  // selling valid, provider operational/capable, and eligible to publish)
+  // without requiring PUBLISHED already. The publication service owns the
+  // actual PUBLISHED transition.
   const readiness = getPackagePurchaseReadiness({
     providerPkg: {
       costStatus: verified.costStatus, pricingStatus: verified.pricingStatus,
@@ -104,6 +109,7 @@ export async function finalizeCatalogPackageConfiguration(
       enabledCapabilities: verified.provider.enabledCapabilities,
       code: verified.provider.code,
     } : null,
+    mode: 'PRE_PUBLISH',
   })
 
   if (!readiness.ready) {
