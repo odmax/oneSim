@@ -76,6 +76,16 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.USAGE,
   ],
 
+  // US-Matrix eSIM API — runtime LOGIN_TOKEN auth, read-only catalog + inventory.
+  // Purchase/suspend/resume are declared but NOT wired (no live mutation during
+  // audit); no usage/balance endpoints verified yet.
+  USMATRIX: [
+    ProviderCapability.AUTH,
+    ProviderCapability.CATALOG_SYNC,
+    ProviderCapability.INVENTORY,
+    ProviderCapability.ESIM,
+  ],
+
   // iBASIS — static token auth, inventory + eSIM lifecycle.
   // No BALANCE until a verified wallet endpoint is documented.
   // IBASIS lacks BALANCE (no wallet concept), USAGE, TOP_UP (Phase 2 stubs)

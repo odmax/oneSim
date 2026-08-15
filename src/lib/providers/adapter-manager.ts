@@ -169,6 +169,7 @@ export function isTemplateDrivenProvider(provider: {
   if (provider.adapterStrategy === 'TELNA') return false // Telna uses dedicated connector
   if (provider.adapterStrategy === 'TELNA_SEAMLESS') return false // Telna SeamlessOS uses dedicated connector
   if (provider.adapterStrategy === 'TELNA_FLEX') return false // Telna Connect Flex uses dedicated connector
+  if (provider.adapterStrategy === 'USMATRIX') return false // US-Matrix uses dedicated connector
   if (provider.adapterStrategy === 'TEMPLATE') return true
   if (provider.adapterStrategy && !['TEMPLATE', 'MOCK'].includes(provider.adapterStrategy)) return false
   if (provider.providerTemplateId) return true

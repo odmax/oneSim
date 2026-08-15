@@ -119,6 +119,19 @@ const BUILTIN_TEMPLATES: Record<string, BuiltInTemplate> = {
       capabilities: ['AUTH','INVENTORY','PLAN_SYNC','PURCHASE','STATUS','SUSPEND','RESUME'],
     },
   },
+  usmatrix: {
+    label: 'US-Matrix',
+    description: 'US-Matrix eSIM API — runtime email/password login, Bearer token, read-only catalog + inventory',
+    presets: {
+      adapterStrategy: 'USMATRIX',
+      authType: 'credentials',
+      apiBaseUrl: 'https://api-esim.usmatrix.com',
+      environment: 'production',
+      name: 'US-Matrix',
+      code: 'USMATRIX',
+      capabilities: ['AUTH','CATALOG_SYNC','INVENTORY','ESIM'],
+    },
+  },
 }
 
 function setField(name: string, value: string) {
@@ -322,6 +335,7 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
           <option value="URL_TOKEN">URL Token Provider — Token in URL path, SOAP auth, template bundles</option>
           <option value="HEADER_TOKEN">Header Token Provider — Token in Authorization header</option>
           <option value="IBASIS">iBASIS — Reseller Gateway (static API token)</option>
+          <option value="USMATRIX">US-Matrix — eSIM API (email/password login, Bearer token)</option>
           <option value="TELNA">Telna — Header-based KeyID authentication</option>
           <option value="TEMPLATE">Template-Driven — Capability/endpoint mapped provider (e.g., Airhub)</option>
         </select>

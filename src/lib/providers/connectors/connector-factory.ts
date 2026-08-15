@@ -11,6 +11,7 @@ import { TelnaConnector } from './telna-connector'
 import { TelnaFlexConnector } from './telna-flex-connector'
 import { TelnaSeamlessConnector } from './telna-seamless-connector'
 import { IbasisConnector } from './ibasis-connector'
+import { UsMatrixConnector } from './usmatrix-connector'
 import { resolveConnectorType } from './connector-type'
 import type { ConnectorType as ConnectorTypeAlias } from './connector-type'
 import { normalizeChoiceUserId } from './url-token-connector'
@@ -86,6 +87,8 @@ export function createConnector(providerId: string, name: string | undefined, co
       return new TelnaFlexConnector(providerId, name)
     case 'IBASIS':
       return new IbasisConnector(providerId)
+    case 'USMATRIX':
+      return new UsMatrixConnector(providerId, name)
     case 'REST_CATALOG':
     default:
       return new RestCatalogConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env })
