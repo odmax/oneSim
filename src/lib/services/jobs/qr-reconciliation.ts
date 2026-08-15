@@ -8,18 +8,32 @@ const RETRY_WINDOWS = [
   { maxMinutes: 1440, intervalMinutes: 30 },
 ]
 
-export const MAX_INSTALLATION_RETRIES = 10
-export const MAX_RECONCILIATION_AGE_HOURS = 24
+/**
+ * Bounded retry budget = one attempt per backoff slot across the full schedule:
+ * 10 × 1 min + 12 × 5 min + 48 × 30 min = 70 attempts ≈ 24h of reconciliation.
+ * STALE is reached when this budget is exhausted. This is the sole STALE
+ * boundary: no time-based condition is used (esim.createdAt and
+ * installationLastCheckedAt are never treated as "reconciliation age").
+ */
+export const MAX_INSTALLATION_RETRIES = RETRY_WINDOWS.reduce(
+  (sum, w) => sum + Math.floor(w.maxMinutes / w.intervalMinutes),
+  0,
+) // 10 + 12 + 48 = 70
 
-function getRetryInterval(retryCount: number): number {
-  let cumulative = 0
-  let interval = 30 // default
+/**
+ * Backoff interval AFTER `retryCount` failed attempts:
+ *   retryCount 0–9   → 1 min  (first ~10 minutes)
+ *   retryCount 10–21 → 5 min  (10–70 minutes)
+ *   retryCount 22+   → 30 min (up to the 24h budget)
+ */
+export function getRetryInterval(retryCount: number): number {
+  let remaining = retryCount
   for (const w of RETRY_WINDOWS) {
-    const remaining = retryCount - cumulative * Math.floor(w.maxMinutes / w.intervalMinutes)
-    if (remaining <= 0) return w.intervalMinutes
-    cumulative += Math.floor(w.maxMinutes / w.intervalMinutes)
+    const attemptsInWindow = Math.floor(w.maxMinutes / w.intervalMinutes)
+    if (remaining < attemptsInWindow) return w.intervalMinutes
+    remaining -= attemptsInWindow
   }
-  return interval
+  return RETRY_WINDOWS[RETRY_WINDOWS.length - 1].intervalMinutes // 30
 }
 
 function isDueForRetry(lastChecked: Date | null, retryCount: number): boolean {
@@ -29,24 +43,15 @@ function isDueForRetry(lastChecked: Date | null, retryCount: number): boolean {
 }
 
 /**
- * STALE must mean "we attempted reconciliation repeatedly / for too long and
- * could not recover installation data" — never "the eSIM itself is old".
- *
- * A PENDING record may become STALE only after reconciliation activity has
- * actually begun:
- *  - retries exhausted (`retryCount >= MAX_INSTALLATION_RETRIES`), OR
- *  - reconciliation has been running for more than
- *    `MAX_RECONCILIATION_AGE_HOURS`, measured from the LAST check (only rows
- *    that have been checked at least once can satisfy this).
- *
- * The raw `createdAt` is never used as a pre-attempt cutoff: a legacy eSIM
- * created before the reconciliation subsystem existed and never checked gets a
- * real recovery attempt regardless of its age.
+ * STALE means "we attempted reconciliation repeatedly and could not recover
+ * installation data". It is reached ONLY when the bounded retry budget is
+ * exhausted (`retryCount >= MAX_INSTALLATION_RETRIES`). The raw eSIM createdAt
+ * is never a pre-attempt cutoff, and installationLastCheckedAt is never
+ * interpreted as "reconciliation age" (it is rewritten on every attempt, so it
+ * would reset under normal cron cadence).
  */
-function isStale(retryCount: number, lastChecked: Date | null): boolean {
-  if (retryCount >= MAX_INSTALLATION_RETRIES) return true
-  if (lastChecked && (Date.now() - lastChecked.getTime()) > MAX_RECONCILIATION_AGE_HOURS * 3600_000) return true
-  return false
+function isStale(retryCount: number): boolean {
+  return retryCount >= MAX_INSTALLATION_RETRIES
 }
 
 /** True when a connector definitively reports the operation is not supported. */
@@ -114,8 +119,9 @@ export async function reconcileMissingInstallationDetails(batchSize = 10): Promi
       continue
     }
 
-    // 2. STALE only after reconciliation activity has begun (never raw eSIM age).
-    if (isStale(esim.installationRetryCount, esim.installationLastCheckedAt)) {
+    // 2. STALE only after the retry budget is exhausted (never raw eSIM age,
+    //    never time-since-last-attempt).
+    if (isStale(esim.installationRetryCount)) {
       await prisma.eSIM.update({ where: { id: esim.id }, data: { installationStatus: 'STALE' } })
       stale++
       continue

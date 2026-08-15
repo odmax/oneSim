@@ -13,7 +13,7 @@ vi.mock('@/lib/providers/adapter-manager', () => ({
 
 const { prisma } = await import('@/lib/prisma')
 const { getAdapterForType } = await import('@/lib/providers/adapter-manager')
-const { reconcileMissingInstallationDetails, repairLegacyStaleInstallationRows, MAX_INSTALLATION_RETRIES, MAX_RECONCILIATION_AGE_HOURS } = await import('./qr-reconciliation')
+const { reconcileMissingInstallationDetails, repairLegacyStaleInstallationRows, MAX_INSTALLATION_RETRIES, getRetryInterval } = await import('./qr-reconciliation')
 
 const mockPrisma = vi.mocked(prisma)
 const mockGetAdapter = vi.mocked(getAdapterForType)
@@ -133,16 +133,23 @@ describe('STALE semantics — legacy eSIM age must not pre-empt an attempt', () 
     }))
   })
 
-  it('reconciliation running longer than the age window makes a PENDING row STALE', async () => {
-    const lastChecked = new Date(Date.now() - (MAX_RECONCILIATION_AGE_HOURS + 1) * 3600000)
+  it('retry budget is the sole STALE boundary — a 25h-old last-check with few retries is NOT stale and gets attempted', async () => {
+    // Regression guard for the removed "time since last attempt > 24h" rule:
+    // installationLastCheckedAt is rewritten every attempt, so it must never be
+    // treated as reconciliation age. A row checked 25h ago with 3 retries is
+    // due and must be attempted, never marked STALE.
+    const lastChecked = new Date(Date.now() - 25 * 3600000)
     mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ installationRetryCount: 3, installationLastCheckedAt: lastChecked })])
     mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+    const adapter = qrAdapter()
+    mockGetAdapter.mockResolvedValue(adapter as any)
 
     const result = await reconcileMissingInstallationDetails(10)
 
-    expect(result.stale).toBe(1)
+    expect(result.stale).toBe(0)
+    expect(adapter.getQRCode).toHaveBeenCalledTimes(1)
     expect(mockPrisma.eSIM.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ installationStatus: 'STALE' }),
+      data: expect.objectContaining({ installationStatus: 'READY' }),
     }))
   })
 
@@ -302,6 +309,45 @@ describe('legacy retry behavior preserved', () => {
     expect(result.failed).toBe(1)
     expect(mockPrisma.eSIM.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ installationRetryCount: { increment: 1 } }),
+    }))
+  })
+})
+
+describe('retry/backoff policy', () => {
+  it('matches the documented 1/5/30-minute window schedule exactly', () => {
+    // 0–10 min: every 1 minute (retryCount 0–9)
+    for (const rc of [0, 1, 5, 9]) expect(getRetryInterval(rc)).toBe(1)
+    // 10–70 min: every 5 minutes (retryCount 10–21)
+    for (const rc of [10, 11, 15, 21]) expect(getRetryInterval(rc)).toBe(5)
+    // 70 min – 24h: every 30 minutes (retryCount 22+)
+    for (const rc of [22, 23, 40, 69]) expect(getRetryInterval(rc)).toBe(30)
+  })
+
+  it('retry budget spans the full 24h schedule (10×1m + 12×5m + 48×30m = 70)', () => {
+    expect(MAX_INSTALLATION_RETRIES).toBe(10 + 12 + 48)
+  })
+
+  it('a row one retry below the budget is not STALE and is still attempted', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ installationRetryCount: MAX_INSTALLATION_RETRIES - 1 })])
+    mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+    const adapter = qrAdapter()
+    mockGetAdapter.mockResolvedValue(adapter as any)
+
+    const result = await reconcileMissingInstallationDetails(10)
+
+    expect(result.stale).toBe(0)
+    expect(adapter.getQRCode).toHaveBeenCalledTimes(1)
+  })
+
+  it('after reaching the budget, the row becomes STALE', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ installationRetryCount: MAX_INSTALLATION_RETRIES })])
+    mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+
+    const result = await reconcileMissingInstallationDetails(10)
+
+    expect(result.stale).toBe(1)
+    expect(mockPrisma.eSIM.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ installationStatus: 'STALE' }),
     }))
   })
 })
