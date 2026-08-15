@@ -66,6 +66,41 @@ export async function authenticateProvider(providerId: string, formData: FormDat
     return { success: true, message: 'API token saved. Use Test Connection to verify.' }
   }
 
+  // Static-credential modes (STATIC_KEY_ID / STATIC_API_KEY / BEARER_TOKEN):
+  // save the credential and VERIFY read-only — never fake a runtime login.
+  const connector = await buildConnectorFromProvider(providerId).catch(() => null)
+  const authProfile = connector?.authProfile
+  if (authProfile && !authProfile.requiresRuntimeAuthentication) {
+    const credential = fd.apiToken || fd.api_token || fd.token || fd.keyId || fd.key_id || fd.apiKey
+    if (!credential) {
+      return { success: false, error: `${authProfile.mode === 'STATIC_KEY_ID' ? 'KeyID' : 'API key'} is required`, field: 'apiToken' }
+    }
+
+    await prisma.provider.update({
+      where: { id: providerId },
+      data: {
+        apiToken: encryptToken(credential),
+        environment: fd.environment || provider.environment || 'staging',
+      },
+    })
+
+    const verify = await runReadOnlyVerification(providerId)
+    await recordHealthEvent(providerId, {
+      eventType: 'CONNECTION_TEST',
+      success: verify.success,
+      message: verify.success ? `${provider.name} credentials saved and verified` : `Credential saved, verification failed: ${verify.error || ''}`,
+    })
+    await prisma.auditLog.create({
+      data: { userId: session.user.id, action: 'PROVIDER_CREDENTIAL_SAVED', entity: 'Provider', entityId: provider.code, details: `"${provider.name}" ${authProfile.mode} credential saved (${verify.success ? 'verified' : 'unverified'})` },
+    })
+    revalidatePath(`/admin/providers/${providerId}`)
+
+    if (!verify.success) {
+      return { success: false, error: `Credential saved, but verification failed: ${verify.error || 'Unknown'}` }
+    }
+    return { success: true, message: `Credential saved and verified (${authProfile.actionLabel || 'Save & Verify'})` }
+  }
+
   // For fd/auth types, run full adapter authentication
   const authResult = await authenticateProviderViaAdapter(provider.type, fd, {
     apiBaseUrl: provider.apiBaseUrl,
@@ -288,6 +323,40 @@ export async function getProviderAccountConfig(providerId: string) {
 function maskToken(token: string | null): string | null {
   if (!token || token.length < 8) return token
   return token.slice(0, 4) + '••••' + token.slice(-4)
+}
+
+/**
+ * Read-only credential verification for static-credential auth modes
+ * (STATIC_KEY_ID / STATIC_API_KEY / BEARER_TOKEN). Builds the canonical
+ * connector (which re-reads the freshly saved credential), calls its read-only
+ * connection test, and updates lastSuccessfulConnection / lastFailedConnection.
+ * Never logs or sends credential values.
+ */
+async function runReadOnlyVerification(providerId: string): Promise<{ success: boolean; error?: string }> {
+  const connector = await buildConnectorFromProvider(providerId).catch(() => null)
+  if (!connector) return { success: false, error: 'Provider connector unavailable' }
+  try {
+    const result = await connector.diagnoseConnection()
+    const healthUpdate: any = {}
+    if (result.success && !result.error) {
+      healthUpdate.lastSuccessfulConnection = new Date()
+      healthUpdate.errorCount = 0
+      healthUpdate.lastError = null
+    } else {
+      healthUpdate.lastFailedConnection = new Date()
+      healthUpdate.lastError = result.error?.message || 'Connection test failed'
+    }
+    await prisma.provider.update({ where: { id: providerId }, data: healthUpdate })
+    return result.success
+      ? { success: true }
+      : { success: false, error: result.error?.message || 'Connection test failed' }
+  } catch (e: any) {
+    await prisma.provider.update({
+      where: { id: providerId },
+      data: { lastFailedConnection: new Date(), lastError: String(e?.message || 'Verification error').slice(0, 300) },
+    }).catch(() => {})
+    return { success: false, error: String(e?.message || 'Verification failed').slice(0, 300) }
+  }
 }
 
 export async function testProviderConnection(providerId: string) {

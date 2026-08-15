@@ -297,6 +297,39 @@ describe('TelnaConnector testConnection', () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
+  it('declares STATIC_KEY_ID auth (no runtime authentication, Save & Verify)', () => {
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const profile = connector.authProfile!
+    expect(profile.mode).toBe('STATIC_KEY_ID')
+    expect(profile.requiresRuntimeAuthentication).toBe(false)
+    expect(profile.canVerifyCredentials).toBe(true)
+    expect(profile.supportsRefresh).toBe(false)
+    expect(profile.actionLabel).toBe('Save & Verify')
+  })
+
+  it('authenticate() is a no-op error — never performs runtime login', async () => {
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.authenticate({})
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_IMPLEMENTED')
+    expect(String(result.error?.message)).toContain('pre-configured KeyID')
+  })
+
+  it('testConnection is a read-only GET (no mutation)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [{ id: 1 }], total: 1 })),
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.testConnection()
+    expect(result.success).toBe(true)
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(init.method).toBe('GET')
+    expect(String(url)).toContain('/countries')
+  })
+
   it('succeeds on 2xx with valid JSON', async () => {
     const fakeResponse = {
       ok: true,

@@ -3,7 +3,7 @@ import { encryptToken, decryptToken } from '@/lib/encryption'
 import { prisma } from '@/lib/prisma'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import { normalizeTravelDateRequirement, isValidTravelDate, withTravelDateMarker } from '@/lib/providers/travel-date-utils'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim, ConnectorCapabilities, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { describeDiagnosticValue, parseMonetaryValue } from '@/lib/providers/balance/monetary'
 
@@ -1061,6 +1061,14 @@ export class AirHubConnector implements IProviderConnector {
     balance: true,
     inventory: true,
     webhooks: false,
+  }
+
+  /** AirHub uses runtime credentials → token. */
+  authProfile: ConnectorAuthProfile = {
+    mode: 'LOGIN_TOKEN',
+    requiresRuntimeAuthentication: true,
+    canVerifyCredentials: true,
+    supportsRefresh: true,
   }
 
   /** Canonical AirHub installation lookup — read-only GetActivationCode. */

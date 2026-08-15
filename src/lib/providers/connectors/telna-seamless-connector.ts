@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult } from './connector-interface'
 import { SEAMLESS_ENDPOINTS, buildSeamlessUrl, type SeamlessEndpoint } from './telna-seamless-endpoints'
 import type { SeamlessProductOffering, SeamlessOrder, SeamlessSubscription, SeamlessQRCode, SeamlessUsage, SeamlessOSApiResponse, SeamlessOrderState, SeamlessSubscriptionState } from './telna-seamless-types'
 
@@ -184,6 +184,31 @@ export class TelnaSeamlessConnector implements IProviderConnector {
 
   async authenticate(): Promise<ConnectorResult<{ token: string; accountInfo?: any }>> {
     return { success: false, error: { code: 'UNSUPPORTED', message: 'SeamlessOS uses static API key authentication — no OAuth flow' } }
+  }
+
+  /** SeamlessOS connector-declared internal capabilities. */
+  capabilities: ConnectorCapabilities = {
+    installationLookup: true,
+    installationDataAtPurchase: true, // QR retrieved from GET /subscriptions/{id}/esim/qrcode at purchase
+    installationLookupHistorical: true, // read-only GET /subscriptions/{id}/esim/qrcode by subscription id
+    statusLookup: true,
+    usageLookup: true,
+    topUp: true,
+    suspend: true,
+    resume: true,
+    balance: false,
+    inventory: true,
+    webhooks: false,
+  }
+
+  /** SeamlessOS uses a static X-API-Key — no runtime token exchange. */
+  authProfile: ConnectorAuthProfile = {
+    mode: 'STATIC_API_KEY',
+    requiresRuntimeAuthentication: false,
+    canVerifyCredentials: true,
+    supportsRefresh: false,
+    credentialField: 'apiToken',
+    actionLabel: 'Save & Verify',
   }
 
   async getTokenState(): Promise<TokenState> {

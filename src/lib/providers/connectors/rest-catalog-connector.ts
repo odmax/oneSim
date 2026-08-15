@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim, StatusLookupIdentifier, ConnectorCapabilities, InstallationLookupInput, InstallationLookupResult } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim, StatusLookupIdentifier, ConnectorCapabilities, InstallationLookupInput, InstallationLookupResult, ConnectorAuthProfile } from './connector-interface'
 import { DEFAULT_CONNECTOR_CAPABILITIES } from './connector-interface'
 import { classifyError } from './connector-interface'
 
@@ -347,6 +347,9 @@ export class RestCatalogConnector implements IProviderConnector {
 
   /** Base connectors declare no internal capabilities; subclasses override. */
   capabilities: ConnectorCapabilities = { ...DEFAULT_CONNECTOR_CAPABILITIES }
+
+  /** Base connectors use the generic runtime-auth contract; subclasses override. */
+  authProfile: ConnectorAuthProfile = { mode: 'CUSTOM', requiresRuntimeAuthentication: true, canVerifyCredentials: false, supportsRefresh: false }
 
   /** Base connectors do not implement installation lookup. */
   async lookupInstallationData(_input: InstallationLookupInput): Promise<InstallationLookupResult> {

@@ -36,6 +36,10 @@ interface ProviderAuthPanelProps {
   credentialsConfigured?: boolean
   requiredConfigFields?: Array<{ name: string; label: string; type: string; required: boolean; placeholder?: string }>
   configurationFields?: Array<{ key: string; label: string; type: string; required?: boolean; secret?: boolean; placeholder?: string; options?: { value: string; label: string }[]; group?: string; default?: string }>
+  /** Provider-neutral auth mode from the connector (e.g. STATIC_KEY_ID). */
+  authMode?: string
+  /** Derived action label (Save & Verify / Save & Authenticate / Connect / Verify Connection). */
+  authActionLabel?: string
 }
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
@@ -47,7 +51,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: string
   unknown: { label: 'Unknown', color: 'text-gray-700 bg-gray-50 border-gray-200', icon: '❓' },
 }
 
-export function ProviderAuthPanel({ providerId, providerType, providerName, authType, authUrl, initialStatus, configValues = {}, requiredConfigFields = [], configurationFields, credentialsConfigured }: ProviderAuthPanelProps) {
+export function ProviderAuthPanel({ providerId, providerType, providerName, authType, authUrl, initialStatus, configValues = {}, requiredConfigFields = [], configurationFields, credentialsConfigured, authMode, authActionLabel }: ProviderAuthPanelProps) {
   const router = useRouter()
   const [authStatus, setAuthStatus] = useState<AuthStatusData>(initialStatus || { hasToken: false, isConnected: false, status: 'unknown' })
   const [accountConfig, setAccountConfig] = useState<any>(null)
@@ -357,7 +361,7 @@ export function ProviderAuthPanel({ providerId, providerType, providerName, auth
               disabled={loading}
               className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700 disabled:opacity-50"
             >
-              {loading ? 'Processing...' : 'Save & Authenticate'}
+              {loading ? 'Processing...' : (authActionLabel || 'Save & Authenticate')}
             </button>
             {authStatus.hasToken && (
               <button

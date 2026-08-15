@@ -84,6 +84,20 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   if (!provider) redirect('/admin/providers?error=Provider+not+found')
 
   const authStatus = await getProviderAuthStatus(provider.id).catch(() => ({ hasToken: false, isConnected: false, status: 'error' as const }))
+
+  // Provider-neutral auth profile (drives Save & Verify vs Save & Authenticate).
+  let authMode: string | null = null
+  let authActionLabel: string | null = null
+  try {
+    const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
+    const { defaultAuthActionLabel } = await import('@/lib/providers/connectors/connector-interface')
+    const connector = await buildConnectorFromProvider(provider.id)
+    if (connector?.authProfile) {
+      authMode = connector.authProfile.mode
+      authActionLabel = connector.authProfile.actionLabel || defaultAuthActionLabel(connector.authProfile.mode)
+    }
+  } catch { /* non-fatal — fall back to generic auth UI */ }
+
   const healthLogs: HealthEvent[] = await getRecentHealthLogs(provider.id, 10).catch(() => [])
 
   // Safely normalize provider config for rendering
@@ -254,6 +268,8 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
           requiredConfigFields={(provider.requiredConfigFields || []) as any[]}
           configurationFields={safeConfigFields}
           credentialsConfigured={hasCredentials}
+          authMode={authMode || undefined}
+          authActionLabel={authActionLabel || undefined}
         />
 
         <div className="rounded-lg border bg-white p-6 shadow-sm">

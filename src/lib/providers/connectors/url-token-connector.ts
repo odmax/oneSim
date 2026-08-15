@@ -1,5 +1,5 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult, ConnectorCapabilities, InstallationLookupInput, InstallationLookupResult, InstallationLookupDiagnostics, ConnectorInstallDataOutput } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, InstallationLookupDiagnostics, ConnectorInstallDataOutput } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
@@ -1153,6 +1153,14 @@ export class UrlTokenConnector extends RestCatalogConnector {
     balance: true,
     inventory: false,
     webhooks: false,
+  }
+
+  /** Choice uses runtime credentials → getaccounts token exchange. */
+  authProfile: ConnectorAuthProfile = {
+    mode: 'LOGIN_TOKEN',
+    requiresRuntimeAuthentication: true,
+    canVerifyCredentials: true,
+    supportsRefresh: true,
   }
 
   /**

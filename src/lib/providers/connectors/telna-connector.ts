@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { TELNA_ENDPOINTS, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption } from './telna-endpoints'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile } from './connector-interface'
 
 interface TelnaRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
@@ -37,6 +37,31 @@ export class TelnaConnector implements IProviderConnector {
   constructor(providerId: string, name: string | undefined) {
     this.providerId = providerId
     this.name = name || 'Telna'
+  }
+
+  /** Telna (legacy) connector-declared internal capabilities. */
+  capabilities: ConnectorCapabilities = {
+    installationLookup: false,
+    installationDataAtPurchase: false,
+    installationLookupHistorical: false,
+    statusLookup: false,
+    usageLookup: false,
+    topUp: false,
+    suspend: false,
+    resume: false,
+    balance: true, // getWallet
+    inventory: true, // listSimRegistries / listInventories
+    webhooks: false,
+  }
+
+  /** Telna uses a pre-issued static KeyID — no runtime token exchange. */
+  authProfile: ConnectorAuthProfile = {
+    mode: 'STATIC_KEY_ID',
+    requiresRuntimeAuthentication: false,
+    canVerifyCredentials: true,
+    supportsRefresh: false,
+    credentialField: 'apiToken',
+    actionLabel: 'Save & Verify',
   }
 
   private async loadProvider(): Promise<{

@@ -11,7 +11,7 @@ import type {
   IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo,
   ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult,
   RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult,
-  QRCodeResult, StatusLookupEsim, ConnectorCapabilities, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput,
+  QRCodeResult, StatusLookupEsim, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput,
 } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
@@ -1029,6 +1029,14 @@ export class IbasisConnector implements IProviderConnector {
     balance: false,
     inventory: false,
     webhooks: false,
+  }
+
+  /** iBASIS uses runtime credentials → token. */
+  authProfile: ConnectorAuthProfile = {
+    mode: 'LOGIN_TOKEN',
+    requiresRuntimeAuthentication: true,
+    canVerifyCredentials: true,
+    supportsRefresh: true,
   }
 
   /** Canonical iBASIS installation lookup — stored/read-only only (no billable call). */

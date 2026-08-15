@@ -196,6 +196,59 @@ export const DEFAULT_CONNECTOR_CAPABILITIES: ConnectorCapabilities = {
   webhooks: false,
 }
 
+export type ConnectorAuthMode =
+  | 'STATIC_KEY_ID'
+  | 'STATIC_API_KEY'
+  | 'BEARER_TOKEN'
+  | 'LOGIN_TOKEN'
+  | 'OAUTH'
+  | 'BASIC'
+  | 'NONE'
+  | 'CUSTOM'
+
+/**
+ * Provider-neutral authentication contract. The connector declares HOW it
+ * authenticates; the generic admin UI/service derives labels and behavior from
+ * this instead of hardcoding provider names.
+ *
+ * Examples:
+ *  STATIC_KEY_ID / STATIC_API_KEY:  credential stored encrypted (provider.apiToken);
+ *    requiresRuntimeAuthentication=false → UI button "Save & Verify" (no fake login);
+ *    verify by a read-only testConnection.
+ *  LOGIN_TOKEN:  credentials → runtime token exchange → UI button "Save & Authenticate".
+ *  BEARER_TOKEN: static bearer token → save + verify.
+ *  OAUTH:        interactive connect flow.
+ *  NONE:         no credentials → "Verify Connection".
+ */
+export interface ConnectorAuthProfile {
+  mode: ConnectorAuthMode
+  requiresRuntimeAuthentication: boolean
+  canVerifyCredentials: boolean
+  supportsRefresh: boolean
+  /** Where a static credential is stored (provider.apiToken is encrypted). */
+  credentialField?: 'apiToken' | 'apiKey' | 'keyId'
+  /** Recommended admin action label; UI falls back to a default by mode. */
+  actionLabel?: string
+}
+
+export function defaultAuthActionLabel(mode: ConnectorAuthMode): string {
+  switch (mode) {
+    case 'STATIC_KEY_ID':
+    case 'STATIC_API_KEY':
+    case 'BEARER_TOKEN':
+      return 'Save & Verify'
+    case 'OAUTH':
+      return 'Connect'
+    case 'NONE':
+      return 'Verify Connection'
+    case 'LOGIN_TOKEN':
+    case 'BASIC':
+    case 'CUSTOM':
+    default:
+      return 'Save & Authenticate'
+  }
+}
+
 export interface TopUpESIMParams {
   iccid: string
   imsi?: string | null
@@ -355,6 +408,13 @@ export interface IProviderConnector {
    * absent.
    */
   capabilities?: ConnectorCapabilities
+  /**
+   * Connector-declared authentication contract. Generic admin UI/service derives
+   * labels (Save & Verify vs Save & Authenticate) and the save/verify flow from
+   * this instead of hardcoding provider names. Defaults to a runtime-auth
+   * (CUSTOM) profile when absent.
+   */
+  authProfile?: ConnectorAuthProfile
   /**
    * Canonical read-only installation lookup. Never a purchase/subscription/
    * wallet mutation. Returns a safe normalized result with no raw provider
