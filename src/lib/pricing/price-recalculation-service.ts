@@ -4,6 +4,7 @@ import { convertCurrency } from '../currency/exchange-rate-service'
 import { getPlatformBaseCurrency } from '../currency/currency-config'
 import { roundCurrencyAmount } from '../currency/currency-rounding'
 import { computeMarkupFromCostAndSell } from './pricing-engine'
+import { computeEffectiveCost } from '../packages/cheapest-utils'
 
 export type RecalculationReason =
   | 'PROVIDER_COST_CHANGED' | 'ADMIN_OVERRIDE_CHANGED'
@@ -110,6 +111,16 @@ export async function recalculatePackagePrice(
   // cost+selling never leaves a determinable markup null.
   const derivedMarkup = effectiveCost > 0 ? (computeMarkupFromCostAndSell(effectiveCost, sellPrice) ?? null) : null
 
+  // Canonical cost status/source: derive effective cost from the established
+  // hierarchy (admin override wins, then provider cost) so historical rows
+  // that have costPrice/sellingPrice but never ran provider-sync obtain
+  // costStatus VALID/OVERRIDDEN instead of the schema default MISSING.
+  const { effectiveCostPrice, costSource } = computeEffectiveCost(
+    Number(pkg.costPrice || 0),
+    pkg.adminCostPrice ? Number(pkg.adminCostPrice) : null,
+  )
+  const normalizedCostStatus = costSource === 'ADMIN_OVERRIDE' ? 'OVERRIDDEN' : (costSource === 'PROVIDER' && effectiveCostPrice && effectiveCostPrice > 0 ? 'VALID' : 'MISSING')
+
     // Step 7: Atomic transaction — create snapshot + update package
     const round6dp = (v: number) => Math.round(v * 1000000) / 1000000
     let snapshotId: string | undefined
@@ -142,6 +153,9 @@ export async function recalculatePackagePrice(
             sellingCurrency: sellCurrency,
             markupPercent: derivedMarkup,
             effectiveCostPrice: round6dp(effectiveCost),
+            costStatus: normalizedCostStatus,
+            costSource,
+            costReceivedAt: normalizedCostStatus === 'VALID' || normalizedCostStatus === 'OVERRIDDEN' ? (pkg.costReceivedAt || new Date()) : undefined,
             pricingStatus: 'READY',
             activePriceSnapshotId: snap.id,
           },
