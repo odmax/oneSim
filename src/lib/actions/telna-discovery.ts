@@ -4,6 +4,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 import type { TelnaConnector } from '@/lib/providers/connectors/telna-connector'
+import { maskIccid } from '@/lib/providers/mappers/ibasis-sim-mapper'
 
 function isTelnaConnector(c: unknown): c is TelnaConnector {
   return c !== null && typeof c === 'object' && 'listCountries' in c && 'getCompany' in c
@@ -143,7 +144,7 @@ export async function telnaMapSimRegistry(providerId: string, iccid: string) {
 
   const { mapTelnaSimRegistry } = await import('@/lib/providers/mappers/telna-sim-mapper')
   const mapped = mapTelnaSimRegistry(detail.data.sim)
-  console.log(`[TELNA_SIM_MAPPING] iccid=${iccid} mapped=true providerStatus=${mapped.providerStatus} normalizedStatus=${mapped.normalizedStatus}`)
+  console.log(`[TELNA_SIM_MAPPING] iccid=${maskIccid(iccid)} mapped=true providerStatus=${mapped.providerStatus} normalizedStatus=${mapped.normalizedStatus}`)
 
   return { success: true, data: mapped }
 }

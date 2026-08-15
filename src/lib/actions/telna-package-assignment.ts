@@ -8,6 +8,7 @@ import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector
 import type { TelnaConnector } from '@/lib/providers/connectors/telna-connector'
 import { mapTelnaPCRProfile } from '@/lib/providers/mappers/telna-pcr-profile-mapper'
 import { mapTelnaSimRegistry } from '@/lib/providers/mappers/telna-sim-mapper'
+import { maskIccid } from '@/lib/providers/mappers/ibasis-sim-mapper'
 
 function isTelnaConnector(c: unknown): c is TelnaConnector {
   return c !== null && typeof c === 'object' && 'getSimPCRProfile' in c && 'updateSimPCRProfile' in c
@@ -158,7 +159,7 @@ export async function assignPackageToSim(esimId: string, providerPackageId: stri
     })
 
     // Log diagnostics
-    console.log(`[TELNA_PACKAGE_ASSIGN] iccid=${esim.iccid} status=success package=${packageTemplateId} oldPackage=${oldPackageId} durationMs=${durationMs}`)
+    console.log(`[TELNA_PACKAGE_ASSIGN] iccid=${maskIccid(esim.iccid)} status=success package=${packageTemplateId} oldPackage=${oldPackageId} durationMs=${durationMs}`)
 
     revalidatePath(`/admin/esims/${esimId}`)
     revalidatePath('/admin/esims')

@@ -6,6 +6,7 @@ import { authOptions } from '@/lib/auth/config'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 import type { TelnaConnector } from '@/lib/providers/connectors/telna-connector'
 import { mapTelnaUsage, mapTelnaSession, mapTelnaBalance } from '@/lib/providers/mappers/telna-usage-mapper'
+import { maskIccid } from '@/lib/providers/mappers/ibasis-sim-mapper'
 
 function isTelnaConnector(c: unknown): c is TelnaConnector {
   return c !== null && typeof c === 'object' && 'getSimUsage' in c
@@ -77,7 +78,7 @@ export async function telnaSyncUsage(esimId: string) {
     },
   })
 
-  console.log(`[TELNA_USAGE] iccid=${esim.iccid} esimId=${esimId} status=success dataUsedMB=${mapped.dataUsedMB} durationMs=${Date.now() - startTime}`)
+  console.log(`[TELNA_USAGE] iccid=${maskIccid(esim.iccid)} esimId=${esimId} status=success dataUsedMB=${mapped.dataUsedMB} durationMs=${Date.now() - startTime}`)
 
   return { success: true, data: mapped }
 }
@@ -148,7 +149,7 @@ export async function telnaSyncSessions(esimId: string) {
     metadata: { iccid: esim.iccid, esimId, sessionCount: created, durationMs: Date.now() - startTime },
   })
 
-  console.log(`[TELNA_SESSION] iccid=${esim.iccid} esimId=${esimId} status=success sessions=${created} durationMs=${Date.now() - startTime}`)
+  console.log(`[TELNA_SESSION] iccid=${maskIccid(esim.iccid)} esimId=${esimId} status=success sessions=${created} durationMs=${Date.now() - startTime}`)
 
   return { success: true, sessionCount: created }
 }
@@ -201,7 +202,7 @@ export async function telnaSyncBalances(esimId: string) {
     metadata: { iccid: esim.iccid, esimId, balance: mapped.balance, dataRemainingMB: mapped.dataRemainingMB, durationMs: Date.now() - startTime },
   })
 
-  console.log(`[TELNA_BALANCE] iccid=${esim.iccid} esimId=${esimId} status=success balance=${mapped.balance} durationMs=${Date.now() - startTime}`)
+  console.log(`[TELNA_BALANCE] iccid=${maskIccid(esim.iccid)} esimId=${esimId} status=success balance=${mapped.balance} durationMs=${Date.now() - startTime}`)
 
   return { success: true, data: mapped }
 }

@@ -584,7 +584,7 @@ describe('TelnaConnector Discovery — listInventories', () => {
     expect(result.data?.items[0].availableSims).toBe(500)
   })
 
-  it('filters by company_id query parameter', async () => {
+  it('filters by company query parameter', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -594,7 +594,11 @@ describe('TelnaConnector Discovery — listInventories', () => {
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     await connector.listInventories(99, 10, 0)
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('company_id=99'),
+      expect.stringContaining('company=99'),
+      expect.any(Object)
+    )
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.not.stringContaining('company_id'),
       expect.any(Object)
     )
   })
@@ -1391,7 +1395,11 @@ describe('TelnaConnector Phase 3 — listSimRegistries', () => {
       expect.any(Object)
     )
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('group_id=55'),
+      expect.stringContaining('group=55'),
+      expect.any(Object)
+    )
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.not.stringContaining('group_id=55'),
       expect.any(Object)
     )
     expect(globalThis.fetch).toHaveBeenCalledWith(
@@ -1812,6 +1820,175 @@ describe('TelnaConnector Phase 4 — PCR profile path param substitution', () =>
     const url = (globalThis.fetch as any).mock.calls[0][0] as string
     expect(url).toMatch(/\/pcr\/sim-pcr-profiles\/89012345678901234567[?]?/)
     expect(url).not.toContain('{iccid}')
+  })
+})
+
+describe('TelnaConnector v2.1 documented read-only endpoints — inventory/group/traffic-policy detail', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('getInventory uses GET /inventory/inventories/{inventory_id}', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 10, name: 'Main Inventory', type: 'PHYSICAL', status: 'ACTIVE', companyId: 42, totalSims: 100, availableSims: 50, allocatedSims: 50, defectiveSims: 0, testSims: 0 } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getInventory(10)
+    expect(result.success).toBe(true)
+    expect(result.data?.inventory.name).toBe('Main Inventory')
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/inventory/inventories/10'),
+      expect.any(Object)
+    )
+  })
+
+  it('getGroup uses GET /inventory/groups/{group_id}', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 100, name: 'Group A', inventoryId: 10, status: 'ACTIVE', totalSims: 20, availableSims: 10, allocatedSims: 10 } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getGroup(100)
+    expect(result.success).toBe(true)
+    expect(result.data?.group.name).toBe('Group A')
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/inventory/groups/100'),
+      expect.any(Object)
+    )
+  })
+
+  it('getTrafficPolicy uses GET /pcr/traffic-policies/{traffic_policy_id}', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 7, name: 'Data Policy', type: 'DATA' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getTrafficPolicy(7)
+    expect(result.success).toBe(true)
+    expect(result.data?.trafficPolicy.name).toBe('Data Policy')
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/pcr/traffic-policies/7'),
+      expect.any(Object)
+    )
+  })
+
+  it('detail endpoints are GET only and never call purge/delete', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: {} })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.getInventory(1)
+    await connector.getGroup(1)
+    await connector.getTrafficPolicy(1)
+    for (const [url, init] of (globalThis.fetch as any).mock.calls) {
+      expect(init.method || 'GET').toBe('GET')
+      expect(String(url)).not.toContain('/sim-registries/')
+    }
+  })
+})
+
+describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('uses GET /pcr/sim-pcr-profiles/{iccid} and maps provider status', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, iccid: '89012345678901234567', status: 'SUSPENDED' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus('89012345678901234567')
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('SUSPENDED')
+    expect(result.data?.rawStatus).toBe('SUSPENDED')
+    expect(result.data?.iccid).toBe('89012345678901234567')
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/pcr/sim-pcr-profiles/89012345678901234567'),
+      expect.any(Object)
+    )
+  })
+
+  it('accepts a structured StatusLookupIdentifier with iccid', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, iccid: '89012345678901234567', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus({ iccid: '89012345678901234567' })
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('ACTIVE')
+  })
+
+  it('fails locally with IDENTIFIER_MISSING when no ICCID (never a local esim.id)', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus('')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('IDENTIFIER_MISSING')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('resolveStatusLookup returns the provider ICCID, never a local esim.id', () => {
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    expect(connector.resolveStatusLookup!({ iccid: '89012345678901234567', status: 'ACTIVE' })).toBe('89012345678901234567')
+    expect(connector.resolveStatusLookup!({ status: 'ACTIVE' })).toBeNull()
+    expect(connector.resolveStatusLookup!({ providerSubscriptionId: 'sub-1' } as any)).toBeNull()
+  })
+
+  it('declares statusLookup capability true (read-only PCR profile)', () => {
+    const caps = new TelnaConnector('telna-provider-1', 'Telna').capabilities!
+    expect(caps.statusLookup).toBe(true)
+    expect(caps.inventory).toBe(true)
+    expect(caps.balance).toBe(true)
+    expect(caps.suspend).toBe(false)
+    expect(caps.resume).toBe(false)
+  })
+
+  it('declares installation capabilities as UNKNOWN (never NOT_SUPPORTED without evidence)', () => {
+    // The official v2.1 endpoint-mapping doc does not provide a QR/activation-code
+    // endpoint, but that absence is NOT proof Telna lacks installation data.
+    const caps = new TelnaConnector('telna-provider-1', 'Telna').capabilities!
+    expect(caps.installationLookup).toBe('UNKNOWN')
+    expect(caps.installationDataAtPurchase).toBe('UNKNOWN')
+    expect(caps.installationLookupHistorical).toBe('UNKNOWN')
+    // Conservative tri-state must not claim NOT_SUPPORTED.
+    expect(caps.installationLookup).not.toBe(false)
+    expect(caps.installationDataAtPurchase).not.toBe(false)
+    expect(caps.installationLookupHistorical).not.toBe(false)
+  })
+
+  it('never logs the full ICCID', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, iccid: '89012345678901234567', status: 'ACTIVE' } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.getStatus('89012345678901234567')
+    for (const [args] of logSpy.mock.calls as Array<[string]>) {
+      expect(String(args)).not.toContain('89012345678901234567')
+    }
+    logSpy.mockRestore()
   })
 })
 

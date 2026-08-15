@@ -59,15 +59,15 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div className="rounded-lg border p-3">
                 <p className="font-medium text-gray-700">Connector declares installation lookup</p>
-                <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationLookup ? 'text-emerald-600' : 'text-red-600'}`}>{profile.connector?.capabilities.installationLookup ? 'YES' : 'NO'}</p>
+                <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationLookup === true ? 'text-emerald-600' : profile.connector?.capabilities.installationLookup === 'UNKNOWN' ? 'text-amber-600' : 'text-red-600'}`}>{profile.connector?.capabilities.installationLookup === true ? 'YES' : profile.connector?.capabilities.installationLookup === 'UNKNOWN' ? 'UNKNOWN' : 'NO'}</p>
               </div>
               <div className="rounded-lg border p-3">
                 <p className="font-medium text-gray-700">Installation data at purchase</p>
-                <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationDataAtPurchase ? 'text-emerald-600' : 'text-gray-400'}`}>{profile.connector?.capabilities.installationDataAtPurchase ? 'SUPPORTED' : 'UNKNOWN'}</p>
+                <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationDataAtPurchase === true ? 'text-emerald-600' : 'text-amber-600'}`}>{profile.connector?.capabilities.installationDataAtPurchase === true ? 'SUPPORTED' : profile.connector?.capabilities.installationDataAtPurchase === 'UNKNOWN' ? 'UNKNOWN' : 'NOT_SUPPORTED'}</p>
               </div>
               <div className="rounded-lg border p-3">
                 <p className="font-medium text-gray-700">Historical installation lookup</p>
-                <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationLookupHistorical ? 'text-emerald-600' : 'text-amber-600'}`}>{profile.connector?.capabilities.installationLookupHistorical ? 'SUPPORTED' : 'UNSUPPORTED'}</p>
+                <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationLookupHistorical === true ? 'text-emerald-600' : 'text-amber-600'}`}>{profile.connector?.capabilities.installationLookupHistorical === true ? 'SUPPORTED' : profile.connector?.capabilities.installationLookupHistorical === 'UNKNOWN' ? 'UNKNOWN' : 'NOT_SUPPORTED'}</p>
               </div>
               <div className="rounded-lg border p-3">
                 <p className="font-medium text-gray-700">Provider DB flag supportsQRCode</p>

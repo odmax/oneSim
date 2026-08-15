@@ -15,7 +15,7 @@ vi.mock('@/lib/providers/capabilities/exposure', () => ({
 
 const { prisma } = await import('@/lib/prisma')
 const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
-const { getProviderCapabilityProfile } = await import('./capability-profile')
+const { getProviderCapabilityProfile, classifyInstallationCapability } = await import('./capability-profile')
 
 const mockPrisma = vi.mocked(prisma)
 const mockBuild = vi.mocked(buildConnectorFromProvider)
@@ -77,5 +77,39 @@ describe('getProviderCapabilityProfile', () => {
     expect(profile).toHaveProperty('exposure')
     expect(profile.matrix[0]).toHaveProperty('portalExposure')
     expect(profile.matrix[0]).toHaveProperty('apiExposure')
+  })
+})
+
+describe('classifyInstallationCapability (conservative tri-state)', () => {
+  it('UNKNOWN stays UNKNOWN — never claimed NOT_SUPPORTED without evidence', () => {
+    expect(classifyInstallationCapability('UNKNOWN', true, 'installationLookupHistorical')).toBe('UNKNOWN')
+    expect(classifyInstallationCapability('UNKNOWN', false, 'installationDataAtPurchase')).toBe('UNKNOWN')
+  })
+
+  it('a declared+implemented capability is SUPPORTED', () => {
+    expect(classifyInstallationCapability(true, true, 'installationDataAtPurchase')).toBe('SUPPORTED')
+  })
+
+  it('a declared-but-unimplemented capability is NOT_IMPLEMENTED', () => {
+    expect(classifyInstallationCapability(true, false, 'installationLookupHistorical')).toBe('NOT_IMPLEMENTED')
+  })
+
+  it('an explicitly false (evidence-backed) capability is NOT_SUPPORTED', () => {
+    expect(classifyInstallationCapability(false, true, 'installationLookup')).toBe('NOT_SUPPORTED')
+  })
+
+  it('tri-state UNKNOWN is not flagged as a hard mismatch in the profile matrix', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue({ ...choiceProvider(), supportsQRCode: false } as any)
+    mockBuild.mockResolvedValue({
+      name: 'Telna Legacy',
+      capabilities: { installationLookup: 'UNKNOWN', installationDataAtPurchase: 'UNKNOWN', installationLookupHistorical: 'UNKNOWN', statusLookup: true, usageLookup: false, topUp: false, suspend: false, resume: false, balance: true, inventory: true, webhooks: false },
+    } as any)
+    const profile = await getProviderCapabilityProfile('p-1')
+    for (const cap of ['installationLookup', 'installationDataAtPurchase', 'installationLookupHistorical']) {
+      const row = profile.matrix.find(r => r.capability === cap)
+      expect(row?.connector).toBe('UNKNOWN')
+      expect(row?.mismatch).toBe(false)
+    }
+    expect(profile.mismatches.some(m => ['installationLookup', 'installationDataAtPurchase', 'installationLookupHistorical'].includes(m.capability))).toBe(false)
   })
 })

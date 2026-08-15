@@ -187,7 +187,7 @@ export async function persistInstallationLookup(esimId: string, esim: { qrCode?:
   return clean
 }
 
-/** True when a connector reports installation lookup support. */
+/** True when a connector reports installation lookup support (tri-state: only a concrete `true` counts). */
 export function connectorSupportsInstallationLookup(connector: Pick<IProviderConnector, 'capabilities' | 'lookupInstallationData'>): boolean {
-  return Boolean(connector.lookupInstallationData) && Boolean(connector.capabilities?.installationLookup)
+  return Boolean(connector.lookupInstallationData) && connector.capabilities?.installationLookup === true
 }

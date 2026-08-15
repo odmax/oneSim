@@ -1,7 +1,8 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { telnaEndpointPath, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption } from './telna-endpoints'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, StatusLookupEsim, StatusLookupIdentifier } from './connector-interface'
+import { normalizeSimStatus } from '../mappers/telna-sim-mapper'
 
 interface TelnaRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
@@ -30,6 +31,12 @@ function maskToken(token: string): string {
   return token.slice(0, 4) + '••••' + token.slice(-4)
 }
 
+function maskIccid(iccid: string): string {
+  if (!iccid) return ''
+  if (iccid.length <= 8) return '••••'
+  return `${iccid.slice(0, 4)}••••${iccid.slice(-4)}`
+}
+
 export class TelnaConnector implements IProviderConnector {
   readonly providerId: string
   readonly name: string
@@ -41,10 +48,15 @@ export class TelnaConnector implements IProviderConnector {
 
   /** Telna (legacy) connector-declared internal capabilities. */
   capabilities: ConnectorCapabilities = {
-    installationLookup: false,
-    installationDataAtPurchase: false,
-    installationLookupHistorical: false,
-    statusLookup: false,
+    // Installation: the official v2.1 endpoint-mapping doc does NOT provide a QR
+    // / activation-code / installation-data endpoint, but its absence there is NOT
+    // proof Telna lacks installation data elsewhere. Conservative tri-state
+    // 'UNKNOWN' (never claimed NOT_SUPPORTED without explicit evidence). The
+    // connector does not wire an install-data method yet.
+    installationLookup: 'UNKNOWN',
+    installationDataAtPurchase: 'UNKNOWN',
+    installationLookupHistorical: 'UNKNOWN',
+    statusLookup: true, // read-only GET /pcr/sim-pcr-profiles/{iccid} (Endpoint Mapping #36)
     usageLookup: false,
     topUp: false,
     suspend: false,
@@ -228,8 +240,26 @@ export class TelnaConnector implements IProviderConnector {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Activation not implemented for Telna connector' } }
   }
 
-  async getStatus(_subscriptionId: string): Promise<ConnectorResult<StatusResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Status not implemented for Telna connector' } }
+  async getStatus(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
+    // Telna v2.1 uses the ICCID directly as the identifier for SIM PCR Profile
+    // lookups (Endpoint Mapping #36). NEVER a local OneSIM id.
+    const iccid = typeof identifier === 'string' ? identifier : (identifier as StatusLookupIdentifier)?.iccid
+    if (!iccid) {
+      return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'ICCID is required for Telna status lookup' } }
+    }
+    const result = await this.getSimPCRProfile(iccid)
+    if (!result.success || !result.data) return { success: false, error: result.error }
+    const profile = result.data.profile
+    const status = normalizeSimStatus(profile.status || 'UNKNOWN')
+    return {
+      success: true,
+      data: { status, rawStatus: profile.status, iccid },
+    }
+  }
+
+  /** Telna status is keyed by ICCID — a provider-owned identifier, never a local esim.id. */
+  resolveStatusLookup(esim: StatusLookupEsim): string | null {
+    return esim.iccid || null
   }
 
   async getUsage(_iccid: string): Promise<ConnectorResult<UsageResult>> {
@@ -285,7 +315,8 @@ export class TelnaConnector implements IProviderConnector {
 
   async listInventories(company?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaInventory[]; total: number }>> {
     const start = Date.now()
-    const result = await this.request({ method: 'GET', endpoint: 'inventories', query: { company_id: company, count, offset } })
+    // Documented v2.1 filter (Endpoint Mapping #3/#13): company=<company_id>
+    const result = await this.request({ method: 'GET', endpoint: 'inventories', query: { company, count, offset } })
     const duration = Date.now() - start
     const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaInventory>).data : []) || []
     const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaInventory>).total : 0) || 0
@@ -319,6 +350,45 @@ export class TelnaConnector implements IProviderConnector {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Wallet not found' } }
     }
     return { success: true, data: { wallet } }
+  }
+
+  /** Documented v2.1 read-only: GET /inventory/inventories/{inventory_id} (Endpoint Mapping #14). */
+  async getInventory(inventoryId: number): Promise<ConnectorResult<{ inventory: TelnaInventory }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'inventory', pathParams: { inventory_id: inventoryId } })
+    const duration = Date.now() - start
+    const inventory = result.success && result.data ? (result.data as { data: TelnaInventory }).data : null
+    console.log(`[TELNA_INVENTORY_DETAIL] inventoryId=${inventoryId} success=${result.success} status=${result.status} durationMs=${duration} requestId=${result.requestId}`)
+    if (!result.success || !inventory) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Inventory not found' } }
+    }
+    return { success: true, data: { inventory } }
+  }
+
+  /** Documented v2.1 read-only: GET /inventory/groups/{group_id} (Endpoint Mapping #5/#8). */
+  async getGroup(groupId: number): Promise<ConnectorResult<{ group: TelnaGroup }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'group', pathParams: { group_id: groupId } })
+    const duration = Date.now() - start
+    const group = result.success && result.data ? (result.data as { data: TelnaGroup }).data : null
+    console.log(`[TELNA_GROUP_DETAIL] groupId=${groupId} success=${result.success} status=${result.status} durationMs=${duration} requestId=${result.requestId}`)
+    if (!result.success || !group) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Group not found' } }
+    }
+    return { success: true, data: { group } }
+  }
+
+  /** Documented v2.1 read-only: GET /pcr/traffic-policies/{traffic_policy_id} (Endpoint Mapping #42). */
+  async getTrafficPolicy(trafficPolicyId: number): Promise<ConnectorResult<{ trafficPolicy: Record<string, unknown> }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'trafficPolicy', pathParams: { traffic_policy_id: trafficPolicyId } })
+    const duration = Date.now() - start
+    const trafficPolicy = result.success && result.data ? (result.data as { data: Record<string, unknown> }).data : null
+    console.log(`[TELNA_TRAFFIC_POLICY] trafficPolicyId=${trafficPolicyId} success=${result.success} status=${result.status} durationMs=${duration} requestId=${result.requestId}`)
+    if (!result.success || !trafficPolicy) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Traffic policy not found' } }
+    }
+    return { success: true, data: { trafficPolicy } }
   }
 
   async getBalance(): Promise<ConnectorResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>> {
@@ -408,9 +478,11 @@ export class TelnaConnector implements IProviderConnector {
 
   async listSimRegistries(inventoryId?: number, groupId?: number, status?: string, iccid?: string, imsi?: string, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaSimRegistry[]; total: number }>> {
     const start = Date.now()
+    // Documented v2.1 filters (Endpoint Mapping #9): group=<group_id>; inventory_id
+    // and status are additional repo-established filters (not contradicted by the doc).
     const result = await this.request({
       method: 'GET', endpoint: 'simRegistries',
-      query: { inventory_id: inventoryId, group_id: groupId, status, iccid, imsi, count, offset },
+      query: { inventory_id: inventoryId, group: groupId, status, iccid, imsi, count, offset },
     })
     const duration = Date.now() - start
     const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaSimRegistry>).data : []) || []
@@ -427,7 +499,7 @@ export class TelnaConnector implements IProviderConnector {
     const result = await this.request({ method: 'GET', endpoint: 'simRegistry', pathParams: { iccid } })
     const duration = Date.now() - start
     const sim = result.success && result.data ? (result.data as { data: TelnaSimRegistry }).data : null
-    console.log(`[TELNA_SIM_REGISTRY_DETAIL] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    console.log(`[TELNA_SIM_REGISTRY_DETAIL] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
     if (!result.success || !sim) {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'SIM registry entry not found' } }
     }
@@ -441,7 +513,7 @@ export class TelnaConnector implements IProviderConnector {
     const result = await this.request({ method: 'GET', endpoint: 'simPCRProfile', pathParams: { iccid } })
     const duration = Date.now() - start
     const profile = result.success && result.data ? (result.data as { data: TelnaPCRProfile }).data : null
-    console.log(`[TELNA_PCR_PROFILE] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    console.log(`[TELNA_PCR_PROFILE] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
     if (!result.success || !profile) {
       return { success: false, error: { code: result.error?.code || 'PCR_FAILED', message: result.error?.message || 'PCR profile not found' } }
     }
@@ -453,7 +525,7 @@ export class TelnaConnector implements IProviderConnector {
     const result = await this.request({ method: 'PUT', endpoint: 'simPCRProfile', pathParams: { iccid }, body: update })
     const duration = Date.now() - start
     const profile = result.success && result.data ? (result.data as { data: TelnaPCRProfile }).data : null
-    console.log(`[TELNA_PACKAGE_ASSIGN] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    console.log(`[TELNA_PACKAGE_ASSIGN] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
     if (!result.success || !profile) {
       return { success: false, error: { code: result.error?.code || 'PCR_FAILED', message: result.error?.message || 'PCR profile update failed' } }
     }
@@ -467,7 +539,7 @@ export class TelnaConnector implements IProviderConnector {
     const result = await this.request({ method: 'GET', endpoint: 'simUsage', pathParams: { iccid } })
     const duration = Date.now() - start
     const usage = result.success && result.data ? (result.data as { data: TelnaUsage }).data : null
-    console.log(`[TELNA_USAGE] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    console.log(`[TELNA_USAGE] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
     if (!result.success || !usage) {
       return { success: false, error: { code: result.error?.code || 'USAGE_FAILED', message: result.error?.message || 'Usage data not found' } }
     }
@@ -480,7 +552,7 @@ export class TelnaConnector implements IProviderConnector {
     const duration = Date.now() - start
     const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaSession>).data : []) || []
     const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaSession>).total : 0) || 0
-    console.log(`[TELNA_SESSION] iccid=${iccid} status=${result.status} requestId=${result.requestId} itemCount=${items.length} durationMs=${duration}`)
+    console.log(`[TELNA_SESSION] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} itemCount=${items.length} durationMs=${duration}`)
     if (!result.success) {
       return { success: false, error: { code: result.error?.code || 'SESSION_FAILED', message: result.error?.message || 'Failed to list sessions' } }
     }
@@ -492,7 +564,7 @@ export class TelnaConnector implements IProviderConnector {
     const result = await this.request({ method: 'GET', endpoint: 'simBalances', pathParams: { iccid } })
     const duration = Date.now() - start
     const balance = result.success && result.data ? (result.data as { data: TelnaBalance }).data : null
-    console.log(`[TELNA_BALANCE] iccid=${iccid} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
+    console.log(`[TELNA_BALANCE] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
     if (!result.success || !balance) {
       return { success: false, error: { code: result.error?.code || 'BALANCE_FAILED', message: result.error?.message || 'Balance data not found' } }
     }

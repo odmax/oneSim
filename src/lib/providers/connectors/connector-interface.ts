@@ -167,11 +167,19 @@ export interface ConnectorInstallDataOutput {
  * SEPARATELY: a provider may capture install data during NEW purchases (from
  * the activation response) while having NO verified read-only way to recover it
  * for already-provisioned eSIMs.
+ *
+ * The three installation capabilities accept a tri-state:
+ *  - `true`            = the connector implements the capability
+ *  - `false`           = explicit evidence the provider/connector does NOT support it
+ *  - `'UNKNOWN'`       = no verified evidence either way (e.g. the official API
+ *    mapping doc does not document a QR endpoint, but its absence is NOT proof
+ *    the provider lacks installation data) → conservatively UNKNOWN, never
+ *    claimed NOT_SUPPORTED.
  */
 export interface ConnectorCapabilities {
-  installationLookup: boolean
-  installationDataAtPurchase: boolean
-  installationLookupHistorical: boolean
+  installationLookup: boolean | 'UNKNOWN'
+  installationDataAtPurchase: boolean | 'UNKNOWN'
+  installationLookupHistorical: boolean | 'UNKNOWN'
   statusLookup: boolean
   usageLookup: boolean
   topUp: boolean

@@ -4,6 +4,7 @@ import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult } from './connector-interface'
 import { SEAMLESS_ENDPOINTS, buildSeamlessUrl, type SeamlessEndpoint } from './telna-seamless-endpoints'
 import type { SeamlessProductOffering, SeamlessOrder, SeamlessSubscription, SeamlessQRCode, SeamlessUsage, SeamlessOSApiResponse, SeamlessOrderState, SeamlessSubscriptionState } from './telna-seamless-types'
+import { maskIccid } from '../mappers/ibasis-sim-mapper'
 
 interface SeamlessConfig {
   apiBaseUrl: string
@@ -532,7 +533,7 @@ export class TelnaSeamlessConnector implements IProviderConnector {
     const status = mapSubscriptionState(rawStatus)
     const iccid = extractIccid(subscription)
 
-    console.log(`[SEAMLESS_STATUS] correlationId=${correlationId} subscriptionId=${subscriptionId} rawStatus=${rawStatus} normalized=${status} iccid=${iccid || 'none'}`)
+    console.log(`[SEAMLESS_STATUS] correlationId=${correlationId} subscriptionId=${subscriptionId} rawStatus=${rawStatus} normalized=${status} iccid=${iccid ? maskIccid(iccid) : 'none'}`)
 
     return { success: true, data: { status, iccid: iccid || undefined, iccids: iccid ? [iccid] : undefined } }
   }

@@ -7,6 +7,7 @@ import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector
 import type { TelnaConnector } from '@/lib/providers/connectors/telna-connector'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 import { mapTelnaSimRegistry } from '@/lib/providers/mappers/telna-sim-mapper'
+import { maskIccid } from '@/lib/providers/mappers/ibasis-sim-mapper'
 
 function isTelnaConnector(c: unknown): c is TelnaConnector {
   return c !== null && typeof c === 'object' && 'listSimRegistries' in c
@@ -105,7 +106,7 @@ export async function telnaSyncSims(providerId: string, inventoryId?: number) {
         processed[iccid] = { action: 'updated', mapped, oldStatus }
       } else {
         // Cannot create ESIM without a purchase association
-        console.log(`[TELNA_SIM_SYNC] No matching ESIM for iccid=${iccid} — skipping (no purchase association)`)
+        console.log(`[TELNA_SIM_SYNC] No matching ESIM for iccid=${maskIccid(iccid)} — skipping (no purchase association)`)
         processed[iccid] = { action: 'skipped', mapped, oldStatus: null }
       }
     }

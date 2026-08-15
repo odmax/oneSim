@@ -5,7 +5,7 @@ import { DEFAULT_CONNECTOR_CAPABILITIES as BASE } from '@/lib/providers/connecto
 import { ProviderCapability } from '@/lib/providers/capabilities/types'
 import { isCapabilityExposedToPortal, isCapabilityExposedToApi } from '@/lib/providers/capabilities/exposure'
 
-export type CapabilityStatus = 'SUPPORTED' | 'NOT_SUPPORTED' | 'NOT_IMPLEMENTED'
+export type CapabilityStatus = 'SUPPORTED' | 'NOT_SUPPORTED' | 'NOT_IMPLEMENTED' | 'UNKNOWN'
 
 /**
  * Capability layers (never conflated):
@@ -31,7 +31,7 @@ export interface ProviderCapabilityProfile {
     usage: { portal: boolean; api: boolean }
     topUp: { portal: boolean; api: boolean }
   }
-  mismatches: Array<{ capability: string; connector: boolean; dbFlag: string | boolean | null; note: string }>
+  mismatches: Array<{ capability: string; connector: boolean | 'UNKNOWN'; dbFlag: string | boolean | null; note: string }>
   matrix: Array<{
     capability: string
     connector: CapabilityStatus
@@ -59,6 +59,30 @@ const CAP_TO_DB: Record<keyof ConnectorCapabilities, { db: keyof ProviderCapabil
 export function connectorCapabilityStatus(declared: boolean, methodPresent: boolean, methodName: keyof ConnectorCapabilities): CapabilityStatus {
   if (!declared) return 'NOT_SUPPORTED'
   return methodPresent ? 'SUPPORTED' : 'NOT_IMPLEMENTED'
+}
+
+/**
+ * Conservative classification for a capability whose provider support is NOT
+ * verified (e.g. the official Telna v2.1 endpoint-mapping doc does not provide a
+ * QR/activation-code endpoint, but absence there is NOT proof the provider lacks
+ * installation data elsewhere).
+ *
+ * Distinction from `connectorCapabilityStatus`:
+ *  - NOT_SUPPORTED  = explicit evidence the provider/connector does NOT support it
+ *  - NOT_IMPLEMENTED = the connector implements the capability contract but the
+ *    method is not wired
+ *  - UNKNOWN        = no verified evidence either way → conservative
+ *
+ * @param triState `'UNKNOWN'` when there is no verified evidence; otherwise a
+ *   boolean declaring connector support.
+ */
+export function classifyInstallationCapability(
+  triState: boolean | 'UNKNOWN',
+  methodPresent: boolean,
+  methodName: keyof ConnectorCapabilities,
+): CapabilityStatus {
+  if (triState === 'UNKNOWN') return 'UNKNOWN'
+  return connectorCapabilityStatus(triState, methodPresent, methodName)
 }
 
 export async function getProviderCapabilityProfile(providerId: string): Promise<ProviderCapabilityProfile> {
@@ -96,6 +120,8 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
   const matrix: ProviderCapabilityProfile['matrix'] = []
   const mismatches: ProviderCapabilityProfile['mismatches'] = []
 
+  const INSTALLATION_CAPS: ReadonlySet<keyof ConnectorCapabilities> = new Set(['installationLookup', 'installationDataAtPurchase', 'installationLookupHistorical'])
+
   const exposureByCap: Record<keyof ConnectorCapabilities, { portal: boolean; api: boolean }> = {
     installationLookup: { portal: installPortal, api: installApi },
     installationDataAtPurchase: { portal: installPortal, api: installApi },
@@ -114,18 +140,22 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
     const connectorSupported = caps[capKey]
     const dbConfigured = Boolean(configured[mapping.db])
     const connectorStatus: CapabilityStatus = connector
-      ? connectorCapabilityStatus(connectorSupported, true, capKey)
+      ? INSTALLATION_CAPS.has(capKey)
+        ? classifyInstallationCapability(connectorSupported, true, capKey)
+        : connectorCapabilityStatus(connectorSupported as boolean, true, capKey)
       : 'NOT_IMPLEMENTED'
     const exp = exposureByCap[capKey]
+    // A tri-state UNKNOWN is never a hard mismatch — it is not a claim of support.
+    const mismatch = connectorSupported !== 'UNKNOWN' && connectorSupported !== dbConfigured
     matrix.push({
       capability: capKey,
       connector: connectorStatus,
       dbConfigured,
       portalExposure: exp.portal,
       apiExposure: exp.api,
-      mismatch: connectorSupported !== dbConfigured,
+      mismatch,
     })
-    if (connectorSupported !== dbConfigured) {
+    if (mismatch) {
       mismatches.push({ capability: capKey, connector: connectorSupported, dbFlag: mapping.db, note: `Connector declares ${connectorSupported} but provider DB flag ${String(mapping.db)}=${dbConfigured}` })
     }
   }
