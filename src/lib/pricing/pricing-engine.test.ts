@@ -16,6 +16,8 @@ import {
   applyTax,
   convertCurrency,
   applyDiscount,
+  resolvePricingMutation,
+  inferPricingIntent,
 } from './pricing-engine'
 import type { PricingContext } from './types'
 
@@ -509,5 +511,112 @@ describe('future hooks', () => {
     it('applies 0% discount (no change)', () => {
       expect(applyDiscount(100, 0)).toBe(100)
     })
+  })
+})
+
+describe('resolvePricingMutation — canonical bidirectional pricing contract', () => {
+  const existing = { costPrice: 7, sellingPrice: null, markupPercent: 9.89 }
+
+  it('CASE 1: cost + markup → selling (the reported bug: NULL selling)', () => {
+    const r = resolvePricingMutation({ intent: 'MARKUP', supplied: { costPrice: 7, markupPercent: 9.89 }, existing })
+    expect(r.valid).toBe(true)
+    expect(r.sellingPrice).toBe(7.69) // 7 * (1 + 0.0989) = 7.6923 → roundMoney → 7.69
+    expect(r.markupPercent).toBe(9.89)
+  })
+
+  it('CASE 2: cost + selling → markup', () => {
+    const r = resolvePricingMutation({ intent: 'SELLING', supplied: { costPrice: 7, sellingPrice: 8 }, existing: { costPrice: 7, sellingPrice: null, markupPercent: null } })
+    expect(r.valid).toBe(true)
+    expect(r.markupPercent).toBe(14.29) // ((8-7)/7)*100 = 14.2857 → roundPercentage → 14.29
+    expect(r.sellingPrice).toBe(8)
+  })
+
+  it('CASE 3: all three supplied with explicit SELLING intent keeps selling authoritative', () => {
+    const r = resolvePricingMutation({ intent: 'SELLING', supplied: { costPrice: 7, sellingPrice: 8, markupPercent: 999 }, existing: { costPrice: 7, sellingPrice: null, markupPercent: null } })
+    expect(r.valid).toBe(true)
+    expect(r.sellingPrice).toBe(8)
+    expect(r.markupPercent).toBe(14.29) // recalculated from cost+selling, NOT the stale 999
+  })
+
+  it('manual markup edit recalculates selling (7.00 → 9.89% → 7.69)', () => {
+    const r = resolvePricingMutation({ intent: 'MARKUP', supplied: { markupPercent: 9.89 }, existing: { costPrice: 7, sellingPrice: null, markupPercent: 0 } })
+    expect(r.valid).toBe(true)
+    expect(r.sellingPrice).toBe(7.69)
+  })
+
+  it('manual selling edit recalculates markup (8.00 on 7.00 → 14.29%)', () => {
+    const r = resolvePricingMutation({ intent: 'SELLING', supplied: { sellingPrice: 8 }, existing: { costPrice: 7, sellingPrice: null, markupPercent: null } })
+    expect(r.valid).toBe(true)
+    expect(r.markupPercent).toBe(14.29)
+  })
+
+  it('cost edit with known markup recalculates selling (COST intent)', () => {
+    const r = resolvePricingMutation({ intent: 'COST', supplied: { costPrice: 10 }, existing: { costPrice: 7, sellingPrice: 7.69, markupPercent: 9.89 } })
+    expect(r.valid).toBe(true)
+    expect(r.sellingPrice).toBe(10.99) // 10 * 1.0989 = 10.989 → roundMoney → 10.99
+    expect(r.markupPercent).toBe(9.89)
+  })
+
+  it('cost edit with known selling but no markup derives markup (COST intent)', () => {
+    const r = resolvePricingMutation({ intent: 'COST', supplied: { costPrice: 10 }, existing: { costPrice: 7, sellingPrice: 14, markupPercent: null } })
+    expect(r.valid).toBe(true)
+    expect(r.markupPercent).toBe(40) // ((14-10)/10)*100
+  })
+
+  it('decimal rounding: money to 2dp, percentage to 2dp', () => {
+    const money = resolvePricingMutation({ intent: 'MARKUP', supplied: { costPrice: 1.60, markupPercent: 10 }, existing: { costPrice: 1.6, sellingPrice: null, markupPercent: null } })
+    expect(money.sellingPrice).toBe(1.76)
+    const pct = resolvePricingMutation({ intent: 'SELLING', supplied: { costPrice: 1.60, sellingPrice: 1.76 }, existing: { costPrice: 1.6, sellingPrice: null, markupPercent: null } })
+    expect(pct.markupPercent).toBe(10.00)
+  })
+
+  it('zero-cost safety: cannot compute markup-derived selling', () => {
+    const r = resolvePricingMutation({ intent: 'MARKUP', supplied: { costPrice: 0, markupPercent: 25 }, existing: { costPrice: 0, sellingPrice: null, markupPercent: null } })
+    expect(r.valid).toBe(false)
+    expect(r.sellingPrice).toBeNull()
+  })
+
+  it('null handling: intent NONE preserves existing triple untouched', () => {
+    const r = resolvePricingMutation({ intent: 'NONE', supplied: {}, existing: { costPrice: 7, sellingPrice: 7.69, markupPercent: 9.89 } })
+    expect(r.valid).toBe(true)
+    expect(r).toEqual({ costPrice: 7, sellingPrice: 7.69, markupPercent: 9.89, valid: true, errors: [] })
+  })
+
+  it('explicitly-set price behavior: NONE intent never overwrites an existing price', () => {
+    const r = resolvePricingMutation({ intent: 'NONE', supplied: {}, existing: { costPrice: 7, sellingPrice: 7.69, markupPercent: 9.89 } })
+    expect(r.sellingPrice).toBe(7.69)
+    expect(r.markupPercent).toBe(9.89)
+    expect(r.costPrice).toBe(7)
+  })
+
+  it('rejects NaN/Infinity inputs', () => {
+    const nan = resolvePricingMutation({ intent: 'MARKUP', supplied: { costPrice: NaN, markupPercent: 25 }, existing: { costPrice: NaN, sellingPrice: null, markupPercent: null } })
+    expect(nan.valid).toBe(false)
+    const inf = resolvePricingMutation({ intent: 'SELLING', supplied: { costPrice: Infinity, sellingPrice: 10 }, existing: { costPrice: Infinity, sellingPrice: null, markupPercent: null } })
+    expect(inf.valid).toBe(false)
+  })
+
+  it('rejects negative cost / selling / markup', () => {
+    expect(resolvePricingMutation({ intent: 'MARKUP', supplied: { costPrice: -1, markupPercent: 25 }, existing: { costPrice: -1, sellingPrice: null, markupPercent: null } }).valid).toBe(false)
+    expect(resolvePricingMutation({ intent: 'SELLING', supplied: { costPrice: 7, sellingPrice: -2 }, existing: { costPrice: 7, sellingPrice: null, markupPercent: null } }).valid).toBe(false)
+    expect(resolvePricingMutation({ intent: 'MARKUP', supplied: { costPrice: 7, markupPercent: -5 }, existing: { costPrice: 7, sellingPrice: null, markupPercent: null } }).valid).toBe(false)
+  })
+})
+
+describe('inferPricingIntent — legacy fallback authority', () => {
+  it('markup supplied alone → MARKUP', () => {
+    expect(inferPricingIntent({ markupPercent: 9.89 }, {})).toBe('MARKUP')
+  })
+  it('selling supplied alone → SELLING', () => {
+    expect(inferPricingIntent({ sellingPrice: 8 }, {})).toBe('SELLING')
+  })
+  it('cost supplied alone → COST', () => {
+    expect(inferPricingIntent({ costPrice: 7 }, {})).toBe('COST')
+  })
+  it('both selling AND markup supplied → NONE (preserve explicit values)', () => {
+    expect(inferPricingIntent({ sellingPrice: 8, markupPercent: 200 }, {})).toBe('NONE')
+  })
+  it('no pricing fields → NONE', () => {
+    expect(inferPricingIntent({ notes: 'x' }, {})).toBe('NONE')
   })
 })

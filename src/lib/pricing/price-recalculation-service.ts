@@ -3,6 +3,7 @@ import { PRICING_ENGINE_VERSION } from '../currency/currency-config'
 import { convertCurrency } from '../currency/exchange-rate-service'
 import { getPlatformBaseCurrency } from '../currency/currency-config'
 import { roundCurrencyAmount } from '../currency/currency-rounding'
+import { computeMarkupFromCostAndSell } from './pricing-engine'
 
 export type RecalculationReason =
   | 'PROVIDER_COST_CHANGED' | 'ADMIN_OVERRIDE_CHANGED'
@@ -105,6 +106,10 @@ export async function recalculatePackagePrice(
   const sellCurrency = pkg.sellingCurrency || baseCurrency
   sellPrice = roundCurrencyAmount(sellPrice, sellCurrency)
 
+  // Canonical invariant: persist the derived markup alongside selling so
+  // cost+selling never leaves a determinable markup null.
+  const derivedMarkup = effectiveCost > 0 ? (computeMarkupFromCostAndSell(effectiveCost, sellPrice) ?? null) : null
+
     // Step 7: Atomic transaction — create snapshot + update package
     const round6dp = (v: number) => Math.round(v * 1000000) / 1000000
     let snapshotId: string | undefined
@@ -135,6 +140,7 @@ export async function recalculatePackagePrice(
           data: {
             sellingPrice: sellPrice,
             sellingCurrency: sellCurrency,
+            markupPercent: derivedMarkup,
             effectiveCostPrice: round6dp(effectiveCost),
             pricingStatus: 'READY',
             activePriceSnapshotId: snap.id,

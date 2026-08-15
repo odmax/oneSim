@@ -6,6 +6,14 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes, recordCatalogPriceSyncAudit } from '@/lib/services/catalog-price-sync'
+import { resolvePricingMutation, inferPricingIntent, type PricingMutationIntent } from '@/lib/pricing/pricing-engine'
+
+/** Convert a Prisma Decimal-ish value (has toString()) to a finite number, else null. */
+function decimalToNumber(v: unknown): number | null {
+  if (v === null || v === undefined) return null
+  const n = typeof v === 'number' ? v : Number(String((v as any).toString?.() ?? v))
+  return isNaN(n) || !isFinite(n) ? null : n
+}
 
 export interface BulkConfigureParams {
   packageIds: string[]
@@ -18,6 +26,8 @@ export interface BulkConfigureParams {
   configurationStatus?: string
   tags?: string[]
   notes?: string
+  /** What the administrator actually edited — authority for bidirectional pricing. */
+  pricingIntent?: PricingMutationIntent
 }
 
 export async function bulkConfigurePackages(params: BulkConfigureParams): Promise<{ success: boolean; updated?: number; error?: string }> {
@@ -116,6 +126,31 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
       select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, sellingPrice: true, sellingCurrency: true, markupPercent: true, providerPlanId: true, providerId: true, publishStatus: true },
     })
 
+    // CANONICAL bidirectional pricing: resolve a consistent triple per package
+    // so cost+markup → selling and cost+selling → markup always hold, even when
+    // the admin supplies only two of the three values (the reported bug).
+    const supplied = {
+      costPrice: configUpdates.costPrice,
+      sellingPrice: configUpdates.sellingPrice,
+      markupPercent: configUpdates.markupPercent,
+    }
+    const perPackagePricing = new Map<string, { costPrice: number | null; sellingPrice: number | null; markupPercent: number | null }>()
+    for (const bp of beforePackages) {
+      const existingState = {
+        costPrice: decimalToNumber(bp.costPrice),
+        sellingPrice: decimalToNumber(bp.sellingPrice),
+        markupPercent: decimalToNumber(bp.markupPercent),
+      }
+      const intent = params.pricingIntent || inferPricingIntent(supplied, existingState)
+      const resolved = resolvePricingMutation({ intent, supplied, existing: existingState })
+      if (!resolved.valid) {
+        await recordStageFromCounts({ pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime, total: packageIds.length, passed: 0, failed: packageIds.length, skipped: 0, statusOverride: 'FAILED', metadata: { error: `Invalid pricing for ${bp.id}: ${resolved.errors.join('; ')}` } })
+        await failPipelineRun(pipelineRunId, `Invalid pricing for ${bp.id}: ${resolved.errors.join('; ')}`)
+        return { success: false, error: `Invalid pricing for ${bp.id}: ${resolved.errors.join('; ')}` }
+      }
+      perPackagePricing.set(bp.id, { costPrice: resolved.costPrice, sellingPrice: resolved.sellingPrice, markupPercent: resolved.markupPercent })
+    }
+
     await prisma.$transaction(async (tx) => {
       const result = await tx.providerPackage.updateMany({
         where: { id: { in: packageIds } },
@@ -124,10 +159,29 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
 
       if (result.count === 0) throw new Error('No packages updated')
 
+      // Persist the resolved pricing triple per package (dependent values are
+      // never silently missing), then sync to linked products.
       for (const bp of beforePackages) {
+        const p = perPackagePricing.get(bp.id)
+        const pricingData: any = {}
+        const existingState = {
+          costPrice: decimalToNumber(bp.costPrice),
+          sellingPrice: decimalToNumber(bp.sellingPrice),
+          markupPercent: decimalToNumber(bp.markupPercent),
+        }
+        const intent = params.pricingIntent || inferPricingIntent(supplied, existingState)
+        if (configUpdates.costPrice !== undefined) pricingData.costPrice = p?.costPrice
+        if (intent === 'COST' || intent === 'MARKUP' || intent === 'SELLING') {
+          if (p?.sellingPrice !== null) pricingData.sellingPrice = p?.sellingPrice
+          if (p?.markupPercent !== null) pricingData.markupPercent = p?.markupPercent
+        }
+        if (Object.keys(pricingData).length > 0) {
+          await tx.providerPackage.update({ where: { id: bp.id }, data: pricingData })
+        }
         const merged = {
           ...bp,
           ...updateData,
+          ...pricingData,
         }
         await syncProviderPackageToPublishedProducts(tx, merged as any)
       }

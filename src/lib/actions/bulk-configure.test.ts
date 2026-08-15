@@ -6,6 +6,7 @@ vi.mock('@/lib/prisma', () => ({
     providerPackage: {
       findMany: vi.fn(),
       updateMany: vi.fn(),
+      update: vi.fn(),
     },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
     $transaction: vi.fn(),
@@ -271,5 +272,40 @@ describe('bulkConfigurePackages', () => {
         details: expect.stringContaining('Bulk configured 2 packages:'),
       },
     })
+  })
+
+  it('bulk Configure uses the same canonical calculation: cost + markup → selling', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([makeBeforePackage({ id: 'pkg-1', costPrice: 7, sellingPrice: null, markupPercent: null })])
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      await fn(prisma)
+      return undefined
+    })
+    vi.mocked(prisma.providerPackage.updateMany).mockResolvedValue({ count: 1 })
+    vi.mocked(prisma.providerPackage.update).mockResolvedValue({} as any)
+
+    const result = await bulkConfigurePackages({ packageIds: ['pkg-1'], costPrice: 7, markupPercent: 9.89 })
+
+    expect(result.success).toBe(true)
+    // 7 * (1 + 0.0989) = 7.6923 → roundMoney → 7.69 — selling is never left null.
+    const perPkgUpdate = vi.mocked(prisma.providerPackage.update).mock.calls[0]?.[0] as any
+    expect(perPkgUpdate).toBeDefined()
+    expect(perPkgUpdate.data.sellingPrice).toBe(7.69)
+  })
+
+  it('bulk Configure derives markup from cost + selling (no markup supplied)', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([makeBeforePackage({ id: 'pkg-1', costPrice: 7, sellingPrice: null, markupPercent: null })])
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      await fn(prisma)
+      return undefined
+    })
+    vi.mocked(prisma.providerPackage.updateMany).mockResolvedValue({ count: 1 })
+    vi.mocked(prisma.providerPackage.update).mockResolvedValue({} as any)
+
+    const result = await bulkConfigurePackages({ packageIds: ['pkg-1'], costPrice: 7, sellingPrice: 8 })
+
+    expect(result.success).toBe(true)
+    const perPkgUpdate = vi.mocked(prisma.providerPackage.update).mock.calls[0]?.[0] as any
+    expect(perPkgUpdate).toBeDefined()
+    expect(perPkgUpdate.data.markupPercent).toBe(14.29) // ((8-7)/7)*100 → 14.29
   })
 })

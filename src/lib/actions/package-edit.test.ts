@@ -225,4 +225,87 @@ describe('updateSinglePackage', () => {
     const result = await updateSinglePackage('pp-1', { sellingPrice: 19.99 })
     expect(result).toEqual({ success: true })
   })
+
+  it('recalculates selling price from cost + markup when only markup is edited (bug: cost+markup with NULL selling)', async () => {
+    const { prisma } = await import('@/lib/prisma') as any
+    // Before: cost 5, markup 20, selling NULL (the reported inconsistent state).
+    const beforeState = { ...mockPackage, publishStatus: 'DRAFT', costPrice: { toString: () => '5.00' }, sellingPrice: null, markupPercent: { toString: () => '20' } }
+    let updateData: any = null
+    prisma.$transaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: {
+          findUnique: vi.fn().mockResolvedValue(beforeState),
+          update: vi.fn().mockImplementation(async (arg: any) => { updateData = arg.data; return { ...beforeState, ...arg.data } }),
+        },
+      }
+      return cb(tx)
+    })
+
+    const result = await updateSinglePackage('pp-1', { markupPercent: 30 })
+    expect(result.success).toBe(true)
+    // 5 * (1 + 30/100) = 6.50 — selling is never left null when determinable.
+    expect(updateData.sellingPrice).toBe(6.5)
+    expect(updateData.markupPercent).toBe(30)
+  })
+
+  it('recalculates markup from cost + selling when only selling is edited', async () => {
+    const { prisma } = await import('@/lib/prisma') as any
+    const beforeState = { ...mockPackage, publishStatus: 'DRAFT', costPrice: { toString: () => '7.00' }, sellingPrice: null, markupPercent: null }
+    let updateData: any = null
+    prisma.$transaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: {
+          findUnique: vi.fn().mockResolvedValue(beforeState),
+          update: vi.fn().mockImplementation(async (arg: any) => { updateData = arg.data; return { ...beforeState, ...arg.data } }),
+        },
+      }
+      return cb(tx)
+    })
+
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 8 })
+    expect(result.success).toBe(true)
+    expect(updateData.markupPercent).toBe(14.29) // ((8-7)/7)*100 → 14.29
+    expect(updateData.sellingPrice).toBe(8)
+  })
+
+  it('recalculates the dependent value on a cost edit (markup-known branch)', async () => {
+    const { prisma } = await import('@/lib/prisma') as any
+    const beforeState = { ...mockPackage, publishStatus: 'DRAFT', costPrice: { toString: () => '7.00' }, sellingPrice: null, markupPercent: { toString: () => '9.89' } }
+    let updateData: any = null
+    prisma.$transaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: {
+          findUnique: vi.fn().mockResolvedValue(beforeState),
+          update: vi.fn().mockImplementation(async (arg: any) => { updateData = arg.data; return { ...beforeState, ...arg.data } }),
+        },
+      }
+      return cb(tx)
+    })
+
+    const result = await updateSinglePackage('pp-1', { costPrice: 7 })
+    expect(result.success).toBe(true)
+    expect(updateData.sellingPrice).toBe(7.69) // 7 * 1.0989 = 7.6923 → 7.69
+  })
+
+  it('CONFIGURED cannot retain a deterministically missing selling price', async () => {
+    const { prisma } = await import('@/lib/prisma') as any
+    const beforeState = { ...mockPackage, publishStatus: 'DRAFT', costPrice: { toString: () => '7.00' }, sellingPrice: null, markupPercent: null }
+    let updateData: any = null
+    prisma.$transaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: {
+          findUnique: vi.fn().mockResolvedValue(beforeState),
+          update: vi.fn().mockImplementation(async (arg: any) => { updateData = arg.data; return { ...beforeState, ...arg.data } }),
+        },
+      }
+      return cb(tx)
+    })
+
+    // Setting CONFIGURED with cost+markup (and NO selling) must compute selling.
+    const result = await updateSinglePackage('pp-1', { configurationStatus: 'CONFIGURED', costPrice: 7, markupPercent: 9.89 })
+    expect(result.success).toBe(true)
+    expect(updateData.configurationStatus).toBe('CONFIGURED')
+    expect(updateData.sellingPrice).toBe(7.69) // 7 * 1.0989 → 7.69 — never left null
+    expect(updateData.markupPercent).toBe(9.89)
+  })
 })

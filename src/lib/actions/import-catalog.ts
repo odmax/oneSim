@@ -112,6 +112,38 @@ export async function importCatalogCSV(formData: FormData): Promise<{ success: b
 
       if (Object.keys(updateData).length === 0) { errors++; continue }
 
+      // CANONICAL bidirectional pricing: resolve a consistent triple so the CSV
+      // never persists cost+markup with a missing determinable selling price.
+      const before = await prisma.providerPackage.findUnique({
+        where: { id: row.providerPackageId },
+        select: { costPrice: true, sellingPrice: true, markupPercent: true },
+      })
+      if (before && (updateData.sellingPrice !== undefined || updateData.markupPercent !== undefined)) {
+        const { resolvePricingMutation, inferPricingIntent } = await import('@/lib/pricing/pricing-engine')
+        const supplied = {
+          costPrice: undefined,
+          sellingPrice: updateData.sellingPrice,
+          markupPercent: updateData.markupPercent,
+        }
+        const intent = inferPricingIntent(supplied, {
+          costPrice: Number(before.costPrice ?? 0),
+          sellingPrice: before.sellingPrice ? Number(before.sellingPrice) : null,
+          markupPercent: before.markupPercent ? Number(before.markupPercent) : null,
+        })
+        const resolved = resolvePricingMutation({
+          intent,
+          supplied,
+          existing: {
+            costPrice: Number(before.costPrice ?? 0),
+            sellingPrice: before.sellingPrice ? Number(before.sellingPrice) : null,
+            markupPercent: before.markupPercent ? Number(before.markupPercent) : null,
+          },
+        })
+        if (!resolved.valid) { errors++; continue }
+        if (resolved.sellingPrice !== null) updateData.sellingPrice = resolved.sellingPrice
+        if (resolved.markupPercent !== null) updateData.markupPercent = resolved.markupPercent
+      }
+
       await prisma.providerPackage.update({
         where: { id: row.providerPackageId },
         data: updateData,

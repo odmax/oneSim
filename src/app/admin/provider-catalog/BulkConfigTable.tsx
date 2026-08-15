@@ -8,6 +8,7 @@ import { resetPricing } from '@/lib/actions/reset-pricing'
 import { updateSinglePackage, undoLastRules } from '@/lib/actions/package-edit'
 import Link from 'next/link'
 import ApplyRulePanel from './ApplyRulePanel'
+import { markSellingPriceByPercent, computeMarkupFromCostAndSell, type PricingMutationIntent } from '@/lib/pricing/pricing-engine'
 
 const PUBLISH_COLORS: Record<string, string> = {
   DRAFT: 'bg-gray-100 text-gray-600',
@@ -80,12 +81,25 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
   const [costPrice, setCostPrice] = useState('')
   const [sellingPrice, setSellingPrice] = useState('')
   const [markupPercent, setMarkupPercent] = useState('')
+  const [pricingIntent, setPricingIntent] = useState<PricingMutationIntent>('NONE')
   const [pricingMode, setPricingMode] = useState('')
   const [sellingCurrency, setSellingCurrency] = useState('')
   const [publishStatus, setPublishStatus] = useState('')
   const [configurationStatus, setConfigurationStatus] = useState('')
   const [tags, setTags] = useState('')
   const [notes, setNotes] = useState('')
+
+  // Canonical live preview: whichever dependent value is missing is derived
+  // with the SAME shared helper the server uses (never a second formula).
+  const liveCost = parseFloat(costPrice)
+  const liveSelling = parseFloat(sellingPrice)
+  const liveMarkup = parseFloat(markupPercent)
+  const previewSelling = isFinite(liveCost) && liveCost > 0 && isFinite(liveMarkup) && liveMarkup >= 0 && !isFinite(liveSelling)
+    ? markSellingPriceByPercent(liveCost, liveMarkup)
+    : null
+  const previewMarkup = isFinite(liveCost) && liveCost > 0 && isFinite(liveSelling) && liveSelling > 0 && !isFinite(liveMarkup)
+    ? computeMarkupFromCostAndSell(liveCost, liveSelling)
+    : null
 
   const toggleAll = () => {
     if (selected.size === initialPackages.length) {
@@ -195,6 +209,10 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
     if (editForm.publishStatus) data.publishStatus = editForm.publishStatus
     if (editForm.configurationStatus) data.configurationStatus = editForm.configurationStatus
     if (editForm.notes) data.notes = editForm.notes
+    // Authority: whichever pricing field the admin last edited. The server
+    // recalculates the dependent value from this — never inferred from non-null.
+    const intent = (editForm as any).pricingIntent as PricingMutationIntent | undefined
+    if (intent) data.pricingIntent = intent
     if (Object.keys(data).length === 0) { setSaving(false); closeEdit(); return }
     const res = await updateSinglePackage(editPkg.id, data)
     setSaving(false)
@@ -249,6 +267,8 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
     if (configurationStatus) params.configurationStatus = configurationStatus
     if (tags) params.tags = tags.split(',').map(s => s.trim()).filter(Boolean)
     if (notes) params.notes = notes
+    // Authority: the pricing field the admin last edited in the bulk form.
+    if (pricingIntent !== 'NONE') params.pricingIntent = pricingIntent
 
     const res = await bulkConfigurePackages(params)
     setResult(res)
@@ -359,18 +379,24 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Cost Price</label>
-              <input type="number" step="0.01" value={costPrice} onChange={e => setCostPrice(e.target.value)}
+              <input type="number" step="0.01" value={costPrice} onChange={e => { setCostPrice(e.target.value); setPricingIntent('COST') }}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" placeholder="e.g. 1.50" />
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Selling Price</label>
-              <input type="number" step="0.01" value={sellingPrice} onChange={e => setSellingPrice(e.target.value)}
+              <input type="number" step="0.01" value={sellingPrice} onChange={e => { setSellingPrice(e.target.value); setPricingIntent('SELLING') }}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" placeholder="e.g. 3.00" />
+              {previewSelling !== null && (
+                <p className="mt-1 text-[10px] text-cyan-600">Auto-calculated: ${previewSelling.toFixed(2)}</p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Markup %</label>
-              <input type="number" step="0.01" value={markupPercent} onChange={e => setMarkupPercent(e.target.value)}
+              <input type="number" step="0.01" value={markupPercent} onChange={e => { setMarkupPercent(e.target.value); setPricingIntent('MARKUP') }}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" placeholder="e.g. 30" />
+              {previewMarkup != null && (
+                <p className="mt-1 text-[10px] text-emerald-600">Auto-calculated: {previewMarkup.toFixed(2)}%</p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Pricing Mode</label>
@@ -445,13 +471,23 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Cost Price</label>
-                <input type="number" step="0.01" value={editForm.costPrice} onChange={e => setEditForm(f => ({ ...f, costPrice: e.target.value }))}
+                <input type="number" step="0.01" value={editForm.costPrice} onChange={e => setEditForm(f => ({ ...f, costPrice: e.target.value, pricingIntent: 'COST' }))}
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Selling Price</label>
-                <input type="number" step="0.01" value={editForm.sellingPrice} onChange={e => setEditForm(f => ({ ...f, sellingPrice: e.target.value }))}
+                <input type="number" step="0.01" value={editForm.sellingPrice} onChange={e => setEditForm(f => ({ ...f, sellingPrice: e.target.value, pricingIntent: 'SELLING' }))}
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
+                {(() => {
+                  const c = parseFloat(editForm.costPrice)
+                  const s = parseFloat(editForm.sellingPrice)
+                  const m = parseFloat(editForm.markupPercent)
+                  if (isFinite(c) && c > 0 && isFinite(m) && m >= 0 && !isFinite(s)) {
+                    const v = markSellingPriceByPercent(c, m)
+                    return <p className="mt-1 text-[10px] text-cyan-600">Auto-calculated: ${v.toFixed(2)}</p>
+                  }
+                  return null
+                })()}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Selling Currency</label>
@@ -465,8 +501,18 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Markup %</label>
-                <input type="number" step="0.01" value={editForm.markupPercent} onChange={e => setEditForm(f => ({ ...f, markupPercent: e.target.value }))}
+                <input type="number" step="0.01" value={editForm.markupPercent} onChange={e => setEditForm(f => ({ ...f, markupPercent: e.target.value, pricingIntent: 'MARKUP' }))}
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none" />
+                {(() => {
+                  const c = parseFloat(editForm.costPrice)
+                  const s = parseFloat(editForm.sellingPrice)
+                  const m = parseFloat(editForm.markupPercent)
+                  if (isFinite(c) && c > 0 && isFinite(s) && s > 0 && !isFinite(m)) {
+                    const v = computeMarkupFromCostAndSell(c, s)
+                    if (v != null) return <p className="mt-1 text-[10px] text-emerald-600">Auto-calculated: {v.toFixed(2)}%</p>
+                  }
+                  return null
+                })()}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Pricing Mode</label>

@@ -6,7 +6,7 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
-import { markSellingPriceByPercent } from '@/lib/pricing/pricing-engine'
+import { markSellingPriceByPercent, computeMarkupFromCostAndSell } from '@/lib/pricing/pricing-engine'
 import { doesRuleMatchPackage, inferPricingStrategy, extractPricingValue } from '@/lib/pricing/pricing-rule-evaluator'
 import { buildUpdateRequest } from '@/lib/pricing/pricing-update-service'
 
@@ -184,6 +184,13 @@ export async function applyRulesToPackages(packageIds?: string[]): Promise<{ suc
 
       if (!sellingPrice || sellingPrice <= 0) continue
 
+      // Canonical markup: for a FIXED_SELLING_PRICE rule, derive the markup so
+      // cost+selling never leaves a determinable markup null.
+      const ruleMarkup = rule.markupPercent ? parseFloat(rule.markupPercent.toString()) : null
+      const derivedMarkup = (ruleMarkup == null && strategy === 'FIXED_SELLING_PRICE')
+        ? (computeMarkupFromCostAndSell(effectiveCost, sellingPrice) ?? null)
+        : ruleMarkup
+
       const updateData = {
         ...buildUpdateRequest({
           packageId: pp.id,
@@ -191,7 +198,7 @@ export async function applyRulesToPackages(packageIds?: string[]): Promise<{ suc
           ruleName: rule.name,
           sellingPrice: sellingPrice!,
           sellingCurrency: rule.sellingCurrency,
-          markupPercent: rule.markupPercent ? parseFloat(rule.markupPercent.toString()) : null,
+          markupPercent: derivedMarkup,
           pricingMode: rule.fixedPrice ? 'FIXED_PRICE' : 'MARKUP_PERCENT',
           publishStatus: rule.publishStatus || 'READY',
           costPrice: effectiveCost !== parseFloat(pp.costPrice.toString()) ? effectiveCost : undefined,

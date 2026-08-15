@@ -418,7 +418,7 @@ export interface PricingRuleInput {
 }
 
 export async function previewPricingRules(formData: FormData): Promise<{
-  matched: number; willUpdate: number; skippedMissingCost: number; skippedExistingSell: number; preview: { providerPackageId: string; name: string; currentSell: number | null; newSell: number }[]
+  matched: number; willUpdate: number; skippedMissingCost: number; skippedExistingSell: number; preview: { providerPackageId: string; name: string; cost: number; currentSell: number | null; newSell: number }[]
 }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
@@ -475,7 +475,7 @@ export async function previewPricingRules(formData: FormData): Promise<{
     }
 
     willUpdate++
-    preview.push({ providerPackageId: pp.id, name: pp.name, currentSell, newSell })
+    preview.push({ providerPackageId: pp.id, name: pp.name, cost, currentSell, newSell })
   }
 
   return { matched, willUpdate, skippedMissingCost, skippedExistingSell, preview }
@@ -503,9 +503,14 @@ export async function applyPricingRules(formData: FormData): Promise<{
       }
       // If no ESIMPackage exists, update ProviderPackage sellingPrice instead
       else {
+        // Canonical invariant: derive markup from cost+selling so the provider
+        // package never keeps a determinable markup null.
+        const derivedMarkup = item.cost > 0
+          ? (computeMarkupFromCostAndSell(item.cost, item.newSell) ?? null)
+          : null
         await prisma.providerPackage.update({
           where: { id: item.providerPackageId },
-          data: { sellingPrice: item.newSell },
+          data: { sellingPrice: item.newSell, ...(derivedMarkup != null ? { markupPercent: derivedMarkup } : {}) },
         })
         applied++
       }

@@ -6,6 +6,14 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes, recordCatalogPriceSyncAudit } from '@/lib/services/catalog-price-sync'
 import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
+import { resolvePricingMutation, inferPricingIntent, type PricingMutationIntent } from '@/lib/pricing/pricing-engine'
+
+/** Convert a Prisma Decimal-ish value (has toString()) to a finite number, else null. */
+function decimalToNumber(v: unknown): number | null {
+  if (v === null || v === undefined) return null
+  const n = typeof v === 'number' ? v : Number(String((v as any).toString?.() ?? v))
+  return isNaN(n) || !isFinite(n) ? null : n
+}
 
 export async function updateSinglePackage(packageId: string, data: {
   costPrice?: number
@@ -16,6 +24,8 @@ export async function updateSinglePackage(packageId: string, data: {
   publishStatus?: string
   configurationStatus?: string
   notes?: string
+  /** What the administrator actually edited — authority for bidirectional pricing. */
+  pricingIntent?: PricingMutationIntent
 }): Promise<{ success: boolean; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
@@ -34,10 +44,36 @@ export async function updateSinglePackage(packageId: string, data: {
       if (!before) throw new Error('Package not found')
 
       const updateData: any = {}
-      if (data.costPrice !== undefined) updateData.costPrice = data.costPrice
-      if (data.sellingPrice !== undefined) updateData.sellingPrice = data.sellingPrice
+
+      // CANONICAL bidirectional pricing: resolve a consistent triple before
+      // persisting so cost+markup → selling and cost+selling → markup always
+      // hold, and an explicitly-set price is never silently overwritten.
+      const supplied = {
+        costPrice: data.costPrice,
+        sellingPrice: data.sellingPrice,
+        markupPercent: data.markupPercent,
+      }
+      const existingState = {
+        costPrice: decimalToNumber(before.costPrice),
+        sellingPrice: decimalToNumber(before.sellingPrice),
+        markupPercent: decimalToNumber(before.markupPercent),
+      }
+      const intent = data.pricingIntent || inferPricingIntent(supplied, existingState)
+      const resolved = resolvePricingMutation({ intent, supplied, existing: existingState })
+      if (!resolved.valid) throw new Error(`Invalid pricing: ${resolved.errors.join('; ')}`)
+
+      if (data.costPrice !== undefined) updateData.costPrice = resolved.costPrice
+      if (data.sellingPrice !== undefined) updateData.sellingPrice = resolved.sellingPrice
+      if (data.markupPercent !== undefined) updateData.markupPercent = resolved.markupPercent
+      // Always persist the derived dependent so the invariant holds: when the
+      // admin edits markup, selling is computed even if left blank; when they
+      // edit selling, markup is computed even if left blank; a cost edit
+      // recalculates whichever dependent is determinable.
+      if (intent === 'COST' || intent === 'MARKUP' || intent === 'SELLING') {
+        if (resolved.sellingPrice !== null) updateData.sellingPrice = resolved.sellingPrice
+        if (resolved.markupPercent !== null) updateData.markupPercent = resolved.markupPercent
+      }
       if (data.sellingCurrency !== undefined) updateData.sellingCurrency = data.sellingCurrency
-      if (data.markupPercent !== undefined) updateData.markupPercent = data.markupPercent
       if (data.pricingMode !== undefined) updateData.pricingMode = data.pricingMode
       if (data.publishStatus !== undefined && data.publishStatus !== 'PUBLISHED') updateData.publishStatus = data.publishStatus
       if (data.configurationStatus !== undefined) { updateData.configurationStatus = data.configurationStatus; updateData.lastConfiguredAt = new Date() }

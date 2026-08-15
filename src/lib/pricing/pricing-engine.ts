@@ -533,3 +533,188 @@ export function applyDiscount(price: number, discountPercent: number): number {
   if (discountPercent >= 100) return 0
   return roundMoney(price * (1 - discountPercent / 100))
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// BIDIRECTIONAL MUTATION CONTRACT
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * What the administrator actually edited in a pricing mutation.
+ * This is the authority — never inferred from merely non-null fields.
+ *
+ * - `COST`    — cost was edited → recalculate the dependent value
+ *               (selling from markup when markup is known, else markup
+ *               from selling) using the existing pricingMode contract.
+ * - `SELLING` — selling price was edited → derive markup from cost + selling.
+ * - `MARKUP`  — markup % was edited → derive selling from cost + markup.
+ * - `NONE`    — no pricing field edited (e.g. only notes/status) → the
+ *               existing pricing triple is preserved untouched.
+ */
+export type PricingMutationIntent = 'COST' | 'SELLING' | 'MARKUP' | 'NONE'
+
+/** Existing persisted values (the "before" state of the mutation). */
+export interface ExistingPricingState {
+  costPrice?: number | null
+  sellingPrice?: number | null
+  markupPercent?: number | null
+}
+
+/** Inputs for the canonical bidirectional pricing mutation resolver. */
+export interface PricingMutationInput {
+  /** What the administrator edited (authority). */
+  intent: PricingMutationIntent
+  /** Values supplied by the mutation (undefined = not edited). */
+  supplied: {
+    costPrice?: number | null
+    sellingPrice?: number | null
+    markupPercent?: number | null
+  }
+  /** Persisted values before the mutation (fallback for non-edited fields). */
+  existing: ExistingPricingState
+}
+
+/** Resolved, internally consistent pricing triple after the mutation. */
+export interface ResolvedPricingMutation {
+  costPrice: number | null
+  sellingPrice: number | null
+  markupPercent: number | null
+  valid: boolean
+  errors: string[]
+}
+
+function toFiniteOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const n = typeof value === 'number' ? value : Number(value)
+  if (isNaN(n) || !isFinite(n)) return null
+  return n
+}
+
+/**
+ * CANONICAL bidirectional pricing calculation for admin pricing mutations.
+ *
+ * Single source of truth for the "cost ⇄ markup ⇄ selling" relationship. Every
+ * admin pricing mutation (manual edit, bulk configure, apply rules, imported
+ * plan rules, recalculation service) must route through this so there is never
+ * a divergent formula and never a deterministically missing dependent value.
+ *
+ * Contract:
+ *   CASE 1  cost + markup supplied  → sellingPrice = cost × (1 + markup/100)
+ *   CASE 2  cost + selling supplied → markupPercent = ((selling − cost)/cost) × 100
+ *   CASE 3  all three supplied      → authority comes from `intent` (never
+ *           inferred from non-null fields alone).
+ *
+ * Rounding uses the canonical money (2dp) and percentage (2dp) policy.
+ *
+ * Numeric safety: NaN/Infinity → null; cost ≤ 0 blocks percentage-derived
+ * selling; selling ≤ 0 blocks markup derivation. Errors are returned, never
+ * silently persisted.
+ *
+ * This is a PURE function — safe to import in server actions and client
+ * components (no prisma / server-only imports).
+ */
+export function resolvePricingMutation(input: PricingMutationInput): ResolvedPricingMutation {
+  const { intent, supplied, existing } = input
+
+  const costPrice = toFiniteOrNull(supplied.costPrice !== undefined ? supplied.costPrice : existing.costPrice)
+  const sellingPrice = toFiniteOrNull(supplied.sellingPrice !== undefined ? supplied.sellingPrice : existing.sellingPrice)
+  const markupPercent = toFiniteOrNull(supplied.markupPercent !== undefined ? supplied.markupPercent : existing.markupPercent)
+
+  const errors: string[] = []
+  if (costPrice !== null && costPrice < 0) errors.push('Cost cannot be negative')
+  if (sellingPrice !== null && sellingPrice < 0) errors.push('Selling price cannot be negative')
+  if (markupPercent !== null && markupPercent < 0) errors.push('Markup cannot be negative')
+
+  let outCost = costPrice
+  let outSelling = sellingPrice
+  let outMarkup = markupPercent
+
+  if (errors.length > 0) {
+    return { costPrice: outCost, sellingPrice: outSelling, markupPercent: outMarkup, valid: false, errors }
+  }
+
+  switch (intent) {
+    case 'NONE':
+      // No pricing field edited — preserve the existing triple untouched.
+      return { costPrice: outCost, sellingPrice: outSelling, markupPercent: outMarkup, valid: true, errors }
+
+    case 'MARKUP': {
+      // Markup is authoritative → derive selling from cost + markup.
+      if (outMarkup === null) {
+        errors.push('Markup % is required when editing markup')
+        break
+      }
+      if (outCost === null || outCost <= 0) {
+        errors.push('A positive cost is required to compute selling price from markup')
+        break
+      }
+      outSelling = markSellingPriceByPercent(outCost, outMarkup)
+      break
+    }
+
+    case 'SELLING': {
+      // Selling is authoritative → derive markup from cost + selling.
+      if (outSelling === null) {
+        errors.push('Selling price is required when editing selling price')
+        break
+      }
+      if (outCost === null || outCost <= 0) {
+        errors.push('A positive cost is required to derive markup from selling price')
+        break
+      }
+      const derived = computeMarkupFromCostAndSell(outCost, outSelling)
+      if (derived === undefined) {
+        errors.push('Unable to derive markup from cost and selling price')
+        break
+      }
+      outMarkup = derived
+      break
+    }
+
+    case 'COST': {
+      // Cost is authoritative → recalculate the dependent value per the
+      // existing pricingMode contract: markup-based when markup is known,
+      // else derive markup from an existing selling price.
+      if (outCost === null) {
+        errors.push('Cost is required when editing cost')
+        break
+      }
+      if (outCost < 0) {
+        errors.push('Cost cannot be negative')
+        break
+      }
+      if (outMarkup !== null && outMarkup > 0 && outCost > 0) {
+        outSelling = markSellingPriceByPercent(outCost, outMarkup)
+      } else if (outSelling !== null && outSelling > 0 && outCost > 0) {
+        const derived = computeMarkupFromCostAndSell(outCost, outSelling)
+        if (derived !== undefined) outMarkup = derived
+      }
+      break
+    }
+
+    default: {
+      const _exhaustive: never = intent
+      return { costPrice: outCost, sellingPrice: outSelling, markupPercent: outMarkup, valid: true, errors }
+    }
+  }
+
+  return { costPrice: outCost, sellingPrice: outSelling, markupPercent: outMarkup, valid: errors.length === 0, errors }
+}
+
+/** Best-effort intent inference for legacy callers that do not pass explicit intent. */
+export function inferPricingIntent(
+  supplied: { costPrice?: unknown; sellingPrice?: unknown; markupPercent?: unknown },
+  _existing: ExistingPricingState,
+): PricingMutationIntent {
+  const hasCost = supplied.costPrice !== undefined && supplied.costPrice !== null
+  const hasSelling = supplied.sellingPrice !== undefined && supplied.sellingPrice !== null
+  const hasMarkup = supplied.markupPercent !== undefined && supplied.markupPercent !== null
+
+  // When both selling AND markup are explicitly supplied, the admin is the
+  // authority — preserve exactly what was set (never silently overwrite one
+  // with the other). The UI passes an explicit intent for single-field edits.
+  if (hasMarkup && hasSelling) return 'NONE'
+  if (hasMarkup) return 'MARKUP'
+  if (hasSelling) return 'SELLING'
+  if (hasCost) return 'COST'
+  return 'NONE'
+}
