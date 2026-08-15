@@ -2225,3 +2225,130 @@ describe('Choice userId resolution — legacy "onesim" sentinel is rejected', ()
     vi.unstubAllGlobals()
   })
 })
+
+describe('Choice lookupInstallationData — canonical installation contract', () => {
+  const ICCID = '89012345678901234567'
+
+  function c() { return makeConnector() }
+
+  it('declares installationLookup capability = true', () => {
+    expect(c().capabilities?.installationLookup).toBe(true)
+  })
+
+  it('extracts root qr_code_link → READY', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ qr_code_link: 'https://qr.example/root' }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('READY')
+    expect(result.data?.qrCodeUrl).toBe('https://qr.example/root')
+    vi.unstubAllGlobals()
+  })
+
+  it('extracts data.package qr_code_url → READY', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, data: { package: { qr_code_url: 'https://qr.example/nested' } } }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('READY')
+    expect(result.data?.qrCodeUrl).toBe('https://qr.example/nested')
+    vi.unstubAllGlobals()
+  })
+
+  it('extracts imsis[] activation_code and qr_code_link → READY', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: ICCID, activation_code: 'LPA:1$s$c', qr_code_link: 'https://qr.example/imsi' }] } }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('READY')
+    expect(result.data?.activationCode).toBe('LPA:1$s$c')
+    expect(result.data?.qrCodeUrl).toBe('https://qr.example/imsi')
+    vi.unstubAllGlobals()
+  })
+
+  it('activation_code only → READY', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ package: { activation_code: 'LPA:1$smdp.example$abc' } }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('READY')
+    expect(result.data?.activationCode).toBe('LPA:1$smdp.example$abc')
+    vi.unstubAllGlobals()
+  })
+
+  it('LPA-only field → READY activationCode', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ package: { lpa: 'LPA:1$smdp.example$mid' } }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('READY')
+    expect(result.data?.activationCode).toBe('LPA:1$smdp.example$mid')
+    vi.unstubAllGlobals()
+  })
+
+  it('SM-DP + matchingId → READY', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ package: { smdp_address: 'smdp.example.com', matching_id: 'mid-123' } }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('READY')
+    expect(result.data?.smdpAddress).toBe('smdp.example.com')
+    expect(result.data?.matchingId).toBe('mid-123')
+    vi.unstubAllGlobals()
+  })
+
+  it('no install fields → NOT_AVAILABLE_YET with NO_QR_CODE', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { iccid: ICCID, status: 'active' } }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('NOT_AVAILABLE_YET')
+    expect(result.errorCode).toBe('NO_QR_CODE')
+    vi.unstubAllGlobals()
+  })
+
+  it('unexpected nesting is safely classified (no throw, no data)', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ payload: { foo: { bar: 'x' } }, list: [1, 2] }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('NOT_AVAILABLE_YET')
+    vi.unstubAllGlobals()
+  })
+
+  it('HTTP 401 → PERMANENT_FAILURE PROVIDER_AUTH_FAILED', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(errorResponse(401))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('PERMANENT_FAILURE')
+    expect(result.errorCode).toBe('PROVIDER_AUTH_FAILED')
+    vi.unstubAllGlobals()
+  })
+
+  it('HTTP 429 → NOT_AVAILABLE_YET (retryable)', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(errorResponse(429))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('NOT_AVAILABLE_YET')
+    vi.unstubAllGlobals()
+  })
+
+  it('HTTP 500 → NOT_AVAILABLE_YET (retryable)', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(errorResponse(500))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('NOT_AVAILABLE_YET')
+    vi.unstubAllGlobals()
+  })
+
+  it('timeout → NOT_AVAILABLE_YET PROVIDER_TIMEOUT', async () => {
+    const mockFetch = vi.fn().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('NOT_AVAILABLE_YET')
+    expect(result.errorCode).toBe('PROVIDER_TIMEOUT')
+    vi.unstubAllGlobals()
+  })
+
+  it('identifier missing → PERMANENT_FAILURE IDENTIFIER_MISSING (no HTTP)', async () => {
+    const mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await c().lookupInstallationData({})
+    expect(result.state).toBe('PERMANENT_FAILURE')
+    expect(result.errorCode).toBe('IDENTIFIER_MISSING')
+    expect(mockFetch).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+})

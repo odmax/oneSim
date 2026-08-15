@@ -1,5 +1,6 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult, ConnectorCapabilities, InstallationLookupInput, InstallationLookupResult, InstallationLookupDiagnostics, ConnectorInstallDataOutput } from './connector-interface'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
 interface UrlTokenConfig extends RestCatalogConfig {
@@ -85,6 +86,32 @@ export function normalizeChoiceUserId(candidate: unknown): string {
   if (!value) return ''
   if (CHOICE_USER_ID_PLACEHOLDERS.includes(value.toLowerCase())) return ''
   return value
+}
+
+const choiceStr = (v: unknown): string | undefined => v == null ? undefined : String(v)
+
+/**
+ * Whitelist parser for Choice package_detail install data. Reads ONLY the known
+ * keys from the package object (root / json.package / json.data.package) and
+ * from data.imsis[] entries; never serializes arbitrary provider payload.
+ * Fill-only across sources (first non-empty wins per field).
+ */
+export function parseChoiceInstallData(pkg: any, imsis: any[] = []): ConnectorInstallDataOutput {
+  const out: ConnectorInstallDataOutput = {}
+  const candidates: any[] = [pkg]
+  if (Array.isArray(imsis)) for (const imsi of imsis) candidates.push(imsi)
+  for (const src of candidates) {
+    if (!src || typeof src !== 'object') continue
+    const qrUrl = choiceStr(src.qr_code_link) || choiceStr(src.qr_code_url) || choiceStr(src.qrCodeUrl)
+    const activation = choiceStr(src.activation_code) || choiceStr(src.activationCode) || choiceStr(src.lpa) || choiceStr(src.lpaProfile)
+    const smdp = choiceStr(src.smdp_address) || choiceStr(src.smdp) || choiceStr(src.smdpAddress) || choiceStr(src.SMDP)
+    const matching = choiceStr(src.matching_id) || choiceStr(src.matchingId)
+    if (qrUrl && !out.qrCodeUrl) out.qrCodeUrl = qrUrl
+    if (activation && !out.activationCode) out.activationCode = activation
+    if (smdp && !out.smdpAddress) out.smdpAddress = smdp
+    if (matching && !out.matchingId) out.matchingId = matching
+  }
+  return out
 }
 
 function normalizeChoiceToken(value: string): string {
@@ -1113,6 +1140,87 @@ export class UrlTokenConnector extends RestCatalogConnector {
     return { success: true, data: { status: action === 'SUSPEND' ? 'SUSPENDED' : 'ACTIVE', providerStatus: action === 'SUSPEND' ? 'suspended' : 'active' } }
   }
 
+  /** Choice connector-declared internal capabilities (runtime truth). */
+  capabilities: ConnectorCapabilities = {
+    installationLookup: true,
+    statusLookup: true,
+    usageLookup: true,
+    topUp: true,
+    suspend: true,
+    resume: true,
+    balance: true,
+    inventory: false,
+    webhooks: false,
+  }
+
+  /**
+   * Canonical Choice installation lookup — read-only package_detail.
+   * Whitelist parser: never serializes an arbitrary provider payload. Extracts
+   * from the package object (root / json.package / json.data.package) and from
+   * data.imsis[] (activation_code / qr_code_link). Classifies state safely.
+   */
+  async lookupInstallationData(input: InstallationLookupInput): Promise<InstallationLookupResult> {
+    const token = this.config.apiToken || ''
+    if (!input.iccid && !input.imsi && input.imsiVersion == null) {
+      return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'IDENTIFIER_MISSING', diagnostics: { methodUsed: 'package_detail', identifierType: 'none' } }
+    }
+    const identifierKey = input.iccid ? 'iccid' : input.imsi ? 'imsi' : 'imsi_version'
+    const identifierValue = input.iccid || input.imsi || String(input.imsiVersion)
+
+    const auth = await this.ensureAuthenticated()
+    if (!auth.success) {
+      return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'PROVIDER_AUTH_FAILED', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey } }
+    }
+
+    const started = Date.now()
+    const path = '/account/v03_09/package_detail'
+    const url = `${this.baseUrl(`${path}/${encodeURIComponent(token)}`)}?${identifierKey}=${encodeURIComponent(String(identifierValue))}`
+    const { text, error, status } = await fetchText(url, { headers: { Accept: 'application/json' }, timeoutMs: this.config.timeoutMs })
+    const durationMs = Date.now() - started
+
+    if (error) {
+      if (status === 401 || status === 403) {
+        return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'PROVIDER_AUTH_FAILED', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
+      }
+      if (status === 429) {
+        return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'PROVIDER_HTTP_ERROR', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
+      }
+      return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: error.code === 'TIMEOUT' || error.code === 'NETWORK_ERROR' ? 'PROVIDER_TIMEOUT' : 'PROVIDER_HTTP_ERROR', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
+    }
+
+    let json: any
+    try {
+      json = JSON.parse(text || '{}')
+    } catch {
+      return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'PROVIDER_RESPONSE_UNMAPPED', diagnostics: { methodUsed: 'package_detail', identifierType: identifierKey, httpMethod: 'GET', endpointName: 'package_detail', httpStatus: status, durationMs } }
+    }
+
+    const pkg = json?.package || json?.data?.package || json
+    const imsis = Array.isArray(json?.data?.imsis) ? json.data.imsis : []
+    const data = parseChoiceInstallData(pkg, imsis)
+
+    const keys = {
+      topLevelKeys: Object.keys(json || {}).slice(0, 30),
+      dataKeys: json?.data && typeof json.data === 'object' ? Object.keys(json.data).slice(0, 30) : [],
+      imsisCount: imsis.length,
+      firstImsiKeys: imsis.length > 0 && typeof imsis[0] === 'object' ? Object.keys(imsis[0]).slice(0, 30) : [],
+    }
+    const diag: InstallationLookupDiagnostics = {
+      methodUsed: 'package_detail',
+      identifierType: identifierKey,
+      httpMethod: 'GET',
+      endpointName: 'package_detail',
+      httpStatus: status,
+      durationMs,
+      responseKeys: [...new Set([...keys.topLevelKeys, ...(keys.dataKeys.length ? ['data:' + keys.dataKeys.join(',')] : []), ...(imsis.length ? [`imsis[${imsis.length}]:` + keys.firstImsiKeys.join(',')] : [])])].slice(0, 20),
+    }
+
+    if (hasUsableInstallData(data)) {
+      return { success: true, state: 'READY', data, diagnostics: diag }
+    }
+    return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'NO_QR_CODE', diagnostics: diag }
+  }
+
   async topUpESIM(params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
     const token = this.config.apiToken || ''
     const topUpPath = this.fieldMappings.topUpPath || `/account/v03_09/update_imsi/${token}`
@@ -1392,31 +1500,11 @@ export class UrlTokenConnector extends RestCatalogConnector {
 
   /** Override getQRCode — use package_detail endpoint for delayed installation lookup */
   async getQRCode(iccid: string): Promise<ConnectorResult<QRCodeResult>> {
-    await this.ensureAuthenticated()
     if (!iccid) return { success: false, error: { code: 'MISSING_ICCID', message: 'No ICCID available' } }
-    const { text, error } = await fetchText(this.baseUrl(`/account/v03_09/package_detail/${this.config.apiToken}?iccid=${encodeURIComponent(iccid)}`), { headers: this.headers })
-    if (error) return { success: false, error }
-    try {
-      const json = JSON.parse(text || '{}')
-      const pkg = json.package || json.data?.package || json
-      const qr = pkg?.qr_code_link || pkg?.qr_code_url || pkg?.qrCodeUrl || ''
-      const code = pkg?.activation_code || pkg?.activationCode || ''
-      const smdp = pkg?.smdp_address || pkg?.smdp || pkg?.smdpAddress || ''
-      const matching = pkg?.matching_id || pkg?.matchingId || ''
-      // Success when ANY usable install field is present — an activation code
-      // (often an LPA string) alone is enough to install.
-      if (qr || code || smdp || matching) {
-        return {
-          success: true,
-          data: {
-            ...(qr ? { qrCodeUrl: qr } : {}),
-            ...(code ? { activationCode: code } : {}),
-            ...(smdp ? { smdpAddress: smdp } : {}),
-            ...(matching ? { matchingId: matching } : {}),
-          },
-        }
-      }
-      return { success: false, error: { code: 'NO_QR_CODE', message: 'No QR code found in package detail' } }
-    } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
+    const result = await this.lookupInstallationData({ iccid })
+    if (!result.success || !result.data) {
+      return { success: false, error: { code: result.errorCode || 'NO_QR_CODE', message: `Installation lookup: ${result.state}` } }
+    }
+    return { success: true, data: { ...result.data } }
   }
 }

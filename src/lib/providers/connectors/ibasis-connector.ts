@@ -11,8 +11,9 @@ import type {
   IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo,
   ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult,
   RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult,
-  QRCodeResult, StatusLookupEsim,
+  QRCodeResult, StatusLookupEsim, ConnectorCapabilities, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput,
 } from './connector-interface'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 /**
  * iBASIS Consumer Offer API connector.
@@ -1013,6 +1014,38 @@ export class IbasisConnector implements IProviderConnector {
    */
   resolveStatusLookup(esim: StatusLookupEsim): string | null {
     return esim.providerActivationId || esim.providerSubscriptionId || null
+  }
+
+  /** iBASIS connector-declared internal capabilities (stored/read-only install lookup). */
+  capabilities: ConnectorCapabilities = {
+    installationLookup: true,
+    statusLookup: true,
+    usageLookup: false,
+    topUp: false,
+    suspend: true,
+    resume: true,
+    balance: false,
+    inventory: false,
+    webhooks: false,
+  }
+
+  /** Canonical iBASIS installation lookup — stored/read-only only (no billable call). */
+  async lookupInstallationData(input: InstallationLookupInput): Promise<InstallationLookupResult> {
+    if (!input.iccid) {
+      return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'IDENTIFIER_MISSING', diagnostics: { methodUsed: 'stored', identifierType: 'none' } }
+    }
+    const result = await this.getQRCode(input.iccid)
+    if (result.success && result.data) {
+      const data: ConnectorInstallDataOutput = {
+        ...(result.data.activationCode ? { activationCode: result.data.activationCode } : {}),
+        ...(result.data.smdpAddress ? { smdpAddress: result.data.smdpAddress } : {}),
+        ...(result.data.matchingId ? { matchingId: result.data.matchingId } : {}),
+      }
+      if (hasUsableInstallData(data)) {
+        return { success: true, state: 'READY', data, diagnostics: { methodUsed: 'stored', identifierType: 'iccid' } }
+      }
+    }
+    return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: result.error?.code === 'NOT_AVAILABLE' ? 'NO_INSTALL_DATA' : (result.error?.code || 'NO_INSTALL_DATA'), diagnostics: { methodUsed: 'stored', identifierType: 'iccid' } }
   }
 
   async getUsage(_iccid: string): Promise<ConnectorResult<UsageResult>> {

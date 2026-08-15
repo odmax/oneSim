@@ -1240,3 +1240,46 @@ describe('IbasisConnector Phase 4 — purchase & provisioning', () => {
     })
   })
 })
+
+describe('IbasisConnector lookupInstallationData (canonical, stored/read-only)', () => {
+  const ICCID = '89012345678901234567'
+  let connector: IbasisConnector
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
+    mockPrisma.eSIM.findFirst.mockResolvedValue(null)
+    connector = new IbasisConnector('ibasis-1')
+  })
+
+  it('declares installationLookup capability = true', () => {
+    expect(connector.capabilities?.installationLookup).toBe(true)
+  })
+
+  it('reads stored activation code ? READY', async () => {
+    mockPrisma.eSIM.findFirst.mockResolvedValue({ providerResponse: null, activationCode: 'FKE: 0$CUST-111-V4$555', providerSubscriptionId: null } as any)
+    const result = await connector.lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('READY')
+    expect(result.data?.activationCode).toBe('FKE: 0$CUST-111-V4$555')
+  })
+
+  it('reads LPA from stored providerResponse ? READY', async () => {
+    mockPrisma.eSIM.findFirst.mockResolvedValue({ providerResponse: { lpa: 'LPA:1$smdp.example.com$mid' }, activationCode: null, providerSubscriptionId: null } as any)
+    const result = await connector.lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('READY')
+    expect(result.data?.activationCode).toBe('LPA:1$smdp.example.com$mid')
+  })
+
+  it('no stored data ? NOT_AVAILABLE_YET NO_INSTALL_DATA (no billable call)', async () => {
+    mockPrisma.eSIM.findFirst.mockResolvedValue({ providerResponse: null, activationCode: null, providerSubscriptionId: null } as any)
+    const result = await connector.lookupInstallationData({ iccid: ICCID })
+    expect(result.state).toBe('NOT_AVAILABLE_YET')
+    expect(result.errorCode).toBe('NO_INSTALL_DATA')
+  })
+
+  it('identifier missing ? IDENTIFIER_MISSING', async () => {
+    const result = await connector.lookupInstallationData({})
+    expect(result.state).toBe('PERMANENT_FAILURE')
+    expect(result.errorCode).toBe('IDENTIFIER_MISSING')
+  })
+})

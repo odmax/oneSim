@@ -2038,3 +2038,32 @@ describe('AirHubConnector', () => {
     })
   })
 })
+
+describe('AirHubConnector lookupInstallationData (canonical)', () => {
+  it('declares installationLookup capability = true', () => {
+    expect(new AirHubConnector('airhub-1', 'test-token').capabilities?.installationLookup).toBe(true)
+  })
+
+  it('maps GetActivationCode QR URL into the canonical contract (READY)', async () => {
+    mockFetchSuccess({ isSuccess: true, data: { qrCodeUrl: 'https://qr.airhub.com/activation/12345' } })
+    const connector = new AirHubConnector('airhub-1', 'test-token')
+    const result = await connector.lookupInstallationData({ iccid: '8901234567890123456' })
+    expect(result.state).toBe('READY')
+    expect(result.data?.qrCodeUrl).toBe('https://qr.airhub.com/activation/12345')
+  })
+
+  it('maps an activationCode (LPA) into activationCode (READY)', async () => {
+    mockFetchSuccess({ isSuccess: true, data: { activationCode: 'LPA:1$smdp.example.com$CODE-999' } })
+    const connector = new AirHubConnector('airhub-1', 'test-token')
+    const result = await connector.lookupInstallationData({ iccid: '8901234567890123456' })
+    expect(result.state).toBe('READY')
+    expect(result.data?.activationCode).toBe('LPA:1$smdp.example.com$CODE-999')
+  })
+
+  it('identifier missing ? IDENTIFIER_MISSING (no HTTP)', async () => {
+    const connector = new AirHubConnector('airhub-1', 'test-token')
+    const result = await connector.lookupInstallationData({})
+    expect(result.state).toBe('PERMANENT_FAILURE')
+    expect(result.errorCode).toBe('IDENTIFIER_MISSING')
+  })
+})

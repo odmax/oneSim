@@ -106,6 +106,81 @@ export interface StatusLookupEsim {
   providerActivationId?: string | null
 }
 
+export type InstallationLookupState = 'READY' | 'NOT_AVAILABLE_YET' | 'NOT_SUPPORTED' | 'PERMANENT_FAILURE'
+
+/**
+ * Canonical installation-lookup contract. The input is provider-owned
+ * identifiers only (never a local OneSIM id). The result never carries a raw
+ * provider payload; `diagnostics` holds safe metadata (method/identifier/http
+ * status/duration and response KEYS only, never values).
+ */
+export interface InstallationLookupInput {
+  esimId?: string | null
+  iccid?: string | null
+  imsi?: string | null
+  imsiVersion?: string | number | null
+  providerSubscriptionId?: string | null
+  providerActivationId?: string | null
+}
+
+export interface InstallationLookupDiagnostics {
+  methodUsed?: string
+  identifierType?: string
+  httpMethod?: string
+  endpointName?: string
+  httpStatus?: number
+  durationMs?: number
+  /** Response object keys only — never values, never a raw payload. */
+  responseKeys?: string[]
+}
+
+export interface InstallationLookupResult {
+  success: boolean
+  state: InstallationLookupState
+  data?: ConnectorInstallDataOutput
+  errorCode?: string
+  diagnostics?: InstallationLookupDiagnostics
+}
+
+/** Canonical, safe install-data output shape (whitelisted keys only). */
+export interface ConnectorInstallDataOutput {
+  qrCode?: string
+  qrCodeUrl?: string
+  activationCode?: string
+  smdpAddress?: string
+  matchingId?: string
+}
+
+/**
+ * Connector-declared internal operation capabilities. This is the runtime truth
+ * for what a connector can actually do (from its implementation), independent
+ * of the provider DB capability booleans, the internal enable flags, and the
+ * client portal/API exposure system.
+ */
+export interface ConnectorCapabilities {
+  installationLookup: boolean
+  statusLookup: boolean
+  usageLookup: boolean
+  topUp: boolean
+  suspend: boolean
+  resume: boolean
+  balance: boolean
+  inventory: boolean
+  webhooks: boolean
+}
+
+export const DEFAULT_CONNECTOR_CAPABILITIES: ConnectorCapabilities = {
+  installationLookup: false,
+  statusLookup: false,
+  usageLookup: false,
+  topUp: false,
+  suspend: false,
+  resume: false,
+  balance: false,
+  inventory: false,
+  webhooks: false,
+}
+
 export interface TopUpESIMParams {
   iccid: string
   imsi?: string | null
@@ -259,6 +334,19 @@ export interface IProviderConnector {
    * connector does not implement it.
    */
   resolveStatusLookup?(esim: StatusLookupEsim): string | StatusLookupIdentifier | null
+  /**
+   * Connector-declared internal capabilities (runtime truth from the connector
+   * implementation, NOT the provider DB booleans). Defaults to all-false when
+   * absent.
+   */
+  capabilities?: ConnectorCapabilities
+  /**
+   * Canonical read-only installation lookup. Never a purchase/subscription/
+   * wallet mutation. Returns a safe normalized result with no raw provider
+   * payload. Connectors that cannot look up installation data return
+   * state=NOT_SUPPORTED.
+   */
+  lookupInstallationData?(input: InstallationLookupInput): Promise<InstallationLookupResult>
   getUsage(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>>
   suspendESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>>
   resumeESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>>

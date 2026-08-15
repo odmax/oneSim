@@ -3,7 +3,8 @@ import { encryptToken, decryptToken } from '@/lib/encryption'
 import { prisma } from '@/lib/prisma'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import { normalizeTravelDateRequirement, isValidTravelDate, withTravelDateMarker } from '@/lib/providers/travel-date-utils'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim, ConnectorCapabilities, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput } from './connector-interface'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { describeDiagnosticValue, parseMonetaryValue } from '@/lib/providers/balance/monetary'
 
 export { describeDiagnosticValue } from '@/lib/providers/balance/monetary'
@@ -1045,6 +1046,43 @@ export class AirHubConnector implements IProviderConnector {
    */
   resolveStatusLookup(esim: StatusLookupEsim): string | null {
     return esim.providerSubscriptionId || esim.providerActivationId || null
+  }
+
+  /** AirHub connector-declared internal capabilities. */
+  capabilities: ConnectorCapabilities = {
+    installationLookup: true,
+    statusLookup: true,
+    usageLookup: false,
+    topUp: false,
+    suspend: false,
+    resume: false,
+    balance: true,
+    inventory: true,
+    webhooks: false,
+  }
+
+  /** Canonical AirHub installation lookup — read-only GetActivationCode. */
+  async lookupInstallationData(input: InstallationLookupInput): Promise<InstallationLookupResult> {
+    if (!input.iccid) {
+      return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'IDENTIFIER_MISSING', diagnostics: { methodUsed: 'get_activation_code', identifierType: 'none' } }
+    }
+    const result = await this.getQRCode(input.iccid)
+    if (result.success && result.data) {
+      const raw = result.data.qrCodeUrl || ''
+      const isLpa = /^LPA:/i.test(raw) || raw.includes('$')
+      const data: ConnectorInstallDataOutput = isLpa ? { activationCode: raw } : { qrCodeUrl: raw }
+      if (hasUsableInstallData(data)) {
+        return { success: true, state: 'READY', data, diagnostics: { methodUsed: 'get_activation_code', identifierType: 'iccid', httpMethod: 'POST', endpointName: 'GetActivationCode' } }
+      }
+    }
+    const code = result.error?.code || ''
+    const diag = { methodUsed: 'get_activation_code', identifierType: 'iccid', httpMethod: 'POST', endpointName: 'GetActivationCode' } as const
+    if (code === 'NOT_SUPPORTED') return { success: false, state: 'NOT_SUPPORTED', errorCode: 'LOOKUP_NOT_SUPPORTED', diagnostics: { ...diag } }
+    if (code === 'TIMEOUT' || code === 'NETWORK_ERROR') return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'PROVIDER_TIMEOUT', diagnostics: { ...diag } }
+    if (code === 'PROVIDER_REJECTED' || /^HTTP_4/.test(code)) {
+      return { success: false, state: 'PERMANENT_FAILURE', errorCode: /^HTTP_40/.test(code) ? 'PROVIDER_AUTH_FAILED' : 'PROVIDER_HTTP_ERROR', diagnostics: { ...diag } }
+    }
+    return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'NO_QR_CODE', diagnostics: { ...diag } }
   }
 
   async getQRCode(iccid: string): Promise<ConnectorResult<QRCodeResult>> {

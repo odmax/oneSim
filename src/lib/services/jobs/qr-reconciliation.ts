@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
-import { getAdapterForType } from '@/lib/providers/adapter-manager'
-import { hasUsableInstallData, extractInstallDataFromProviderResponse, normalizeConnectorInstallData, mergeInstallData } from '@/lib/esim/installation-data'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
+import { lookupEsimInstallationData, persistInstallationLookup } from '@/lib/providers/installation-lookup'
 
 const RETRY_WINDOWS = [
   { maxMinutes: 10, intervalMinutes: 1 },
@@ -54,13 +54,6 @@ function isStale(retryCount: number): boolean {
   return retryCount >= MAX_INSTALLATION_RETRIES
 }
 
-/** True when a connector definitively reports the operation is not supported. */
-function isDefinitiveUnsupported(error?: { code?: string; message?: string } | null): boolean {
-  if (!error) return false
-  const code = error.code || ''
-  return code === 'NOT_SUPPORTED' || code === 'NOT_IMPLEMENTED' || /not support|not implemented/i.test(error.message || '')
-}
-
 /**
  * Requeue legacy STALE rows that were incorrectly marked STALE by the old logic
  * without ever attempting reconciliation.
@@ -91,6 +84,11 @@ export async function repairLegacyStaleInstallationRows(): Promise<number> {
   return result.count
 }
 
+/**
+ * Provider-neutral installation reconciliation. Delegates the read-only lookup
+ * to the canonical `lookupEsimInstallationData` service; no provider-name
+ * branches; never purchases/subscribes/mutates wallet; never creates eSIMs.
+ */
 export async function reconcileMissingInstallationDetails(batchSize = 10): Promise<{
   processed: number; updated: number; failed: number; stale: number; notSupported: number
 }> {
@@ -127,103 +125,56 @@ export async function reconcileMissingInstallationDetails(batchSize = 10): Promi
       continue
     }
 
-    // 3. Provider resolution — canonical chain: esim.purchaseId → purchase.packageId → package.providerId.
-    const providerId = esim.purchase?.package?.providerId
-    if (!providerId) continue
-
-    const provider = await prisma.provider.findUnique({ where: { id: providerId } })
-    if (!provider) continue
-
+    // 3. Canonical read-only lookup (provider resolution happens inside the
+    //    service via purchase.package.providerId; connector decides support).
+    let lookup
     try {
-      let found = false
-      let lookupAttempted = false
-      let lookupUnsupported = false
-
-      // 4. Read-only install lookup via the provider's connector (never a
-      //    purchase/subscription mutation, never a wallet/order touch). The
-      //    attempt is gated on having an ICCID only — a stale `supportsQRCode`
-      //    boolean must not block an implemented connector capability; the
-      //    connector itself decides support via its response.
-      if (esim.iccid) {
-        const adapter = await getAdapterForType(provider.type, {
-          apiBaseUrl: provider.apiBaseUrl, apiToken: provider.apiToken,
-          providerId: provider.id, environment: provider.environment, authUrl: provider.authUrl,
-        })
-        if (adapter?.getQRCode) {
-          lookupAttempted = true
-          const qrResult = await adapter.getQRCode(esim.iccid)
-          if (qrResult.success && qrResult.data) {
-            const installData = normalizeConnectorInstallData(qrResult.data)
-            const merged = mergeInstallData(esim, installData)
-            if (hasUsableInstallData(merged)) {
-              await prisma.eSIM.update({
-                where: { id: esim.id },
-                data: {
-                  ...(installData.qrCodeUrl && !esim.qrCodeUrl ? { qrCodeUrl: installData.qrCodeUrl } : {}),
-                  ...(installData.qrCode && !esim.qrCode ? { qrCode: installData.qrCode } : {}),
-                  ...(installData.activationCode && !esim.activationCode ? { activationCode: installData.activationCode } : {}),
-                  ...(installData.smdpAddress && !esim.smdpAddress ? { smdpAddress: installData.smdpAddress } : {}),
-                  ...(installData.matchingId && !esim.matchingId ? { matchingId: installData.matchingId } : {}),
-                  installationStatus: 'READY', installationLastCheckedAt: new Date(),
-                },
-              })
-              found = true
-              updated++
-            }
-          } else if (isDefinitiveUnsupported(qrResult.error)) {
-            lookupUnsupported = true
-          }
-        }
-      }
-
-      // 5. Stored providerResponse whitelist (data saved at purchase time).
-      if (!found) {
-        const extracted = extractInstallDataFromProviderResponse(esim.providerResponse)
-        const merged = mergeInstallData(esim, extracted)
-        if (hasUsableInstallData(merged)) {
-          await prisma.eSIM.update({
-            where: { id: esim.id },
-            data: {
-              ...(extracted.activationCode && !esim.activationCode ? { activationCode: extracted.activationCode } : {}),
-              ...(extracted.qrCodeUrl && !esim.qrCodeUrl ? { qrCodeUrl: extracted.qrCodeUrl } : {}),
-              ...(extracted.qrCode && !esim.qrCode ? { qrCode: extracted.qrCode } : {}),
-              ...(extracted.smdpAddress && !esim.smdpAddress ? { smdpAddress: extracted.smdpAddress } : {}),
-              ...(extracted.matchingId && !esim.matchingId ? { matchingId: extracted.matchingId } : {}),
-              installationStatus: 'READY', installationLastCheckedAt: new Date(),
-            },
-          })
-          found = true
-          updated++
-        }
-      }
-
-      if (!found) {
-        // Permanent NOT_SUPPORTED comes from the connector itself (or from the
-        // provider declaring no QR capability when no lookup could be made).
-        // Otherwise it is a retryable miss — bounded by the stale policy.
-        if (lookupUnsupported || (!lookupAttempted && !provider.supportsQRCode)) {
-          await prisma.eSIM.update({ where: { id: esim.id }, data: { installationStatus: 'NOT_SUPPORTED' } })
-          notSupported++
-        } else {
-          await prisma.eSIM.update({
-            where: { id: esim.id },
-            data: { installationRetryCount: { increment: 1 }, installationLastCheckedAt: new Date() },
-          })
-          failed++
-        }
-      }
+      lookup = await lookupEsimInstallationData(esim.id)
     } catch (e: any) {
-      const isPermanent = e.code === 'NOT_SUPPORTED' || e.message?.includes('permanent')
-      await prisma.eSIM.update({
-        where: { id: esim.id },
-        data: {
-          installationRetryCount: { increment: 1 },
-          installationLastCheckedAt: new Date(),
-          installationLastError: e.message?.substring(0, 200),
-          ...(isPermanent ? { installationStatus: 'FAILED' } : {}),
-        },
-      })
-      if (isPermanent) failed++
+      lookup = { esimId: esim.id, success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'PROVIDER_HTTP_ERROR' } as any
+    }
+
+    switch (lookup.state) {
+      case 'READY': {
+        if (lookup.data && hasUsableInstallData(lookup.data)) {
+          await persistInstallationLookup(esim.id, esim, lookup.data)
+        }
+        await prisma.eSIM.update({
+          where: { id: esim.id },
+          data: { installationStatus: 'READY', installationLastCheckedAt: new Date(), installationRetryCount: 0, installationLastError: null },
+        })
+        updated++
+        break
+      }
+      case 'NOT_SUPPORTED': {
+        await prisma.eSIM.update({
+          where: { id: esim.id },
+          data: { installationStatus: 'NOT_SUPPORTED', installationLastCheckedAt: new Date(), installationLastError: lookup.errorCode || 'LOOKUP_NOT_SUPPORTED' },
+        })
+        notSupported++
+        break
+      }
+      case 'PERMANENT_FAILURE': {
+        await prisma.eSIM.update({
+          where: { id: esim.id },
+          data: { installationStatus: 'FAILED', installationLastCheckedAt: new Date(), installationLastError: lookup.errorCode || 'PERMANENT_FAILURE' },
+        })
+        failed++
+        break
+      }
+      case 'NOT_AVAILABLE_YET':
+      default: {
+        await prisma.eSIM.update({
+          where: { id: esim.id },
+          data: {
+            installationRetryCount: { increment: 1 },
+            installationLastCheckedAt: new Date(),
+            installationLastError: lookup.errorCode || 'NO_INSTALL_DATA',
+          },
+        })
+        failed++
+        break
+      }
     }
   }
 

@@ -1,4 +1,5 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim, StatusLookupIdentifier } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim, StatusLookupIdentifier, ConnectorCapabilities, InstallationLookupInput, InstallationLookupResult } from './connector-interface'
+import { DEFAULT_CONNECTOR_CAPABILITIES } from './connector-interface'
 import { classifyError } from './connector-interface'
 
 export interface RestCatalogConfig {
@@ -342,6 +343,14 @@ export class RestCatalogConnector implements IProviderConnector {
     const ref = esim.providerSubscriptionId || esim.providerActivationId
     if (ref) return ref
     return esim.iccid || null
+  }
+
+  /** Base connectors declare no internal capabilities; subclasses override. */
+  capabilities: ConnectorCapabilities = { ...DEFAULT_CONNECTOR_CAPABILITIES }
+
+  /** Base connectors do not implement installation lookup. */
+  async lookupInstallationData(_input: InstallationLookupInput): Promise<InstallationLookupResult> {
+    return { success: false, state: 'NOT_SUPPORTED', errorCode: 'LOOKUP_NOT_SUPPORTED' }
   }
 
   async getUsage(_iccid: string): Promise<ConnectorResult<UsageResult>> {

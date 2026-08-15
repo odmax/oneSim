@@ -7,6 +7,7 @@ import { getProviderDiagnosticsDetail } from '@/lib/services/operations/provider
 import { computeProviderHealth } from '@/lib/services/operations/provider-health-score'
 import { prisma } from '@/lib/prisma'
 import { getChoiceEndpointCoverage, getDocumentedUnusedEndpoints } from '@/lib/providers/telemetry/endpoint-telemetry'
+import { getProviderCapabilityProfile } from '@/lib/providers/capability-profile'
 
 const SEVERITY_COLORS: Record<string, string> = {
   HEALTHY: 'bg-emerald-100 text-emerald-800',
@@ -38,6 +39,7 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
   if (!d) return <div className="p-6"><p className="text-red-600">Provider not found.</p></div>
 
   const health = await computeProviderHealth(params.id)
+  const profile = await getProviderCapabilityProfile(params.id).catch(() => null)
 
   return (
     <div className="p-6 space-y-6 max-w-5xl">
@@ -49,6 +51,63 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
         <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${VERDICT_COLORS[d.verdict]}`}>Purchase: {d.verdict}</span>
         <span className="text-xs text-gray-400">{d.verdictReason}</span>
       </div>
+
+      {/* Capability profile — connector vs configured vs exposure */}
+      {profile && (
+        <Section title="Capability Profile">
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="rounded-lg border p-3">
+                <p className="font-medium text-gray-700">Connector declares installation lookup</p>
+                <p className={`mt-1 font-bold ${profile.connector?.capabilities.installationLookup ? 'text-emerald-600' : 'text-red-600'}`}>{profile.connector?.capabilities.installationLookup ? 'YES' : 'NO'}</p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="font-medium text-gray-700">Provider DB flag supportsQRCode</p>
+                <p className={`mt-1 font-bold ${profile.configured.supportsQRCode ? 'text-emerald-600' : 'text-amber-600'}`}>{profile.configured.supportsQRCode ? 'YES' : 'NO'}</p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="font-medium text-gray-700">Client portal exposure (install)</p>
+                <p className="mt-1 font-bold text-gray-600">{profile.exposure.installation.portal ? 'ON' : 'OFF'}</p>
+              </div>
+              <div className="rounded-lg border p-3">
+                <p className="font-medium text-gray-700">Client API exposure (install)</p>
+                <p className="mt-1 font-bold text-gray-600">{profile.exposure.installation.api ? 'ON' : 'OFF'}</p>
+              </div>
+            </div>
+
+            {profile.mismatches.length > 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-xs font-semibold text-amber-800">Capability mismatches (connector vs configured)</p>
+                <ul className="mt-1 space-y-1 text-xs text-amber-700">
+                  {profile.mismatches.map(m => (
+                    <li key={m.capability}>• {m.capability}: {m.note}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-left text-gray-400"><tr>
+                  <th className="pb-2 pr-2">Capability</th><th className="pb-2 pr-2">Connector</th>
+                  <th className="pb-2 pr-2">DB configured</th><th className="pb-2 pr-2">Portal</th><th className="pb-2 pr-2">API</th>
+                </tr></thead>
+                <tbody className="divide-y">
+                  {profile.matrix.map(r => (
+                    <tr key={r.capability}>
+                      <td className="py-1.5 pr-2 font-medium text-gray-700">{r.capability}</td>
+                      <td className={`py-1.5 pr-2 ${r.connector === 'SUPPORTED' ? 'text-emerald-600' : r.connector === 'NOT_SUPPORTED' ? 'text-gray-400' : 'text-amber-600'}`}>{r.connector}</td>
+                      <td className={`py-1.5 pr-2 ${r.dbConfigured ? 'text-emerald-600' : 'text-gray-400'}`}>{r.dbConfigured ? 'YES' : 'NO'}</td>
+                      <td className="py-1.5 pr-2">{r.portalExposure ? 'ON' : 'OFF'}</td>
+                      <td className="py-1.5">{r.apiExposure ? 'ON' : 'OFF'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </Section>
+      )}
 
       {/* Health Score Breakdown */}
       <Section title="Health Score">
