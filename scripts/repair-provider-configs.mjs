@@ -73,7 +73,9 @@ const CONFIGS = {
     },
     fieldMappings: {
       activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL',
-      userId: 'onesim',
+      // NOTE: no userId here — a real Choice account id is persisted by the
+      // auth flow (provider.config.userId). The legacy 'onesim' placeholder is
+      // intentionally NOT written.
     },
     supportsESIM: true, supportsUsage: true, supportsTopUp: true,
     templateName: 'Choice Wireless',

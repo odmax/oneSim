@@ -30,7 +30,14 @@ export async function syncEsimStatus(esimId: string) {
   const adapter = await getAdapterForProvider(providerId)
   if (!adapter) return { success: false, error: 'Provider not available' }
 
-  const result = await adapter.getActivationStatus(esim.providerActivationId)
+  // Provider-neutral, SAFE identifier — Choice gets the structured package_detail
+  // lookup; string connectors get their provider reference. A local OneSIM id is
+  // never sent upstream, and we skip when no safe identifier exists.
+  const lookup = adapter.resolveStatusLookup?.(esim)
+    ?? (esim.providerSubscriptionId || esim.providerActivationId || esim.iccid || null)
+  if (!lookup) return { success: false, error: 'No provider identifier available for status lookup' }
+
+  const result = await adapter.getActivationStatus(lookup)
   if (!result.success) return { success: false, error: result.error?.message }
 
   await prisma.eSIM.update({

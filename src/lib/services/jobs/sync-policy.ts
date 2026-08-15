@@ -1,19 +1,22 @@
 /**
  * eSIM auto-sync scheduling policy.
  * Determines when a status or usage sync should next run.
+ *
+ * retryCount === 0  → SUCCESS cadence (base interval for the status).
+ * retryCount > 0    → FAILURE backoff (5m / 15m / 30m / 2h). A failed sync
+ *                     never falls back to the long success cadence — e.g. a
+ *                     failed ACTIVE status sync retries at +5m, not +6h.
  */
 export function getStatusNextSync(status: string, retryCount: number): Date {
   const now = Date.now()
-  const base = getBaseSyncInterval(status)
-  const backoff = retryBackoff(retryCount)
-  return new Date(now + Math.max(base, backoff))
+  if (retryCount > 0) return new Date(now + retryBackoff(retryCount))
+  return new Date(now + getBaseSyncInterval(status))
 }
 
 export function getUsageNextSync(status: string, retryCount: number): Date {
   const now = Date.now()
-  const base = getUsageBaseInterval(status)
-  const backoff = retryBackoff(retryCount)
-  return new Date(now + Math.max(base, backoff))
+  if (retryCount > 0) return new Date(now + retryBackoff(retryCount))
+  return new Date(now + getUsageBaseInterval(status))
 }
 
 function getBaseSyncInterval(status: string): number {

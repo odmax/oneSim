@@ -12,6 +12,7 @@ import { TelnaSeamlessConnector } from './telna-seamless-connector'
 import { IbasisConnector } from './ibasis-connector'
 import { resolveConnectorType } from './connector-type'
 import type { ConnectorType as ConnectorTypeAlias } from './connector-type'
+import { normalizeChoiceUserId } from './url-token-connector'
 
 export { resolveConnectorType } from './connector-type'
 export type { ConnectorType } from './connector-type'
@@ -105,13 +106,20 @@ export async function buildConnectorFromProvider(providerId: string): Promise<IP
     : {}
   const mergedFieldMappings = { ...configFm, ...directFm }
 
-  // Choice defaults: activationPayloadType + userId from config or auth data
+  // Choice defaults: activationPayloadType + userId from config or auth data.
+  // A legacy/placeholder fieldMappings.userId (e.g. 'onesim') is NEVER treated
+  // as a valid explicit override — it falls through to the authenticated
+  // provider.config.userId / selectedAccountId, else '' (purchase validation
+  // then fails safely).
   if (provider.adapterStrategy === 'CHOICE' && !mergedFieldMappings.activationPayloadType) {
     mergedFieldMappings.activationPayloadType = 'CHOICE_ADD_BUNDLE_FROM_POOL'
   }
-  if (provider.adapterStrategy === 'CHOICE' && !mergedFieldMappings.userId) {
+  if (provider.adapterStrategy === 'CHOICE') {
     const cfg = (provider.config as any) || {}
-    mergedFieldMappings.userId = cfg.userId || cfg.selectedAccountId || ''
+    const fieldUserId = normalizeChoiceUserId(mergedFieldMappings.userId)
+    const configUserId = normalizeChoiceUserId(cfg.userId)
+    const selectedAccountId = normalizeChoiceUserId(cfg.selectedAccountId)
+    mergedFieldMappings.userId = fieldUserId || configUserId || selectedAccountId || ''
   }
 
   console.log(`[buildConnector] fieldMappings keys: ${Object.keys(mergedFieldMappings).join(', ') || '(none)'}`)

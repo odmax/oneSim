@@ -1,5 +1,5 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, UsageResult, EsimLifecycleResult, QRCodeResult } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult } from './connector-interface'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
 interface UrlTokenConfig extends RestCatalogConfig {
@@ -71,6 +71,21 @@ const CHOICE_STATUS_GROUPS: Record<string, string[]> = {
 }
 
 const MEANINGFUL_INTERNAL_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED']
+
+/** Legacy/placeholder Choice user_id values that must never be sent upstream. */
+const CHOICE_USER_ID_PLACEHOLDERS = ['onesim', 'default', 'choice', 'unknown', 'n/a', 'na', 'none', 'null', 'undefined']
+
+/**
+ * Normalize a candidate Choice user_id. Rejects empty and legacy placeholder
+ * sentinels (e.g. 'onesim'), returning '' so the resolution chain falls through
+ * to a real authenticated account id. Never silently sends a placeholder.
+ */
+export function normalizeChoiceUserId(candidate: unknown): string {
+  const value = typeof candidate === 'string' ? candidate.trim() : (candidate == null ? '' : String(candidate).trim())
+  if (!value) return ''
+  if (CHOICE_USER_ID_PLACEHOLDERS.includes(value.toLowerCase())) return ''
+  return value
+}
 
 function normalizeChoiceToken(value: string): string {
   return value.trim().toLowerCase().replace(/[\s_]+/g, ' ')
@@ -344,6 +359,18 @@ export class UrlTokenConnector extends RestCatalogConnector {
 
   private get fieldMappings(): Record<string, any> {
     return (this.config as any).fieldMappings || {}
+  }
+
+  /**
+   * Resolve the effective Choice user_id with the approved precedence:
+   * explicit admin override (fieldMappings.userId) → authenticated
+   * provider.config.userId → selectedAccountId fallback → '' (caller fails
+   * safely). Legacy placeholders ('onesim' etc.) are rejected at every step.
+   */
+  private resolveEffectiveChoiceUserId(): string {
+    return normalizeChoiceUserId(this.fieldMappings.userId)
+      || normalizeChoiceUserId((this.config as any)?.userId)
+      || normalizeChoiceUserId((this.config as any)?.selectedAccountId)
   }
 
   protected get headers(): Record<string, string> {
@@ -654,8 +681,8 @@ export class UrlTokenConnector extends RestCatalogConnector {
     if (!payloadType) {
       return { valid: false, reason: `Choice activation payload type is not configured.` }
     }
-    // Resolve effective userId — never defaults to "onesim"
-    const effectiveUserId = this.fieldMappings.userId || (this.config as any)?.userId || ''
+    // Resolve effective userId — legacy placeholders like 'onesim' are rejected.
+    const effectiveUserId = this.resolveEffectiveChoiceUserId()
     if (!effectiveUserId) {
       return { valid: false, reason: `Choice user_id could not be resolved from the authenticated account. Re-authenticate or select a Choice account.` }
     }
@@ -672,10 +699,15 @@ export class UrlTokenConnector extends RestCatalogConnector {
     let maskedBody: Record<string, any>
 
     if (payloadType === 'CHOICE_ADD_BUNDLE_FROM_POOL') {
-      const effectiveUserId = this.fieldMappings.userId || (this.config as any)?.userId || ''
+      // Never send a legacy/placeholder user_id (e.g. 'onesim') upstream — fail
+      // BEFORE the provider mutation when no real account id can be resolved.
+      const effectiveUserId = this.resolveEffectiveChoiceUserId()
+      if (!effectiveUserId) {
+        return { success: false, error: { code: 'CHOICE_USER_ID_MISSING', message: 'Choice user_id could not be resolved from the authenticated account' } }
+      }
       body = {
         sku: params.planId,
-        user_id: effectiveUserId || undefined,
+        user_id: effectiveUserId,
         eu_email_address: params.subscriber.email || undefined,
       }
 
@@ -787,6 +819,24 @@ export class UrlTokenConnector extends RestCatalogConnector {
       return this.getChoicePackageDetailStatus(identifier)
     }
     return this.getLegacyUrlTokenStatus(String(identifier || ''))
+  }
+
+  /**
+   * Choice status lookup is OBJECT-only (package_detail by ICCID/IMSI/
+   * imsi_version). Never send a string here — a raw string would hit the legacy
+   * template route. Returns the structured identifier when any Choice identifier
+   * exists, otherwise null so the caller skips the provider call safely.
+   */
+  resolveStatusLookup(esim: StatusLookupEsim): string | StatusLookupIdentifier | null {
+    if (esim.iccid || esim.imsi || esim.imsiVersion != null) {
+      return {
+        ...(esim.iccid ? { iccid: esim.iccid } : {}),
+        ...(esim.imsi ? { imsi: esim.imsi } : {}),
+        ...(esim.imsiVersion != null ? { imsiVersion: esim.imsiVersion } : {}),
+        ...(esim.status ? { currentStatus: esim.status } : {}),
+      }
+    }
+    return null
   }
 
   /**
@@ -1073,8 +1123,13 @@ export class UrlTokenConnector extends RestCatalogConnector {
     let body: Record<string, any>
 
     if (payloadType === 'CHOICE_UPDATE_IMSI') {
+      // Never send a legacy/placeholder user_id (e.g. 'onesim') upstream.
+      const userId = this.resolveEffectiveChoiceUserId()
+      if (!userId) {
+        return { success: false, error: { code: 'CHOICE_USER_ID_MISSING', message: 'Choice user_id could not be resolved from the authenticated account' } }
+      }
       body = {
-        user_id: this.fieldMappings.userId || 'onesim',
+        user_id: userId,
         iccid: params.iccid,
         package_name: params.sku || params.packageName || params.planId,
         top_up_occurrences: this.fieldMappings.topUpOccurrences || 1,

@@ -74,6 +74,9 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
         },
       }
     },
+    resolveStatusLookup: (esim) => connector.resolveStatusLookup
+      ? connector.resolveStatusLookup(esim)
+      : (esim.providerSubscriptionId || esim.providerActivationId || esim.iccid || null),
     suspendESIM: async (id) => {
       const r = await connector.suspendESIM(id)
       if (!r.success) return { success: false, error: r.error }

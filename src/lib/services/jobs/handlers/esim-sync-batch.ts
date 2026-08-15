@@ -1,11 +1,29 @@
 import { prisma } from '@/lib/prisma'
 import { getStatusNextSync, getUsageNextSync, shouldStopRetrying } from '../sync-policy'
 import { claimEsimForSync } from '../recurring-jobs'
-import type { IProviderConnector } from '@/lib/providers/connectors/connector-interface'
+import type { IProviderConnector, StatusLookupIdentifier, StatusLookupEsim } from '@/lib/providers/connectors/connector-interface'
 
 async function getConnector(providerId: string): Promise<IProviderConnector | null> {
   const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
   return buildConnectorFromProvider(providerId) as any
+}
+
+function maskIccid(iccid: string | null | undefined): string {
+  if (!iccid) return ''
+  return iccid.length <= 8 ? '****' : `${iccid.slice(0, 4)}••••${iccid.slice(-4)}`
+}
+
+/**
+ * Resolve the provider-appropriate, provider-NEUTRAL status-lookup identifier.
+ * Uses the connector's own resolution when available (Choice returns the
+ * structured package_detail identifier; AirHub/iBASIS return their provider
+ * reference). Falls back to a safe provider reference (never a local OneSIM id).
+ * Returns null when no safe upstream identifier exists — the caller must skip
+ * the provider HTTP call.
+ */
+function resolveLookup(connector: IProviderConnector, esim: StatusLookupEsim): string | StatusLookupIdentifier | null {
+  if (connector?.resolveStatusLookup) return connector.resolveStatusLookup(esim)
+  return esim.providerSubscriptionId || esim.providerActivationId || esim.iccid || null
 }
 
 /** Backfill null sync schedules for existing eSIMs. Idempotent. */
@@ -52,11 +70,21 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
     if (!provider || !['ACTIVE', 'DEGRADED', 'TESTING'].includes(provider.status)) { skipped++; continue }
 
+    const connectorName = provider.adapterStrategy || provider.type || 'UNKNOWN'
+
     try {
       const connector = await getConnector(provider.id)
       if (!connector) { skipped++; continue }
 
-      const result = await connector.getStatus(esim.iccid || esim.id)
+      // SAFE provider-neutral identifier — never a local OneSIM database id.
+      const lookup = resolveLookup(connector, esim)
+      if (!lookup) {
+        console.log(`[ESIM_STATUS_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=IDENTIFIER_MISSING`)
+        skipped++
+        continue
+      }
+
+      const result = await connector.getStatus(lookup)
 
       if (result.success && result.data) {
         const newStatus = result.data.status
@@ -77,8 +105,9 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
         })
         updated++
       } else {
-        const errCode = result.error?.code || ''
+        const errCode = result.error?.code || 'UNKNOWN'
         const stop = shouldStopRetrying(esim.statusSyncRetryCount + 1, errCode)
+        console.log(`[ESIM_STATUS_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=${errCode} retryCount=${esim.statusSyncRetryCount + 1} stopRetrying=${stop}`)
         await prisma.eSIM.update({
           where: { id: esim.id },
           data: {
@@ -88,7 +117,8 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
         })
         failed++
       }
-    } catch {
+    } catch (e: any) {
+      console.log(`[ESIM_STATUS_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=THROWN retryCount=${esim.statusSyncRetryCount + 1} stopRetrying=${shouldStopRetrying(esim.statusSyncRetryCount + 1)}`)
       await prisma.eSIM.update({ where: { id: esim.id }, data: { statusSyncRetryCount: { increment: 1 }, statusNextSyncAt: getStatusNextSync(esim.status, esim.statusSyncRetryCount + 1) } })
       failed++
     }
@@ -124,11 +154,21 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
     const caps = (provider.enabledCapabilities || []) as string[]
     if (!caps.includes('USAGE')) { skipped++; continue }
 
+    const connectorName = provider.adapterStrategy || provider.type || 'UNKNOWN'
+
     try {
       const connector = await getConnector(provider.id)
       if (!connector) { skipped++; continue }
 
-      const result = await connector.getUsage(esim.iccid || esim.id)
+      // SAFE provider-neutral identifier — never a local OneSIM database id.
+      const lookup = resolveLookup(connector, esim)
+      if (!lookup) {
+        console.log(`[ESIM_USAGE_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=IDENTIFIER_MISSING`)
+        skipped++
+        continue
+      }
+
+      const result = await connector.getUsage(lookup as any)
 
       if (result.success && result.data) {
         const data = result.data as any
@@ -146,6 +186,7 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
         updated++
       } else {
         const stop = shouldStopRetrying(esim.usageSyncRetryCount + 1)
+        console.log(`[ESIM_USAGE_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=${result.error?.code || 'UNKNOWN'} retryCount=${esim.usageSyncRetryCount + 1} stopRetrying=${stop}`)
         await prisma.eSIM.update({
           where: { id: esim.id },
           data: {
@@ -155,7 +196,8 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
         })
         failed++
       }
-    } catch {
+    } catch (e: any) {
+      console.log(`[ESIM_USAGE_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=THROWN retryCount=${esim.usageSyncRetryCount + 1} stopRetrying=${shouldStopRetrying(esim.usageSyncRetryCount + 1)}`)
       await prisma.eSIM.update({ where: { id: esim.id }, data: { usageSyncRetryCount: { increment: 1 }, usageNextSyncAt: getUsageNextSync(esim.status, esim.usageSyncRetryCount + 1) } })
       failed++
     }

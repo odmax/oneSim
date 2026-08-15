@@ -173,6 +173,14 @@ export interface ProviderAdapter {
     matchingId?: string
   }>>
 
+  /**
+   * Resolve the provider-appropriate status-lookup identifier for an eSIM.
+   * Structured lookups (Choice) return a StatusLookupIdentifier object; string-
+   * based connectors return their provider-owned reference. Returns null when no
+   * safe upstream identifier exists — the caller must skip the provider call.
+   */
+  resolveStatusLookup?(esim: import('./connectors/connector-interface').StatusLookupEsim): string | import('./connectors/connector-interface').StatusLookupIdentifier | null
+
   suspendESIM(subscriptionId: string | import('./connectors/connector-interface').StatusLookupIdentifier): Promise<ProviderResult<import('./connectors/connector-interface').EsimLifecycleResult>>
 
   resumeESIM(subscriptionId: string | import('./connectors/connector-interface').StatusLookupIdentifier): Promise<ProviderResult<import('./connectors/connector-interface').EsimLifecycleResult>>

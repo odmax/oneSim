@@ -91,6 +91,21 @@ export interface StatusLookupIdentifier {
   currentStatus?: string
 }
 
+/**
+ * The minimal eSIM shape a connector needs to resolve the correct upstream
+ * status-lookup identifier. Provider-owned references (subscription/activation
+ * id) are included so string-based connectors never fall back to a local
+ * OneSIM id.
+ */
+export interface StatusLookupEsim {
+  iccid?: string | null
+  imsi?: string | null
+  imsiVersion?: string | number | null
+  status?: string | null
+  providerSubscriptionId?: string | null
+  providerActivationId?: string | null
+}
+
 export interface TopUpESIMParams {
   iccid: string
   imsi?: string | null
@@ -233,6 +248,17 @@ export interface IProviderConnector {
   syncPlans(): Promise<ConnectorResult<ConnectorPlan[]>>
   activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>>
   getStatus(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>>
+  /**
+   * Resolve the provider-appropriate status-lookup identifier for an eSIM.
+   * Connectors that support structured lookups (e.g. Choice package_detail by
+   * ICCID/IMSI/imsi_version) return a `StatusLookupIdentifier` object; string-
+   * based connectors return their provider-owned reference (subscription /
+   * activation id), never a local OneSIM id. Returns null when no safe upstream
+   * identifier exists — the caller MUST skip the provider call in that case.
+   * Optional: callers fall back to a safe provider-reference default when a
+   * connector does not implement it.
+   */
+  resolveStatusLookup?(esim: StatusLookupEsim): string | StatusLookupIdentifier | null
   getUsage(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>>
   suspendESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>>
   resumeESIM(subscriptionId: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>>

@@ -185,7 +185,8 @@ const templates = [
       isSystemTemplate: true,
       defaultFieldMappings: {
         activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL',
-        userId: 'onesim',
+        // NOTE: no userId here — a real Choice account id is persisted by the
+        // auth flow. The legacy 'onesim' placeholder is intentionally NOT used.
       },
     },
     provider: {

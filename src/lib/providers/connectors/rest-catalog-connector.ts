@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState, EsimLifecycleResult, QRCodeResult } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, DiagnosticInfo, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim, StatusLookupIdentifier } from './connector-interface'
 import { classifyError } from './connector-interface'
 
 export interface RestCatalogConfig {
@@ -330,6 +330,18 @@ export class RestCatalogConnector implements IProviderConnector {
 
   async getStatus(_subscriptionId: string): Promise<ConnectorResult<StatusResult>> {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Status not implemented for REST catalog connector' } }
+  }
+
+  /**
+   * Default safe status-lookup resolution for string-based connectors:
+   * prefer the provider-owned reference, then the ICCID. Never a local OneSIM
+   * id. Choice (UrlTokenConnector) overrides this to return the structured
+   * package_detail identifier.
+   */
+  resolveStatusLookup(esim: StatusLookupEsim): string | StatusLookupIdentifier | null {
+    const ref = esim.providerSubscriptionId || esim.providerActivationId
+    if (ref) return ref
+    return esim.iccid || null
   }
 
   async getUsage(_iccid: string): Promise<ConnectorResult<UsageResult>> {

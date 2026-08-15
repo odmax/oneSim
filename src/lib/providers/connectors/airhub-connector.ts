@@ -3,7 +3,7 @@ import { encryptToken, decryptToken } from '@/lib/encryption'
 import { prisma } from '@/lib/prisma'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import { normalizeTravelDateRequirement, isValidTravelDate, withTravelDateMarker } from '@/lib/providers/travel-date-utils'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult, QRCodeResult } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo, ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult, RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult, QRCodeResult, StatusLookupEsim } from './connector-interface'
 import { describeDiagnosticValue, parseMonetaryValue } from '@/lib/providers/balance/monetary'
 
 export { describeDiagnosticValue } from '@/lib/providers/balance/monetary'
@@ -1036,6 +1036,15 @@ export class AirHubConnector implements IProviderConnector {
       if (e.name === 'AbortError') return { success: false, error: { code: 'TIMEOUT', message: 'AirHub status check timed out' } }
       return { success: false, error: { code: 'NETWORK_ERROR', message: `AirHub status error: ${e.message?.substring(0, 200)}` } }
     }
+  }
+
+  /**
+   * AirHub OrderDetails is keyed by the AirHub order id, so the status lookup
+   * must use the provider-owned reference — never a local OneSIM id and never an
+   * ICCID. Returns null when no order reference exists so the caller skips.
+   */
+  resolveStatusLookup(esim: StatusLookupEsim): string | null {
+    return esim.providerSubscriptionId || esim.providerActivationId || null
   }
 
   async getQRCode(iccid: string): Promise<ConnectorResult<QRCodeResult>> {

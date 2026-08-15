@@ -322,7 +322,7 @@ describe('UrlTokenConnector', () => {
       return new UrlTokenConnector('choice-1', 'Choice', makeChoiceConfig({
         fieldMappings: {
           activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL',
-          userId: 'onesim',
+          userId: 'test-user-1',
         },
       }))
     }
@@ -378,7 +378,7 @@ describe('UrlTokenConnector', () => {
       const [url, options] = mockFetch.mock.calls[0]
       const body = JSON.parse(options.body)
       expect(body.sku).toBe('sku-abc')
-      expect(body.user_id).toBe('onesim')
+      expect(body.user_id).toBe('test-user-1')
       expect(body.eu_email_address).toBe('test@test.com')
 
       vi.unstubAllGlobals()
@@ -440,7 +440,7 @@ describe('UrlTokenConnector', () => {
   describe('validatePurchase', () => {
     it('returns valid when activationPayloadType and userId are set', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
-        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' },
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'test-user-1' },
       }))
       const result = await c.validatePurchase!({ planId: 'sku-1', quantity: 1, subscriber: { email: 't@t.com' } })
       expect(result.valid).toBe(true)
@@ -501,7 +501,7 @@ describe('UrlTokenConnector', () => {
       const c = new UrlTokenConnector('choice-1', 'Choice', makeChoiceConfig({
         fieldMappings: {
           activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL',
-          userId: 'onesim',
+          userId: 'test-user-1',
         },
       }))
       const mockFetch = vi.fn().mockResolvedValue(okJson({
@@ -513,7 +513,7 @@ describe('UrlTokenConnector', () => {
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body)
       expect(body.sku).toBe('sku-test-plan')
-      expect(body.user_id).toBe('onesim')
+      expect(body.user_id).toBe('test-user-1')
       expect(body.eu_email_address).toBe('test@test.com')
       expect(body.template_id).toBeUndefined()
       expect(body.quantity).toBeUndefined()
@@ -526,7 +526,7 @@ describe('UrlTokenConnector', () => {
       const c = new UrlTokenConnector('choice-1', 'Choice', makeChoiceConfig({
         fieldMappings: {
           activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL',
-          userId: 'onesim',
+          userId: 'test-user-1',
         },
       }))
       const mockFetch = vi.fn().mockResolvedValue(okJson({
@@ -538,7 +538,7 @@ describe('UrlTokenConnector', () => {
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body)
       expect(body.sku).toBe('sku-a')
-      expect(body.user_id).toBe('onesim')
+      expect(body.user_id).toBe('test-user-1')
       expect(body.eu_email_address).toBeUndefined()
       expect(body.template_id).toBeUndefined()
       expect(body.email).toBeUndefined()
@@ -1555,7 +1555,7 @@ describe('UrlTokenConnector', () => {
   describe('topUpESIM', () => {
     it('sends CHOICE_UPDATE_IMSI format', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
-        fieldMappings: { topUpPayloadType: 'CHOICE_UPDATE_IMSI', userId: 'onesim', topUpOccurrences: 2, topUpAllowDays: 30 },
+        fieldMappings: { topUpPayloadType: 'CHOICE_UPDATE_IMSI', userId: 'test-user-1', topUpOccurrences: 2, topUpAllowDays: 30 },
       }))
       const mockFetch = vi.fn().mockResolvedValue(okJson({ status: 'completed', transaction_id: 'topup-1' }))
       vi.stubGlobal('fetch', mockFetch)
@@ -1565,7 +1565,7 @@ describe('UrlTokenConnector', () => {
       expect(result.data?.providerReference).toBe('topup-1')
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body)
-      expect(body.user_id).toBe('onesim')
+      expect(body.user_id).toBe('test-user-1')
       expect(body.iccid).toBe('icc-1')
       expect(body.package_name).toBe('sku-1')
       expect(body.top_up_occurrences).toBe(2)
@@ -1750,7 +1750,7 @@ describe('UrlTokenConnector', () => {
   describe('activateESIM with roaming profile', () => {
     it('includes imsi1_roaming_profile when fieldMapping is set', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
-        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim', roamingProfileId: 'AIRTEL_UG' },
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'test-user-1', roamingProfileId: 'AIRTEL_UG' },
       }))
       const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: 'icc-1', imsi: 'imsi-1' }] } }))
       vi.stubGlobal('fetch', mockFetch)
@@ -1761,7 +1761,7 @@ describe('UrlTokenConnector', () => {
 
     it('omits imsi1_roaming_profile when fieldMapping is not set', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
-        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' },
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'test-user-1' },
       }))
       const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: 'icc-1', imsi: 'imsi-1' }] } }))
       vi.stubGlobal('fetch', mockFetch)
@@ -1772,7 +1772,7 @@ describe('UrlTokenConnector', () => {
 
     it('omits imsi1_roaming_profile when roamingProfileId is empty', async () => {
       const c = new UrlTokenConnector('c1', 'Choice', makeChoiceConfig({
-        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim', roamingProfileId: '' },
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'test-user-1', roamingProfileId: '' },
       }))
       const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: 'icc-1', imsi: 'imsi-1' }] } }))
       vi.stubGlobal('fetch', mockFetch)
@@ -2167,5 +2167,61 @@ describe('UrlTokenConnector', () => {
       delete process.env.CHOICE_BALANCE_DIAGNOSTICS_ENABLED
       vi.unstubAllGlobals()
     })
+  })
+})
+
+describe('Choice userId resolution — legacy "onesim" sentinel is rejected', () => {
+  it('normalizeChoiceUserId rejects empty and legacy placeholders', async () => {
+    const { normalizeChoiceUserId } = await import('./url-token-connector')
+    expect(normalizeChoiceUserId('onesim')).toBe('')
+    expect(normalizeChoiceUserId('  onesim  ')).toBe('')
+    expect(normalizeChoiceUserId('')).toBe('')
+    expect(normalizeChoiceUserId('default')).toBe('')
+    expect(normalizeChoiceUserId('12345')).toBe('12345')
+  })
+
+  it('validatePurchase FAILS before any mutation when only a legacy onesim userId exists', async () => {
+    const connector = makeConnector({ fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' } })
+    const result = await connector.validatePurchase({ planId: 'x', quantity: 1, subscriber: { email: 'a@b.com' } })
+    expect(result.valid).toBe(false)
+    expect(result.reason).toContain('user_id')
+  })
+
+  it('validatePurchase uses the authenticated config userId when fieldMappings holds stale onesim', async () => {
+    const connector = makeConnector({ fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' }, userId: '12345' })
+    const result = await connector.validatePurchase({ planId: 'x', quantity: 1, subscriber: { email: 'a@b.com' } })
+    expect(result.valid).toBe(true)
+  })
+
+  it('activateESIM fails BEFORE the provider mutation when no real userId can be resolved', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const connector = makeConnector({ fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' } })
+    const result = await connector.activateESIM({ planId: 'p1', quantity: 1, subscriber: { email: 'a@b.com' } })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('CHOICE_USER_ID_MISSING')
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('activateESIM sends the authenticated userId (12345), never the onesim placeholder', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ success: true, data: {} }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const connector = makeConnector({ fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'onesim' }, userId: '12345' })
+    await connector.activateESIM({ planId: 'p1', quantity: 1, subscriber: { email: 'a@b.com' } }).catch(() => {})
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    expect(body.user_id).toBe('12345')
+    vi.unstubAllGlobals()
+  })
+
+  it('topUpESIM fails instead of sending the onesim placeholder', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const connector = makeConnector({ fieldMappings: { topUpPayloadType: 'CHOICE_UPDATE_IMSI', userId: 'onesim' } })
+    const result = await connector.topUpESIM({ iccid: 'icc-1', planId: 'p1', quantity: 1 })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('CHOICE_USER_ID_MISSING')
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
   })
 })

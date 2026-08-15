@@ -11,7 +11,7 @@ import type {
   IProviderConnector, ConnectorResult, ConnectorPlan, DiagnosticInfo,
   ActivateESIMParams, ActivateESIMResult, UsageResult, StatusResult,
   RateResult, TopUpESIMParams, TopUpESIMResult, TokenState, EsimLifecycleResult,
-  QRCodeResult,
+  QRCodeResult, StatusLookupEsim,
 } from './connector-interface'
 
 /**
@@ -1004,6 +1004,15 @@ export class IbasisConnector implements IProviderConnector {
       success: true,
       data: { status: activation.data.status, iccids: activationIccids },
     }
+  }
+
+  /**
+   * iBASIS status is keyed by the provider activation id (then a subscription
+   * id once available). Never a local OneSIM id or an ICCID. Returns null when
+   * no provider reference exists so the caller skips safely.
+   */
+  resolveStatusLookup(esim: StatusLookupEsim): string | null {
+    return esim.providerActivationId || esim.providerSubscriptionId || null
   }
 
   async getUsage(_iccid: string): Promise<ConnectorResult<UsageResult>> {

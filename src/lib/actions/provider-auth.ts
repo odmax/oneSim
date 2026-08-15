@@ -120,6 +120,10 @@ export async function authenticateProvider(providerId: string, formData: FormDat
     updateData.apiToken = encryptToken(authResult.token)
     configUpdate.selectedAccountId = account.account || ''
     configUpdate.selectedAccountName = account.accountName || ''
+    // Persist the authenticated Choice account id so the purchase payload's
+    // user_id is never a placeholder. account.userId is the API user id when
+    // the provider returns it; account.account is the account identifier.
+    configUpdate.userId = account.userId || account.account || ''
   }
 
   await prisma.provider.update({ where: { id: providerId }, data: updateData })
@@ -188,6 +192,8 @@ export async function selectProviderAccount(providerId: string, formData: FormDa
         ...config,
         selectedAccountId: account.account,
         selectedAccountName: account.accountName,
+        // Persist the authenticated Choice account id (never a placeholder).
+        userId: account.userId || account.account || '',
       },
     },
   })
