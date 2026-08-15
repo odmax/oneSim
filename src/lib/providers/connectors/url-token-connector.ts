@@ -1346,8 +1346,22 @@ export class UrlTokenConnector extends RestCatalogConnector {
       const pkg = json.package || json.data?.package || json
       const qr = pkg?.qr_code_link || pkg?.qr_code_url || pkg?.qrCodeUrl || ''
       const code = pkg?.activation_code || pkg?.activationCode || ''
-      return qr ? { success: true, data: { qrCodeUrl: qr, activationCode: code || undefined } }
-        : { success: false, error: { code: 'NO_QR_CODE', message: 'No QR code found in package detail' } }
+      const smdp = pkg?.smdp_address || pkg?.smdp || pkg?.smdpAddress || ''
+      const matching = pkg?.matching_id || pkg?.matchingId || ''
+      // Success when ANY usable install field is present — an activation code
+      // (often an LPA string) alone is enough to install.
+      if (qr || code || smdp || matching) {
+        return {
+          success: true,
+          data: {
+            ...(qr ? { qrCodeUrl: qr } : {}),
+            ...(code ? { activationCode: code } : {}),
+            ...(smdp ? { smdpAddress: smdp } : {}),
+            ...(matching ? { matchingId: matching } : {}),
+          },
+        }
+      }
+      return { success: false, error: { code: 'NO_QR_CODE', message: 'No QR code found in package detail' } }
     } catch { return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse response' } } }
   }
 }

@@ -1650,6 +1650,41 @@ describe('UrlTokenConnector', () => {
 
       vi.unstubAllGlobals()
     })
+
+    it('succeeds with an activation-code-only package (LPA string is installable data)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { activation_code: 'LPA:1$smdp.example$abc', qr_code_link: '' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getQRCode('89012345678901234567')
+      expect(result.success).toBe(true)
+      expect(result.data?.activationCode).toBe('LPA:1$smdp.example$abc')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('maps smdpAddress and matchingId from package detail', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { smdp_address: 'smdp.example.com', matching_id: 'mid-123', qr_code_link: '' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getQRCode('89012345678901234567')
+      expect(result.success).toBe(true)
+      expect(result.data?.smdpAddress).toBe('smdp.example.com')
+      expect(result.data?.matchingId).toBe('mid-123')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('stays read-only — only GET package_detail is issued, never a mutation', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { qr_code_link: 'https://qr.example/link', activation_code: 'LPA:1$smdp$c' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.getQRCode('89012345678901234567')
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(mockFetch.mock.calls[0][1].method).toBe('GET')
+      expect(mockFetch.mock.calls[0][0]).toContain('/account/v03_09/package_detail/')
+
+      vi.unstubAllGlobals()
+    })
   })
 
   describe('getRoamingProfiles', () => {
