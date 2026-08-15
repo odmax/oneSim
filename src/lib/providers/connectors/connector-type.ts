@@ -1,4 +1,4 @@
-export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB' | 'TELNA' | 'TELNA_SEAMLESS' | 'IBASIS'
+export type ConnectorType = 'MOCK' | 'REST_CATALOG' | 'URL_TOKEN' | 'HEADER_TOKEN' | 'STANDARD' | 'AIRHUB' | 'TELNA' | 'TELNA_SEAMLESS' | 'TELNA_FLEX' | 'IBASIS'
 
 /**
  * Maps a provider's persisted strategy/type onto the concrete connector class.
@@ -18,6 +18,7 @@ export function resolveConnectorType(
   if (adapterStrategy === 'AIRHUB') return 'AIRHUB'
   if (providerCode === 'AIRHUB' && !adapterStrategy) return 'AIRHUB'
   if (adapterStrategy === 'TELNA_SEAMLESS') return 'TELNA_SEAMLESS'
+  if (adapterStrategy === 'TELNA_FLEX') return 'TELNA_FLEX'
   if (adapterStrategy === 'TELNA') return 'TELNA'
   if (adapterStrategy === 'IBASIS') return 'IBASIS'
   switch (adapterStrategy) {

@@ -68,6 +68,14 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.STATUS,
   ],
 
+  // Telna Connect Flex (ppo-api.telna.com/v1) — read-only surface only (purchase
+  // via POST /v1/ordering/work-orders is declared but NOT wired).
+  TELNA_FLEX: [
+    ProviderCapability.AUTH,
+    ProviderCapability.CATALOG_SYNC,
+    ProviderCapability.USAGE,
+  ],
+
   // iBASIS — static token auth, inventory + eSIM lifecycle.
   // No BALANCE until a verified wallet endpoint is documented.
   // IBASIS lacks BALANCE (no wallet concept), USAGE, TOP_UP (Phase 2 stubs)

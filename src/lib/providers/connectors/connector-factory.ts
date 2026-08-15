@@ -8,6 +8,7 @@ import { UrlTokenConnector } from './url-token-connector'
 import { HeaderTokenRestConnector } from './header-token-rest-connector'
 import { StandardProviderConnector } from './standard-connector'
 import { TelnaConnector } from './telna-connector'
+import { TelnaFlexConnector } from './telna-flex-connector'
 import { TelnaSeamlessConnector } from './telna-seamless-connector'
 import { IbasisConnector } from './ibasis-connector'
 import { resolveConnectorType } from './connector-type'
@@ -81,6 +82,8 @@ export function createConnector(providerId: string, name: string | undefined, co
       return new HeaderTokenRestConnector(providerId, name, { apiBaseUrl: baseUrl, apiToken: token, authUrl, environment: env })
     case 'TELNA':
       return new TelnaConnector(providerId, name)
+    case 'TELNA_FLEX':
+      return new TelnaFlexConnector(providerId, name)
     case 'IBASIS':
       return new IbasisConnector(providerId)
     case 'REST_CATALOG':
