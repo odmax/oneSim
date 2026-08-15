@@ -175,7 +175,7 @@ describe('publishToCatalog', () => {
   })
 
   it('skipped details populated correctly for invalid packages', async () => {
-    const invalid = makeProviderPackage({ configurationStatus: 'UNCONFIGURED' })
+    const invalid = makeProviderPackage({ configurationStatus: 'UNCONFIGURED', publishStatus: 'DRAFT' })
     vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([invalid] as any)
 
     const result = await publishToCatalog(['pp-1'])

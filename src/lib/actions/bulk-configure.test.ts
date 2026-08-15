@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { prisma } from '@/lib/prisma'
 
+const { mockPublishProviderPackageToRetailCatalog } = vi.hoisted(() => ({
+  mockPublishProviderPackageToRetailCatalog: vi.fn(),
+}))
+
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     providerPackage: {
@@ -11,6 +15,10 @@ vi.mock('@/lib/prisma', () => ({
     auditLog: { create: vi.fn().mockResolvedValue({}) },
     $transaction: vi.fn(),
   },
+}))
+
+vi.mock('@/lib/services/catalog/publish-to-retail', () => ({
+  publishProviderPackageToRetailCatalog: mockPublishProviderPackageToRetailCatalog,
 }))
 
 vi.mock('next-auth', () => ({
@@ -61,6 +69,7 @@ function makeBeforePackage(overrides: Record<string, any> = {}) {
     providerPlanId: 'plan-1',
     providerId: 'prov-1',
     publishStatus: 'DRAFT',
+    configurationStatus: 'CONFIGURED',
     ...overrides,
   }
 }
@@ -307,5 +316,157 @@ describe('bulkConfigurePackages', () => {
     const perPkgUpdate = vi.mocked(prisma.providerPackage.update).mock.calls[0]?.[0] as any
     expect(perPkgUpdate).toBeDefined()
     expect(perPkgUpdate.data.markupPercent).toBe(14.29) // ((8-7)/7)*100 → 14.29
+  })
+
+  it('PUBLISHED intent routes each package through the canonical gate, never writes PUBLISHED directly', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([makeBeforePackage({ id: 'pkg-1' }), makeBeforePackage({ id: 'pkg-2' })])
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      await fn(prisma)
+      return undefined
+    })
+    vi.mocked(prisma.providerPackage.updateMany).mockResolvedValue({ count: 2 })
+    vi.mocked(prisma.providerPackage.update).mockResolvedValue({} as any)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, publishStatusSet: true, readinessReasons: [] })
+
+    const result = await bulkConfigurePackages({ packageIds: ['pkg-1', 'pkg-2'], sellingPrice: 10, sellingCurrency: 'USD', costPrice: 3, publishStatus: 'PUBLISHED' })
+
+    expect(result).toEqual({ success: true, updated: 2, published: 2, publishBlocked: 0, blockedDetails: undefined })
+    // PUBLISHED never persisted by updateMany.
+    expect(vi.mocked(prisma.providerPackage.updateMany).mock.calls[0][0].data.publishStatus).toBeUndefined()
+    // Canonical gate invoked per package.
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(2)
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledWith('pkg-1', expect.objectContaining({ reason: 'BULK_CONFIGURE_PUBLISH' }))
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledWith('pkg-2', expect.objectContaining({ reason: 'BULK_CONFIGURE_PUBLISH' }))
+  })
+
+  it('PUBLISHED-only intent (no pricing edits) still routes through the canonical gate', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([makeBeforePackage({ id: 'pkg-1' })])
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      await fn(prisma)
+      return undefined
+    })
+    vi.mocked(prisma.providerPackage.updateMany).mockResolvedValue({ count: 1 })
+    vi.mocked(prisma.providerPackage.update).mockResolvedValue({} as any)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, publishStatusSet: true, readinessReasons: [] })
+
+    const result = await bulkConfigurePackages({ packageIds: ['pkg-1'], publishStatus: 'PUBLISHED' })
+
+    expect(result.success).toBe(true)
+    expect(result.published).toBe(1)
+    expect(vi.mocked(prisma.providerPackage.updateMany)).not.toHaveBeenCalled()
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('PUBLISHED blocked by readiness → PARTIAL, reports exact reasons, never forces PUBLISHED', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([makeBeforePackage({ id: 'pkg-1' }), makeBeforePackage({ id: 'pkg-2' })])
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      await fn(prisma)
+      return undefined
+    })
+    vi.mocked(prisma.providerPackage.updateMany).mockResolvedValue({ count: 2 })
+    vi.mocked(prisma.providerPackage.update).mockResolvedValue({} as any)
+    mockPublishProviderPackageToRetailCatalog
+      .mockResolvedValueOnce({ success: true, publishStatusSet: true, readinessReasons: [] })
+      .mockResolvedValueOnce({ success: false, publishStatusSet: false, readinessReasons: ['Cost status is MISSING', 'No active price snapshot'], error: 'Finalization failed' })
+
+    const result = await bulkConfigurePackages({ packageIds: ['pkg-1', 'pkg-2'], sellingPrice: 10, sellingCurrency: 'USD', costPrice: 3, publishStatus: 'PUBLISHED' })
+
+    expect(result.success).toBe(true)
+    expect(result.published).toBe(1)
+    expect(result.publishBlocked).toBe(1)
+    expect(result.blockedDetails).toEqual([{ packageId: 'pkg-2', name: 'Test Plan', reasons: ['Cost status is MISSING', 'No active price snapshot'] }])
+    expect(vi.mocked(completePipelineRun)).toHaveBeenCalledWith('pipeline-run-1', 'PARTIAL', 1)
+    // Blocked package still never receives PUBLISHED.
+    expect(vi.mocked(prisma.providerPackage.updateMany).mock.calls[0][0].data.publishStatus).toBeUndefined()
+  })
+
+  it('bulk PUBLISHED: UNCONFIGURED packages are blocked by eligibility and never reach the canonical gate', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([
+      makeBeforePackage({ id: 'pkg-1' }),
+      makeBeforePackage({ id: 'pkg-2', configurationStatus: 'UNCONFIGURED' }),
+    ])
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      await fn(prisma)
+      return undefined
+    })
+    vi.mocked(prisma.providerPackage.updateMany).mockResolvedValue({ count: 2 })
+    vi.mocked(prisma.providerPackage.update).mockResolvedValue({} as any)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, publishStatusSet: true, readinessReasons: [] })
+
+    const result = await bulkConfigurePackages({ packageIds: ['pkg-1', 'pkg-2'], sellingPrice: 10, sellingCurrency: 'USD', costPrice: 3, publishStatus: 'PUBLISHED' })
+
+    expect(result.success).toBe(true)
+    expect(result.published).toBe(1)
+    expect(result.publishBlocked).toBe(1)
+    expect(result.blockedDetails).toEqual([{ packageId: 'pkg-2', name: 'Test Plan', reasons: ['configurationStatus is UNCONFIGURED (never eligible to publish)'] }])
+    // Only the eligible package reached the canonical gate.
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(1)
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledWith('pkg-1', expect.objectContaining({ reason: 'BULK_CONFIGURE_PUBLISH' }))
+  })
+
+  it('bulk PUBLISHED: HIDDEN and ARCHIVED packages are blocked even when CONFIGURED', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([
+      makeBeforePackage({ id: 'pkg-1', publishStatus: 'HIDDEN', configurationStatus: 'CONFIGURED' }),
+      makeBeforePackage({ id: 'pkg-2', publishStatus: 'ARCHIVED', configurationStatus: 'CONFIGURED' }),
+    ])
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      await fn(prisma)
+      return undefined
+    })
+    vi.mocked(prisma.providerPackage.updateMany).mockResolvedValue({ count: 2 })
+    vi.mocked(prisma.providerPackage.update).mockResolvedValue({} as any)
+
+    const result = await bulkConfigurePackages({ packageIds: ['pkg-1', 'pkg-2'], sellingPrice: 10, sellingCurrency: 'USD', costPrice: 3, publishStatus: 'PUBLISHED' })
+
+    expect(result.success).toBe(true)
+    expect(result.published).toBe(0)
+    expect(result.publishBlocked).toBe(2)
+    expect(result.blockedDetails![0].reasons).toEqual(['publishStatus is HIDDEN (restore/unarchive before publishing)'])
+    expect(result.blockedDetails![1].reasons).toEqual(['publishStatus is ARCHIVED (restore/unarchive before publishing)'])
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
+  })
+
+  it('bulk PUBLISHED: READY packages are eligible (source-state transition allowed)', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([
+      makeBeforePackage({ id: 'pkg-1', publishStatus: 'READY', configurationStatus: 'CONFIGURED' }),
+    ])
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      await fn(prisma)
+      return undefined
+    })
+    vi.mocked(prisma.providerPackage.updateMany).mockResolvedValue({ count: 1 })
+    vi.mocked(prisma.providerPackage.update).mockResolvedValue({} as any)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, publishStatusSet: true, readinessReasons: [] })
+
+    const result = await bulkConfigurePackages({ packageIds: ['pkg-1'], sellingPrice: 10, sellingCurrency: 'USD', costPrice: 3, publishStatus: 'PUBLISHED' })
+
+    expect(result.success).toBe(true)
+    expect(result.published).toBe(1)
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('bulk PUBLISHED: eligibility is provider-neutral (CHOICE, AIRHUB, iBASIS identical)', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([
+      makeBeforePackage({ id: 'pkg-1', providerId: 'prov-choice' }),
+      makeBeforePackage({ id: 'pkg-2', providerId: 'prov-airhub' }),
+      makeBeforePackage({ id: 'pkg-3', providerId: 'prov-ibasis' }),
+      makeBeforePackage({ id: 'pkg-4', providerId: 'prov-choice', configurationStatus: 'UNCONFIGURED' }),
+    ])
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      await fn(prisma)
+      return undefined
+    })
+    vi.mocked(prisma.providerPackage.updateMany).mockResolvedValue({ count: 4 })
+    vi.mocked(prisma.providerPackage.update).mockResolvedValue({} as any)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, publishStatusSet: true, readinessReasons: [] })
+
+    const result = await bulkConfigurePackages({ packageIds: ['pkg-1', 'pkg-2', 'pkg-3', 'pkg-4'], sellingPrice: 10, sellingCurrency: 'USD', costPrice: 3, publishStatus: 'PUBLISHED' })
+
+    expect(result.success).toBe(true)
+    expect(result.published).toBe(3)
+    expect(result.publishBlocked).toBe(1)
+    expect(result.blockedDetails).toEqual([{ packageId: 'pkg-4', name: 'Test Plan', reasons: ['configurationStatus is UNCONFIGURED (never eligible to publish)'] }])
+    // All three providers passed the identical eligibility rule.
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(3)
   })
 })

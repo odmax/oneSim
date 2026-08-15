@@ -9,6 +9,7 @@ import { emitEvent } from '@/lib/catalog-events'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from '@/lib/services/catalog-price-sync'
 import { finalizeCatalogPackageConfiguration } from '@/lib/pricing/configuration-finalizer'
 import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
+import { isPackagePublishEligible } from '@/lib/catalog/publish-eligibility'
 
 function shortCode(s: string | null | undefined, fallback: string): string {
   if (!s) return fallback
@@ -91,9 +92,10 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
     }
 
     const configStatus = pp.configurationStatus || 'UNCONFIGURED'
-    if (!['CONFIGURED', 'AUTO_CONFIGURED'].includes(configStatus)) {
+    const eligible = isPackagePublishEligible({ configurationStatus: configStatus, publishStatus: pp.publishStatus })
+    if (!eligible) {
       skipped++
-      skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `not configured (status: ${configStatus})` })
+      skippedDetails.push({ packageId: pp.id, name: pp.name, reason: `not eligible for publication (status: ${configStatus})` })
       continue
     }
 

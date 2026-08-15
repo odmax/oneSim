@@ -7,6 +7,8 @@ import { revalidatePath } from 'next/cache'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes, recordCatalogPriceSyncAudit } from '@/lib/services/catalog-price-sync'
 import { resolvePricingMutation, inferPricingIntent, type PricingMutationIntent } from '@/lib/pricing/pricing-engine'
+import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
+import { isPackagePublishEligible, getPublishIneligibilityReasons } from '@/lib/catalog/publish-eligibility'
 
 /** Convert a Prisma Decimal-ish value (has toString()) to a finite number, else null. */
 function decimalToNumber(v: unknown): number | null {
@@ -30,7 +32,14 @@ export interface BulkConfigureParams {
   pricingIntent?: PricingMutationIntent
 }
 
-export async function bulkConfigurePackages(params: BulkConfigureParams): Promise<{ success: boolean; updated?: number; error?: string }> {
+export async function bulkConfigurePackages(params: BulkConfigureParams): Promise<{
+  success: boolean
+  updated?: number
+  published?: number
+  publishBlocked?: number
+  blockedDetails?: Array<{ packageId: string; name: string; reasons: string[] }>
+  error?: string
+}> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     return { success: false, error: 'Unauthorized' }
@@ -100,7 +109,9 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
   if (configUpdates.sellingCurrency) {
     updateData.sellingCurrency = configUpdates.sellingCurrency
   }
-  if (configUpdates.publishStatus) {
+  // PUBLISHED is intentionally NOT persisted directly here — it is routed
+  // through the canonical publication gate per package below.
+  if (configUpdates.publishStatus && configUpdates.publishStatus !== 'PUBLISHED') {
     updateData.publishStatus = configUpdates.publishStatus
   }
   if (configUpdates.configurationStatus) {
@@ -114,7 +125,9 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
     updateData.tags = configUpdates.tags
   }
 
-  if (Object.keys(updateData).length === 0) {
+  // PUBLISHED-only intent is valid (route through the canonical gate) even when
+  // there are no pricing/config fields to persist.
+  if (Object.keys(updateData).length === 0 && params.publishStatus !== 'PUBLISHED') {
     await recordStageFromCounts({ pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime, total: 0, passed: 0, failed: 0, skipped: 0, statusOverride: 'FAILED', metadata: { error: 'No options provided' } })
     await failPipelineRun(pipelineRunId, 'No configuration options provided')
     return { success: false, error: 'No configuration options provided' }
@@ -123,7 +136,7 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
   try {
     const beforePackages = await prisma.providerPackage.findMany({
       where: { id: { in: packageIds } },
-      select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, sellingPrice: true, sellingCurrency: true, markupPercent: true, providerPlanId: true, providerId: true, publishStatus: true },
+      select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, sellingPrice: true, sellingCurrency: true, markupPercent: true, providerPlanId: true, providerId: true, publishStatus: true, configurationStatus: true },
     })
 
     // CANONICAL bidirectional pricing: resolve a consistent triple per package
@@ -152,12 +165,14 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
     }
 
     await prisma.$transaction(async (tx) => {
-      const result = await tx.providerPackage.updateMany({
-        where: { id: { in: packageIds } },
-        data: updateData,
-      })
+      if (Object.keys(updateData).length > 0) {
+        const result = await tx.providerPackage.updateMany({
+          where: { id: { in: packageIds } },
+          data: updateData,
+        })
 
-      if (result.count === 0) throw new Error('No packages updated')
+        if (result.count === 0) throw new Error('No packages updated')
+      }
 
       // Persist the resolved pricing triple per package (dependent values are
       // never silently missing), then sync to linked products.
@@ -187,12 +202,43 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
       }
     })
 
+    // Explicit PUBLISHED intent: route every selected package through the
+    // FIRST gate (publish eligibility) and then the canonical publication gate
+    // (finalize → snapshot → retail → readiness → PUBLISHED). Ineligible or
+    // readiness-failed packages do NOT force PUBLISHED.
+    let published = 0
+    let publishBlocked = 0
+    const blockedDetails: { packageId: string; name: string; reasons: string[] }[] = []
+    if (params.publishStatus === 'PUBLISHED') {
+      for (const bp of beforePackages) {
+        // Prospective status: the bulk form's requested configuration wins;
+        // otherwise the current DB state. PUBLISHED intent itself is never a
+        // source state — eligibility comes from CONFIGURED/AUTO_CONFIGURED/READY.
+        const prospectiveState = {
+          configurationStatus: configUpdates.configurationStatus ?? bp.configurationStatus,
+          publishStatus: bp.publishStatus,
+        }
+        if (!isPackagePublishEligible(prospectiveState)) {
+          publishBlocked++
+          blockedDetails.push({ packageId: bp.id, name: bp.name, reasons: getPublishIneligibilityReasons(prospectiveState) })
+          continue
+        }
+        const result = await publishProviderPackageToRetailCatalog(bp.id, { reason: 'BULK_CONFIGURE_PUBLISH' })
+        if (result.success) {
+          published++
+        } else {
+          publishBlocked++
+          blockedDetails.push({ packageId: bp.id, name: bp.name, reasons: result.readinessReasons || (result.error ? [result.error] : []) })
+        }
+      }
+    }
+
     await prisma.auditLog.create({
       data: {
         userId: session.user.id,
         action: 'BULK_CONFIGURE_PACKAGES',
         entity: 'ProviderPackage',
-        details: `Bulk configured ${packageIds.length} packages: ${Object.keys(updateData).join(', ')}`,
+        details: `Bulk configured ${packageIds.length} packages: ${Object.keys(updateData).join(', ')}${params.publishStatus === 'PUBLISHED' ? ` published=${published} blocked=${publishBlocked}` : ''}`,
       },
     }).catch(() => {})
 
@@ -200,7 +246,7 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
     await recordStageFromCounts({
       pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime,
       total: packageIds.length, passed: packageIds.length, failed: 0, skipped: 0,
-      metadata: { publishStatus: updateData.publishStatus, configurationStatus: updateData.configurationStatus },
+      metadata: { publishStatus: updateData.publishStatus, configurationStatus: updateData.configurationStatus, published, publishBlocked },
     })
     if (isPublishReady) {
       const readyStartTime = Date.now()
@@ -209,10 +255,22 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
         total: packageIds.length, passed: packageIds.length, failed: 0, skipped: 0,
       })
     }
+    if (params.publishStatus === 'PUBLISHED' && publishBlocked > 0) {
+      for (const b of blockedDetails.slice(0, 10)) {
+        console.log(`[BULK_CONFIGURE_PUBLISH_BLOCKED] ${b.name} (${b.packageId.slice(-8)}): ${b.reasons.join('; ')}`)
+      }
+      await completePipelineRun(pipelineRunId, 'PARTIAL', published)
+      await revalidateCatalogRoutes()
+      return { success: true, updated: packageIds.length, published, publishBlocked, blockedDetails }
+    }
     await completePipelineRun(pipelineRunId, 'SUCCESS', packageIds.length)
 
     await revalidateCatalogRoutes()
-    return { success: true, updated: packageIds.length }
+    return {
+      success: true,
+      updated: packageIds.length,
+      ...(params.publishStatus === 'PUBLISHED' ? { published, publishBlocked } : {}),
+    }
   } catch (e: any) {
     await recordStageFromCounts({ pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime, total: packageIds.length, passed: 0, failed: packageIds.length, skipped: 0, statusOverride: 'FAILED', metadata: { error: e.message } })
     await failPipelineRun(pipelineRunId, e.message || 'Bulk configuration failed')

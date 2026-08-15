@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
+import { isPackagePublishEligible } from '@/lib/catalog/publish-eligibility'
 
 export async function autoPickAndPublishWinners() {
   const session = await getServerSession(authOptions)
@@ -68,7 +69,7 @@ export async function autoPickAndPublishWinners() {
     const canPublish = winner.costPrice && parseFloat(winner.costPrice.toString()) > 0
       && winner.sellingPrice && parseFloat(winner.sellingPrice.toString()) > 0
       && winner.sellingCurrency
-      && (winner.configurationStatus === 'CONFIGURED' || winner.configurationStatus === 'AUTO_CONFIGURED')
+      && isPackagePublishEligible({ configurationStatus: winner.configurationStatus, publishStatus: winner.publishStatus })
 
     if (!canPublish) {
       skipped++
@@ -127,7 +128,7 @@ export async function publishPreferredOnly() {
     const costPrice = pp.costPrice ? parseFloat(pp.costPrice.toString()) : null
     const sellPrice = pp.sellingPrice ? parseFloat(pp.sellingPrice.toString()) : null
     if (!costPrice || costPrice <= 0 || !sellPrice || sellPrice <= 0 || !pp.sellingCurrency) continue
-    if (pp.configurationStatus !== 'CONFIGURED' && pp.configurationStatus !== 'AUTO_CONFIGURED') continue
+    if (!isPackagePublishEligible({ configurationStatus: pp.configurationStatus, publishStatus: pp.publishStatus })) continue
 
     const result = await publishProviderPackageToRetailCatalog(pp.id, { reason: 'PREFERRED' })
     if (result.success) published++

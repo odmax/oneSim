@@ -10,6 +10,10 @@ const { mockSyncProviderPackageToPublishedProducts, mockRevalidateCatalogRoutes,
   mockRecordCatalogPriceSyncAudit: vi.fn(),
 }))
 
+const { mockPublishProviderPackageToRetailCatalog } = vi.hoisted(() => ({
+  mockPublishProviderPackageToRetailCatalog: vi.fn(),
+}))
+
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     $transaction: vi.fn(),
@@ -35,6 +39,10 @@ vi.mock('@/lib/services/catalog-price-sync', () => ({
   syncProviderPackageToPublishedProducts: mockSyncProviderPackageToPublishedProducts,
   revalidateCatalogRoutes: mockRevalidateCatalogRoutes,
   recordCatalogPriceSyncAudit: mockRecordCatalogPriceSyncAudit,
+}))
+
+vi.mock('@/lib/services/catalog/publish-to-retail', () => ({
+  publishProviderPackageToRetailCatalog: mockPublishProviderPackageToRetailCatalog,
 }))
 
 import { updateSinglePackage } from './package-edit'
@@ -307,5 +315,207 @@ describe('updateSinglePackage', () => {
     expect(updateData.configurationStatus).toBe('CONFIGURED')
     expect(updateData.sellingPrice).toBe(7.69) // 7 * 1.0989 → 7.69 — never left null
     expect(updateData.markupPercent).toBe(9.89)
+  })
+})
+
+describe('updateSinglePackage — explicit PUBLISHED intent (canonical publish contract)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetServerSession.mockResolvedValue(mockSession)
+    mockSyncProviderPackageToPublishedProducts.mockResolvedValue(undefined)
+    mockRevalidateCatalogRoutes.mockResolvedValue(undefined)
+    mockRecordCatalogPriceSyncAudit.mockResolvedValue(undefined)
+  })
+
+  async function setupEditTx(before: any): Promise<{ txUpdate: any }> {
+    const state: { txUpdate: any } = { txUpdate: null }
+    const { prisma } = await import('@/lib/prisma') as any
+    // Outer read for the eligibility gate + inner transaction read for pricing.
+    prisma.providerPackage.findUnique.mockResolvedValue(before)
+    prisma.$transaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: {
+          findUnique: vi.fn().mockResolvedValue(before),
+          update: vi.fn().mockImplementation(async (arg: any) => { state.txUpdate = arg.data; return { ...before, ...arg.data } }),
+        },
+      }
+      return cb(tx)
+    })
+    return state
+  }
+
+  it('persists edits THEN routes through canonical publication (not a drop)', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', costPrice: { toString: () => '7.00' }, sellingPrice: null, markupPercent: null }
+    const state = await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: true, updated: false, publishStatusSet: true, ready: true, readinessReasons: [] })
+
+    const result = await updateSinglePackage('pp-1', { configurationStatus: 'CONFIGURED', costPrice: 7, markupPercent: 9.89, sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+
+    expect(result.success).toBe(true)
+    // Edits persisted BEFORE the publish call.
+    expect(state.txUpdate).not.toBeNull()
+    expect(state.txUpdate.configurationStatus).toBe('CONFIGURED')
+    expect(state.txUpdate.sellingPrice).toBe(7.69)
+    // No direct publishStatus=PUBLISHED write — the canonical gate owns it.
+    expect(state.txUpdate.publishStatus).toBeUndefined()
+    // Canonical publication invoked.
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledWith('pp-1', expect.objectContaining({ reason: 'MANUAL_EDIT' }))
+  })
+
+  it('PUBLISHED intent blocked by readiness → NOT PUBLISHED + exact reasons returned', async () => {
+    // Cost must be non-zero so the pricing resolver stays valid; readiness is
+    // whatever the canonical gate reports.
+    const before = { ...mockPackage, publishStatus: 'DRAFT', costPrice: { toString: () => '7.00' }, sellingPrice: null, markupPercent: null }
+    await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({
+      success: false, providerPackageId: 'pp-1', created: false, updated: false, publishStatusSet: false, ready: false,
+      readinessReasons: ['Cost status is MISSING', 'Pricing status is COST_UNAVAILABLE', 'No active price snapshot'],
+      failedStage: 'FINALIZATION_FAILED', error: 'Finalization failed',
+    })
+
+    const result = await updateSinglePackage('pp-1', { configurationStatus: 'CONFIGURED', sellingPrice: 5, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(false)
+    expect(result.readinessReasons).toEqual(['Cost status is MISSING', 'Pricing status is COST_UNAVAILABLE', 'No active price snapshot'])
+  })
+
+  it('DRAFT edit does not publish', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    const result = await updateSinglePackage('pp-1', { publishStatus: 'DRAFT', configurationStatus: 'CONFIGURED', sellingPrice: 7.69 })
+    expect(result.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
+  })
+
+  it('READY edit does not publish unless explicitly PUBLISHED', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    const state = await setupEditTx(before)
+    const result = await updateSinglePackage('pp-1', { publishStatus: 'READY', configurationStatus: 'CONFIGURED', sellingPrice: 7.69 })
+    expect(result.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
+    expect(state.txUpdate.publishStatus).toBe('READY')
+  })
+
+  it('repeated PUBLISHED save is idempotent (retail handled by canonical service, no duplicate logic here)', async () => {
+    const before = { ...mockPackage, publishStatus: 'PUBLISHED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: false, updated: true, publishStatusSet: true, ready: true, readinessReasons: [] })
+    const r1 = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    const r2 = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(r1.success).toBe(true)
+    expect(r2.success).toBe(true)
+    // Each PUBLISHED intent invokes the canonical gate exactly once.
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(2)
+  })
+
+  it('CONFIGURED + PUBLISHED intent → publication attempted', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', configurationStatus: 'CONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: true, updated: false, publishStatusSet: true, ready: true, readinessReasons: [] })
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('AUTO_CONFIGURED + PUBLISHED intent → publication attempted', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', configurationStatus: 'AUTO_CONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: true, updated: false, publishStatusSet: true, ready: true, readinessReasons: [] })
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('READY + PUBLISHED intent → publication attempted', async () => {
+    const before = { ...mockPackage, publishStatus: 'READY', configurationStatus: 'CONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: false, updated: true, publishStatusSet: true, ready: true, readinessReasons: [] })
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('UNCONFIGURED + PUBLISHED intent → blocked, canonical publish service NOT called', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', configurationStatus: 'UNCONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(false)
+    expect(result.eligibilityReasons).toBeDefined()
+    expect(result.eligibilityReasons).toContain('configurationStatus is UNCONFIGURED (never eligible to publish)')
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
+  })
+
+  it('DRAFT + UNCONFIGURED + PUBLISHED intent → blocked', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', configurationStatus: 'UNCONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(false)
+    expect(result.eligibilityReasons).toBeDefined()
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
+  })
+
+  it('DRAFT + CONFIGURED + PUBLISHED intent → allowed to attempt publish', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', configurationStatus: 'CONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: true, updated: false, publishStatusSet: true, ready: true, readinessReasons: [] })
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('HIDDEN + PUBLISHED intent → blocked (restore/unarchive first)', async () => {
+    const before = { ...mockPackage, publishStatus: 'HIDDEN', configurationStatus: 'CONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(false)
+    expect(result.eligibilityReasons).toContain('publishStatus is HIDDEN (restore/unarchive before publishing)')
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
+  })
+
+  it('ARCHIVED + PUBLISHED intent → blocked (restore/unarchive first)', async () => {
+    const before = { ...mockPackage, publishStatus: 'ARCHIVED', configurationStatus: 'CONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(false)
+    expect(result.eligibilityReasons).toContain('publishStatus is ARCHIVED (restore/unarchive before publishing)')
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
+  })
+
+  it('eligible (CONFIGURED) but readiness fails → NOT published + exact readiness blockers returned', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', configurationStatus: 'CONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: null, markupPercent: null }
+    await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({
+      success: false, providerPackageId: 'pp-1', created: false, updated: false, publishStatusSet: false, ready: false,
+      readinessReasons: ['Cost status is MISSING', 'No active price snapshot'], failedStage: 'RETAIL_READINESS_FAILED', error: 'Cost status is MISSING',
+    })
+    const result = await updateSinglePackage('pp-1', { configurationStatus: 'CONFIGURED', sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(false)
+    expect(result.readinessReasons).toEqual(['Cost status is MISSING', 'No active price snapshot'])
+    // Never persisted as PUBLISHED, never written to retail.
+    expect(mockPublishProviderPackageToRetailCatalog.mock.calls[0][1].reason).toBe('MANUAL_EDIT')
+  })
+
+  it('provider-neutral eligibility: CHOICE and AIRHUB behave identically', async () => {
+    const before = { ...mockPackage, publishStatus: 'DRAFT', configurationStatus: 'CONFIGURED', providerId: 'prov-choice', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: true, updated: false, publishStatusSet: true, ready: true, readinessReasons: [] })
+    const r1 = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(r1.success).toBe(true)
+
+    const before2 = { ...mockPackage, publishStatus: 'DRAFT', configurationStatus: 'CONFIGURED', providerId: 'prov-airhub', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    await setupEditTx(before2)
+    const r2 = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(r2.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(2)
+  })
+
+  it('existing PUBLISHED package price edit behavior is unaffected (no re-persist of status)', async () => {
+    const before = { ...mockPackage, publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
+    const state = await setupEditTx(before)
+    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: false, updated: true, publishStatusSet: true, ready: true, readinessReasons: [] })
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    expect(result.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(1)
+    expect(state.txUpdate.publishStatus).toBeUndefined()
+    expect(state.txUpdate.sellingPrice).toBe(7.69)
   })
 })
