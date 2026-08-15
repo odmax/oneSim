@@ -12,11 +12,18 @@ async function recordHealEvent(providerId: string, action: string, result: strin
   ).catch(() => {})
 }
 
-async function claimProviderHeal(providerId: string): Promise<boolean> {
+/**
+ * Claim a provider for self-heal with a lease. `selfHealLeaseUntil` is written
+ * as a JS Date (Prisma serializes UTC wall-clock) into a `timestamp without time
+ * zone` column, so the expiry comparison must use UTC wall-clock too —
+ * `NOW() AT TIME ZONE 'UTC'` — otherwise a server timezone ahead of UTC makes
+ * every lease look already-expired and multi-worker safety is lost.
+ */
+export async function claimProviderHeal(providerId: string): Promise<boolean> {
   const now = new Date()
   const leaseUntil = new Date(now.getTime() + HEAL_LEASE_MS)
   const result = await prisma.$executeRawUnsafe(
-    `UPDATE providers SET "selfHealLeaseUntil" = $1 WHERE id = $2 AND ("selfHealLeaseUntil" IS NULL OR "selfHealLeaseUntil" < NOW())`,
+    `UPDATE providers SET "selfHealLeaseUntil" = $1 WHERE id = $2 AND ("selfHealLeaseUntil" IS NULL OR "selfHealLeaseUntil" < NOW() AT TIME ZONE 'UTC')`,
     leaseUntil, providerId
   )
   return result > 0
