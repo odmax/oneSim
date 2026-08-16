@@ -9,7 +9,9 @@ export default async function BusinessApiUsagePage() {
   if (!session || session.user.role !== 'BUSINESS_USER') redirect('/login')
 
   const businessId = session.user.businessId!
-  const { logs, requestsToday, failedToday, rateLimitHits } = await getBusinessApiUsage(businessId)
+  // Tenant-scoped access: the action derives businessId from the authenticated
+  // session and never accepts a caller-supplied tenant id.
+  const { logs, requestsToday, failedToday, rateLimitHits } = await getBusinessApiUsage()
 
   const business = await prisma.business.findUnique({
     where: { id: businessId },

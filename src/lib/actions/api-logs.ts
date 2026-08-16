@@ -91,8 +91,25 @@ export async function getApiLogSummary() {
   return { requestsToday, failedRequests, topBusinessList, rateLimitHits }
 }
 
-export async function getBusinessApiUsage(businessId: string) {
-  await requireAdmin()
+/**
+ * Business-scoped API log access.
+ *
+ * A BUSINESS_USER may ONLY ever see their OWN tenant's logs: the tenant identity
+ * is derived from the authenticated session — there is deliberately NO
+ * caller-supplied businessId parameter, so it is structurally impossible for a
+ * caller to read another business's logs. INTERNAL_ADMIN is intentionally NOT
+ * permitted here (admins use the admin-facing getApiLogs / getApiLogSummary).
+ */
+export async function getBusinessApiUsage() {
+  const session = await getServerSession(authOptions)
+  if (
+    !session ||
+    session.user.role !== 'BUSINESS_USER' ||
+    !session.user.businessId
+  ) {
+    throw new Error('Unauthorized')
+  }
+  const businessId = session.user.businessId
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
