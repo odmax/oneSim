@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { generateUsageReport } from '@/lib/actions/usage'
+import { deriveUsageMetrics } from '@/components/admin/esims/UsageBar'
 
 export default async function UsagePage({
   searchParams
@@ -64,11 +65,11 @@ export default async function UsagePage({
     }
   })
 
-  // Calculate summary stats
+  // CURRENT usage derives from canonical ESIM snapshot columns; UsageRecord is
+  // HISTORICAL (see "Recent Usage Records"). "Total Data Used" is the sum of
+  // the current snapshot usage — never a reconstruction from historical rows.
   const totalDataSold = esims.reduce((sum, esim) => sum + (esim.purchase.package.dataGB * 1024), 0)
-  const totalDataUsed = esims.reduce((sum, esim) => 
-    sum + esim.usageRecords.reduce((s, r) => s + r.dataUsedMB, 0), 0
-  )
+  const totalDataUsed = esims.reduce((sum, esim) => sum + (esim.dataUsedMB || 0), 0)
   const remainingData = totalDataSold - totalDataUsed
   const activeEsims = esims.filter(e => e.status === 'ACTIVE').length
 
@@ -225,8 +226,7 @@ export default async function UsagePage({
           {esims.length > 0 ? (
             <div className="divide-y">
               {esims.map((esim) => {
-                const esimUsage = esim.usageRecords.reduce((sum, r) => sum + r.dataUsedMB, 0)
-                const percentage = (esimUsage / (esim.purchase.package.dataGB * 1024)) * 100
+                const current = deriveUsageMetrics(esim.dataUsedMB, esim.dataTotalMB, esim.dataRemainingMB)
                 return (
                   <div key={esim.id} className="p-4 hover:bg-gray-50">
                     <div className="mb-2 flex items-center justify-between">
@@ -237,20 +237,28 @@ export default async function UsagePage({
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-sm font-medium text-gray-900">
-                          {(esimUsage / 1024).toFixed(2)} / {esim.purchase.package.dataGB} GB
-                        </p>
-                        <p className="text-xs text-gray-500">
-                          {percentage.toFixed(1)}% used
-                        </p>
+                        {current.hasSnapshot ? (
+                          <>
+                            <p className="text-sm font-medium text-gray-900">
+                              {(current.used / 1024).toFixed(2)} / {current.total > 0 ? `${(current.total / 1024).toFixed(2)}` : '—'} GB
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              {current.total > 0 ? `${((current.used / current.total) * 100).toFixed(1)}% used` : '—'}
+                            </p>
+                          </>
+                        ) : (
+                          <p className="text-sm font-medium text-gray-400">Usage unavailable</p>
+                        )}
                       </div>
                     </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-gray-200">
-                      <div 
-                        className="h-full rounded-full bg-cyan-600" 
-                        style={{ width: `${Math.min(percentage, 100)}%` }}
-                      />
-                    </div>
+                    {current.hasSnapshot && current.total > 0 ? (
+                      <div className="h-2 overflow-hidden rounded-full bg-gray-200">
+                        <div
+                          className="h-full rounded-full bg-cyan-600"
+                          style={{ width: `${Math.min((current.used / current.total) * 100, 100)}%` }}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 )
               })}
@@ -265,7 +273,7 @@ export default async function UsagePage({
         {/* Recent Usage Records */}
         <div className="rounded-lg border bg-white shadow-sm">
           <div className="border-b p-4">
-            <h3 className="text-lg font-semibold text-gray-900">Recent Usage Records</h3>
+            <h3 className="text-lg font-semibold text-gray-900">Historical Usage Records</h3>
           </div>
           {usageRecords.length > 0 ? (
             <div className="overflow-x-auto">

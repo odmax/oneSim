@@ -10,6 +10,7 @@ import { UsageSummary } from '@/components/admin/esims/UsageBar'
 import { EsimActionsBar } from '@/components/admin/esims/EsimActionsBar'
 import { getEsimActionAvailability, getUsagePanelState, getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 import { providerSupports } from '@/lib/providers/capabilities/registry'
+import { getSafeProviderResponseForDisplay } from '@/lib/esim/provider-response-display'
 
 async function loadPCRProfile(iccid: string, providerId: string) {
   try {
@@ -257,11 +258,18 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
         </dl>
       </div>
 
-      {/* Provider Raw Data */}
+      {/* Provider Raw Data (whitelisted + masked display only) */}
       {esim.providerResponse && (
         <details className="mt-6 rounded-lg border bg-white p-4">
           <summary className="cursor-pointer text-sm font-medium text-gray-700">Provider Raw Response</summary>
-          <pre className="mt-2 overflow-x-auto text-xs text-gray-600">{JSON.stringify(esim.providerResponse, null, 2)}</pre>
+          {(() => {
+            const safe = getSafeProviderResponseForDisplay(esim.providerResponse)
+            return Object.keys(safe).length > 0 ? (
+              <pre className="mt-2 overflow-x-auto text-xs text-gray-600">{JSON.stringify(safe, null, 2)}</pre>
+            ) : (
+              <p className="mt-2 text-xs text-gray-400">No safe provider metadata to display.</p>
+            )
+          })()}
         </details>
       )}
     </div>

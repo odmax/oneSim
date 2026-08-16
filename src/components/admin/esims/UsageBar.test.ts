@@ -53,6 +53,14 @@ describe('UsageBar', () => {
     expect(html).not.toContain('Usage unavailable')
   })
 
+  it('renders the live US-Matrix snapshot (800 / 10240 / 9440 MB) correctly', () => {
+    const html = renderUsageBar({ dataUsedMB: 800, dataTotalMB: 10240, dataRemainingMB: 9440 })
+    expect(html).toContain('0.78 GB') // used
+    expect(html).toContain('of 10.00 GB') // total
+    expect(html).toContain('9.22 GB remaining')
+    expect(html).toContain('8% used') // 800/10240 = 7.8125% → rounded 8%
+  })
+
   it('renders used/total/remaining/percentage from normalized MB values', () => {
     const html = renderUsageBar({ dataUsedMB: 512, dataTotalMB: 1024, dataRemainingMB: 512 })
     expect(html).toContain('0.50 GB')

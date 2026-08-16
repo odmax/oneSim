@@ -3,7 +3,6 @@ import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
 import { createTimelineEvent } from '@/lib/services/orders/order-state-machine'
 import type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
 import { buildChoiceStatusLookup, hasChoiceIdentifier, extractChoiceImsiVersion } from './choice-lookup'
-import { deriveEsimLifecycleStatus } from './lifecycle-status'
 
 export { buildChoiceStatusLookup, extractChoiceImsiVersion } from './choice-lookup'
 export type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
@@ -32,85 +31,34 @@ export interface SuspendResumeResult {
   error?: string
 }
 
+/**
+ * Refresh eSIM status from the provider.
+ *
+ * CANONICAL DELEGATION: this wrapper routes to `syncESIMStatus` — the SINGLE
+ * canonical per-eSIM status refresh service shared by admin/order/business UI,
+ * the client API, and the recurring batch. There is deliberately NO second
+ * provider-fetch implementation here and NO local OneSIM esim.id fallback:
+ * identifier selection is owned by `resolveStatusLookup` / the connector's
+ * resolver, and a missing safe identifier is a clean skip (never a guess).
+ */
 export async function refreshEsimStatus(esimId: string): Promise<RefreshStatusResult> {
-  const esim = await prisma.eSIM.findUnique({
-    where: { id: esimId },
-    include: { purchase: { include: { package: true } } },
-  })
-  if (!esim) return { success: false, error: 'eSIM not found' }
+  const { syncESIMStatus } = await import('@/lib/services/esims/sync-esim-status')
+  const result = await syncESIMStatus(esimId)
 
-  const providerId = esim.purchase.package.providerId
-  if (!providerId) return { success: false, error: 'No linked provider' }
-
-  const adapter = await getAdapterForProvider(providerId)
-  if (!adapter) return { success: false, error: 'Provider adapter unavailable' }
-
-  const provider = await prisma.provider.findUnique({
-    where: { id: providerId },
-    select: { code: true },
-  })
-  const isChoice = provider?.code?.toUpperCase() === 'CHOICE'
-
-  let identifier: string | StatusLookupIdentifier
-  if (isChoice) {
-    identifier = buildChoiceStatusLookup(esim)
-    if (!hasChoiceIdentifier(identifier)) {
-      return { success: false, error: 'No Choice status identifier (ICCID/IMSI/imsi_version) available' }
-    }
-  } else {
-    identifier = esim.providerActivationId || esim.id
+  if (!result.success) {
+    return { success: false, error: result.error || 'Status sync failed' }
+  }
+  if (result.skipped) {
+    const error = result.skipReason === 'STATUS_CAPABILITY_NOT_SUPPORTED'
+      ? 'Status not supported by provider'
+      : result.skipReason === 'IDENTIFIER_MISSING'
+        ? 'No provider identifier available for status lookup'
+        : (result.skipReason || 'Status unavailable')
+    return { success: false, error }
   }
 
-  const result = await adapter.getActivationStatus(identifier)
-  if (!result.success) return { success: false, error: result.error?.message || 'Provider status check failed' }
-
-  const providerStatus = result.data?.rawStatus || result.data?.status || 'UNKNOWN'
-  const connectorStatus = result.data?.status || providerStatus
-
-  const lifecycle = deriveEsimLifecycleStatus({
-    providerNormalizedStatus: connectorStatus,
-    currentStatus: esim.status,
-    dataUsedMB: esim.dataUsedMB || 0,
-    activatedAt: esim.activatedAt,
-    providerInstalledSignal: result.data?.evidence?.deviceInstalled,
-    providerNetworkAttachedSignal: result.data?.evidence?.networkAttached,
-  })
-
-  const oneSimStatus = lifecycle.status
-  const shouldSetActivatedAt = lifecycle.setActivatedAt
-
-  // MERGE sanitized provider metadata into providerResponse — never overwrite
-  // existing keys (e.g. a persisted usage association id). The connector
-  // whitelists its rawMetadata; the lifecycle reason documents the derivation.
-  const existingProviderResponse = esim.providerResponse && typeof esim.providerResponse === 'object'
-    ? esim.providerResponse as Record<string, unknown>
-    : {}
-  const mergedProviderResponse = {
-    ...existingProviderResponse,
-    ...(result.data?.rawMetadata && typeof result.data.rawMetadata === 'object' ? result.data.rawMetadata as Record<string, unknown> : {}),
-    evidence: lifecycle.reason,
-    evidenceObservedAt: new Date().toISOString(),
-  }
-
-  await prisma.eSIM.update({
-    where: { id: esimId },
-    data: {
-      providerStatus,
-      status: oneSimStatus,
-      lastStatusSyncAt: new Date(),
-      lastSyncAt: new Date(),
-      ...(result.data?.rawMetadata ? { providerResponse: mergedProviderResponse } : {}),
-      ...(shouldSetActivatedAt ? { activatedAt: new Date() } : {}),
-    },
-  })
-
-  // Timeline event for status change
-  if (shouldSetActivatedAt) {
-    await createTimelineEvent(esim.purchaseId, { eventType: 'ESIM_ACTIVATED', message: `eSIM ${esim.iccid.slice(-8)} activated — ${lifecycle.reason}` })
-  }
-  await createTimelineEvent(esim.purchaseId, { eventType: 'STATUS_REFRESHED', message: `eSIM ${esim.iccid.slice(-8)}: ${oneSimStatus}` })
-
-  return { success: true, activated: shouldSetActivatedAt, status: oneSimStatus, providerStatus }
+  const status = result.status || result.newStatus
+  return { success: true, activated: result.activated, status, providerStatus: status }
 }
 
 export async function refreshEsimUsage(esimId: string): Promise<{ success: boolean; data?: UsageData; error?: string }> {

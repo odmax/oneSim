@@ -3,57 +3,6 @@
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth/config'
-
-async function requireAdmin() {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
-  return session.user.id
-}
-
-export async function syncEsimStatus(esimId: string) {
-  const userId = await requireAdmin()
-  const esim = await prisma.eSIM.findUnique({
-    where: { id: esimId },
-    include: { purchase: { include: { package: true } } },
-  })
-  if (!esim) return { success: false, error: 'eSIM not found' }
-
-  if (!esim.providerActivationId) {
-    return { success: false, error: 'No provider activation ID' }
-  }
-
-  const providerId = esim.purchase.package.providerId
-  if (!providerId) return { success: false, error: 'No linked provider' }
-
-  const adapter = await getAdapterForProvider(providerId)
-  if (!adapter) return { success: false, error: 'Provider not available' }
-
-  // Provider-neutral, SAFE identifier — Choice gets the structured package_detail
-  // lookup; string connectors get their provider reference. A local OneSIM id is
-  // never sent upstream, and we skip when no safe identifier exists.
-  const lookup = adapter.resolveStatusLookup?.(esim)
-    ?? (esim.providerSubscriptionId || esim.providerActivationId || esim.iccid || null)
-  if (!lookup) return { success: false, error: 'No provider identifier available for status lookup' }
-
-  const result = await adapter.getActivationStatus(lookup)
-  if (!result.success) return { success: false, error: result.error?.message }
-
-  await prisma.eSIM.update({
-    where: { id: esimId },
-    data: {
-      providerStatus: result.data?.status,
-      status: result.data?.status === 'ACTIVE' ? 'ACTIVE' : esim.status,
-      lastSyncAt: new Date(),
-      providerResponse: result.data,
-    },
-  })
-
-  revalidatePath(`/admin/esims/${esimId}`)
-  revalidatePath('/admin/esims')
-  return { success: true, data: result.data }
-}
 
 export async function syncEsimUsage(esimId: string) {
   const esim = await prisma.eSIM.findUnique({

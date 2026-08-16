@@ -216,4 +216,29 @@ describe('syncESIMStatus — canonical evidence pipeline (root-cause fix)', () =
     expect(result.skipped).toBe(true)
     expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
   })
+
+  it('ESIM with ONLY a local OneSIM id → provider getStatus is NEVER called', async () => {
+    // No iccid, no provider identifiers — only the local database id exists.
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({
+      iccid: null,
+      providerActivationId: null,
+      providerSubscriptionId: null,
+      providerSubscriberId: null,
+      providerResponse: null,
+    }) as any)
+    // US-Matrix-shaped resolver: returns null when no provider eSIM UUID exists.
+    const connector = statusConnector({
+      resolveStatusLookup: vi.fn((esim: any) => (esim.providerActivationId ? { providerActivationId: esim.providerActivationId, iccid: esim.iccid } : null)),
+      getStatus: vi.fn(),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    const result = await syncESIMStatus('esim-1')
+    expect(result.success).toBe(true)
+    expect(result.skipped).toBe(true)
+    expect(result.skipReason).toBe('IDENTIFIER_MISSING')
+    // No provider call, no DB write — a local id is never forwarded upstream.
+    expect(connector.getStatus).not.toHaveBeenCalled()
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+  })
 })

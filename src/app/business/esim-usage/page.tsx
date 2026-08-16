@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { deriveUsageMetrics } from '@/components/admin/esims/UsageBar'
 
 function UsagePill({ value, total }: { value: number; total: number }) {
   const pct = total > 0 ? Math.round((value / total) * 100) : 0
@@ -66,10 +67,14 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
     }),
   ])
 
+  // CURRENT usage derives from the canonical ESIM snapshot columns; UsageRecord
+  // is historical. eSIMs without a snapshot are UNKNOWN, never shown as 0 MB.
   const totalDataUsed = esims.reduce((sum, e) => sum + (e.dataUsedMB || 0), 0)
   const activeCount = esims.filter((e) => e.status === 'ACTIVE').length
   const expiringSoon = esims.filter((e) => e.expiresAt && e.expiresAt < new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) && e.expiresAt > new Date()).length
-  const noUsage = esims.filter((e) => !e.dataUsedMB || e.dataUsedMB === 0).length
+  const hasSnapshot = (e: any) => e.dataTotalMB != null || e.dataRemainingMB != null
+  const zeroUsage = esims.filter((e) => hasSnapshot(e) && !e.dataUsedMB).length
+  const unknownUsage = esims.filter((e) => !hasSnapshot(e)).length
 
   const uniquePkgs = packages.map((p) => p.package).filter((p, i, arr) => arr.findIndex((x) => x.id === p.id) === i)
 
@@ -95,8 +100,12 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
           <p className="mt-1 text-2xl font-bold text-amber-600">{expiringSoon}</p>
         </div>
         <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">No Usage</p>
-          <p className="mt-1 text-2xl font-bold text-gray-500">{noUsage}</p>
+          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Zero Usage</p>
+          <p className="mt-1 text-2xl font-bold text-gray-500">{zeroUsage}<span className="text-sm font-normal text-gray-400 ml-1">known 0 MB</span></p>
+        </div>
+        <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Unknown Usage</p>
+          <p className="mt-1 text-2xl font-bold text-gray-500">{unknownUsage}<span className="text-sm font-normal text-gray-400 ml-1">no snapshot</span></p>
         </div>
         <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
           <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Avg per eSIM</p>
@@ -155,8 +164,7 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
               {esims.length === 0 ? (
                 <tr><td colSpan={9} className="px-5 py-12 text-center text-sm text-gray-400">No eSIMs found matching your filters.</td></tr>
               ) : esims.map((esim) => {
-                const totalMB = esim.dataTotalMB || (esim.purchase.package.dataGB * 1024) || 0
-                const remainingMB = esim.dataRemainingMB ?? (totalMB - (esim.dataUsedMB || 0))
+                const current = deriveUsageMetrics(esim.dataUsedMB, esim.dataTotalMB, esim.dataRemainingMB)
                 return (
                   <tr key={esim.id} className="hover:bg-gray-50/50 transition-colors">
                     <td className="whitespace-nowrap px-5 py-4 text-sm">
@@ -174,13 +182,13 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
                       {esim.purchase.package.displayName || esim.purchase.package.name}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-900">
-                      {esim.dataUsedMB ? `${(esim.dataUsedMB / 1024).toFixed(2)} GB` : '0 MB'}
+                      {current.hasSnapshot ? `${(current.used / 1024).toFixed(2)} GB` : 'Usage unavailable'}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-900">
-                      {remainingMB > 0 ? `${(remainingMB / 1024).toFixed(2)} GB` : '0 MB'}
+                      {current.hasSnapshot ? `${Math.max(0, current.remaining / 1024).toFixed(2)} GB` : '—'}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4">
-                      <UsagePill value={esim.dataUsedMB || 0} total={totalMB} />
+                      {current.hasSnapshot && current.total > 0 ? <UsagePill value={current.used} total={current.total} /> : <span className="text-xs text-gray-400">—</span>}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
                       {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '—'}
