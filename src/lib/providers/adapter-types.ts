@@ -164,6 +164,7 @@ export interface ProviderAdapter {
     imsiVersion?: string | number
     packageName?: string
     expiresAt?: string
+    evidence?: import('./connectors/connector-interface').StatusResultEvidence
     rawMetadata?: Record<string, any>
     activationCode?: string
     activationCodes?: string[]

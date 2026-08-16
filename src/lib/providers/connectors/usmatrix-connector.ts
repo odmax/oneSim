@@ -563,15 +563,21 @@ export class UsMatrixConnector implements IProviderConnector {
    * Resolve the provider-owned US-Matrix eSIM UUID for a status lookup.
    * Preferred source: providerActivationId (persisted from the assign-package
    * response `id`). Fallback: providerResponse.providerEsimId when present.
+   * Returns a structured bundle carrying the eSIM ICCID so the connector can
+   * verify location-event identity (never promote from another eSIM's event).
    * NEVER a local OneSIM esim.id. Returns null when no provider UUID exists.
    */
-  resolveStatusLookup(esim: StatusLookupEsim): string | null {
-    if (esim.providerActivationId) return esim.providerActivationId
+  resolveStatusLookup(esim: StatusLookupEsim): string | StatusLookupIdentifier | null {
     const raw = esim.providerResponse && typeof esim.providerResponse === 'object'
       ? (esim.providerResponse as Record<string, unknown>)
       : undefined
-    if (raw && typeof raw.providerEsimId === 'string' && raw.providerEsimId) {
-      return raw.providerEsimId
+    const providerEsimUuid = esim.providerActivationId
+      || (typeof raw?.providerEsimId === 'string' ? raw.providerEsimId : '')
+    if (providerEsimUuid) {
+      return {
+        providerActivationId: providerEsimUuid,
+        ...(esim.iccid ? { iccid: esim.iccid } : {}),
+      }
     }
     return null
   }
@@ -799,10 +805,17 @@ export class UsMatrixConnector implements IProviderConnector {
     if (!config) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not found' } }
     if (!config.token) return { success: false, error: { code: 'NO_TOKEN', message: 'Not authenticated — run Save & Authenticate first' } }
 
-    const esimUuid = typeof identifier === 'string' ? identifier : (identifier as StatusLookupIdentifier)?.providerActivationId
+    const target = typeof identifier === 'string'
+      ? { providerActivationId: identifier as string, iccid: null as string | null }
+      : {
+          providerActivationId: (identifier as StatusLookupIdentifier)?.providerActivationId || '',
+          iccid: (identifier as StatusLookupIdentifier)?.iccid || null,
+        }
+    const esimUuid = target.providerActivationId
     if (!esimUuid) return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'Provider eSIM UUID required for status lookup' } }
 
-    // 1) Vendor profile info (documented read-only).
+    // 1) Vendor profile info (documented read-only). The exact response
+    //    envelope is { activationProfile, profileLogs } — read directly.
     const infoBody: GetEsimInfoRequestDTO = { esimId: esimUuid }
     const infoResult = await this.request('esimInfo', { method: 'POST', body: infoBody })
     if (!infoResult.success && infoResult.error?.code === 'HTTP_401') {
@@ -813,29 +826,45 @@ export class UsMatrixConnector implements IProviderConnector {
     const profile: ActivationProfileDTO | undefined = info?.activationProfile
     const profileLogs: ProfileLogDTO[] = Array.isArray(info?.profileLogs) ? info.profileLogs : []
 
-    // 2) Network attach evidence (read-only event logs).
+    // 2) Network attach evidence (read-only event logs). The exact response
+    //    envelope is { search_id, page_number, total_pages, data: [...] } —
+    //    events live at response.data.data.
     let networkAttach = false
-    let servingNetwork: string | null = null
-    let networkType: string | null = null
-    let eventTime: string | null = null
+    let attachEvent: NetworkEventLogDTO | null = null
     const eventBody: LocationLogsRequestDTO = { esimId: esimUuid, page: 1, pageSize: 20 }
     const eventResult = await this.request('esimLocationEventLogs', { method: 'POST', body: eventBody }).catch(() => ({ success: false }))
     if (eventResult.success) {
       const eventData = (eventResult as any).data
-      const events: NetworkEventLogDTO[] = Array.isArray(eventData) ? eventData
+      // Real envelope: { ..., data: [...] }. Tolerate a bare array defensively,
+      // but the canonical read is response.data.data.
+      const events: NetworkEventLogDTO[] = Array.isArray(eventData)
+        ? eventData
         : Array.isArray(eventData?.data) ? eventData.data
         : []
+
+      // A successful attach is ONLY evidence for the exact target eSIM: skip
+      // any event whose iccid disagrees with the eSIM being synchronized (when
+      // both are known). The endpoint is scoped to the provider eSIM UUID, so
+      // an event without an iccid is accepted (documented safe policy).
+      const matchesTarget = (e: NetworkEventLogDTO): boolean => {
+        const eventIccid = e?.iccid ? String(e.iccid) : null
+        if (eventIccid && target.iccid && eventIccid !== target.iccid) return false
+        return true
+      }
+
       for (const e of events) {
         const status = String(e?.request_status || '').toUpperCase()
         const isSuccess = status === 'DIAMETER_SUCCESS' || status === 'SUCCESS' || status === 'OK'
-        if (isSuccess && (e?.serving_network || e?.network_type)) {
-          networkAttach = true
-          servingNetwork = e.serving_network || null
-          networkType = e.network_type || null
-          eventTime = e.event_time || null
-          break
+        if (!isSuccess) continue
+        if (!(e?.serving_network || e?.network_type)) continue
+        if (!matchesTarget(e)) continue
+        // Select the NEWEST valid event deterministically (event_time is the
+        // provider timestamp), so stale history never overrides fresh attach.
+        if (!attachEvent || (e.event_time && (!attachEvent.event_time || e.event_time > attachEvent.event_time))) {
+          attachEvent = e
         }
       }
+      networkAttach = attachEvent != null
     }
 
     // 3) Evidence-based normalization (provider-neutral status vocabulary).
@@ -845,19 +874,38 @@ export class UsMatrixConnector implements IProviderConnector {
     if (profileStatus === 'SUSPENDED' || logStates.includes('SUSPENDED')) {
       return { success: true, data: { status: 'SUSPENDED', rawStatus: 'suspended', rawMetadata: { source: 'esims/info' } } }
     }
-    if (networkAttach) {
+    if (networkAttach && attachEvent) {
+      // Verified successful network attach for the exact eSIM → ACTIVE evidence.
+      const observedAt = attachEvent.event_time ? String(attachEvent.event_time) : undefined
       return {
         success: true,
         data: {
           status: 'ACTIVE',
           rawStatus: 'network_attach',
-          rawMetadata: { source: 'esims/location-event-logs', servingNetwork, networkType, eventTime },
+          evidence: { networkAttached: true, observedAt, reason: 'diameter-success-attach' },
+          rawMetadata: {
+            source: 'esims/location-event-logs',
+            networkAttached: true,
+            servingNetwork: attachEvent.serving_network ? String(attachEvent.serving_network) : null,
+            networkType: attachEvent.network_type ? String(attachEvent.network_type) : null,
+            countryNetwork: attachEvent.country_network ? String(attachEvent.country_network) : null,
+            observedAt,
+            reason: 'diameter-success-attach',
+          },
         },
       }
     }
     if (profileStatus === 'ENABLED' || profileStatus === 'ENABLE' || logStates.includes('ENABLED') || logStates.includes('INSTALLED')) {
       // Profile enabled / installed on device — NOT network-active.
-      return { success: true, data: { status: 'INSTALLED', rawStatus: 'profile_enabled', rawMetadata: { source: 'esims/info', profileLogStates: logStates } } }
+      return {
+        success: true,
+        data: {
+          status: 'INSTALLED',
+          rawStatus: 'profile_enabled',
+          evidence: { deviceInstalled: true, reason: 'profile-installed-no-attach' },
+          rawMetadata: { source: 'esims/info', deviceInstalled: true, profileLogStates: logStates },
+        },
+      }
     }
     // assigned-only / no proven evidence → provisioned, not active.
     return { success: true, data: { status: 'PENDING_ACTIVATION', rawStatus: profileStatus || 'assigned', rawMetadata: { source: 'esims/info', profileLogStates: logStates } } }

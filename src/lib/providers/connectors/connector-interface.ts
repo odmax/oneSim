@@ -70,6 +70,26 @@ export interface UsageResult {
   rawMetadata?: Record<string, any>
 }
 
+/**
+ * Canonical activation-evidence signals a connector VERIFIED from provider
+ * data. Provider-neutral. Only set when the connector has explicit evidence
+ * for the exact target eSIM (e.g. US-Matrix network-attach event), NEVER
+ * inferred from a weak "package active" claim. The generic lifecycle engine
+ * uses these to promote ACTIVE/INSTALLED without a provider-name branch.
+ * Defined as a type alias (not interface) so it is structurally assignable to
+ * Prisma JSON inputs.
+ */
+export type StatusResultEvidence = {
+  /** Verified network attach for the exact eSIM (e.g. DIAMETER_SUCCESS + serving network). */
+  networkAttached?: boolean
+  /** Verified profile installed/enabled on device (no network attach). */
+  deviceInstalled?: boolean
+  /** Provider event timestamp that produced the evidence (ISO 8601). */
+  observedAt?: string
+  /** Human-readable reason (sanitized, no credentials). */
+  reason?: string
+}
+
 export interface StatusResult {
   status: string
   iccids?: string[]
@@ -82,6 +102,8 @@ export interface StatusResult {
   rateGroupStarttime?: string
   rateGroupExpire?: string
   expiresAt?: string
+  /** Canonical activation-evidence signals the connector verified (see StatusResultEvidence). */
+  evidence?: StatusResultEvidence
   /** Sanitized provider metadata safe to persist. */
   rawMetadata?: Record<string, any>
 }

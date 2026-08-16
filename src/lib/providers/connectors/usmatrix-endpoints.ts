@@ -343,6 +343,7 @@ export interface NetworkEventLogDTO {
   iccid?: string | null
   serving_network?: string | null
   network_type?: string | null
+  country_network?: string | null
   apn?: string | null
   volume_used?: number | null
 }

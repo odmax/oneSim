@@ -217,4 +217,67 @@ describe('deriveEsimLifecycleStatus', () => {
     expect(r.setActivatedAt).toBe(true)
     expect(r.reason).toBe('usage-evidence')
   })
+
+  it('28. VERIFIED network attach (zero usage, no history) promotes PENDING_ACTIVATION → ACTIVE', () => {
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+      providerNetworkAttachedSignal: true,
+    }))
+    expect(r.status).toBe('ACTIVE')
+    expect(r.setActivatedAt).toBe(true)
+    expect(r.reason).toBe('network-attach-evidence')
+  })
+
+  it('29. VERIFIED network attach does not overwrite an existing activatedAt', () => {
+    const existing = new Date('2026-01-01')
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'ACTIVE',
+      dataUsedMB: 0,
+      activatedAt: existing,
+      providerNetworkAttachedSignal: true,
+    }))
+    expect(r.status).toBe('ACTIVE')
+    expect(r.setActivatedAt).toBe(false)
+  })
+
+  it('30. VERIFIED network attach without providerNormalizedStatus ACTIVE still maps to ACTIVE when connector normalizes it', () => {
+    // A future connector returning the same canonical ACTIVE + evidence shape
+    // receives the same promotion — provider-neutral.
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+      providerNetworkAttachedSignal: true,
+    }))
+    expect(r.status).toBe('ACTIVE')
+    expect(r.setActivatedAt).toBe(true)
+  })
+
+  it('31. SUSPENDED can resume to ACTIVE when the connector proves network attach', () => {
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'SUSPENDED',
+      dataUsedMB: 0,
+      activatedAt: new Date('2026-01-01'),
+      providerNetworkAttachedSignal: true,
+    }))
+    expect(r.status).toBe('ACTIVE')
+  })
+
+  it('32. weak "active" claim WITHOUT verified evidence still stays PENDING (Choice-style preserved)', () => {
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+      providerNetworkAttachedSignal: false,
+    }))
+    expect(r.status).toBe('PENDING_ACTIVATION')
+    expect(r.reason).toBe('provider-active-no-evidence')
+  })
 })

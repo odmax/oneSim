@@ -85,23 +85,32 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
 
       if (result.success && result.data) {
         const providerStatus = result.data.status
-        // Canonical lifecycle derivation: evidence-aware, monotonic (never
-        // regress ACTIVE → PENDING without explicit evidence).
+        // Forward verified connector evidence (network attach / device install)
+        // so the lifecycle engine promotes ACTIVE/INSTALLED identically to the
+        // single-sync path — no duplicated normalization logic.
         const lifecycle = deriveEsimLifecycleStatus({
           providerNormalizedStatus: providerStatus,
           currentStatus: esim.status,
           dataUsedMB: esim.dataUsedMB || 0,
           activatedAt: esim.activatedAt,
+          providerInstalledSignal: result.data.evidence?.deviceInstalled,
+          providerNetworkAttachedSignal: result.data.evidence?.networkAttached,
         })
         const newStatus = lifecycle.status
+        const statusRaw = (result.data as any).rawMetadata && typeof (result.data as any).rawMetadata === 'object'
+          ? (result.data as any).rawMetadata as Record<string, unknown>
+          : {}
         const updateData: any = {
           status: newStatus,
           providerStatus: (result.data as any).providerStatus || providerStatus || null,
           lastStatusSyncAt: new Date(),
           statusNextSyncAt: getStatusNextSync(newStatus, 0),
           statusSyncRetryCount: 0,
+          // Sanitized evidence audit trail — MERGE (never overwrite existing
+          // keys such as a persisted usage association id).
           providerResponse: {
             ...((esim as any).providerResponse && typeof (esim as any).providerResponse === 'object' ? (esim as any).providerResponse : {}),
+            ...statusRaw,
             evidence: lifecycle.reason,
             evidenceObservedAt: new Date().toISOString(),
           },
@@ -109,6 +118,13 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
         if (lifecycle.setActivatedAt && !esim.activatedAt) {
           updateData.activatedAt = new Date()
           updateData.activationDetectedAt = new Date()
+        }
+        // Usage polling handoff: prove ACTIVE/INSTALLED + usageLookup support →
+        // seed usageNextSyncAt if it was never scheduled. Provider-neutral.
+        if ((newStatus === 'ACTIVE' || newStatus === 'INSTALLED') && (esim as any).usageNextSyncAt == null) {
+          if (connector.capabilities?.usageLookup === true) {
+            updateData.usageNextSyncAt = getUsageNextSync(newStatus, 0)
+          }
         }
         await prisma.eSIM.update({ where: { id: esim.id }, data: updateData })
         updated++

@@ -72,10 +72,25 @@ export async function refreshEsimStatus(esimId: string): Promise<RefreshStatusRe
     currentStatus: esim.status,
     dataUsedMB: esim.dataUsedMB || 0,
     activatedAt: esim.activatedAt,
+    providerInstalledSignal: result.data?.evidence?.deviceInstalled,
+    providerNetworkAttachedSignal: result.data?.evidence?.networkAttached,
   })
 
   const oneSimStatus = lifecycle.status
   const shouldSetActivatedAt = lifecycle.setActivatedAt
+
+  // MERGE sanitized provider metadata into providerResponse — never overwrite
+  // existing keys (e.g. a persisted usage association id). The connector
+  // whitelists its rawMetadata; the lifecycle reason documents the derivation.
+  const existingProviderResponse = esim.providerResponse && typeof esim.providerResponse === 'object'
+    ? esim.providerResponse as Record<string, unknown>
+    : {}
+  const mergedProviderResponse = {
+    ...existingProviderResponse,
+    ...(result.data?.rawMetadata && typeof result.data.rawMetadata === 'object' ? result.data.rawMetadata as Record<string, unknown> : {}),
+    evidence: lifecycle.reason,
+    evidenceObservedAt: new Date().toISOString(),
+  }
 
   await prisma.eSIM.update({
     where: { id: esimId },
@@ -84,7 +99,7 @@ export async function refreshEsimStatus(esimId: string): Promise<RefreshStatusRe
       status: oneSimStatus,
       lastStatusSyncAt: new Date(),
       lastSyncAt: new Date(),
-      ...(result.data?.rawMetadata ? { providerResponse: result.data.rawMetadata as any } : {}),
+      ...(result.data?.rawMetadata ? { providerResponse: mergedProviderResponse } : {}),
       ...(shouldSetActivatedAt ? { activatedAt: new Date() } : {}),
     },
   })

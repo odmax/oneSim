@@ -17,6 +17,10 @@ export interface LifecycleInput {
   activatedAt: Date | null | undefined
   /** Optional explicit device-level evidence from the provider response. */
   providerInstalledSignal?: boolean
+  /** Optional VERIFIED network-attach evidence from the provider response.
+   *  Only set when the connector proved a successful network attach for the
+   *  exact target eSIM (never from a weak "package active" claim). */
+  providerNetworkAttachedSignal?: boolean
 }
 
 export interface LifecycleResult {
@@ -50,7 +54,7 @@ function hasActivationHistory(activatedAt: Date | null | undefined): boolean {
 }
 
 export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResult {
-  const { providerNormalizedStatus, currentStatus, dataUsedMB, activatedAt, providerInstalledSignal } = input
+  const { providerNormalizedStatus, currentStatus, dataUsedMB, activatedAt, providerInstalledSignal, providerNetworkAttachedSignal } = input
   const upper = providerNormalizedStatus.toUpperCase()
   const currentUpper = (currentStatus || '').toUpperCase()
 
@@ -65,10 +69,15 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
     return { status: 'INSTALLED', setActivatedAt: !hasActivationHistory(activatedAt), reason: 'provider-installed-signal' }
   }
 
-  // Provider says ACTIVE — check for usage/activation evidence
+  // Provider says ACTIVE — check for usage/activation evidence. The connector
+  // may provide VERIFIED network-attach evidence (providerNetworkAttachedSignal)
+  // that proves device activation without usage history.
   if (upper === 'ACTIVE') {
     if (hasActivationHistory(activatedAt)) {
       return { status: 'ACTIVE', setActivatedAt: false, reason: 'already-activated' }
+    }
+    if (providerNetworkAttachedSignal) {
+      return { status: 'ACTIVE', setActivatedAt: !hasActivationHistory(activatedAt), reason: 'network-attach-evidence' }
     }
     if (hasUsageEvidence(dataUsedMB)) {
       return { status: 'ACTIVE', setActivatedAt: !hasActivationHistory(activatedAt), reason: 'usage-evidence' }

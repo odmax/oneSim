@@ -716,17 +716,17 @@ describe('US-Matrix status lookup (read-only evidence policy)', () => {
     })
   }
 
-  it('resolveStatusLookup uses providerActivationId (never a local id)', () => {
+  it('resolveStatusLookup returns a structured bundle (provider UUID + ICCID for identity check)', () => {
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const r = connector.resolveStatusLookup!({ providerActivationId: 'esim-uuid-1', iccid: '8944501234567890123' } as any)
-    expect(r).toBe('esim-uuid-1')
-    expect(r).not.toContain('local')
+    expect(r).toEqual({ providerActivationId: 'esim-uuid-1', iccid: '8944501234567890123' })
+    expect(JSON.stringify(r)).not.toContain('local')
   })
 
   it('resolveStatusLookup falls back to providerResponse.providerEsimId', () => {
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const r = connector.resolveStatusLookup!({ providerActivationId: '', providerResponse: { providerEsimId: 'esim-uuid-9' } } as any)
-    expect(r).toBe('esim-uuid-9')
+    expect(r).toEqual({ providerActivationId: 'esim-uuid-9' })
   })
 
   it('resolveStatusLookup returns null when no provider UUID exists', () => {
@@ -782,24 +782,126 @@ describe('US-Matrix status lookup (read-only evidence policy)', () => {
     expect(r.data?.status).toBe('ACTIVE')
   })
 
-  it('real evidence: profile INSTALLED + DIAMETER_SUCCESS + serving network → ACTIVE', async () => {
+  it('real evidence: exact empirical envelopes (info + location logs) → ACTIVE with evidence', async () => {
+    // EXACT empirical location-event envelope: { search_id, page_number,
+    // total_pages, data: [...] } — events live at response.data.data.
+    const locationLogs = {
+      search_id: 'search-abc',
+      page_number: 1,
+      total_pages: 1,
+      data: [
+        {
+          event_time: '2026-08-16 09:08:42.274',
+          request_type: 'Initial',
+          request_status: 'DIAMETER_SUCCESS',
+          imsi: '65501',
+          iccid: '8944501234567890123',
+          country_network: 'South Africa-Vodacom',
+          serving_network: '65501',
+          network_type: '4G LTE',
+          volume_used: 0.3906280854716897,
+        },
+        {
+          event_time: '2026-08-15 18:02:10.000',
+          request_type: 'Update',
+          request_status: 'DIAMETER_SUCCESS',
+          imsi: '65501',
+          iccid: '8944501234567890123',
+          country_network: 'South Africa-Vodacom',
+          serving_network: '65501',
+          network_type: '3G UTRAN',
+          volume_used: 0.1,
+        },
+      ],
+    }
     const fetchSpy = vi.fn()
     fetchSpy
       .mockResolvedValueOnce(okJson({
-        activationProfile: { status: 'INSTALLED' },
+        // EXACT empirical /esims/info envelope.
+        activationProfile: { status: 'ENABLE', eid: '8904305000000000001', imsi: '655010000000001' },
         profileLogs: [
-          { status: 'AVAILABLE', type: 'PROFILE', eventName: 'CREATE', createdAt: '2026-08-16T09:00:00Z' },
-          { status: 'INSTALLED', type: 'PROFILE', eventName: 'INSTALL', createdAt: '2026-08-16T09:01:00Z' },
+          { status: 'AVAILABLE', type: 'PROFILE', eventName: 'CREATE', createdAt: '2026-08-16T09:00:00Z', result: 'success' },
+          { status: 'DOWNLOADED', type: 'PROFILE', eventName: 'DOWNLOAD', createdAt: '2026-08-16T09:01:00Z', result: 'success' },
+          { status: 'INSTALLED', type: 'PROFILE', eventName: 'INSTALL', createdAt: '2026-08-16T09:02:00Z', result: 'success' },
+          { status: 'ENABLED', type: 'PROFILE', eventName: 'ENABLE', createdAt: '2026-08-16T09:03:00Z', result: 'success' },
         ],
       }))
-      .mockResolvedValueOnce(okJson({ data: [{ event_time: '2026-08-16T09:08:42Z', request_type: 'Update Location', request_status: 'DIAMETER_SUCCESS', serving_network: '65501', network_type: '3G', volume_used: 0.4 }] }))
+      .mockResolvedValueOnce(okJson(locationLogs))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus({ providerActivationId: 'esim-uuid-1', iccid: '8944501234567890123' })
+    expect(r.success).toBe(true)
+    // The connector MUST normalize verified attach into the canonical contract.
+    expect(r.data?.status).toBe('ACTIVE')
+    expect(r.data?.rawStatus).toBe('network_attach')
+    expect(r.data?.evidence).toMatchObject({ networkAttached: true })
+    expect(r.data?.evidence?.reason).toBe('diameter-success-attach')
+    expect(r.data?.evidence?.observedAt).toBe('2026-08-16 09:08:42.274')
+    // Sanitized metadata (no PIN/PUK/ADM/raw profile payload persisted).
+    expect(r.data?.rawMetadata?.servingNetwork).toBe('65501')
+    expect(r.data?.rawMetadata?.networkType).toBe('4G LTE')
+    expect(r.data?.rawMetadata?.countryNetwork).toBe('South Africa-Vodacom')
+    expect(JSON.stringify(r.data)).not.toContain('8904305000000000001') // EID not persisted
+    expect(JSON.stringify(r.data)).not.toContain('PIN')
+    expect(JSON.stringify(r.data)).not.toContain('PUK')
+  })
+
+  it('selects the NEWEST valid event (stale failure does not override fresh attach)', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ activationProfile: { status: 'ENABLE' }, profileLogs: [] }))
+      .mockResolvedValueOnce(okJson({ data: [
+        { event_time: '2026-08-15T08:00:00Z', request_status: 'DIAMETER_SUCCESS', serving_network: '65501', network_type: '3G', iccid: '8944501234567890123' },
+        { event_time: '2026-08-14T08:00:00Z', request_status: 'DIAMETER_ERROR_LOCAL_HHR', serving_network: '65501', network_type: '3G', iccid: '8944501234567890123' },
+      ] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus({ providerActivationId: 'esim-uuid-1', iccid: '8944501234567890123' })
+    expect(r.data?.status).toBe('ACTIVE')
+    expect(r.data?.rawMetadata?.observedAt).toBe('2026-08-15T08:00:00Z')
+  })
+
+  it('ENABLE + INSTALLED logs but EMPTY location events → INSTALLED (not ACTIVE)', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ activationProfile: { status: 'ENABLE' }, profileLogs: [
+        { status: 'INSTALLED', eventName: 'INSTALL', createdAt: '2026-08-16T09:02:00Z' },
+        { status: 'ENABLED', eventName: 'ENABLE', createdAt: '2026-08-16T09:03:00Z' },
+      ] }))
+      .mockResolvedValueOnce(okJson({ search_id: 's', page_number: 1, total_pages: 0, data: [] }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const r = await connector.getStatus('esim-uuid-1')
-    expect(r.success).toBe(true)
+    expect(r.data?.status).toBe('INSTALLED')
+    expect(r.data?.evidence).toMatchObject({ deviceInstalled: true })
+    expect(r.data?.status).not.toBe('ACTIVE')
+  })
+
+  it('mismatched event ICCID is NOT evidence (never promote from another eSIM)', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ activationProfile: { status: 'ENABLE' }, profileLogs: [] }))
+      .mockResolvedValueOnce(okJson({ data: [
+        { event_time: '2026-08-16T09:08:42Z', request_status: 'DIAMETER_SUCCESS', serving_network: '65501', network_type: '4G', iccid: '8944999999999999999' },
+      ] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus({ providerActivationId: 'esim-uuid-1', iccid: '8944501234567890123' })
+    expect(r.data?.status).toBe('INSTALLED') // profile enabled but event belongs to another ICCID
+    expect(r.data?.status).not.toBe('ACTIVE')
+  })
+
+  it('event without ICCID is accepted when the endpoint is scoped to the provider eSIM id (documented policy)', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ activationProfile: { status: 'ENABLE' }, profileLogs: [] }))
+      .mockResolvedValueOnce(okJson({ data: [
+        { event_time: '2026-08-16T09:08:42Z', request_status: 'DIAMETER_SUCCESS', serving_network: '65501', network_type: '4G' },
+      ] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus({ providerActivationId: 'esim-uuid-1', iccid: '8944501234567890123' })
     expect(r.data?.status).toBe('ACTIVE')
-    expect(r.data?.rawStatus).toBe('network_attach')
-    expect(r.data?.rawMetadata?.servingNetwork).toBe('65501')
   })
 
   it('failed network event does NOT → ACTIVE', async () => {
@@ -811,6 +913,7 @@ describe('US-Matrix status lookup (read-only evidence policy)', () => {
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const r = await connector.getStatus('esim-uuid-1')
     expect(r.data?.status).toBe('INSTALLED') // profile enabled but no attach
+    expect(r.data?.evidence?.networkAttached).toBeFalsy()
     expect(r.data?.status).not.toBe('ACTIVE')
   })
 

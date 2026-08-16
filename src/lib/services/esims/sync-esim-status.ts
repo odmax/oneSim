@@ -2,12 +2,15 @@ import { prisma } from '@/lib/prisma'
 import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
 import { getStatusNextSync, getUsageNextSync } from '@/lib/services/jobs/sync-policy'
 import { capabilitySupported, resolveStatusLookup, buildProviderConnector } from '@/lib/services/esims/sync-lookup'
+import type { StatusResultEvidence } from '@/lib/providers/connectors/connector-interface'
 
 export interface SyncStatusResult {
   success: boolean
   statusChanged?: boolean
   newStatus?: string
   activated?: boolean
+  /** The canonical lifecycle status persisted by this sync. */
+  status?: string
   error?: string
   skipped?: boolean
   skipReason?: string
@@ -54,11 +57,17 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   }
 
   let providerStatus: string | undefined
+  let evidence: StatusResultEvidence | undefined
+  let sanitizedRawMetadata: Record<string, unknown> | undefined
 
   try {
     const statusResult = await connector.getStatus(lookup.identifier)
     if (statusResult.success && statusResult.data) {
       providerStatus = statusResult.data.status
+      evidence = statusResult.data.evidence
+      if (statusResult.data.rawMetadata && typeof statusResult.data.rawMetadata === 'object') {
+        sanitizedRawMetadata = statusResult.data.rawMetadata as Record<string, unknown>
+      }
     } else if (statusResult.error?.code === 'NOT_IMPLEMENTED') {
       return { success: true, skipped: true, skipReason: 'STATUS_CAPABILITY_NOT_SUPPORTED' }
     } else {
@@ -69,11 +78,16 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   }
 
   // Canonical evidence-aware lifecycle derivation (monotonic, never regress).
+  // Verified connector evidence (network attach / device install) is forwarded
+  // so the lifecycle engine can promote ACTIVE/INSTALLED without a
+  // provider-name branch.
   const lifecycle = deriveEsimLifecycleStatus({
     providerNormalizedStatus: providerStatus || 'UNKNOWN',
     currentStatus: esim.status,
     dataUsedMB: esim.dataUsedMB || 0,
     activatedAt: esim.activatedAt,
+    providerInstalledSignal: evidence?.deviceInstalled,
+    providerNetworkAttachedSignal: evidence?.networkAttached,
   })
 
   const updateData: any = {
@@ -93,12 +107,34 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
     updateData.activationDetectedAt = new Date()
   }
 
+  // Sanitized evidence audit trail — MERGE, never overwrite existing
+  // providerResponse keys (e.g. a persisted usage association id). The
+  // connector whitelists its rawMetadata (no credentials); the lifecycle
+  // reason/observedAt document the canonical interpretation.
+  updateData.providerResponse = {
+    ...(esim.providerResponse && typeof esim.providerResponse === 'object' ? esim.providerResponse as Record<string, unknown> : {}),
+    ...(sanitizedRawMetadata ?? {}),
+    evidence: lifecycle.reason,
+    evidenceObservedAt: new Date().toISOString(),
+  }
+
+  // Usage polling handoff: when a sync proves ACTIVE/INSTALLED and the connector
+  // supports usage lookup, seed usageNextSyncAt if it was never scheduled
+  // (e.g. pre-existing eSIMs). Provider-neutral — capability-driven, no
+  // provider-name branch.
+  if ((lifecycle.status === 'ACTIVE' || lifecycle.status === 'INSTALLED') && esim.usageNextSyncAt == null) {
+    if (connector.capabilities?.usageLookup === true) {
+      updateData.usageNextSyncAt = getUsageNextSync(lifecycle.status, 0)
+    }
+  }
+
   await prisma.eSIM.update({ where: { id: esimId }, data: updateData })
 
   return {
     success: true,
     statusChanged: lifecycle.status !== esim.status,
     newStatus: lifecycle.status,
+    status: lifecycle.status,
     activated: lifecycle.setActivatedAt && !esim.activatedAt,
   }
 }

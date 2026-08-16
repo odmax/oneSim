@@ -175,6 +175,54 @@ describe('executeStatusSynchronization — provider-neutral identifier', () => {
     expect(message).not.toContain('boom') // no raw provider message/payload
     expect(message).not.toContain('test-token')
   })
+
+  it('BATCH path: ACTIVE + verified network-attach evidence promotes PENDING → ACTIVE (same as single sync)', async () => {
+    const connector = choiceConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          status: 'ACTIVE',
+          providerStatus: 'active',
+          evidence: { networkAttached: true, observedAt: '2026-08-16T09:08:42Z' },
+          rawMetadata: { networkAttached: true },
+        },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ status: 'PENDING_ACTIVATION', activatedAt: null, usageNextSyncAt: null })])
+
+    const result = await executeStatusSynchronization(10)
+
+    expect(result.updated).toBe(1)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBe('ACTIVE')
+    expect(updateCall.data.activatedAt).toBeInstanceOf(Date)
+    expect(updateCall.data.activationDetectedAt).toBeInstanceOf(Date)
+    // ACTIVE cadence (6h), not pending (1m).
+    const sixHours = 6 * 3600 * 1000
+    expect(updateCall.data.statusNextSyncAt.getTime() - Date.now()).toBeGreaterThanOrEqual(sixHours - 5000)
+    // Usage polling seeded when the connector supports usage lookup.
+    expect(updateCall.data.usageNextSyncAt).toBeInstanceOf(Date)
+  })
+
+  it('BATCH path: weak ACTIVE claim (no evidence) does NOT promote (same as single sync)', async () => {
+    const connector = choiceConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', providerStatus: 'active', rawMetadata: {} },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ status: 'PENDING_ACTIVATION', activatedAt: null, usageNextSyncAt: null })])
+
+    const result = await executeStatusSynchronization(10)
+
+    expect(result.updated).toBe(1)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBe('PENDING_ACTIVATION')
+    expect(updateCall.data.activatedAt).toBeUndefined()
+    expect(updateCall.data.usageNextSyncAt).toBeUndefined()
+  })
 })
 
 describe('executeUsageSynchronization — capability gate + isolation', () => {

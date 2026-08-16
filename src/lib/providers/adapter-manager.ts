@@ -69,6 +69,7 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
             imsiVersion: r.data.imsiVersion,
             packageName: r.data.packageName,
             expiresAt: r.data.expiresAt,
+            evidence: r.data.evidence,
             rawMetadata: r.data.rawMetadata,
           } : {}),
         },
