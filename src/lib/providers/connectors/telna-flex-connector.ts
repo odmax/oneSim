@@ -235,6 +235,11 @@ export class TelnaFlexConnector implements IProviderConnector {
     return null
   }
 
+  /** Telna Connect Flex usage is keyed by ICCID. */
+  resolveUsageLookup(esim: import('./connector-interface').StatusLookupEsim): string | null {
+    return esim.iccid || null
+  }
+
   async getStatus(_identifier: string | import('./connector-interface').StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Status lookup not wired for Telna Connect Flex' } }
   }

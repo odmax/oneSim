@@ -1,5 +1,5 @@
 import { RestCatalogConnector } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, StatusResult, UsageResult, DiagnosticInfo, EsimLifecycleResult } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, StatusResult, UsageResult, DiagnosticInfo, EsimLifecycleResult, ConnectorCapabilities } from './connector-interface'
 
 interface HeaderTokenConfig {
   apiBaseUrl: string
@@ -35,6 +35,25 @@ async function fetchJson(url: string, opts?: { method?: string; headers?: Record
 export class HeaderTokenRestConnector extends RestCatalogConnector {
   constructor(providerId: string, name: string | undefined, config: HeaderTokenConfig) {
     super(providerId, name, config)
+  }
+
+  /**
+   * HeaderToken uses fixed `/subscriptions/{id}` (status) and
+   * `/subscriptions/{iccid}/usage` (usage) paths, so both are always
+   * implemented when the connector is constructed (Part 10).
+   */
+  capabilities: ConnectorCapabilities = {
+    installationLookup: false,
+    installationDataAtPurchase: false,
+    installationLookupHistorical: false,
+    statusLookup: true,
+    usageLookup: true,
+    topUp: false,
+    suspend: false,
+    resume: false,
+    balance: false,
+    inventory: true,
+    webhooks: false,
   }
 
   protected get headers(): Record<string, string> {

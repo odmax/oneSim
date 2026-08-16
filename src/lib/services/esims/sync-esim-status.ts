@@ -1,5 +1,7 @@
 import { prisma } from '@/lib/prisma'
-import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
+import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
+import { getStatusNextSync, getUsageNextSync } from '@/lib/services/jobs/sync-policy'
+import { capabilitySupported, resolveStatusLookup, buildProviderConnector } from '@/lib/services/esims/sync-lookup'
 
 export interface SyncStatusResult {
   success: boolean
@@ -7,148 +9,125 @@ export interface SyncStatusResult {
   newStatus?: string
   activated?: boolean
   error?: string
+  skipped?: boolean
+  skipReason?: string
 }
 
-function detectStatus(providerStatus: string | null | undefined, dataUsedMB: number | undefined | null): { status: string; activated: boolean } {
-  const ps = (providerStatus || '').toLowerCase()
-  if (ps === 'in use' || ps === 'active' || ps === 'activated' || ps === 'completed' || (dataUsedMB != null && dataUsedMB > 0)) {
-    return { status: 'ACTIVE', activated: true }
-  }
-  if (ps === 'expired' || ps === 'suspended' || ps === 'deactivated') {
-    return { status: ps === 'expired' ? 'EXPIRED' : ps === 'suspended' ? 'SUSPENDED' : 'INACTIVE', activated: false }
-  }
-  if (ps === 'failed' || ps === 'error') {
-    return { status: 'FAILED', activated: false }
-  }
-  return { status: 'PENDING_ACTIVATION', activated: false }
-}
-
+/**
+ * Canonical single-eSIM status sync (also used by manual Refresh Status).
+ *
+ * Provider-neutral:
+ *   - capability gate: skips providers whose connector does not declare status
+ *     lookup (US-Matrix returns NOT_IMPLEMENTED today → skipped cleanly).
+ *   - identifier safety: uses only provider-owned identifiers via the connector
+ *     (never a local OneSIM id).
+ *   - canonical lifecycle derivation: `deriveEsimLifecycleStatus` decides the
+ *     stored status from evidence (never infers ACTIVE from "assigned").
+ *   - monotonic: ACTIVE cannot regress to PENDING from stale provider data.
+ *   - schedules next sync (with backoff on failure).
+ *
+ * This sync is intentionally decoupled from USAGE — a separate usage sync path
+ * owns usage data.
+ */
 export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> {
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
-    include: {
-      purchase: { include: { package: true } },
-      usageRecords: { orderBy: { timestamp: 'desc' }, take: 1 },
-    },
+    include: { purchase: { include: { package: true } } },
   })
   if (!esim) return { success: false, error: 'eSIM not found' }
 
-  const providerId = esim.purchase.package.providerId
+  const providerId = esim.purchase?.package?.providerId
   if (!providerId) return { success: false, error: 'No provider configured' }
 
-  const adapter = await getAdapterForProvider(providerId)
-  if (!adapter) return { success: false, error: 'Provider adapter unavailable' }
+  const connector = await buildProviderConnector(providerId)
+  if (!connector) return { success: false, error: 'Provider connector unavailable' }
+
+  // Capability gate: only sync status for connectors that declare it.
+  if (!capabilitySupported(connector, 'statusLookup')) {
+    return { success: true, skipped: true, skipReason: 'STATUS_CAPABILITY_NOT_SUPPORTED' }
+  }
+
+  // Safe provider-neutral identifier (never a local OneSIM id).
+  const lookup = resolveStatusLookup(connector, esim)
+  if (!lookup.ok) {
+    return { success: true, skipped: true, skipReason: lookup.skipReason }
+  }
 
   let providerStatus: string | undefined
-  let dataUsedMB = esim.dataUsedMB || 0
-  let dataTotalMB: number | undefined = esim.dataTotalMB || undefined
-  let dataRemainingMB: number | undefined = esim.dataRemainingMB || undefined
-  let expiresAt: Date | undefined = esim.expiresAt || undefined
-  let lastUsageAt: Date | undefined = esim.lastUsageAt || undefined
 
   try {
-    const statusResult = await adapter.getActivationStatus(esim.providerActivationId || esim.iccid)
+    const statusResult = await connector.getStatus(lookup.identifier)
     if (statusResult.success && statusResult.data) {
       providerStatus = statusResult.data.status
+    } else if (statusResult.error?.code === 'NOT_IMPLEMENTED') {
+      return { success: true, skipped: true, skipReason: 'STATUS_CAPABILITY_NOT_SUPPORTED' }
+    } else {
+      return { success: false, error: statusResult.error?.message || 'Status lookup failed' }
     }
-  } catch { }
+  } catch {
+    return { success: false, error: 'Status lookup threw' }
+  }
 
-  try {
-    const usageResult = await adapter.getUsage(esim.iccid)
-    if (usageResult.success && usageResult.data) {
-      const d = usageResult.data
-      dataUsedMB = d.dataUsedMB ?? dataUsedMB
-      if (d.timestamp) lastUsageAt = new Date(d.timestamp)
-      if ((d as any).dataTotalMB !== undefined) dataTotalMB = (d as any).dataTotalMB
-      if ((d as any).dataRemainingMB !== undefined) dataRemainingMB = (d as any).dataRemainingMB
-    }
-  } catch { }
-
-  const { status: newStatus, activated } = detectStatus(providerStatus, dataUsedMB)
+  // Canonical evidence-aware lifecycle derivation (monotonic, never regress).
+  const lifecycle = deriveEsimLifecycleStatus({
+    providerNormalizedStatus: providerStatus || 'UNKNOWN',
+    currentStatus: esim.status,
+    dataUsedMB: esim.dataUsedMB || 0,
+    activatedAt: esim.activatedAt,
+  })
 
   const updateData: any = {
     providerStatus: providerStatus || esim.providerStatus,
     lastSyncAt: new Date(),
     lastStatusSyncAt: new Date(),
+    statusNextSyncAt: getStatusNextSync(lifecycle.status, 0),
+    statusSyncRetryCount: 0,
   }
 
-  if (dataUsedMB !== undefined) updateData.dataUsedMB = dataUsedMB
-  if (dataTotalMB !== undefined) updateData.dataTotalMB = dataTotalMB
-  if (dataRemainingMB !== undefined) updateData.dataRemainingMB = dataRemainingMB
-  if (lastUsageAt) updateData.lastUsageAt = lastUsageAt
-
-  if (newStatus !== esim.status) {
-    updateData.status = newStatus
+  if (lifecycle.status !== esim.status) {
+    updateData.status = lifecycle.status
   }
 
-  if (activated && !esim.activatedAt) {
+  if (lifecycle.setActivatedAt && !esim.activatedAt) {
     updateData.activatedAt = new Date()
     updateData.activationDetectedAt = new Date()
   }
 
-  if (expiresAt) updateData.expiresAt = expiresAt
-
   await prisma.eSIM.update({ where: { id: esimId }, data: updateData })
-
-  // Fire business webhooks (non-blocking)
-  if (activated && !esim.activatedAt) {
-    ;(async () => {
-      try {
-        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
-        await enqueueBusinessWebhooks(esim.purchase.businessId, 'esim.activated', { esimId, iccid: esim.iccid, imsi: esim.imsi, status: newStatus, providerStatus })
-      } catch { }
-    })()
-  }
-  if (newStatus === 'EXPIRED' && esim.status !== 'EXPIRED') {
-    ;(async () => {
-      try {
-        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
-        await enqueueBusinessWebhooks(esim.purchase.businessId, 'esim.expired', { esimId, iccid: esim.iccid })
-      } catch { }
-    })()
-  }
-  if (newStatus === 'SUSPENDED' && esim.status !== 'SUSPENDED') {
-    ;(async () => {
-      try {
-        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
-        await enqueueBusinessWebhooks(esim.purchase.businessId, 'esim.suspended', { esimId, iccid: esim.iccid })
-      } catch { }
-    })()
-  }
-  if (dataUsedMB != null && dataUsedMB !== esim.dataUsedMB) {
-    ;(async () => {
-      try {
-        const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
-        await enqueueBusinessWebhooks(esim.purchase.businessId, 'usage.updated', { esimId, iccid: esim.iccid, dataUsedMB, dataTotalMB, dataRemainingMB })
-      } catch { }
-    })()
-  }
-
-  // Create usage record if we have data
-  if (dataUsedMB != null && dataUsedMB > 0) {
-    const lastRecord = esim.usageRecords[0]
-    if (!lastRecord || lastRecord.dataUsedMB !== dataUsedMB) {
-      await prisma.usageRecord.create({
-        data: {
-          esimId,
-          dataUsedMB,
-          dataTotalMB: dataTotalMB || null,
-          dataRemainingMB: dataRemainingMB || null,
-          timestamp: lastUsageAt || new Date(),
-        },
-      })
-    }
-  }
 
   return {
     success: true,
-    statusChanged: newStatus !== esim.status,
-    newStatus,
-    activated: activated && !esim.activatedAt,
+    statusChanged: lifecycle.status !== esim.status,
+    newStatus: lifecycle.status,
+    activated: lifecycle.setActivatedAt && !esim.activatedAt,
   }
 }
 
-export async function batchSyncPendingEsims(): Promise<{ checked: number; activated: number; failed: number }> {
+/** Seed the next-sync schedules for a newly fulfilled eSIM (Part 13). */
+export async function seedEsimSyncSchedules(esimId: string, providerId: string, status: string): Promise<void> {
+  const now = new Date()
+  const data: any = {
+    statusNextSyncAt: getStatusNextSync(status || 'PENDING_ACTIVATION', 0),
+    usageNextSyncAt: getUsageNextSync(status || 'PENDING_ACTIVATION', 0),
+  }
+  // Only seed usage when the provider's connector declares usage lookup.
+  try {
+    const connector = await buildProviderConnector(providerId)
+    if (connector?.capabilities?.usageLookup !== true) {
+      data.usageNextSyncAt = null
+    }
+    if (connector?.capabilities?.statusLookup !== true) {
+      data.statusNextSyncAt = null
+    }
+  } catch {
+    data.usageNextSyncAt = null
+  }
+  void now
+  await prisma.eSIM.update({ where: { id: esimId }, data }).catch(() => {})
+}
+
+/** Batch sync of pending eSIMs (kept for backward compatibility). */
+export async function batchSyncPendingEsims(): Promise<{ checked: number; activated: number; failed: number; skipped: number }> {
   const esims = await prisma.eSIM.findMany({
     where: {
       status: { in: ['PENDING_ACTIVATION', 'PENDING'] },
@@ -162,16 +141,18 @@ export async function batchSyncPendingEsims(): Promise<{ checked: number; activa
   let checked = 0
   let activated = 0
   let failed = 0
+  let skipped = 0
 
   for (const esim of esims) {
     checked++
     const result = await syncESIMStatus(esim.id)
     if (result.success) {
-      if (result.activated) activated++
+      if (result.skipped) skipped++
+      else if (result.activated) activated++
     } else {
       failed++
     }
   }
 
-  return { checked, activated, failed }
+  return { checked, activated, failed, skipped }
 }

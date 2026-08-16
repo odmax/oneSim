@@ -1,4 +1,4 @@
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, UsageResult, RateResult, DiagnosticInfo, EsimLifecycleResult } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, UsageResult, RateResult, DiagnosticInfo, EsimLifecycleResult, ConnectorCapabilities } from './connector-interface'
 import { classifyError } from './connector-interface'
 
 interface StandardConnectorConfig {
@@ -66,6 +66,27 @@ export class StandardProviderConnector implements IProviderConnector {
     this.providerId = config.providerId
     this.name = config.name || 'Standard Provider'
     this.config = config
+  }
+
+  /**
+   * Capabilities derived from the configured paths (Part 10): a capability is
+   * supported only when the provider instance actually has a path for it.
+   * Never enabled merely because the method exists.
+   */
+  get capabilities(): ConnectorCapabilities {
+    return {
+      installationLookup: false,
+      installationDataAtPurchase: !!this.config.activationPath,
+      installationLookupHistorical: false,
+      statusLookup: !!this.config.statusPath,
+      usageLookup: !!this.config.usagePath,
+      topUp: false,
+      suspend: !!this.config.suspendPath,
+      resume: !!this.config.resumePath,
+      balance: false,
+      inventory: !!this.config.planListPath,
+      webhooks: false,
+    }
   }
 
   async getTokenState(): Promise<import('./connector-interface').TokenState> {

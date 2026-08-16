@@ -23,7 +23,7 @@ vi.mock('@/lib/providers/capabilities/exposure', () => ({
 
 vi.mock('@/lib/providers/capabilities/defaults', () => ({
   DEFAULT_PROVIDER_CAPABILITIES: {
-    USMATRIX: ['AUTH', 'CATALOG_SYNC', 'INVENTORY', 'ESIM', 'PURCHASE', 'SUSPEND', 'RESUME'],
+    USMATRIX: ['AUTH', 'CATALOG_SYNC', 'INVENTORY', 'ESIM', 'PURCHASE', 'STATUS', 'USAGE', 'SUSPEND', 'RESUME'],
     CHOICE: ['AUTH', 'CATALOG_SYNC', 'PURCHASE', 'STATUS', 'USAGE', 'SUSPEND', 'RESUME', 'BALANCE'],
     AIRHUB: ['AUTH', 'CATALOG_SYNC', 'PURCHASE', 'STATUS', 'BALANCE'],
   },
@@ -38,8 +38,8 @@ function usmConnector() {
       installationLookup: true,
       installationDataAtPurchase: true,
       installationLookupHistorical: true,
-      statusLookup: false,
-      usageLookup: false,
+      statusLookup: true,
+      usageLookup: true,
       topUp: false,
       suspend: true,
       resume: true,
@@ -73,23 +73,23 @@ describe('getProviderCapabilityState', () => {
     expect(by.INSTALLATION_LOOKUP_HISTORICAL.implementationState).toBe('SUPPORTED')
   })
 
-  it('reports US-Matrix STATUS/USAGE/TOP_UP/BALANCE as NOT_SUPPORTED and NOT enabled', async () => {
+  it('reports US-Matrix STATUS/USAGE as SUPPORTED + enabled; TOP_UP/BALANCE NOT_SUPPORTED', async () => {
     const r = await getProviderCapabilityState('usm-1')
     const by = r!.byKey
-    expect(by.STATUS.implementationState).toBe('NOT_SUPPORTED')
-    expect(by.STATUS.enabled).toBe(false)
-    expect(by.USAGE.implementationState).toBe('NOT_SUPPORTED')
-    expect(by.USAGE.enabled).toBe(false)
+    expect(by.STATUS.implementationState).toBe('SUPPORTED')
+    expect(by.STATUS.enabled).toBe(true)
+    expect(by.USAGE.implementationState).toBe('SUPPORTED')
+    expect(by.USAGE.enabled).toBe(true)
     expect(by.TOP_UP.implementationState).toBe('NOT_SUPPORTED')
     expect(by.BALANCE.implementationState).toBe('NOT_SUPPORTED')
   })
 
   it('a provider-enabled capability the connector does not implement is NEVER enabled', async () => {
-    // Provider enables USAGE but connector says NOT_SUPPORTED.
-    mockProviderFindUnique.mockResolvedValue({ id: 'usm-1', code: 'USMATRIX', enabledCapabilities: ['USAGE', 'PURCHASE'] })
+    // Provider enables TOP_UP but the US-Matrix connector declares topUp:false.
+    mockProviderFindUnique.mockResolvedValue({ id: 'usm-1', code: 'USMATRIX', enabledCapabilities: ['TOP_UP', 'PURCHASE'] })
     const r = await getProviderCapabilityState('usm-1')
-    expect(r!.byKey.USAGE.implementationState).toBe('NOT_SUPPORTED')
-    expect(r!.byKey.USAGE.enabled).toBe(false)
+    expect(r!.byKey.TOP_UP.implementationState).toBe('NOT_SUPPORTED')
+    expect(r!.byKey.TOP_UP.enabled).toBe(false)
     // PURCHASE is supported + enabled.
     expect(r!.byKey.PURCHASE.enabled).toBe(true)
   })
@@ -158,14 +158,16 @@ describe('getProviderCapabilityState', () => {
     }
   })
 
-  it('enabled vs implemented: provider-disabled SUPPORTED capability is Supported/Disabled', async () => {
+  it('enabled vs implemented: a capability absent from defaults stays disabled', async () => {
     mockProviderFindUnique.mockResolvedValue({ id: 'usm-1', code: 'USMATRIX', enabledCapabilities: [] })
-    // USMATRIX defaults include SUSPEND/RESUME/PURCHASE but NOT USAGE.
+    // USMATRIX defaults include STATUS/USAGE/PURCHASE/SUSPEND/RESUME but NOT TOP_UP/BALANCE.
     const r = await getProviderCapabilityState('usm-1')
     expect(r!.byKey.PURCHASE.implementationState).toBe('SUPPORTED')
     expect(r!.byKey.PURCHASE.enabled).toBe(true)
-    expect(r!.byKey.USAGE.implementationState).toBe('NOT_SUPPORTED')
-    expect(r!.byKey.USAGE.enabled).toBe(false)
+    expect(r!.byKey.STATUS.enabled).toBe(true)
+    expect(r!.byKey.USAGE.enabled).toBe(true)
+    expect(r!.byKey.TOP_UP.implementationState).toBe('NOT_SUPPORTED')
+    expect(r!.byKey.TOP_UP.enabled).toBe(false)
   })
 
   it('exposure does NOT alter implementation or enabled truth', async () => {

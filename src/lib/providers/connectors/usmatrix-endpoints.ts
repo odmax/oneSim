@@ -64,6 +64,10 @@ export const USMATRIX_ENDPOINTS = {
   esimRemovePackages: '/api/v1/esims/remove-packages',
   esimTransfer: '/api/v1/esims/transfer',
   esimQrcode: '/api/v1/esims/qrcode',
+  // Network telemetry (read-only, per-eSIM evidence).
+  esimEventLogs: '/api/v1/esims/event-logs',
+  esimLocationEventLogs: '/api/v1/esims/location-event-logs',
+  esimRawLocation: '/api/v1/esims/raw-location',
 
   // Dashboard (read-only, diagnostic).
   dashboard: '/api/v1/dashboard',
@@ -284,3 +288,84 @@ export interface ListCountriesResponseDTO {
   data: CountryDTO[]
   count: number
 }
+
+/**
+ * POST /api/v1/esims/info request — documented GetEsimInfoRequestDTO.
+ * `esimId` is the US-Matrix provider eSIM UUID (from AssignPackageResponseDTO.id /
+ * providerActivationId). Never a local OneSIM id.
+ */
+export interface GetEsimInfoRequestDTO {
+  esimId: string
+}
+
+/** POST /api/v1/esims/info response — documented GetEsimInfoResponseDTO. */
+export interface GetEsimInfoResponseDTO {
+  activationProfile: ActivationProfileDTO
+  profileLogs: ProfileLogDTO[]
+}
+
+/** Documented ActivationProfileDTO (vendor profile state). */
+export interface ActivationProfileDTO {
+  iccid?: string | null
+  eid?: string | null
+  imsi?: string | null
+  status?: string | null
+}
+
+/** Documented ProfileLogDTO. */
+export interface ProfileLogDTO {
+  status?: string | null
+  type?: string | null
+  eventName?: string | null
+  createdAt?: string | null
+  result?: string | null
+  state?: string | null
+}
+
+/**
+ * POST /api/v1/esims/location-event-logs request — documented LocationLogsRequestDTO.
+ * The exact documented shape is per the current Swagger; keep it minimal and
+ * provider-scoped (the eSIM UUID or ICCID) — never a local OneSIM id.
+ */
+export interface LocationLogsRequestDTO {
+  esimId?: string
+  iccid?: string
+  page?: number
+  pageSize?: number
+}
+
+/** A network/location event entry (documented event-logs / location-event-logs). */
+export interface NetworkEventLogDTO {
+  event_time?: string | null
+  request_type?: string | null
+  request_status?: string | null
+  imsi?: string | null
+  iccid?: string | null
+  serving_network?: string | null
+  network_type?: string | null
+  apn?: string | null
+  volume_used?: number | null
+}
+
+/**
+ * A package↔eSIM association from mobile-detail.
+ *
+ * `id` is the packageEsimId — the association UUID accepted by POST
+ * /packages/usage. `package.id` is the separate package UUID and must NEVER be
+ * used as the association identifier. Proven by live staging evidence.
+ */
+export interface MobileDetailPackageEsimDTO {
+  id: string
+  status?: string
+  usageValue?: number
+  package?: {
+    id?: string
+    name?: string
+    dataLimit?: number
+    dataType?: string
+    limit?: number
+    limitType?: string
+  }
+}
+
+

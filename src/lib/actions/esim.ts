@@ -170,21 +170,18 @@ export async function syncSubscriptionStatus(esimId: string) {
     include: { purchase: { include: { package: true } } },
   })
   if (!esim) return { error: 'eSIM not found' }
-  if (!esim.providerActivationId) return { error: 'No provider activation ID' }
 
-  try {
-    const slug = esim.purchase?.package?.providerName?.toLowerCase()
-    if (!slug) return { error: 'No provider slug found' }
-    const adapter = await registry.resolve(slug)
-    const status = await adapter.getStatus(esim.iccid)
-    await prisma.eSIM.update({
-      where: { id: esimId },
-      data: { providerStatus: status.status, status: status.status === 'ACTIVE' ? 'ACTIVE' : esim.status },
-    })
-    return { status: status.status }
-  } catch (e: any) {
-    return { error: e.message || 'Sync failed' }
+  // Route through the SAME canonical status sync service as the background job
+  // and the canonical manual refresh — never a separate registry/ICCID path.
+  const { syncESIMStatus } = await import('@/lib/services/esims/sync-esim-status')
+  const result = await syncESIMStatus(esimId)
+
+  if (result.success && result.skipped) {
+    return { error: result.skipReason === 'STATUS_CAPABILITY_NOT_SUPPORTED' ? 'Status not supported by provider' : (result.skipReason || 'Status unavailable') }
   }
+  if (!result.success) return { error: result.error || 'Status sync failed' }
+
+  return { status: result.newStatus || esim.status }
 }
 
 export async function sendToCustomer(formData: FormData) {

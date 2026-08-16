@@ -867,6 +867,15 @@ export class UrlTokenConnector extends RestCatalogConnector {
   }
 
   /**
+   * Choice usage is keyed by the same structured package_detail identifier
+   * (ICCID/IMSI/imsi_version) as status — usage must never receive a plain
+   * string from generic code.
+   */
+  resolveUsageLookup(esim: StatusLookupEsim): string | StatusLookupIdentifier | null {
+    return this.resolveStatusLookup(esim)
+  }
+
+  /**
    * Shared Choice package_detail fetch used by both status and usage lookups:
    * GET {baseUrl}/account/v03_09/package_detail/{token}?iccid=...|imsi=...|imsi_version=...
    * Token is path-based and URL-encoded; never logged in full. Error codes are

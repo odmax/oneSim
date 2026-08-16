@@ -211,7 +211,25 @@ describe('persistProviderFulfillment — idempotent eSIM persistence', () => {
     })
 
     const createCall = mockPrisma.eSIM.create.mock.calls[0]
-    expect(createCall[0].data.installationStatus).toBeUndefined()
+    expect(createCall[0].data.installationStatus).toBeUndefined()  })
+
+  it('9b. auto-seeds statusNextSyncAt + usageNextSyncAt on newly fulfilled eSIM (Part 13)', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([])
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
+    mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
+
+    await persistProviderFulfillment({
+      orderId: 'order-1', businessId: 'biz-1',
+      providerResult: { iccids: ['89012345678901234567'] },
+    })
+
+    const createCall = mockPrisma.eSIM.create.mock.calls[0]
+    expect(createCall[0].data.statusNextSyncAt).toBeInstanceOf(Date)
+    expect(createCall[0].data.usageNextSyncAt).toBeInstanceOf(Date)
+    // Schedules are in the near future (auto-start).
+    expect(createCall[0].data.statusNextSyncAt.getTime() - Date.now()).toBeGreaterThanOrEqual(55_000)
+    expect(createCall[0].data.usageNextSyncAt.getTime() - Date.now()).toBeGreaterThanOrEqual(3_500_000)
   })
 
   it('10. fills missing install columns on existing eSIM and sets READY', async () => {

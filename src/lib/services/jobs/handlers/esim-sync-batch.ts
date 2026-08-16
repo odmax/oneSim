@@ -1,29 +1,17 @@
 import { prisma } from '@/lib/prisma'
 import { getStatusNextSync, getUsageNextSync, shouldStopRetrying } from '../sync-policy'
 import { claimEsimForSync } from '../recurring-jobs'
-import type { IProviderConnector, StatusLookupIdentifier, StatusLookupEsim } from '@/lib/providers/connectors/connector-interface'
+import type { IProviderConnector } from '@/lib/providers/connectors/connector-interface'
+import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
+import { capabilitySupported, resolveStatusLookup, resolveUsageLookup, buildProviderConnector } from '@/lib/services/esims/sync-lookup'
 
 async function getConnector(providerId: string): Promise<IProviderConnector | null> {
-  const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
-  return buildConnectorFromProvider(providerId) as any
+  return buildProviderConnector(providerId)
 }
 
 function maskIccid(iccid: string | null | undefined): string {
   if (!iccid) return ''
   return iccid.length <= 8 ? '****' : `${iccid.slice(0, 4)}••••${iccid.slice(-4)}`
-}
-
-/**
- * Resolve the provider-appropriate, provider-NEUTRAL status-lookup identifier.
- * Uses the connector's own resolution when available (Choice returns the
- * structured package_detail identifier; AirHub/iBASIS return their provider
- * reference). Falls back to a safe provider reference (never a local OneSIM id).
- * Returns null when no safe upstream identifier exists — the caller must skip
- * the provider HTTP call.
- */
-function resolveLookup(connector: IProviderConnector, esim: StatusLookupEsim): string | StatusLookupIdentifier | null {
-  if (connector?.resolveStatusLookup) return connector.resolveStatusLookup(esim)
-  return esim.providerSubscriptionId || esim.providerActivationId || esim.iccid || null
 }
 
 /** Backfill null sync schedules for existing eSIMs. Idempotent. */
@@ -76,33 +64,53 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
       const connector = await getConnector(provider.id)
       if (!connector) { skipped++; continue }
 
-      // SAFE provider-neutral identifier — never a local OneSIM database id.
-      const lookup = resolveLookup(connector, esim)
-      if (!lookup) {
-        console.log(`[ESIM_STATUS_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=IDENTIFIER_MISSING`)
+      // Capability gate: only call connectors that declare status lookup support.
+      if (!capabilitySupported(connector, 'statusLookup')) {
+        console.log(`[ESIM_STATUS_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=STATUS_CAPABILITY_NOT_SUPPORTED`)
+        // Stop polling unsupported providers instead of counting endless failures.
+        await prisma.eSIM.update({ where: { id: esim.id }, data: { statusNextSyncAt: null, statusSyncRetryCount: 0 } })
         skipped++
         continue
       }
 
-      const result = await connector.getStatus(lookup)
+      // SAFE provider-neutral identifier — never a local OneSIM database id.
+      const lookup = resolveStatusLookup(connector, esim)
+      if (!lookup.ok) {
+        console.log(`[ESIM_STATUS_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=${lookup.skipReason}`)
+        skipped++
+        continue
+      }
+
+      const result = await connector.getStatus(lookup.identifier)
 
       if (result.success && result.data) {
-        const newStatus = result.data.status
-        // Guard: never regress ACTIVE → PENDING
-        if (esim.status === 'ACTIVE' && (newStatus === 'PENDING' || newStatus === 'PENDING_ACTIVATION' || newStatus === 'PROCESSING')) {
-          await prisma.eSIM.update({ where: { id: esim.id }, data: { statusNextSyncAt: getStatusNextSync(esim.status, 0), statusSyncRetryCount: { increment: 1 } } })
-          failed++; continue
-        }
-        await prisma.eSIM.update({
-          where: { id: esim.id },
-          data: {
-            status: newStatus,
-            providerStatus: (result.data as any).providerStatus || null,
-            lastStatusSyncAt: new Date(),
-            statusNextSyncAt: getStatusNextSync(newStatus, 0),
-            statusSyncRetryCount: 0,
-          },
+        const providerStatus = result.data.status
+        // Canonical lifecycle derivation: evidence-aware, monotonic (never
+        // regress ACTIVE → PENDING without explicit evidence).
+        const lifecycle = deriveEsimLifecycleStatus({
+          providerNormalizedStatus: providerStatus,
+          currentStatus: esim.status,
+          dataUsedMB: esim.dataUsedMB || 0,
+          activatedAt: esim.activatedAt,
         })
+        const newStatus = lifecycle.status
+        const updateData: any = {
+          status: newStatus,
+          providerStatus: (result.data as any).providerStatus || providerStatus || null,
+          lastStatusSyncAt: new Date(),
+          statusNextSyncAt: getStatusNextSync(newStatus, 0),
+          statusSyncRetryCount: 0,
+          providerResponse: {
+            ...((esim as any).providerResponse && typeof (esim as any).providerResponse === 'object' ? (esim as any).providerResponse : {}),
+            evidence: lifecycle.reason,
+            evidenceObservedAt: new Date().toISOString(),
+          },
+        }
+        if (lifecycle.setActivatedAt && !esim.activatedAt) {
+          updateData.activatedAt = new Date()
+          updateData.activationDetectedAt = new Date()
+        }
+        await prisma.eSIM.update({ where: { id: esim.id }, data: updateData })
         updated++
       } else {
         const errCode = result.error?.code || 'UNKNOWN'
@@ -151,24 +159,30 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
     if (!provider) { skipped++; continue }
 
-    const caps = (provider.enabledCapabilities || []) as string[]
-    if (!caps.includes('USAGE')) { skipped++; continue }
-
     const connectorName = provider.adapterStrategy || provider.type || 'UNKNOWN'
 
     try {
       const connector = await getConnector(provider.id)
       if (!connector) { skipped++; continue }
 
-      // SAFE provider-neutral identifier — never a local OneSIM database id.
-      const lookup = resolveLookup(connector, esim)
-      if (!lookup) {
-        console.log(`[ESIM_USAGE_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=IDENTIFIER_MISSING`)
+      // Capability gate: only call connectors that declare usage lookup support.
+      if (!capabilitySupported(connector, 'usageLookup')) {
+        console.log(`[ESIM_USAGE_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=USAGE_CAPABILITY_NOT_SUPPORTED`)
+        // Stop polling unsupported providers instead of counting endless failures.
+        await prisma.eSIM.update({ where: { id: esim.id }, data: { usageNextSyncAt: null, usageSyncRetryCount: 0 } })
         skipped++
         continue
       }
 
-      const result = await connector.getUsage(lookup as any)
+      // SAFE provider-neutral identifier — never a local OneSIM database id.
+      const lookup = resolveUsageLookup(connector, esim)
+      if (!lookup.ok) {
+        console.log(`[ESIM_USAGE_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=${lookup.skipReason}`)
+        skipped++
+        continue
+      }
+
+      const result = await connector.getUsage(lookup.identifier as any)
 
       if (result.success && result.data) {
         const data = result.data as any

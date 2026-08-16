@@ -193,7 +193,8 @@ export class TelnaSeamlessConnector implements IProviderConnector {
     installationDataAtPurchase: true, // QR retrieved from GET /subscriptions/{id}/esim/qrcode at purchase
     installationLookupHistorical: true, // read-only GET /subscriptions/{id}/esim/qrcode by subscription id
     statusLookup: true,
-    usageLookup: true,
+    // usageLookup=false: getUsage() returns NOT_IMPLEMENTED (no usage endpoint wired).
+    usageLookup: false,
     topUp: true,
     suspend: true,
     resume: true,

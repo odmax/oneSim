@@ -37,7 +37,7 @@
  */
 import { prisma } from '@/lib/prisma'
 import { decryptToken, encryptToken } from '@/lib/encryption'
-import { usMatrixEndpointPath, buildUsMatrixUrl, normalizeUsMatrixBaseUrl, type UsMatrixEndpoint, type UsMatrixPaginated, type UsMatrixPackage, type UsMatrixEsim, type UsMatrixSigninRequest, type UsMatrixSigninResponse, type AssignPackageRequestDTO, type AssignPackageResponseDTO, type GetPackageUsageRequestDTO, type GetPackageUsageResponseDTO, type RateGroupDTO, type SuspendEsimRequestDTO, type UnsuspendEsimRequestDTO, type RemoveEsimFromPackageRequestDTO, type AvailabilityCountRequestDTO, type CountryDTO, type ListCountriesResponseDTO } from './usmatrix-endpoints'
+import { usMatrixEndpointPath, buildUsMatrixUrl, normalizeUsMatrixBaseUrl, type UsMatrixEndpoint, type UsMatrixPaginated, type UsMatrixPackage, type UsMatrixEsim, type UsMatrixSigninRequest, type UsMatrixSigninResponse, type AssignPackageRequestDTO, type AssignPackageResponseDTO, type GetPackageUsageRequestDTO, type GetPackageUsageResponseDTO, type RateGroupDTO, type SuspendEsimRequestDTO, type UnsuspendEsimRequestDTO, type RemoveEsimFromPackageRequestDTO, type AvailabilityCountRequestDTO, type CountryDTO, type ListCountriesResponseDTO, type GetEsimInfoRequestDTO, type GetEsimInfoResponseDTO, type ActivationProfileDTO, type ProfileLogDTO, type NetworkEventLogDTO, type LocationLogsRequestDTO, type MobileDetailPackageEsimDTO } from './usmatrix-endpoints'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput, DiagnosticInfo, StatusLookupEsim, StatusLookupIdentifier } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
@@ -99,8 +99,8 @@ export class UsMatrixConnector implements IProviderConnector {
     // AssignPackageResponseDTO (201) carries install fields → purchase returns install data.
     installationDataAtPurchase: true,
     installationLookupHistorical: true, // GET /esims?iccid=… EsimDTO install fields
-    statusLookup: false, // GET /esims status enum (free/assigned/suspended) is allocation state, not proven OneSIM lifecycle
-    usageLookup: false, // POST /packages/usage requires packageEsimId — NOT returned by ANY documented response; keep getUsage() defensive but unadvertised
+    statusLookup: true, // live staging evidence: DIAMETER_SUCCESS + serving_network → ACTIVE; profile ENABLED → INSTALLED
+    usageLookup: true, // live staging evidence: mobile-detail.packageEsims[].id is the packageEsimId association identifier
     topUp: false, // no documented top-up endpoint; assign-package is not top-up
     suspend: true, // PUT /esims/suspend (eSIM-level) — wired
     resume: true, // PUT /esims/unsuspend (eSIM-level) — wired
@@ -521,60 +521,6 @@ export class UsMatrixConnector implements IProviderConnector {
     return { success: true, data: { status: 'ACTIVE', providerStatus: 'active', message: 'eSIM unsuspended' } }
   }
 
-  /**
-   * POST /api/v1/packages/usage — keyed by packageEsimId (the package-eSIM
-   * association UUID). Resolved from stored provider metadata (rawMetadata /
-   * providerResponse). NEVER sends local esim.id / package id / ICCID.
-   */
-  async getUsage(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>> {
-    if (typeof identifier !== 'string') {
-      return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'US-Matrix usage requires a provider packageEsimId' } }
-    }
-    // packageEsimId must be a provider association UUID, not a local id or ICCID.
-    if (!identifier || identifier === '' || /^\d{16,22}$/.test(identifier)) {
-      return { success: false, error: { code: 'INVALID_IDENTIFIER', message: 'US-Matrix usage requires the provider packageEsimId (package-eSIM association UUID)' } }
-    }
-    const body: GetPackageUsageRequestDTO = { packageEsimId: identifier }
-    const result = await this.request('packageUsage', { method: 'POST', body })
-    if (!result.success) return { success: false, error: result.error }
-
-    const resp = result.data as GetPackageUsageResponseDTO | null
-    const detail = resp?.package
-    const group: RateGroupDTO | undefined = Array.isArray(detail?.rate_groups) ? detail.rate_groups[0] : undefined
-    if (!detail || !group) {
-      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'GetPackageUsageResponseDTO missing package/rate_groups' } }
-    }
-
-    const allowance = Number(group.rate_group_allowance) || 0
-    const usage = Number(group.rate_group_usage) || 0
-    const isGB = /gb/i.test(group.rate_group_allow_qtyp || '')
-    const toMB = (v: number) => isGB ? v * 1024 : v
-    const dataTotalMB = toMB(allowance)
-    const dataUsedMB = Math.round(toMB(usage))
-    const dataRemainingMB = dataTotalMB > 0 ? Math.max(0, Math.round(dataTotalMB - dataUsedMB)) : undefined
-    const percentageUsed = dataTotalMB > 0 ? Math.min(100, Math.max(0, Math.round((dataUsedMB / dataTotalMB) * 100))) : undefined
-
-    return {
-      success: true,
-      data: {
-        iccid: identifier,
-        dataUsedMB,
-        dataTotalMB: dataTotalMB > 0 ? dataTotalMB : undefined,
-        dataRemainingMB,
-        percentageUsed,
-        expiresAt: group.rate_group_expire ? String(group.rate_group_expire) : undefined,
-        status: detail.status || undefined,
-        rawMetadata: {
-          package_status: detail.package_status,
-          rate_group_id: group.rate_group_id,
-          rate_group_starttime: group.rate_group_starttime,
-          rate_group_expire: group.rate_group_expire,
-          rate_group_days_used: group.rate_group_days_used,
-        },
-      },
-    }
-  }
-
   // ── Read-only helpers (availability / countries) ─────────────────────────
 
   /** POST /api/v1/esims/availability-count — batch free-to-sell counts per package. */
@@ -611,15 +557,274 @@ export class UsMatrixConnector implements IProviderConnector {
     return { success: true, data: items }
   }
 
-  // ── Unwired / unsafe operations ─────────────────────────────────────────
+  // ── Status / usage evidence (read-only, provider-neutral semantics) ─────
 
-  resolveStatusLookup(_esim: StatusLookupEsim): string | null {
-    // Status not wired — never return a local OneSIM id upstream.
+  /**
+   * Resolve the provider-owned US-Matrix eSIM UUID for a status lookup.
+   * Preferred source: providerActivationId (persisted from the assign-package
+   * response `id`). Fallback: providerResponse.providerEsimId when present.
+   * NEVER a local OneSIM esim.id. Returns null when no provider UUID exists.
+   */
+  resolveStatusLookup(esim: StatusLookupEsim): string | null {
+    if (esim.providerActivationId) return esim.providerActivationId
+    const raw = esim.providerResponse && typeof esim.providerResponse === 'object'
+      ? (esim.providerResponse as Record<string, unknown>)
+      : undefined
+    if (raw && typeof raw.providerEsimId === 'string' && raw.providerEsimId) {
+      return raw.providerEsimId
+    }
     return null
   }
 
-  async getStatus(_identifier: string | import('./connector-interface').StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Status lookup not wired for US-Matrix (GET /esims status enum free/assigned/suspended is allocation state, not proven OneSIM lifecycle)' } }
+  /**
+   * Resolve the US-Matrix package↔eSIM association UUID (packageEsimId) for a
+   * usage lookup — the identifier required by POST /packages/usage.
+   *
+   * 1. When already persisted in provider metadata (packageEsimId /
+   *    package_esim_id), return it directly (provider association id, safe).
+   * 2. Otherwise return a structured bundle carrying the provider eSIM UUID
+   *    (from providerActivationId / providerResponse.providerEsimId) so getUsage
+   *    can discover the current association via mobile-detail. NEVER a local
+   *    OneSIM esim.id. Returns null only when no provider identifier exists.
+   */
+  resolveUsageLookup(esim: StatusLookupEsim): string | StatusLookupIdentifier | null {
+    const raw = esim.providerResponse && typeof esim.providerResponse === 'object'
+      ? (esim.providerResponse as Record<string, unknown>)
+      : undefined
+    const persisted = raw?.packageEsimId ?? raw?.package_esim_id
+    if (typeof persisted === 'string' && persisted && !/^\d{16,22}$/.test(persisted)) {
+      return persisted
+    }
+    // Not persisted → return the provider eSIM UUID so getUsage can discover the
+    // association via mobile-detail (documented read-only).
+    const providerEsimUuid = esim.providerActivationId
+      || (typeof raw?.providerEsimId === 'string' ? raw.providerEsimId : '')
+    if (providerEsimUuid) {
+      return { providerActivationId: providerEsimUuid }
+    }
+    return null
+  }
+
+  /**
+   * Discover the current package↔eSIM association via GET /esims/mobile-detail/{id}
+   * (documented read-only). Returns the packageEsimId (packageEsims[].id) for the
+   * best association: prefer status "active", else first non-suspended/expired.
+   * NEVER uses package.id as the association id.
+   */
+  private async discoverPackageEsimId(providerEsimUuid: string): Promise<{ ok: boolean; packageEsimId?: string; error?: { code: string; message: string } }> {
+    const result = await this.request('esimMobileDetail', { pathParams: { esim_id: providerEsimUuid } })
+    if (!result.success) return { ok: false, error: result.error }
+
+    const data = result.data as any
+    const associations: MobileDetailPackageEsimDTO[] = Array.isArray(data?.packageEsims)
+      ? data.packageEsims
+      : Array.isArray(data?.data?.packageEsims) ? data.data.packageEsims
+      : []
+
+    if (associations.length === 0) {
+      return { ok: false, error: { code: 'NO_ASSOCIATION', message: 'mobile-detail returned no packageEsims for this eSIM' } }
+    }
+
+    // Selection: prefer status active, else first non-suspended/non-expired.
+    const active = associations.find(a => String(a?.status || '').toLowerCase() === 'active')
+    const usable = active
+      || associations.find(a => {
+        const s = String(a?.status || '').toLowerCase()
+        return s && s !== 'suspended' && s !== 'expired'
+      })
+      || associations[0]
+
+    if (!usable?.id) {
+      return { ok: false, error: { code: 'NO_ASSOCIATION', message: 'mobile-detail associations missing id (packageEsimId)' } }
+    }
+    return { ok: true, packageEsimId: String(usable.id) }
+  }
+
+  /**
+   * Canonical US-Matrix usage lookup.
+   *
+   * Identifier resolution:
+   *   - a persisted/known packageEsimId → used directly
+   *   - a structured { providerActivationId } bundle → discovered via mobile-detail
+   *
+   * Then POST /packages/usage and normalize rate groups with unit handling.
+   */
+  async getUsage(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>> {
+    let packageEsimId: string | null = null
+
+    if (typeof identifier === 'string') {
+      // Reject ICCID-shaped / empty values — packageEsimId is a UUID.
+      if (!identifier || /^\d{16,22}$/.test(identifier)) {
+        return { success: false, error: { code: 'INVALID_IDENTIFIER', message: 'US-Matrix usage requires the provider packageEsimId (package-eSIM association UUID)' } }
+      }
+      packageEsimId = identifier
+    } else if (identifier && typeof identifier === 'object') {
+      const providerEsimUuid = identifier.providerActivationId || identifier.iccid || ''
+      if (!providerEsimUuid) {
+        return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'US-Matrix usage requires a provider eSIM UUID to discover the association' } }
+      }
+      const discovered = await this.discoverPackageEsimId(providerEsimUuid)
+      if (!discovered.ok) return { success: false, error: discovered.error }
+      packageEsimId = discovered.packageEsimId!
+    } else {
+      return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'US-Matrix usage requires a packageEsimId or provider eSIM UUID' } }
+    }
+
+    const body: GetPackageUsageRequestDTO = { packageEsimId }
+    const result = await this.request('packageUsage', { method: 'POST', body })
+    if (!result.success) return { success: false, error: result.error }
+
+    const resp = result.data as GetPackageUsageResponseDTO | null
+    const detail = resp?.package
+    const groups: RateGroupDTO[] = Array.isArray(detail?.rate_groups) ? detail.rate_groups : []
+    if (!detail || groups.length === 0) {
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'GetPackageUsageResponseDTO missing package/rate_groups' } }
+    }
+
+    // Sum allowance/usage across rate groups without double-counting. The
+    // canonical total allowance is rate_group_total_qty when present (it is the
+    // actual quantity); otherwise rate_group_allowance. Units normalize GB→MB.
+    const unitToMB = (unit: string | null | undefined): number => {
+      const u = String(unit || '').toLowerCase()
+      if (u === 'gb') return 1024
+      if (u === 'mb') return 1
+      if (u === 'kb') return 1 / 1024
+      if (u === 'b' || u === 'bytes') return 1 / (1024 * 1024)
+      return 1 // default MB
+    }
+
+    let totalMB = 0
+    let usedMB = 0
+    let earliestStart: string | undefined
+    let latestExpire: string | undefined
+    let daysUsed = 0
+
+    for (const group of groups) {
+      const unit = group.rate_group_allow_qtyp || group.rate_group_throttle_qtyp
+      const toMB = unitToMB(unit)
+      const allowance = Number(group.rate_group_allowance) || 0
+      const totalQty = Number(group.rate_group_total_qty) || 0
+      const usage = Number(group.rate_group_usage) || 0
+      // Canonical total: prefer total_qty (actual quantity), fall back to allowance.
+      const groupTotal = totalQty > 0 ? totalQty : allowance
+      totalMB += groupTotal * toMB
+      usedMB += usage * toMB
+      if (group.rate_group_starttime && (!earliestStart || group.rate_group_starttime < earliestStart)) earliestStart = group.rate_group_starttime
+      if (group.rate_group_expire && (!latestExpire || group.rate_group_expire > latestExpire)) latestExpire = group.rate_group_expire
+      daysUsed = Math.max(daysUsed, Number(group.rate_group_days_used) || 0)
+    }
+
+    const dataTotalMB = totalMB > 0 ? Math.round(totalMB) : undefined
+    const dataUsedMB = Math.round(usedMB)
+    const dataRemainingMB = dataTotalMB != null ? Math.max(0, dataTotalMB - dataUsedMB) : undefined
+    const percentageUsed = dataTotalMB != null && dataTotalMB > 0 ? Math.min(100, Math.max(0, Math.round((dataUsedMB / dataTotalMB) * 100))) : undefined
+
+    return {
+      success: true,
+      data: {
+        // iccid field is required by the interface; this is the provider
+        // packageEsimId (safe, non-local). The sync layer supplies the real
+        // eSIM identity from the ESIM row.
+        iccid: packageEsimId,
+        dataUsedMB,
+        dataTotalMB,
+        dataRemainingMB,
+        percentageUsed,
+        expiresAt: latestExpire ? String(latestExpire) : undefined,
+        status: detail.status || undefined,
+        rawMetadata: {
+          package_status: detail.package_status,
+          rateGroupCount: groups.length,
+          earliestStart,
+          latestExpire,
+          daysUsed,
+        },
+      },
+    }
+  }
+
+  /**
+   * Canonical US-Matrix status lookup — read-only, evidence-based.
+   *
+   * Uses the documented POST /esims/info (vendor profile + profile logs) and
+   * network event logs (POST /esims/location-event-logs). Maps evidence
+   * conservatively:
+   *   - suspended            → SUSPENDED
+   *   - latest successful DIAMETER_SUCCESS + serving_network → ACTIVE
+   *   - profile ENABLED / INSTALLED (no network attach) → INSTALLED
+   *   - assigned / provisioned only → PENDING_ACTIVATION
+   *
+   * This connector owns provider-specific interpretation; the global lifecycle
+   * engine applies the canonical monotonic rules. Never manufactures ACTIVE
+   * from ENABLE alone, assigned, linked, QR, or API success.
+   */
+  async getStatus(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
+    const config = await this.loadConfig()
+    if (!config) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not found' } }
+    if (!config.token) return { success: false, error: { code: 'NO_TOKEN', message: 'Not authenticated — run Save & Authenticate first' } }
+
+    const esimUuid = typeof identifier === 'string' ? identifier : (identifier as StatusLookupIdentifier)?.providerActivationId
+    if (!esimUuid) return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'Provider eSIM UUID required for status lookup' } }
+
+    // 1) Vendor profile info (documented read-only).
+    const infoBody: GetEsimInfoRequestDTO = { esimId: esimUuid }
+    const infoResult = await this.request('esimInfo', { method: 'POST', body: infoBody })
+    if (!infoResult.success && infoResult.error?.code === 'HTTP_401') {
+      return { success: false, error: infoResult.error }
+    }
+
+    const info = infoResult.success ? infoResult.data as GetEsimInfoResponseDTO | null : null
+    const profile: ActivationProfileDTO | undefined = info?.activationProfile
+    const profileLogs: ProfileLogDTO[] = Array.isArray(info?.profileLogs) ? info.profileLogs : []
+
+    // 2) Network attach evidence (read-only event logs).
+    let networkAttach = false
+    let servingNetwork: string | null = null
+    let networkType: string | null = null
+    let eventTime: string | null = null
+    const eventBody: LocationLogsRequestDTO = { esimId: esimUuid, page: 1, pageSize: 20 }
+    const eventResult = await this.request('esimLocationEventLogs', { method: 'POST', body: eventBody }).catch(() => ({ success: false }))
+    if (eventResult.success) {
+      const eventData = (eventResult as any).data
+      const events: NetworkEventLogDTO[] = Array.isArray(eventData) ? eventData
+        : Array.isArray(eventData?.data) ? eventData.data
+        : []
+      for (const e of events) {
+        const status = String(e?.request_status || '').toUpperCase()
+        const isSuccess = status === 'DIAMETER_SUCCESS' || status === 'SUCCESS' || status === 'OK'
+        if (isSuccess && (e?.serving_network || e?.network_type)) {
+          networkAttach = true
+          servingNetwork = e.serving_network || null
+          networkType = e.network_type || null
+          eventTime = e.event_time || null
+          break
+        }
+      }
+    }
+
+    // 3) Evidence-based normalization (provider-neutral status vocabulary).
+    const profileStatus = String(profile?.status || '').toUpperCase()
+    const logStates = profileLogs.map(l => String(l?.status || '').toUpperCase())
+
+    if (profileStatus === 'SUSPENDED' || logStates.includes('SUSPENDED')) {
+      return { success: true, data: { status: 'SUSPENDED', rawStatus: 'suspended', rawMetadata: { source: 'esims/info' } } }
+    }
+    if (networkAttach) {
+      return {
+        success: true,
+        data: {
+          status: 'ACTIVE',
+          rawStatus: 'network_attach',
+          rawMetadata: { source: 'esims/location-event-logs', servingNetwork, networkType, eventTime },
+        },
+      }
+    }
+    if (profileStatus === 'ENABLED' || profileStatus === 'ENABLE' || logStates.includes('ENABLED') || logStates.includes('INSTALLED')) {
+      // Profile enabled / installed on device — NOT network-active.
+      return { success: true, data: { status: 'INSTALLED', rawStatus: 'profile_enabled', rawMetadata: { source: 'esims/info', profileLogStates: logStates } } }
+    }
+    // assigned-only / no proven evidence → provisioned, not active.
+    return { success: true, data: { status: 'PENDING_ACTIVATION', rawStatus: profileStatus || 'assigned', rawMetadata: { source: 'esims/info', profileLogStates: logStates } } }
   }
 
   async topUpESIM(_params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {

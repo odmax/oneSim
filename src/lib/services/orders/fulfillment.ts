@@ -147,6 +147,10 @@ export async function persistProviderFulfillment(input: PersistFulfillmentInput)
             packageDataGB: pGB,
             packageValidityDays: pValidity,
             ...(rawMetadata ? { providerResponse: rawMetadata } : {}),
+            // Auto-schedule status + usage sync (Part 13). Unsupported-capability
+            // providers are corrected to null by the batch capability gate.
+            statusNextSyncAt: new Date(Date.now() + 60_000),
+            usageNextSyncAt: new Date(Date.now() + 3_600_000),
           },
         })
       }

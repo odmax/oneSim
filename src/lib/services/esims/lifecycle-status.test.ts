@@ -144,4 +144,77 @@ describe('deriveEsimLifecycleStatus', () => {
     expect(r.status).toBe('ACTIVE')
     expect(r.setActivatedAt).toBe(true)
   })
+
+  it('21. assigned (US-Matrix inventory) is NOT treated as ACTIVE', () => {
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'assigned',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+    }))
+    // "assigned" is allocation state — not device activation.
+    expect(r.status).toBe('PENDING_ACTIVATION')
+    expect(r.setActivatedAt).toBe(false)
+  })
+
+  it('22. free (US-Matrix inventory) is NOT treated as ACTIVE', () => {
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'free',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+    }))
+    expect(r.status).toBe('PENDING_ACTIVATION')
+  })
+
+  it('23. ACTIVE never regresses to PENDING from a weaker provider report', () => {
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'PENDING',
+      currentStatus: 'ACTIVE',
+      dataUsedMB: 0,
+      activatedAt: new Date('2026-01-01'),
+    }))
+    expect(r.status).toBe('ACTIVE')
+    expect(r.reason).toBe('monotonic-preserve-active')
+  })
+
+  it('24. INSTALLED never regresses to PROCESSING from a weaker provider report', () => {
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'PROCESSING',
+      currentStatus: 'INSTALLED',
+      dataUsedMB: 0,
+      activatedAt: new Date('2026-01-01'),
+    }))
+    expect(r.status).toBe('INSTALLED')
+    expect(r.reason).toBe('monotonic-preserve-active')
+  })
+
+  it('25. ACTIVE still transitions to SUSPENDED / EXPIRED (terminal/stronger states)', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'SUSPENDED', currentStatus: 'ACTIVE', activatedAt: new Date() })).status).toBe('SUSPENDED')
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'EXPIRED', currentStatus: 'ACTIVE', activatedAt: new Date() })).status).toBe('EXPIRED')
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'FAILED', currentStatus: 'ACTIVE', activatedAt: new Date() })).status).toBe('FAILED')
+  })
+
+  it('26. SUSPENDED can resume to ACTIVE when provider reports explicit device-active evidence', () => {
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'SUSPENDED',
+      dataUsedMB: 64,
+      activatedAt: new Date('2026-01-01'),
+    }))
+    expect(r.status).toBe('ACTIVE')
+    expect(r.reason).toBe('already-activated')
+  })
+
+  it('27. positive per-eSIM usage promotes PENDING_ACTIVATION → ACTIVE (documented policy)', () => {
+    const r = deriveEsimLifecycleStatus(input({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 1,
+      activatedAt: null,
+    }))
+    expect(r.status).toBe('ACTIVE')
+    expect(r.setActivatedAt).toBe(true)
+    expect(r.reason).toBe('usage-evidence')
+  })
 })

@@ -77,16 +77,18 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
   ],
 
   // US-Matrix eSIM API — runtime LOGIN_TOKEN auth, catalog + inventory +
-  // purchase (POST /esims/assign-package), eSIM-level suspend/resume. Usage is
-  // NOT advertised: POST /packages/usage requires packageEsimId, which is not
-  // returned by any documented response. No status lifecycle, top-up, balance
-  // or webhooks in the documented client API.
+  // purchase (POST /esims/assign-package), eSIM-level suspend/resume, status
+  // (POST /esims/info + location-event-logs evidence), and usage
+  // (POST /packages/usage via mobile-detail packageEsims[].id). No top-up,
+  // balance or webhooks in the documented client API.
   USMATRIX: [
     ProviderCapability.AUTH,
     ProviderCapability.CATALOG_SYNC,
     ProviderCapability.INVENTORY,
     ProviderCapability.ESIM,
     ProviderCapability.PURCHASE,
+    ProviderCapability.STATUS,
+    ProviderCapability.USAGE,
     ProviderCapability.SUSPEND,
     ProviderCapability.RESUME,
   ],

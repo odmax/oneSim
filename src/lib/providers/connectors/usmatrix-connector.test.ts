@@ -118,13 +118,13 @@ describe('US-Matrix auth profile', () => {
     expect(profile.actionLabel).toBe('Save & Authenticate')
   })
 
-  it('declares implemented capabilities (purchase/suspend/resume/install wired; usage NOT advertised)', () => {
+  it('declares implemented capabilities (purchase/suspend/resume/install/status/usage wired)', () => {
     const caps = new UsMatrixConnector('usmatrix-1', 'US-Matrix').capabilities!
     expect(caps.installationLookup).toBe(true)
     expect(caps.installationLookupHistorical).toBe(true)
     expect(caps.inventory).toBe(true)
-    expect(caps.statusLookup).toBe(false)
-    expect(caps.usageLookup).toBe(false)
+    expect(caps.statusLookup).toBe(true)
+    expect(caps.usageLookup).toBe(true)
     expect(caps.topUp).toBe(false)
     expect(caps.suspend).toBe(true)
     expect(caps.resume).toBe(true)
@@ -354,14 +354,16 @@ describe('US-Matrix installation lookup (read-only, EsimDTO fields)', () => {
 })
 
 describe('US-Matrix top-up + status + QR are unwired (documented endpoints, no OneSIM wiring)', () => {
-  it('top-up/status/getQRCode return NOT_IMPLEMENTED and never call the network', async () => {
+  it('top-up/getQRCode return NOT_IMPLEMENTED and never call the network; getStatus is wired', async () => {
     const fetchSpy = vi.fn()
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     expect((await connector.topUpESIM({ iccid: 'x', planId: 'p', quantity: 1 })).error?.code).toBe('NOT_IMPLEMENTED')
-    expect((await connector.getStatus('x')).error?.code).toBe('NOT_IMPLEMENTED')
     expect((await connector.getQRCode('8944501234567890123')).error?.code).toBe('NOT_IMPLEMENTED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    // getStatus is implemented; with no mock response it errors cleanly (never NOT_IMPLEMENTED).
+    const statusResult = await connector.getStatus('provider-esim-uuid')
+    expect(statusResult.error?.code).not.toBe('NOT_IMPLEMENTED')
+    expect(fetchSpy).toHaveBeenCalled()
   })
 
   it('declares the documented mutating paths in the endpoint map for path-accuracy', () => {
@@ -696,5 +698,323 @@ describe('extractMatchingId (conservative LPA component extraction)', () => {
     const full = 'LPA:1$smdp.example.com$MID-42'
     expect(extractMatchingId(full)).toBe('MID-42')
     expect(extractMatchingId(full)).not.toBe(full)
+  })
+})
+
+describe('US-Matrix status lookup (read-only evidence policy)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+    mockPrisma.provider.update.mockResolvedValue({})
+  })
+
+  function infoResponse(overrides: any = {}) {
+    return okJson({
+      activationProfile: { iccid: '8944501234567890123', eid: '8904305', imsi: '724543', status: 'ENABLED' },
+      profileLogs: [{ status: 'ENABLED', type: 'PROFILE', eventName: 'INSTALL', createdAt: '2026-08-01T10:00:00Z' }],
+      ...overrides,
+    })
+  }
+
+  it('resolveStatusLookup uses providerActivationId (never a local id)', () => {
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = connector.resolveStatusLookup!({ providerActivationId: 'esim-uuid-1', iccid: '8944501234567890123' } as any)
+    expect(r).toBe('esim-uuid-1')
+    expect(r).not.toContain('local')
+  })
+
+  it('resolveStatusLookup falls back to providerResponse.providerEsimId', () => {
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = connector.resolveStatusLookup!({ providerActivationId: '', providerResponse: { providerEsimId: 'esim-uuid-9' } } as any)
+    expect(r).toBe('esim-uuid-9')
+  })
+
+  it('resolveStatusLookup returns null when no provider UUID exists', () => {
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = connector.resolveStatusLookup!({ iccid: '8944501234567890123' } as any)
+    expect(r).toBeNull()
+  })
+
+  it('assigned-only (no profile/network evidence) stays PENDING_ACTIVATION', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ activationProfile: { status: 'assigned' }, profileLogs: [] }))
+      .mockResolvedValueOnce(okJson({ data: [] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(true)
+    expect(r.data?.status).toBe('PENDING_ACTIVATION')
+  })
+
+  it('profile ENABLED does NOT automatically mean ACTIVE (INSTALLED only)', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(infoResponse())
+      .mockResolvedValueOnce(okJson({ data: [] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(true)
+    expect(r.data?.status).toBe('INSTALLED')
+    expect(r.data?.status).not.toBe('ACTIVE')
+  })
+
+  it('suspended → SUSPENDED', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ activationProfile: { status: 'SUSPENDED' }, profileLogs: [] }))
+      .mockResolvedValueOnce(okJson({ data: [] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.data?.status).toBe('SUSPENDED')
+  })
+
+  it('successful network attach → ACTIVE evidence', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ activationProfile: { status: 'ENABLED' }, profileLogs: [] }))
+      .mockResolvedValueOnce(okJson({ data: [{ event_time: '2026-08-02T08:00:00Z', request_type: 'Update Location', request_status: 'DIAMETER_SUCCESS', serving_network: '65501', network_type: 'LTE', volume_used: 12 }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.data?.status).toBe('ACTIVE')
+  })
+
+  it('failed network event does NOT → ACTIVE', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ activationProfile: { status: 'ENABLED' }, profileLogs: [] }))
+      .mockResolvedValueOnce(okJson({ data: [{ event_time: '2026-08-02T08:00:00Z', request_type: 'Update Location', request_status: 'DIAMETER_ERROR_LOCAL_HHR', serving_network: '65501' }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.data?.status).toBe('INSTALLED') // profile enabled but no attach
+    expect(r.data?.status).not.toBe('ACTIVE')
+  })
+
+  it('secrets never logged during status lookup (safe field-name diagnostics only)', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(infoResponse())
+      .mockResolvedValueOnce(okJson({ data: [] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    await connector.getStatus('esim-uuid-1')
+    for (const [args] of logSpy.mock.calls as Array<[string]>) {
+      expect(String(args)).not.toContain('8944501234567890123')
+      expect(String(args)).not.toContain('724543')
+      expect(String(args)).not.toContain('Bearer ')
+    }
+    logSpy.mockRestore()
+  })
+})
+
+describe('US-Matrix usage (POST /packages/usage, rate-group normalization)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+    mockPrisma.provider.update.mockResolvedValue({})
+  })
+
+  it('resolveUsageLookup returns packageEsimId only when persisted in providerResponse', () => {
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = connector.resolveUsageLookup!({ providerResponse: { packageEsimId: 'assoc-uuid-1' } } as any)
+    expect(r).toBe('assoc-uuid-1')
+  })
+
+  it('resolveUsageLookup returns a structured bundle (provider eSIM UUID) when no association id persisted', () => {
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = connector.resolveUsageLookup!({ providerActivationId: 'esim-uuid-1', providerResponse: { providerEsimId: 'esim-uuid-1' } } as any)
+    // Not persisted → carry the provider eSIM UUID so getUsage can discover the association.
+    expect(r).toEqual({ providerActivationId: 'esim-uuid-1' })
+  })
+
+  it('resolveUsageLookup returns null when no provider identifier exists at all', () => {
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = connector.resolveUsageLookup!({ providerResponse: {} } as any)
+    expect(r).toBeNull()
+  })
+
+  it('resolveUsageLookup rejects an ICCID-shaped value (not an association id)', () => {
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = connector.resolveUsageLookup!({ providerResponse: { packageEsimId: '8944501234567890123' } } as any)
+    expect(r).toBeNull()
+  })
+
+  it('getUsage rejects a local ICCID (no packageEsimId) cleanly', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage('8944501234567890123')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_IDENTIFIER')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('normalizes GB usage to MB (single rate group)', async () => {
+    const resp = okJson({
+      success: true, errmsg: '',
+      package: { package_status: 'New', status: 'active', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 5, rate_group_allow_qtyp: 'GB', rate_group_usage: 1.25, rate_group_total_qty: 5, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: '2026-08-01', rate_group_expire: '2026-08-31', rate_group_days_used: 10 },
+      ] },
+    })
+    const fetchSpy = vi.fn().mockResolvedValue(resp)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage('assoc-uuid-1')
+    expect(r.success).toBe(true)
+    expect(r.data?.dataTotalMB).toBe(5120) // 5 GB
+    expect(r.data?.dataUsedMB).toBe(1280) // 1.25 GB
+    expect(r.data?.dataRemainingMB).toBe(3840)
+    expect(r.data?.expiresAt).toBe('2026-08-31')
+  })
+
+  it('normalizes MB usage to MB (unit passthrough)', async () => {
+    const resp = okJson({
+      success: true, errmsg: '',
+      package: { package_status: 'New', status: 'active', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 1024, rate_group_allow_qtyp: 'MB', rate_group_usage: 512, rate_group_total_qty: 1024, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'MB', rate_group_starttime: '2026-08-01', rate_group_expire: '2026-08-31', rate_group_days_used: 5 },
+      ] },
+    })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(resp)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage('assoc-uuid-1')
+    expect(r.data?.dataTotalMB).toBe(1024)
+    expect(r.data?.dataUsedMB).toBe(512)
+    expect(r.data?.dataRemainingMB).toBe(512)
+  })
+
+  it('aggregates multiple rate groups without double-counting', async () => {
+    const resp = okJson({
+      success: true, errmsg: '',
+      package: { package_status: 'New', status: 'active', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 2, rate_group_allow_qtyp: 'GB', rate_group_usage: 0.5, rate_group_total_qty: 2, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: '2026-08-01', rate_group_expire: '2026-08-31', rate_group_days_used: 10 },
+        { rate_group_id: 'rg-2', rate_group_allowance: 3, rate_group_allow_qtyp: 'GB', rate_group_usage: 1, rate_group_total_qty: 3, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: '2026-08-01', rate_group_expire: '2026-09-30', rate_group_days_used: 5 },
+      ] },
+    })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(resp)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage('assoc-uuid-1')
+    expect(r.data?.dataTotalMB).toBe(5120) // 2+3 GB
+    expect(r.data?.dataUsedMB).toBe(1536) // 0.5+1 GB
+    expect(r.data?.dataRemainingMB).toBe(3584)
+    expect(r.data?.expiresAt).toBe('2026-09-30') // latest
+  })
+
+  it('remaining = total - used always non-negative', async () => {
+    const resp = okJson({
+      success: true, errmsg: '',
+      package: { package_status: 'New', status: 'active', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 1, rate_group_allow_qtyp: 'GB', rate_group_usage: 2, rate_group_total_qty: 1, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: '2026-08-01', rate_group_expire: '2026-08-31', rate_group_days_used: 10 },
+      ] },
+    })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(resp)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage('assoc-uuid-1')
+    expect(r.data?.dataRemainingMB).toBe(0)
+  })
+
+  it('returns INVALID_RESPONSE when no rate groups', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({ success: true, errmsg: '', package: { package_status: 'New', status: 'active', rate_groups: [] } }))
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage('assoc-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_RESPONSE')
+  })
+
+  it('discovers packageEsimId from mobile-detail packageEsims[].id (never package.id)', async () => {
+    const fetchSpy = vi.fn()
+    // First call: mobile-detail returns packageEsims with association id + package.id (distinct).
+    fetchSpy
+      .mockResolvedValueOnce(okJson({
+        data: {
+          packageEsims: [
+            { id: 'assoc-uuid-9', status: 'active', usageValue: 0, package: { id: 'pkg-uuid-77', name: 'Test', dataLimit: 10 } },
+          ],
+        },
+      }))
+      .mockResolvedValueOnce(okJson({
+        success: true, errmsg: '',
+        package: { package_status: 'New', status: 'active', rate_groups: [
+          { rate_group_id: 'rg-1', rate_group_allowance: 10, rate_group_allow_qtyp: 'GB', rate_group_usage: 1, rate_group_total_qty: 10, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: '2026-08-16', rate_group_expire: '2026-09-05', rate_group_days_used: 1 },
+        ] },
+      }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage({ providerActivationId: 'esim-uuid-1' })
+    expect(r.success).toBe(true)
+    // The usage POST body must carry the ASSOCIATION id, never package.id.
+    const usageBody = JSON.parse(fetchSpy.mock.calls[1][1].body)
+    expect(usageBody.packageEsimId).toBe('assoc-uuid-9')
+    expect(usageBody.packageEsimId).not.toBe('pkg-uuid-77')
+  })
+
+  it('prefers the active association when multiple exist', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({
+        data: {
+          packageEsims: [
+            { id: 'assoc-old', status: 'expired', package: { id: 'pkg-1' } },
+            { id: 'assoc-active', status: 'active', package: { id: 'pkg-2' } },
+          ],
+        },
+      }))
+      .mockResolvedValueOnce(okJson({ success: true, errmsg: '', package: { package_status: 'New', status: 'active', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 5, rate_group_allow_qtyp: 'GB', rate_group_usage: 1, rate_group_total_qty: 5, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: 'x', rate_group_expire: 'y', rate_group_days_used: 1 },
+      ] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage({ providerActivationId: 'esim-uuid-1' })
+    expect(r.success).toBe(true)
+    const usageBody = JSON.parse(fetchSpy.mock.calls[1][1].body)
+    expect(usageBody.packageEsimId).toBe('assoc-active')
+  })
+
+  it('no association found → clean unavailable (no usage call)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(okJson({ data: { packageEsims: [] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage({ providerActivationId: 'esim-uuid-1' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('NO_ASSOCIATION')
+    expect(fetchSpy).toHaveBeenCalledTimes(1) // mobile-detail only, no /packages/usage
+  })
+
+  it('normalizes the live 10GB / 0.390628GB sample to expected MB values', async () => {
+    const resp = okJson({
+      success: true, errmsg: '',
+      package: { status: 'active', package_status: 'In Use', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 10, rate_group_allow_qtyp: 'GB', rate_group_usage: 0.3906280854716897, rate_group_total_qty: 10, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: '2026-08-16 09:08:42.274', rate_group_expire: '2026-09-05 09:08:42.274', rate_group_days_used: 1 },
+      ] },
+    })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(resp)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage('assoc-uuid-live')
+    expect(r.success).toBe(true)
+    expect(r.data?.dataTotalMB).toBe(10240) // 10 GB
+    expect(r.data?.dataUsedMB).toBe(400) // 0.3906 GB ≈ 400 MB
+    expect(r.data?.dataRemainingMB).toBe(9840)
+    expect(r.data?.expiresAt).toBe('2026-09-05 09:08:42.274')
+  })
+
+  it('KB and bytes units convert correctly', async () => {
+    const resp = okJson({
+      success: true, errmsg: '',
+      package: { package_status: 'New', status: 'active', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 2048, rate_group_allow_qtyp: 'KB', rate_group_usage: 512, rate_group_total_qty: 2048, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'KB', rate_group_starttime: 'x', rate_group_expire: 'y', rate_group_days_used: 1 },
+        { rate_group_id: 'rg-2', rate_group_allowance: 1048576, rate_group_allow_qtyp: 'B', rate_group_usage: 524288, rate_group_total_qty: 1048576, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'B', rate_group_starttime: 'x', rate_group_expire: 'z', rate_group_days_used: 1 },
+      ] },
+    })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(resp)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage('assoc-uuid-1')
+    // KB: 2048 KB = 2 MB total, 512 KB = 0.5 MB used
+    // B: 1048576 B = 1 MB total, 524288 B = 0.5 MB used
+    expect(r.data?.dataTotalMB).toBe(3)
+    expect(r.data?.dataUsedMB).toBe(1)
   })
 })

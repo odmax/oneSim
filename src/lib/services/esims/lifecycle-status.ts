@@ -31,8 +31,14 @@ export interface LifecycleResult {
  *  unless the provider explicitly reports a terminal/better state. */
 const STICKY_STATUSES = ['ACTIVE', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED']
 
+/** Statuses from which we never regress to a "not yet active" state. */
+const NEVER_REGRESS_TO_PENDING_FROM = ['ACTIVE', 'INSTALLED', 'INSTALLING']
+
 /** Provider-reported statuses that represent device-level activation. */
 const DEVICE_ACTIVATION_SIGNALS = ['INSTALLED', 'ACTIVATED_ON_DEVICE', 'DEVICE_ACTIVATED', 'IN_USE', 'ONLINE', 'ATTACHED']
+
+/** Provider-reported "not yet active" states (weaker than ACTIVE). */
+const WEAKER_PROVISIONING_STATES = ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'QUEUED', 'RESERVED']
 
 /** Whether a positive usage value counts as activation evidence. */
 function hasUsageEvidence(dataUsedMB: number): boolean {
@@ -47,6 +53,12 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
   const { providerNormalizedStatus, currentStatus, dataUsedMB, activatedAt, providerInstalledSignal } = input
   const upper = providerNormalizedStatus.toUpperCase()
   const currentUpper = (currentStatus || '').toUpperCase()
+
+  // Monotonic guard: never regress from a device-active state to "not yet
+  // active" based on a weaker provider provisioning report (Part 23).
+  if (NEVER_REGRESS_TO_PENDING_FROM.includes(currentUpper) && WEAKER_PROVISIONING_STATES.includes(upper)) {
+    return { status: currentUpper, setActivatedAt: false, reason: 'monotonic-preserve-active' }
+  }
 
   // Explicit device-installed signal from provider
   if (providerInstalledSignal || DEVICE_ACTIVATION_SIGNALS.includes(upper)) {

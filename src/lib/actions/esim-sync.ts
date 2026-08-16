@@ -65,29 +65,18 @@ export async function syncEsimUsage(esimId: string) {
   const providerId = esim.purchase.package.providerId
   if (!providerId) return { success: false, error: 'No linked provider' }
 
-  const adapter = await getAdapterForProvider(providerId)
-  if (!adapter) return { success: false, error: 'Provider not available' }
+  // Route through the SAME canonical usage sync service as background jobs and
+  // the client refresh — never a separate direct-provider fetch path (Part 7).
+  const { syncESIMUsage } = await import('@/lib/services/usage/sync-usage')
+  const result = await syncESIMUsage(esimId)
 
-  const result = await adapter.getUsage(esim.iccid)
-  if (!result.success) return { success: false, error: result.error?.message }
-
-  if (result.data) {
-    await prisma.usageRecord.create({
-      data: {
-        esimId,
-        dataUsedMB: result.data.dataUsedMB,
-        timestamp: result.data.timestamp ? new Date(result.data.timestamp) : new Date(),
-      },
-    })
+  if (result.success && result.skipped) {
+    return { success: false, error: result.skipReason === 'CAPABILITY_NOT_SUPPORTED' ? 'Usage not supported by provider' : (result.skipReason || 'Usage unavailable') }
   }
-
-  await prisma.eSIM.update({
-    where: { id: esimId },
-    data: { lastSyncAt: new Date() },
-  })
+  if (!result.success) return { success: false, error: result.error || 'Usage sync failed' }
 
   revalidatePath(`/admin/esims/${esimId}`)
-  return { success: true, data: result.data }
+  return { success: true, data: result }
 }
 
 export async function getQrCode(esimId: string) {

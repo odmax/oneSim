@@ -45,6 +45,7 @@ const provider = { id: 'p-1', code: 'CHOICE', type: 'CHOICE', adapterStrategy: '
 
 function choiceConnector(overrides: any = {}) {
   return {
+    capabilities: { statusLookup: true, usageLookup: true },
     resolveStatusLookup: vi.fn((esim: any) => ({
       ...(esim.iccid ? { iccid: esim.iccid } : {}),
       ...(esim.imsi ? { imsi: esim.imsi } : {}),
@@ -117,7 +118,7 @@ describe('executeStatusSynchronization — provider-neutral identifier', () => {
     expect(updateCall.data.statusNextSyncAt.getTime() - Date.now()).toBeLessThan(sixHours + 5000)
   })
 
-  it('ACTIVE regression guard: provider PENDING does NOT downgrade status', async () => {
+  it('ACTIVE regression guard: provider PENDING does NOT downgrade status (canonical monotonic)', async () => {
     const connector = choiceConnector({
       getStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PENDING' } }),
     })
@@ -126,8 +127,19 @@ describe('executeStatusSynchronization — provider-neutral identifier', () => {
     await executeStatusSynchronization(10)
 
     const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
-    expect(updateCall.data.status).toBeUndefined() // never regress ACTIVE → PENDING
-    expect(updateCall.data.statusSyncRetryCount).toEqual({ increment: 1 })
+    // Canonical deriveEsimLifecycleStatus preserves ACTIVE (never regress to PENDING).
+    expect(updateCall.data.status).toBe('ACTIVE')
+    expect(updateCall.data.statusNextSyncAt.getTime() - Date.now()).toBeGreaterThanOrEqual(6 * 3600 * 1000 - 5000)
+  })
+
+  it('skips a connector that does not declare status lookup (US-Matrix pattern)', async () => {
+    mockBuildConnector.mockResolvedValue({ capabilities: { statusLookup: false }, getStatus: vi.fn() } as any)
+    const result = await executeStatusSynchronization(10)
+    expect(result.skipped).toBe(1)
+    expect(mockPrisma.eSIM.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'esim-1' },
+      data: expect.objectContaining({ statusNextSyncAt: null }),
+    }))
   })
 
   it('failure schedules +5m backoff (not the +6h success cadence) and increments retry', async () => {
@@ -162,5 +174,45 @@ describe('executeStatusSynchronization — provider-neutral identifier', () => {
     expect(message).toContain('iccid=8901••••4567')
     expect(message).not.toContain('boom') // no raw provider message/payload
     expect(message).not.toContain('test-token')
+  })
+})
+
+describe('executeUsageSynchronization — capability gate + isolation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.eSIM.update.mockResolvedValue({})
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim()])
+    mockPrisma.provider.findUnique.mockResolvedValue(provider as any)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('skips a connector that does not declare usage lookup (US-Matrix pattern)', async () => {
+    const { executeUsageSynchronization } = await import('./esim-sync-batch')
+    mockBuildConnector.mockResolvedValue({ capabilities: { usageLookup: false }, getUsage: vi.fn() } as any)
+
+    const result = await executeUsageSynchronization(10)
+    expect(result.skipped).toBe(1)
+    expect(mockPrisma.eSIM.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'esim-1' },
+      data: expect.objectContaining({ usageNextSyncAt: null }),
+    }))
+  })
+
+  it('syncs usage for a connector that declares usage lookup', async () => {
+    const { executeUsageSynchronization } = await import('./esim-sync-batch')
+    mockBuildConnector.mockResolvedValue({
+      capabilities: { usageLookup: true, statusLookup: true },
+      getUsage: vi.fn().mockResolvedValue({ success: true, data: { iccid: '89012345678901234567', dataUsedMB: 500, dataTotalMB: 1024, dataRemainingMB: 524 } }),
+    } as any)
+
+    const result = await executeUsageSynchronization(10)
+    expect(result.updated).toBe(1)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.dataUsedMB).toBe(500)
+    expect(updateCall.data.dataTotalMB).toBe(1024)
+    expect(updateCall.data.dataRemainingMB).toBe(524)
   })
 })

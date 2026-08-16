@@ -108,89 +108,54 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
   const providerId = esim.purchase.package.providerId
   if (!providerId) return { success: false, error: 'No linked provider' }
 
+  // Capability exposure gate (client portal).
   const { isCapabilityExposedToPortal } = await import('@/lib/providers/capabilities/exposure')
   if (!await isCapabilityExposedToPortal(providerId, 'USAGE' as any)) {
     return { success: false, error: 'capability_not_available' }
   }
 
-  const adapter = await getAdapterForProvider(providerId)
-  if (!adapter) return { success: false, error: 'Provider adapter unavailable' }
+  // Route through the SAME canonical usage sync service as background jobs and
+  // manual admin refresh (Part 6) — never a separate provider-fetch path.
+  const { syncESIMUsage } = await import('@/lib/services/usage/sync-usage')
+  const result = await syncESIMUsage(esimId)
 
-  const provider = await prisma.provider.findUnique({
-    where: { id: providerId },
-    select: { code: true },
-  })
-  const isChoice = provider?.code?.toUpperCase() === 'CHOICE'
-
-  let identifier: string | StatusLookupIdentifier
-  if (isChoice) {
-    identifier = buildChoiceStatusLookup(esim)
-    if (!hasChoiceIdentifier(identifier)) {
-      return { success: false, error: 'No Choice usage identifier (ICCID/IMSI/imsi_version) available' }
-    }
-  } else {
-    if (!esim.iccid) return { success: false, error: 'eSIM has no ICCID' }
-    identifier = esim.iccid
+  if (result.success && result.skipped) {
+    return { success: false, error: result.skipReason === 'CAPABILITY_NOT_SUPPORTED' ? 'Usage not supported by provider' : (result.skipReason || 'Usage unavailable') }
+  }
+  if (!result.success) {
+    return { success: false, error: result.error || 'Usage sync failed' }
   }
 
-  const result = await adapter.getUsage(identifier)
-  if (!result.success) return { success: false, error: result.error?.message || 'Usage fetch failed' }
+  // Re-read the persisted snapshot and apply canonical first-usage activation
+  // evidence (positive per-eSIM usage may promote PENDING_ACTIVATION → ACTIVE).
+  const fresh = await prisma.eSIM.findUnique({ where: { id: esimId } })
+  const dataUsedMB = result.dataUsedMB ?? 0
+  const dataTotalMB = result.dataTotalMB
+  const dataRemainingMB = result.dataRemainingMB
 
-  const usageData = (result.data || {}) as Record<string, any>
-  const dataUsedMB = usageData.dataUsedMB ?? 0
-  const dataTotalMB = usageData.dataTotalMB ?? undefined
-  const dataRemainingMB = usageData.dataRemainingMB ?? undefined
-  const expiresAt = usageData.expiresAt ? new Date(usageData.expiresAt) : undefined
-
-  // DB columns are Int; keep fractional values in the normalized result and round only for persistence.
-  const persistedUsedMB = Number.isFinite(dataUsedMB) ? Math.round(dataUsedMB) : 0
-  const persistedTotalMB = dataTotalMB !== undefined ? Math.round(dataTotalMB) : undefined
-  const persistedRemainingMB = dataRemainingMB !== undefined ? Math.round(dataRemainingMB) : undefined
-
-  // Store usage record
-  await prisma.usageRecord.create({
-    data: {
-      esimId,
-      dataUsedMB: persistedUsedMB,
-      dataTotalMB: persistedTotalMB ?? null,
-      dataRemainingMB: persistedRemainingMB ?? null,
-      timestamp: usageData.timestamp ? new Date(usageData.timestamp) : new Date(),
-      ...(usageData.rawMetadata ? { rawData: usageData.rawMetadata as any } : {}),
-    },
-  })
-
-  // Update eSIM usage snapshot — detect first positive usage as device activation
   const hadNoUsage = (esim.dataUsedMB || 0) <= 0
-  const nowHasUsage = persistedUsedMB > 0
+  const nowHasUsage = dataUsedMB > 0
   const firstActivation = hadNoUsage && nowHasUsage && !esim.activatedAt
   const shouldPromoteToActive = hadNoUsage && nowHasUsage && (esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING')
 
   await prisma.eSIM.update({
     where: { id: esimId },
     data: {
-      dataUsedMB: persistedUsedMB,
-      ...(persistedTotalMB !== undefined ? { dataTotalMB: persistedTotalMB } : {}),
-      ...(persistedRemainingMB !== undefined ? { dataRemainingMB: persistedRemainingMB } : {}),
-      ...(expiresAt ? { expiresAt } : {}),
-      ...(usageData.rawMetadata ? { providerResponse: usageData.rawMetadata as any } : {}),
-      lastUsageAt: new Date(),
-      lastUsageSyncAt: new Date(),
-      lastSyncAt: new Date(),
       ...(firstActivation ? { activatedAt: new Date() } : {}),
       ...(shouldPromoteToActive ? { status: 'ACTIVE' } : {}),
     },
   })
 
   if (firstActivation) {
-    await createTimelineEvent(esim.purchaseId, { eventType: 'ESIM_ACTIVATED', message: `eSIM ${esim.iccid.slice(-8)} activated — first usage detected (${persistedUsedMB}MB)` })
+    await createTimelineEvent(esim.purchaseId, { eventType: 'ESIM_ACTIVATED', message: `eSIM ${esim.iccid.slice(-8)} activated — first usage detected (${dataUsedMB}MB)` })
   }
   await createTimelineEvent(esim.purchaseId, { eventType: 'USAGE_REFRESHED', message: `Usage synced: ${dataUsedMB}MB used` })
 
-  const percentageUsed = usageData.percentageUsed ?? (dataTotalMB !== undefined && dataTotalMB > 0 ? Math.round((dataUsedMB / dataTotalMB) * 100) : undefined)
+  const percentageUsed = dataTotalMB !== undefined && dataTotalMB > 0 ? Math.round((dataUsedMB / dataTotalMB) * 100) : undefined
 
   return {
     success: true,
-    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: expiresAt || esim.expiresAt || undefined, status: shouldPromoteToActive ? 'ACTIVE' : esim.status },
+    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: fresh?.expiresAt || esim.expiresAt || undefined, status: shouldPromoteToActive ? 'ACTIVE' : fresh?.status || esim.status },
   }
 }
 

@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/prisma'
-import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
+import { capabilitySupported, resolveUsageLookup, buildProviderConnector } from '@/lib/services/esims/sync-lookup'
 
 export interface SyncUsageResult {
   success: boolean
@@ -8,31 +8,52 @@ export interface SyncUsageResult {
   dataRemainingMB?: number
   status?: string
   error?: string
+  skipped?: boolean
+  skipReason?: string
 }
 
+/**
+ * Canonical single-eSIM usage sync (also used by manual Refresh Usage and the
+ * recurring batch).
+ *
+ * Provider-neutral:
+ *   - capability gate: only calls connectors that declare usageLookup
+ *     (AIRHUB/IBASIS/US-Matrix → clean skip, never a failure).
+ *   - identifier safety: connector.resolveUsageLookup(esim) → safe fallback
+ *     (provider reference → ICCID). A local OneSIM id is never sent.
+ *   - normalized persistence into UsageRecord + eSIM columns.
+ */
 export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
     include: {
       purchase: {
-        include: {
-          package: true,
-        },
+        include: { package: true },
       },
     },
   })
 
   if (!esim) return { success: false, error: 'eSIM not found' }
-  if (!esim.iccid) return { success: false, error: 'eSIM has no ICCID' }
 
-  const providerId = esim.purchase.package.providerId
-  if (!providerId) return { success: false, error: 'No provider configured' }
+  const providerId = esim.purchase?.package?.providerId
+  if (!providerId) return { success: true, skipped: true, skipReason: 'PROVIDER_NOT_CONFIGURED' }
 
-  const adapter = await getAdapterForProvider(providerId)
-  if (!adapter) return { success: false, error: 'Provider adapter unavailable' }
+  const connector = await buildProviderConnector(providerId)
+  if (!connector) return { success: true, skipped: true, skipReason: 'PROVIDER_NOT_CONFIGURED' }
+
+  // Capability gate — unsupported providers skip cleanly.
+  if (!capabilitySupported(connector, 'usageLookup')) {
+    return { success: true, skipped: true, skipReason: 'CAPABILITY_NOT_SUPPORTED' }
+  }
+
+  // Safe provider-neutral identifier (never a local OneSIM id).
+  const lookup = resolveUsageLookup(connector, esim)
+  if (!lookup.ok) {
+    return { success: true, skipped: true, skipReason: lookup.skipReason }
+  }
 
   try {
-    const usageResult = await adapter.getUsage(esim.iccid)
+    const usageResult = await connector.getUsage(lookup.identifier)
 
     if (usageResult.success && usageResult.data) {
       const d = usageResult.data
@@ -53,6 +74,7 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
         if (dataUsedMB !== undefined) updateData.dataUsedMB = dataUsedMB
         if ((d as any).dataTotalMB !== undefined) updateData.dataTotalMB = (d as any).dataTotalMB
         if ((d as any).dataRemainingMB !== undefined) updateData.dataRemainingMB = (d as any).dataRemainingMB
+        if ((d as any).expiresAt) updateData.expiresAt = new Date((d as any).expiresAt)
 
         await tx.eSIM.update({
           where: { id: esimId },
@@ -74,7 +96,7 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
   }
 }
 
-export async function batchSyncUsage(businessId?: string): Promise<{ synced: number; failed: number }> {
+export async function batchSyncUsage(businessId?: string): Promise<{ synced: number; skipped: number; failed: number }> {
   const where: any = {
     iccid: { not: null },
   }
@@ -93,13 +115,18 @@ export async function batchSyncUsage(businessId?: string): Promise<{ synced: num
   })
 
   let synced = 0
+  let skipped = 0
   let failed = 0
 
   for (const esim of esims) {
     const result = await syncESIMUsage(esim.id)
-    if (result.success) synced++
-    else failed++
+    if (result.success) {
+      if (result.skipped) skipped++
+      else synced++
+    } else {
+      failed++
+    }
   }
 
-  return { synced, failed }
+  return { synced, skipped, failed }
 }

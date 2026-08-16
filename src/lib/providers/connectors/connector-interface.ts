@@ -93,6 +93,8 @@ export interface StatusLookupIdentifier {
   imsi?: string
   imsiVersion?: string | number
   currentStatus?: string
+  /** Optional provider-owned eSIM/activation UUID (US-Matrix usage discovery). */
+  providerActivationId?: string
 }
 
 /**
@@ -108,6 +110,9 @@ export interface StatusLookupEsim {
   status?: string | null
   providerSubscriptionId?: string | null
   providerActivationId?: string | null
+  /** Optional provider metadata (e.g. persisted providerEsimId / packageEsimId). */
+  providerResponse?: unknown
+  providerSubscriberId?: string | null
 }
 
 export type InstallationLookupState = 'READY' | 'NOT_AVAILABLE_YET' | 'NOT_SUPPORTED' | 'NOT_RECOVERABLE' | 'PERMANENT_FAILURE'
@@ -414,6 +419,13 @@ export interface IProviderConnector {
    * connector does not implement it.
    */
   resolveStatusLookup?(esim: StatusLookupEsim): string | StatusLookupIdentifier | null
+  /**
+   * Resolve the provider-appropriate USAGE-lookup identifier for an eSIM.
+   * Optional — when absent, callers fall back to a safe provider-reference /
+   * ICCID default. Usage identifiers may differ from status identifiers
+   * (e.g. US-Matrix packageEsimId vs eSIM id). Never returns a local OneSIM id.
+   */
+  resolveUsageLookup?(esim: StatusLookupEsim): string | StatusLookupIdentifier | null
   /**
    * Connector-declared internal capabilities (runtime truth from the connector
    * implementation, NOT the provider DB booleans). Defaults to all-false when
