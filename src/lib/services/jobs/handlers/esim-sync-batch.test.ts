@@ -215,4 +215,37 @@ describe('executeUsageSynchronization — capability gate + isolation', () => {
     expect(updateCall.data.dataTotalMB).toBe(1024)
     expect(updateCall.data.dataRemainingMB).toBe(524)
   })
+
+  it('persists a discovered packageEsimId into providerResponse (preserving existing keys)', async () => {
+    const { executeUsageSynchronization } = await import('./esim-sync-batch')
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ providerResponse: { providerEsimId: 'esim-uuid-1' } })])
+    mockBuildConnector.mockResolvedValue({
+      capabilities: { usageLookup: true },
+      resolveUsageLookup: (esim: any) => ({ providerActivationId: 'esim-uuid-1', providerPlanId: 'pkg-uuid-77' }),
+      getUsage: vi.fn().mockResolvedValue({ success: true, data: { iccid: 'assoc', dataUsedMB: 400, providerPackageEsimId: 'assoc-uuid-9' } }),
+    } as any)
+
+    const result = await executeUsageSynchronization(10)
+    expect(result.updated).toBe(1)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.providerResponse).toEqual({ providerEsimId: 'esim-uuid-1', packageEsimId: 'assoc-uuid-9' })
+  })
+
+  it('treats an ambiguous association as a clean skip (no retry failure)', async () => {
+    const { executeUsageSynchronization } = await import('./esim-sync-batch')
+    mockBuildConnector.mockResolvedValue({
+      capabilities: { usageLookup: true },
+      resolveUsageLookup: (esim: any) => ({ providerActivationId: 'esim-uuid-1' }),
+      getUsage: vi.fn().mockResolvedValue({ success: false, error: { code: 'AMBIGUOUS_ASSOCIATION', message: 'no unique match' } }),
+    } as any)
+
+    const result = await executeUsageSynchronization(10)
+    expect(result.skipped).toBe(1)
+    expect(result.failed).toBe(0)
+    // Clean skip — the retry count is NOT incremented and polling continues.
+    expect(mockPrisma.eSIM.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'esim-1' },
+      data: expect.objectContaining({ usageSyncRetryCount: 0 }),
+    }))
+  })
 })

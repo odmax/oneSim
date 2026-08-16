@@ -62,6 +62,10 @@ export interface UsageResult {
   expiresAt?: string
   /** Supplemental normalized status. Never used to downgrade a meaningful stored status. */
   status?: string
+  /** Provider package↔eSIM association id used/discovered for this lookup
+   *  (e.g. US-Matrix packageEsimId). Provider-owned and safe to persist so
+   *  future usage lookups skip mobile-detail discovery. */
+  providerPackageEsimId?: string
   /** Sanitized provider metadata safe to persist. */
   rawMetadata?: Record<string, any>
 }
@@ -95,6 +99,11 @@ export interface StatusLookupIdentifier {
   currentStatus?: string
   /** Optional provider-owned eSIM/activation UUID (US-Matrix usage discovery). */
   providerActivationId?: string
+  /** Optional provider-owned package identity (provider package UUID / plan id).
+   *  Used to match package↔eSIM associations deterministically (e.g. US-Matrix
+   *  mobile-detail packageEsims[].package.id). Never a local OneSIM id. */
+  providerPackageId?: string
+  providerPlanId?: string
 }
 
 /**
@@ -113,6 +122,9 @@ export interface StatusLookupEsim {
   /** Optional provider metadata (e.g. persisted providerEsimId / packageEsimId). */
   providerResponse?: unknown
   providerSubscriberId?: string | null
+  /** Optional provider-owned package identity (provider package UUID / plan id). */
+  providerPackageId?: string | null
+  providerPlanId?: string | null
 }
 
 export type InstallationLookupState = 'READY' | 'NOT_AVAILABLE_YET' | 'NOT_SUPPORTED' | 'NOT_RECOVERABLE' | 'PERMANENT_FAILURE'

@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/prisma'
-import { capabilitySupported, resolveUsageLookup, buildProviderConnector } from '@/lib/services/esims/sync-lookup'
+import { capabilitySupported, resolveUsageLookup, buildProviderConnector, mergeProviderPackageEsimId, isUsageLookupSkip, type SyncLookupEsim } from '@/lib/services/esims/sync-lookup'
 
 export interface SyncUsageResult {
   success: boolean
@@ -46,8 +46,15 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
     return { success: true, skipped: true, skipReason: 'CAPABILITY_NOT_SUPPORTED' }
   }
 
-  // Safe provider-neutral identifier (never a local OneSIM id).
-  const lookup = resolveUsageLookup(connector, esim)
+  // Safe provider-neutral identifier (never a local OneSIM id). The connector
+  // resolver also receives the provider-owned package identity so providers
+  // that need to match package↔eSIM associations (e.g. US-Matrix mobile-detail)
+  // can resolve them deterministically.
+  const lookup = resolveUsageLookup(connector, {
+    ...esim,
+    providerPackageId: esim.purchase?.package?.providerPackageId ?? undefined,
+    providerPlanId: esim.purchase?.package?.providerPlanId ?? undefined,
+  } as SyncLookupEsim)
   if (!lookup.ok) {
     return { success: true, skipped: true, skipReason: lookup.skipReason }
   }
@@ -76,6 +83,12 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
         if ((d as any).dataRemainingMB !== undefined) updateData.dataRemainingMB = (d as any).dataRemainingMB
         if ((d as any).expiresAt) updateData.expiresAt = new Date((d as any).expiresAt)
 
+        // Persist a provider-discovered package↔eSIM association id
+        // (providerResponse.packageEsimId) WITHOUT overwriting existing keys, so
+        // subsequent usage syncs use the fast path (no re-discovery).
+        const mergedProviderResponse = mergeProviderPackageEsimId(esim.providerResponse, (d as any).providerPackageEsimId)
+        if (mergedProviderResponse) updateData.providerResponse = mergedProviderResponse
+
         await tx.eSIM.update({
           where: { id: esimId },
           data: updateData,
@@ -88,6 +101,12 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
         dataTotalMB: (d as any).dataTotalMB,
         dataRemainingMB: (d as any).dataRemainingMB,
       }
+    }
+
+    // No safe usage identifier (no/ambiguous association) → clean skip, never a
+    // retryable failure.
+    if (isUsageLookupSkip(usageResult.error?.code)) {
+      return { success: true, skipped: true, skipReason: usageResult.error!.code }
     }
 
     return { success: false, error: usageResult.error?.message || 'Usage fetch failed' }

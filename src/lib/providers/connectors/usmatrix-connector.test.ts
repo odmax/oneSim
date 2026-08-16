@@ -782,6 +782,26 @@ describe('US-Matrix status lookup (read-only evidence policy)', () => {
     expect(r.data?.status).toBe('ACTIVE')
   })
 
+  it('real evidence: profile INSTALLED + DIAMETER_SUCCESS + serving network → ACTIVE', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({
+        activationProfile: { status: 'INSTALLED' },
+        profileLogs: [
+          { status: 'AVAILABLE', type: 'PROFILE', eventName: 'CREATE', createdAt: '2026-08-16T09:00:00Z' },
+          { status: 'INSTALLED', type: 'PROFILE', eventName: 'INSTALL', createdAt: '2026-08-16T09:01:00Z' },
+        ],
+      }))
+      .mockResolvedValueOnce(okJson({ data: [{ event_time: '2026-08-16T09:08:42Z', request_type: 'Update Location', request_status: 'DIAMETER_SUCCESS', serving_network: '65501', network_type: '3G', volume_used: 0.4 }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(true)
+    expect(r.data?.status).toBe('ACTIVE')
+    expect(r.data?.rawStatus).toBe('network_attach')
+    expect(r.data?.rawMetadata?.servingNetwork).toBe('65501')
+  })
+
   it('failed network event does NOT → ACTIVE', async () => {
     const fetchSpy = vi.fn()
     fetchSpy
@@ -842,6 +862,46 @@ describe('US-Matrix usage (POST /packages/usage, rate-group normalization)', () 
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const r = connector.resolveUsageLookup!({ providerResponse: { packageEsimId: '8944501234567890123' } } as any)
     expect(r).toBeNull()
+  })
+
+  it('resolveUsageLookup bundle carries provider-owned package identity for deterministic matching', () => {
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = connector.resolveUsageLookup!({ providerActivationId: 'esim-uuid-1', providerPlanId: 'pkg-uuid-77', providerPackageId: 'pp-1', providerResponse: { providerEsimId: 'esim-uuid-1' } } as any)
+    expect(r).toEqual({ providerActivationId: 'esim-uuid-1', providerPlanId: 'pkg-uuid-77', providerPackageId: 'pp-1' })
+  })
+
+  it('persisted packageEsimId fast path: NO mobile-detail discovery call', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({
+      success: true, errmsg: '',
+      package: { status: 'active', package_status: 'In Use', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 10, rate_group_allow_qtyp: 'GB', rate_group_usage: 1, rate_group_total_qty: 10, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: 'x', rate_group_expire: 'y', rate_group_days_used: 1 },
+      ] },
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const lookup = connector.resolveUsageLookup!({ providerActivationId: 'esim-uuid-1', providerResponse: { packageEsimId: 'assoc-uuid-1' } } as any)
+    expect(lookup).toBe('assoc-uuid-1')
+    const r = await connector.getUsage(lookup as string)
+    expect(r.success).toBe(true)
+    // Exactly ONE HTTP call — /packages/usage only; mobile-detail is never hit.
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/packages/usage')
+    expect(String(fetchSpy.mock.calls[0][0])).not.toContain('/mobile-detail')
+    expect(r.data?.providerPackageEsimId).toBe('assoc-uuid-1')
+  })
+
+  it('exposes the discovered packageEsimId as providerPackageEsimId for canonical persistence', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ data: { packageEsims: [{ id: 'assoc-uuid-9', status: 'active', package: { id: 'pkg-uuid-77' } }] } }))
+      .mockResolvedValueOnce(okJson({ success: true, errmsg: '', package: { package_status: 'New', status: 'active', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 10, rate_group_allow_qtyp: 'GB', rate_group_usage: 1, rate_group_total_qty: 10, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: 'x', rate_group_expire: 'y', rate_group_days_used: 1 },
+      ] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage({ providerActivationId: 'esim-uuid-1' })
+    expect(r.success).toBe(true)
+    expect(r.data?.providerPackageEsimId).toBe('assoc-uuid-9')
   })
 
   it('getUsage rejects a local ICCID (no packageEsimId) cleanly', async () => {
@@ -952,14 +1012,14 @@ describe('US-Matrix usage (POST /packages/usage, rate-group normalization)', () 
     expect(usageBody.packageEsimId).not.toBe('pkg-uuid-77')
   })
 
-  it('prefers the active association when multiple exist', async () => {
+  it('selects the single exact provider-package match among multiple associations', async () => {
     const fetchSpy = vi.fn()
     fetchSpy
       .mockResolvedValueOnce(okJson({
         data: {
           packageEsims: [
-            { id: 'assoc-old', status: 'expired', package: { id: 'pkg-1' } },
-            { id: 'assoc-active', status: 'active', package: { id: 'pkg-2' } },
+            { id: 'assoc-other', status: 'active', package: { id: 'pkg-other' } },
+            { id: 'assoc-match', status: 'active', package: { id: 'pkg-uuid-77' } },
           ],
         },
       }))
@@ -968,10 +1028,61 @@ describe('US-Matrix usage (POST /packages/usage, rate-group normalization)', () 
       ] } }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage({ providerActivationId: 'esim-uuid-1', providerPlanId: 'pkg-uuid-77' })
+    expect(r.success).toBe(true)
+    const usageBody = JSON.parse(fetchSpy.mock.calls[1][1].body)
+    expect(usageBody.packageEsimId).toBe('assoc-match')
+  })
+
+  it('ambiguous multiple associations → clean skip, NO /packages/usage call', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(okJson({
+      data: {
+        packageEsims: [
+          { id: 'assoc-a', status: 'active', package: { id: 'pkg-a' } },
+          { id: 'assoc-b', status: 'active', package: { id: 'pkg-b' } },
+        ],
+      },
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage({ providerActivationId: 'esim-uuid-1', providerPlanId: 'pkg-uuid-77' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('AMBIGUOUS_ASSOCIATION')
+    expect(fetchSpy).toHaveBeenCalledTimes(1) // mobile-detail only — never a guess
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/mobile-detail')
+    expect(String(fetchSpy.mock.calls[0][0])).not.toContain('/packages/usage')
+  })
+
+  it('multiple associations with no provider package identity → ambiguous (never blindly index 0)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(okJson({
+      data: {
+        packageEsims: [
+          { id: 'assoc-a', status: 'active', package: { id: 'pkg-a' } },
+          { id: 'assoc-b', status: 'active', package: { id: 'pkg-b' } },
+        ],
+      },
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getUsage({ providerActivationId: 'esim-uuid-1' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('AMBIGUOUS_ASSOCIATION')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('exactly one association is selected without requiring package identity', async () => {
+    const fetchSpy = vi.fn()
+    fetchSpy
+      .mockResolvedValueOnce(okJson({ data: { packageEsims: [{ id: 'assoc-only', status: 'active', package: { id: 'pkg-1' } }] } }))
+      .mockResolvedValueOnce(okJson({ success: true, errmsg: '', package: { package_status: 'New', status: 'active', rate_groups: [
+        { rate_group_id: 'rg-1', rate_group_allowance: 5, rate_group_allow_qtyp: 'GB', rate_group_usage: 1, rate_group_total_qty: 5, rate_group_throttle_usage: 0, rate_group_throttle_qtyp: 'GB', rate_group_starttime: 'x', rate_group_expire: 'y', rate_group_days_used: 1 },
+      ] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const r = await connector.getUsage({ providerActivationId: 'esim-uuid-1' })
     expect(r.success).toBe(true)
     const usageBody = JSON.parse(fetchSpy.mock.calls[1][1].body)
-    expect(usageBody.packageEsimId).toBe('assoc-active')
+    expect(usageBody.packageEsimId).toBe('assoc-only')
   })
 
   it('no association found → clean unavailable (no usage call)', async () => {

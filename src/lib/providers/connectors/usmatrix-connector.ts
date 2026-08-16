@@ -583,9 +583,11 @@ export class UsMatrixConnector implements IProviderConnector {
    * 1. When already persisted in provider metadata (packageEsimId /
    *    package_esim_id), return it directly (provider association id, safe).
    * 2. Otherwise return a structured bundle carrying the provider eSIM UUID
-   *    (from providerActivationId / providerResponse.providerEsimId) so getUsage
-   *    can discover the current association via mobile-detail. NEVER a local
-   *    OneSIM esim.id. Returns null only when no provider identifier exists.
+   *    (from providerActivationId / providerResponse.providerEsimId) PLUS the
+   *    provider-owned package identity (providerPlanId / providerPackageId) so
+   *    getUsage can discover AND prove the current association via
+   *    mobile-detail. NEVER a local OneSIM esim.id. Returns null only when no
+   *    provider identifier exists.
    */
   resolveUsageLookup(esim: StatusLookupEsim): string | StatusLookupIdentifier | null {
     const raw = esim.providerResponse && typeof esim.providerResponse === 'object'
@@ -596,22 +598,32 @@ export class UsMatrixConnector implements IProviderConnector {
       return persisted
     }
     // Not persisted → return the provider eSIM UUID so getUsage can discover the
-    // association via mobile-detail (documented read-only).
+    // association via mobile-detail (documented read-only), plus package identity
+    // so a multi-association eSIM resolves deterministically (never index 0).
     const providerEsimUuid = esim.providerActivationId
       || (typeof raw?.providerEsimId === 'string' ? raw.providerEsimId : '')
     if (providerEsimUuid) {
-      return { providerActivationId: providerEsimUuid }
+      return {
+        providerActivationId: providerEsimUuid,
+        ...(esim.providerPlanId ? { providerPlanId: esim.providerPlanId } : {}),
+        ...(esim.providerPackageId ? { providerPackageId: esim.providerPackageId } : {}),
+      }
     }
     return null
   }
 
   /**
    * Discover the current package↔eSIM association via GET /esims/mobile-detail/{id}
-   * (documented read-only). Returns the packageEsimId (packageEsims[].id) for the
-   * best association: prefer status "active", else first non-suspended/expired.
+   * (documented read-only). Deterministic + safe selection:
+   *   - exactly one packageEsims[] association → may be selected directly
+   *   - multiple associations → require an EXACT provider-package identity match
+   *     (packageEsims[].package.id vs the canonical providerPlanId/providerPackageId);
+   *     NEVER blindly select index 0 / "first active"
+   *   - no unique provable association → AMBIGUOUS_ASSOCIATION (safe skip, no usage call)
+   *   - zero associations → NO_ASSOCIATION (safe skip)
    * NEVER uses package.id as the association id.
    */
-  private async discoverPackageEsimId(providerEsimUuid: string): Promise<{ ok: boolean; packageEsimId?: string; error?: { code: string; message: string } }> {
+  private async discoverPackageEsimId(providerEsimUuid: string, expectedPackageIds: string[] = []): Promise<{ ok: boolean; packageEsimId?: string; error?: { code: string; message: string } }> {
     const result = await this.request('esimMobileDetail', { pathParams: { esim_id: providerEsimUuid } })
     if (!result.success) return { ok: false, error: result.error }
 
@@ -625,29 +637,48 @@ export class UsMatrixConnector implements IProviderConnector {
       return { ok: false, error: { code: 'NO_ASSOCIATION', message: 'mobile-detail returned no packageEsims for this eSIM' } }
     }
 
-    // Selection: prefer status active, else first non-suspended/non-expired.
-    const active = associations.find(a => String(a?.status || '').toLowerCase() === 'active')
-    const usable = active
-      || associations.find(a => {
-        const s = String(a?.status || '').toLowerCase()
-        return s && s !== 'suspended' && s !== 'expired'
-      })
-      || associations[0]
+    const idOf = (a: MobileDetailPackageEsimDTO): string | null => (a?.id ? String(a.id) : null)
 
-    if (!usable?.id) {
-      return { ok: false, error: { code: 'NO_ASSOCIATION', message: 'mobile-detail associations missing id (packageEsimId)' } }
+    // Exactly one association → the only proof available; select it directly.
+    if (associations.length === 1) {
+      const id = idOf(associations[0])
+      return id
+        ? { ok: true, packageEsimId: id }
+        : { ok: false, error: { code: 'NO_ASSOCIATION', message: 'mobile-detail association missing id (packageEsimId)' } }
     }
-    return { ok: true, packageEsimId: String(usable.id) }
+
+    // Multiple associations → deterministic provider-package identity match.
+    const expected = expectedPackageIds.map(String).filter(Boolean)
+    const matches = expected.length
+      ? associations.filter(a => expected.includes(String(a?.package?.id || '')))
+      : []
+    if (matches.length === 1) {
+      const id = idOf(matches[0])
+      return id
+        ? { ok: true, packageEsimId: id }
+        : { ok: false, error: { code: 'AMBIGUOUS_ASSOCIATION', message: 'Matched association missing id (packageEsimId)' } }
+    }
+
+    return {
+      ok: false,
+      error: {
+        code: 'AMBIGUOUS_ASSOCIATION',
+        message: `mobile-detail returned ${associations.length} package associations with no unique provider-package match; refusing to guess`,
+      },
+    }
   }
 
   /**
    * Canonical US-Matrix usage lookup.
    *
    * Identifier resolution:
-   *   - a persisted/known packageEsimId → used directly
-   *   - a structured { providerActivationId } bundle → discovered via mobile-detail
+   *   - a persisted/known packageEsimId → used directly (fast path, no discovery)
+   *   - a structured { providerActivationId, providerPlanId? } bundle →
+   *     discovered via mobile-detail with deterministic association matching
    *
    * Then POST /packages/usage and normalize rate groups with unit handling.
+   * The packageEsimId used is returned as `providerPackageEsimId` so the
+   * canonical service can persist it (future lookups skip discovery).
    */
   async getUsage(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>> {
     let packageEsimId: string | null = null
@@ -659,11 +690,13 @@ export class UsMatrixConnector implements IProviderConnector {
       }
       packageEsimId = identifier
     } else if (identifier && typeof identifier === 'object') {
-      const providerEsimUuid = identifier.providerActivationId || identifier.iccid || ''
+      // Discovery key: the provider eSIM UUID only. Never guess from an ICCID.
+      const providerEsimUuid = identifier.providerActivationId
       if (!providerEsimUuid) {
-        return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'US-Matrix usage requires a provider eSIM UUID to discover the association' } }
+        return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'US-Matrix usage requires the provider eSIM UUID to discover the package association' } }
       }
-      const discovered = await this.discoverPackageEsimId(providerEsimUuid)
+      const expectedPackageIds = [identifier.providerPlanId, identifier.providerPackageId].filter((v): v is string => typeof v === 'string' && !!v)
+      const discovered = await this.discoverPackageEsimId(providerEsimUuid, expectedPackageIds)
       if (!discovered.ok) return { success: false, error: discovered.error }
       packageEsimId = discovered.packageEsimId!
     } else {
@@ -726,6 +759,9 @@ export class UsMatrixConnector implements IProviderConnector {
         // packageEsimId (safe, non-local). The sync layer supplies the real
         // eSIM identity from the ESIM row.
         iccid: packageEsimId,
+        // Provider association id used/discovered → canonical layer persists it
+        // so subsequent usage syncs skip mobile-detail discovery.
+        providerPackageEsimId: packageEsimId,
         dataUsedMB,
         dataTotalMB,
         dataRemainingMB,

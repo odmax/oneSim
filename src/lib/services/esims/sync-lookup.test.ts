@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveStatusLookup, resolveUsageLookup, capabilitySupported, toEsimProviderIdentity } from './sync-lookup'
+import { resolveStatusLookup, resolveUsageLookup, capabilitySupported, toEsimProviderIdentity, mergeProviderPackageEsimId } from './sync-lookup'
 import type { IProviderConnector, ConnectorCapabilities } from '@/lib/providers/connectors/connector-interface'
 
 function makeConnector(overrides: Partial<IProviderConnector> = {}): IProviderConnector {
@@ -93,6 +93,29 @@ describe('resolveUsageLookup (canonical)', () => {
     if (!r.ok) expect(r.skipReason).toBe('IDENTIFIER_MISSING')
   })
 
+  it('does NOT fall back to an ICCID when the connector resolver returns null (US-Matrix needs packageEsimId)', () => {
+    // US-Matrix pattern: resolveUsageLookup returns null when no provider eSIM
+    // UUID exists — an ICCID alone must NEVER be substituted upstream.
+    const connector = makeConnector({
+      resolveUsageLookup: (esim: any) => (esim.providerActivationId ? { providerActivationId: esim.providerActivationId } : null),
+    })
+    const r = resolveUsageLookup(connector, makeEsim({ providerActivationId: null, iccid: '89012345678901234567' }))
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.skipReason).toBe('IDENTIFIER_MISSING')
+  })
+
+  it('forwards provider-owned package identity to the connector usage resolver', () => {
+    const connector = makeConnector({
+      resolveUsageLookup: (esim: any) => {
+        const bundle: any = { providerActivationId: esim.providerActivationId }
+        if (esim.providerPlanId) bundle.providerPlanId = esim.providerPlanId
+        return bundle
+      },
+    })
+    const r = resolveUsageLookup(connector, makeEsim({ providerActivationId: 'esim-uuid-1', providerPlanId: 'pkg-uuid-77' }))
+    expect(r.ok && (r as any).identifier).toEqual({ providerActivationId: 'esim-uuid-1', providerPlanId: 'pkg-uuid-77' })
+  })
+
   it('usage identifier may differ from status identifier (separate resolvers)', () => {
     const connector = makeConnector({
       resolveStatusLookup: (esim: any) => `status:${esim.providerSubscriptionId}`,
@@ -127,9 +150,28 @@ describe('capabilitySupported (provider-neutral gate)', () => {
 
 describe('toEsimProviderIdentity', () => {
   it('exposes only provider-owned identifiers (no local esim.id)', () => {
-    const bundle = toEsimProviderIdentity(makeEsim({ id: 'local-1', providerPlanId: 'plan-1' }))
+    const bundle = toEsimProviderIdentity(makeEsim({ id: 'local-1', providerPlanId: 'plan-1', providerPackageId: 'pp-1' }))
     expect(bundle).toHaveProperty('iccid')
     expect(bundle).not.toHaveProperty('id')
-    expect(bundle).not.toHaveProperty('providerPlanId')
+    // Provider-owned package identity IS exposed for association matching.
+    expect(bundle.providerPlanId).toBe('plan-1')
+    expect(bundle.providerPackageId).toBe('pp-1')
+  })
+})
+
+describe('mergeProviderPackageEsimId', () => {
+  it('preserves existing providerResponse keys and adds packageEsimId', () => {
+    const merged = mergeProviderPackageEsimId({ providerEsimId: 'esim-uuid-1', evidence: 'x' }, 'assoc-uuid-9')
+    expect(merged).toEqual({ providerEsimId: 'esim-uuid-1', evidence: 'x', packageEsimId: 'assoc-uuid-9' })
+  })
+
+  it('returns undefined when there is no association id to persist (never writes)', () => {
+    expect(mergeProviderPackageEsimId({ providerEsimId: 'e' }, undefined)).toBeUndefined()
+    expect(mergeProviderPackageEsimId({ providerEsimId: 'e' }, '')).toBeUndefined()
+  })
+
+  it('handles a non-object / null providerResponse', () => {
+    expect(mergeProviderPackageEsimId(null, 'assoc-1')).toEqual({ packageEsimId: 'assoc-1' })
+    expect(mergeProviderPackageEsimId(undefined, 'assoc-1')).toEqual({ packageEsimId: 'assoc-1' })
   })
 })
