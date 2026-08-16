@@ -355,6 +355,10 @@ export class PurchaseOrchestrator {
         planId, quantity, subscriber, totalAmount, displayName, packageId: pkg.id,
         packageSnapshot, pkg, customerId, rankedProviders, policy: 'PREFERRED',
         travelDate: normalizedTravelDate,
+        // Canonical ProviderPackage bound to this retail package — the
+        // execution boundary derives the provider plan id from it and refuses
+        // any attempt whose provider does not own it.
+        providerPackageId: pkg.providerPackageId || undefined,
       })
 
       if (result.success && (result.status === 'SUCCEEDED' || result.status === 'ALREADY_COMPLETE')) {

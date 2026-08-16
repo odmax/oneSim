@@ -5,6 +5,7 @@ vi.mock('@/lib/prisma', () => ({
     eSIMPurchase: { findUnique: vi.fn() },
     providerAttempt: { count: vi.fn(), create: vi.fn(), update: vi.fn() },
     provider: { findUnique: vi.fn() },
+    providerPackage: { findUnique: vi.fn() },
   },
 }))
 
@@ -151,5 +152,210 @@ describe('executeProviderAttempt', () => {
     expect(callArgs.qrCodeUrl).toBeUndefined()
     expect(callArgs.smdpAddress).toBeUndefined()
     expect(callArgs.matchingId).toBeUndefined()
+  })
+})
+
+describe('executeProviderAttempt — cross-provider plan-binding ownership guard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockPrisma.providerAttempt.create.mockResolvedValue({ id: 'attempt-guard' })
+    mockPrisma.providerAttempt.update.mockResolvedValue({})
+    mockPrisma.provider.findUnique.mockResolvedValue({ id: PROVIDER_ID, name: 'Test', type: 'CUSTOM', status: 'ACTIVE', apiBaseUrl: '', apiToken: '', environment: 'test', authUrl: '' })
+  })
+
+  function guardedInput(overrides: any = {}) {
+    return {
+      ...baseInput(),
+      providerPackageId: 'pp-own',
+      ...overrides,
+    }
+  }
+
+  it('valid ownership: provider owns the ProviderPackage → derives planId from it and dispatches', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    // Retail package is bound to pp-own which belongs to PROVIDER_ID with external plan "ext-plan-own".
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: 'pp-own', providerId: PROVIDER_ID, providerPlanId: 'ext-plan-own' })
+    const activate = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'act-1', iccids: ['89012345678901234567'], status: 'ACTIVE' } })
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    // baseInput() has planId 'plan-1' — the guard must derive 'ext-plan-own' from ProviderPackage, not trust 'plan-1'.
+    const result = await executeProviderAttempt(guardedInput())
+
+    expect(result.success).toBe(true)
+    expect(activate).toHaveBeenCalledWith(expect.objectContaining({ planId: 'ext-plan-own' }))
+    // The stale independently-supplied planId must never reach the connector.
+    expect(JSON.stringify(activate.mock.calls[0][0])).not.toContain('plan-1')
+  })
+
+  it('mismatch: selected provider does NOT own the ProviderPackage → blocked before connector', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    // pp-own belongs to a DIFFERENT provider (e.g. US-Matrix) than the attempt provider.
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: 'pp-own', providerId: 'other-provider', providerPlanId: 'usm-uuid' })
+    const activate = vi.fn()
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    const result = await executeProviderAttempt(guardedInput())
+
+    expect(result.success).toBe(false)
+    expect(result.status).toBe('PROVIDER_PACKAGE_MISMATCH')
+    expect(result.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+    // The connector must NEVER be invoked with the wrong provider's identifier.
+    expect(activate).not.toHaveBeenCalled()
+    // Attempt recorded as SKIPPED + NON_RETRYABLE with mismatch metadata.
+    const updateCall = mockPrisma.providerAttempt.update.mock.calls[0][0] as any
+    expect(updateCall.data.status).toBe('SKIPPED')
+    expect(updateCall.data.retryClassification).toBe('NON_RETRYABLE')
+    expect(updateCall.data.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+  })
+
+  it('providerPackage not found → blocked before connector', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.providerPackage.findUnique.mockResolvedValue(null)
+    const activate = vi.fn()
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    const result = await executeProviderAttempt(guardedInput())
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+    expect(activate).not.toHaveBeenCalled()
+  })
+
+  it('external plan id collision is safe: planId is derived from the owning ProviderPackage, never resolved globally', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    // Same external string "ABC123" exists on provider A and provider B, but
+    // the ProviderPackage lookup is by internal id + providerId — never by
+    // external plan id alone.
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: 'pp-own', providerId: PROVIDER_ID, providerPlanId: 'ABC123' })
+    const activate = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'a', iccids: ['89012345678901234567'], status: 'ACTIVE' } })
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    const result = await executeProviderAttempt(guardedInput())
+    expect(result.success).toBe(true)
+    expect(activate).toHaveBeenCalledWith(expect.objectContaining({ planId: 'ABC123' }))
+  })
+
+  it('records providerPackageId / externalPlanId / retailPackageId in attempt metadata', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: 'pp-own', providerId: PROVIDER_ID, providerPlanId: 'ext-plan-own' })
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: vi.fn().mockResolvedValue({ success: true, data: { activationId: 'a', iccids: ['89012345678901234567'], status: 'ACTIVE' } }) } as any)
+
+    await executeProviderAttempt(guardedInput())
+    const createCall = mockPrisma.providerAttempt.create.mock.calls[0][0] as any
+    expect(createCall.data.providerId).toBe(PROVIDER_ID)
+    expect(createCall.data.metadata).toMatchObject({
+      providerPackageId: 'pp-own',
+      externalPlanId: 'plan-1',
+      retailPackageId: 'pkg-1',
+    })
+  })
+
+  it('same-provider normal purchase unchanged when providerPackageId is absent (legacy path)', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    // No providerPackageId → guard skipped; uses supplied planId (existing behavior).
+    const activate = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'a', iccids: ['89012345678901234567'], status: 'ACTIVE' } })
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    const result = await executeProviderAttempt(baseInput())
+    expect(result.success).toBe(true)
+    expect(activate).toHaveBeenCalledWith(expect.objectContaining({ planId: 'plan-1' }))
+  })
+})
+
+describe('executeProviderAttempt — three-provider cross-failover safety (USMATRIX/CHOICE/AIRHUB)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockPrisma.providerAttempt.create.mockResolvedValue({ id: 'attempt-3p' })
+    mockPrisma.providerAttempt.update.mockResolvedValue({})
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+  })
+
+  const scoped = (attemptProviderId: string, packageOwnerProviderId: string, providerPackageId: string, planId: string) => {
+    mockPrisma.provider.findUnique.mockResolvedValue({ id: attemptProviderId, name: attemptProviderId, type: 'CUSTOM', status: 'ACTIVE', apiBaseUrl: '', apiToken: '', environment: 'test', authUrl: '' })
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: providerPackageId, providerId: packageOwnerProviderId, providerPlanId: planId })
+  }
+
+  const guardedInput = (overrides: any = {}) => ({ ...baseInput(), providerPackageId: 'pp-own', ...overrides })
+
+  it('USMATRIX package → CHOICE failover is impossible: CHOICE.activateESIM never runs', async () => {
+    // Attempt attributed to CHOICE (failover bug simulation); package owned by US-Matrix.
+    scoped('prov-choice', 'prov-usm', 'pp-usm', 'usm-uuid-123')
+    const activate = vi.fn()
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    const result = await executeProviderAttempt(guardedInput({ providerId: 'prov-choice', providerPackageId: 'pp-usm', planId: 'usm-uuid-123' }))
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+    // CHOICE connector must receive ZERO calls; the US-Matrix UUID never reaches CHOICE.
+    expect(activate).not.toHaveBeenCalled()
+  })
+
+  it('CHOICE package → AIRHUB failover is impossible: AIRHUB never receives CHOICE identifier', async () => {
+    scoped('prov-airhub', 'prov-choice', 'pp-choice', 'choice-sku')
+    const activate = vi.fn()
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    const result = await executeProviderAttempt(guardedInput({ providerId: 'prov-airhub', providerPackageId: 'pp-choice', planId: 'choice-sku' }))
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+    expect(activate).not.toHaveBeenCalled()
+  })
+
+  it('AIRHUB package → USMATRIX failover is impossible: assign-package never receives AIRHUB identifier', async () => {
+    scoped('prov-usm', 'prov-airhub', 'pp-airhub', 'airhub-plan')
+    const activate = vi.fn()
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    const result = await executeProviderAttempt(guardedInput({ providerId: 'prov-usm', providerPackageId: 'pp-airhub', planId: 'airhub-plan' }))
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+    expect(activate).not.toHaveBeenCalled()
+  })
+
+  it('same-provider purchase still succeeds for each provider (USMATRIX/CHOICE/AIRHUB)', async () => {
+    for (const [providerId, ppId, planId] of [['prov-usm', 'pp-usm', 'usm-uuid'], ['prov-choice', 'pp-choice', 'choice-sku'], ['prov-airhub', 'pp-airhub', 'airhub-plan']] as const) {
+      mockPrisma.providerPackage.findUnique.mockReset()
+      mockPrisma.provider.findUnique.mockReset()
+      scoped(providerId, providerId, ppId, planId)
+      const activate = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'a', iccids: ['89012345678901234567'], status: 'ACTIVE' } })
+      mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+      const result = await executeProviderAttempt(guardedInput({ providerId, providerPackageId: ppId, planId }))
+      expect(result.success).toBe(true)
+      expect(activate).toHaveBeenCalledWith(expect.objectContaining({ planId }))
+    }
+  })
+
+  it('ambiguous timeout is NOT weakened: ownership guard is NON_RETRYABLE, so it cannot trigger cross-provider dispatch', async () => {
+    // The guard must classify PROVIDER_PACKAGE_MISMATCH as NON_RETRYABLE so the
+    // orchestrator's failover loop does NOT treat it as a retryable attempt.
+    scoped('prov-choice', 'prov-usm', 'pp-usm', 'usm-uuid')
+    const activate = vi.fn()
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    const result = await executeProviderAttempt(guardedInput({ providerId: 'prov-choice', providerPackageId: 'pp-usm', planId: 'usm-uuid' }))
+    expect(result.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+    const updateCall = mockPrisma.providerAttempt.update.mock.calls[0][0] as any
+    expect(updateCall.data.retryClassification).toBe('NON_RETRYABLE')
+    // No connector call → no chance of a duplicate/dispatch.
+    expect(activate).not.toHaveBeenCalled()
+  })
+
+  it('arbitrary future provider codes behave identically (no provider-name coupling)', async () => {
+    scoped('prov-future', 'prov-future', 'pp-future', 'future-plan')
+    const activate = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'a', iccids: ['89012345678901234567'], status: 'ACTIVE' } })
+    mockGetAdapter.mockResolvedValue({ validatePurchase: undefined, activateESIM: activate } as any)
+
+    const own = await executeProviderAttempt(guardedInput({ providerId: 'prov-future', providerPackageId: 'pp-future', planId: 'future-plan' }))
+    expect(own.success).toBe(true)
+
+    mockPrisma.provider.findUnique.mockReset()
+    mockPrisma.providerPackage.findUnique.mockReset()
+    scoped('prov-other', 'prov-future', 'pp-future', 'future-plan')
+    const wrong = await executeProviderAttempt(guardedInput({ providerId: 'prov-other', providerPackageId: 'pp-future', planId: 'future-plan' }))
+    expect(wrong.success).toBe(false)
+    expect(wrong.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
   })
 })

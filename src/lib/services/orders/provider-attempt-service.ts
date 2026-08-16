@@ -28,6 +28,13 @@ interface ActivationInput {
   policy?: ProviderPolicy
   /** Travel date (YYYY-MM-DD) to forward to providers that require it. */
   travelDate?: string
+  /**
+   * The canonical ProviderPackage.id the retail package is bound to. When
+   * present, the execution boundary verifies this ProviderPackage belongs to
+   * `providerId` and derives the external provider plan id from it — a provider
+   * can never receive another provider's package identifier.
+   */
+  providerPackageId?: string
 }
 
 export async function executeProviderAttempt(input: ActivationInput): Promise<{ success: boolean; status: string; errorCode?: string; errorMessage?: string; providerReference?: string; iccids?: string[]; qrCode?: string }> {
@@ -59,6 +66,11 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
     data: {
       orderId, providerId, attemptNumber,
       source: 'PURCHASE', status: 'STARTED', startedAt,
+      metadata: {
+        providerPackageId: input.providerPackageId || null,
+        externalPlanId: planId,
+        retailPackageId: packageId,
+      } as any,
     },
   })
 
@@ -74,9 +86,36 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
     providerId: provider.id, environment: provider.environment, authUrl: provider.authUrl,
   })
 
+  // ── Execution-boundary ownership guard (provider-neutral) ────────────────
+  // A retail package is bound to exactly one ProviderPackage (providerPackageId).
+  // A provider attempt may only execute when the selected provider OWNS that
+  // ProviderPackage, and the external plan id must be derived FROM that
+  // ProviderPackage — never carried forward from another provider's attempt.
+  // This is defense-in-depth against cross-provider failover bugs.
+  let effectivePlanId = planId
+  if (input.providerPackageId) {
+    const providerPackage = await prisma.providerPackage.findUnique({
+      where: { id: input.providerPackageId },
+      select: { id: true, providerId: true, providerPlanId: true },
+    })
+
+    if (!providerPackage) {
+      await prisma.providerAttempt.update({ where: { id: attempt.id }, data: { status: 'SKIPPED', completedAt: new Date(), retryClassification: 'NON_RETRYABLE', errorCode: 'PROVIDER_PACKAGE_MISMATCH', errorMessage: 'ProviderPackage not found for purchase attempt', metadata: { providerId, providerPackageId: input.providerPackageId } } })
+      return { success: false, status: 'PROVIDER_PACKAGE_MISMATCH', errorCode: 'PROVIDER_PACKAGE_MISMATCH', errorMessage: 'ProviderPackage not found for purchase attempt' }
+    }
+
+    if (providerPackage.providerId !== provider.id) {
+      await prisma.providerAttempt.update({ where: { id: attempt.id }, data: { status: 'SKIPPED', completedAt: new Date(), retryClassification: 'NON_RETRYABLE', errorCode: 'PROVIDER_PACKAGE_MISMATCH', errorMessage: `Provider package ${input.providerPackageId} belongs to provider ${providerPackage.providerId}, not ${provider.id}`, metadata: { providerId, providerPackageId: input.providerPackageId, ownedByProviderId: providerPackage.providerId } } })
+      return { success: false, status: 'PROVIDER_PACKAGE_MISMATCH', errorCode: 'PROVIDER_PACKAGE_MISMATCH', errorMessage: 'Selected provider does not own the package bound to this purchase' }
+    }
+
+    // Derive the external provider plan id from the owning ProviderPackage.
+    effectivePlanId = providerPackage.providerPlanId
+  }
+
   // Validate config
   if (adapter.validatePurchase) {
-    const v = await adapter.validatePurchase({ planId, quantity, subscriber })
+    const v = await adapter.validatePurchase({ planId: effectivePlanId, quantity, subscriber })
     if (!v.valid) {
       await prisma.providerAttempt.update({ where: { id: attempt.id }, data: { status: 'SKIPPED', completedAt: new Date(), retryClassification: 'NON_RETRYABLE', errorCode: 'CONFIG_INVALID', errorMessage: v.reason } })
       return { success: false, status: 'CONFIG_INVALID', errorCode: 'PROVIDER_CONFIG', errorMessage: v.reason }
@@ -86,7 +125,7 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
   // Dispatch
   try {
     console.log(`[TRAVEL_DATE_TRACE] stage=DISPATCH travelDate=${travelDate || 'undefined'} provider=${providerName} orderId=${orderId}`)
-    const result = await adapter.activateESIM({ planId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: businessId, orderId, ...(travelDate ? { travelDate } : {}) } as any)
+    const result = await adapter.activateESIM({ planId: effectivePlanId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: businessId, orderId, ...(travelDate ? { travelDate } : {}) } as any)
     const latencyMs = Date.now() - startedAt.getTime()
 
     if (!result.success || !result.data) {

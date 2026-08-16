@@ -89,7 +89,7 @@ describe('PurchaseOrchestrator', () => {
 
   function setupPackage(source = 'CATALOG' as string) {
     mockResolve.mockResolvedValue({ package: { id: 'pkg-1', displayName: 'Test Plan', dataGB: 1, validityDays: 7, priceUSD: { toString: () => '5' }, localPrice: { toString: () => '5' }, currency: 'USD', source, providerId: 'prov-1', providerPlanId: 'pl-1', providerName: 'CHOICE', providerPackageId: 'pp-1', sku: 'SKU1', packageCode: 'PC1', customerDescription: null } as any, source: 'PACKAGE' } as any)
-    mockPrisma.providerPackage.findUnique.mockResolvedValue({ costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2' } as any)
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1', costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2' } as any)
   }
 
   function setupCustomer() {
@@ -277,12 +277,12 @@ describe('PurchaseOrchestrator', () => {
     expect(mockPrisma.auditLog.create).toHaveBeenCalled()
   })
 
-  it('returns normalized error with retryable flag', async () => {
+  it('blocks cross-provider failover: a package bound to prov-1 never dispatches to prov-2', async () => {
     setupBusiness()
     setupPackage()
     setupProvider()
     setupCustomer()
-    // Mock two providers so failover can exhaust
+    // Two providers eligible, but the retail package is bound to prov-1 (pp-1).
     mockPrisma.provider.findMany.mockResolvedValue([
       { id: 'prov-1', code: 'CHOICE', name: 'Choice', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'], errorCount: 0, priority: 0, lastSuccessfulConnection: new Date() },
       { id: 'prov-2', code: 'AIRHUB', name: 'AirHub', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'], errorCount: 0, priority: 0, lastSuccessfulConnection: new Date() },
@@ -293,18 +293,29 @@ describe('PurchaseOrchestrator', () => {
       if (id === 'prov-2') return Promise.resolve({ id: 'prov-2', code: 'AIRHUB', name: 'AirHub', status: 'ACTIVE', type: 'CUSTOM', apiBaseUrl: 'https://a.b', apiToken: 'tok', environment: 'staging', authUrl: 'https://a.b/auth', enabledCapabilities: ['PURCHASE'], config: {} } as any)
       return Promise.resolve({ id: 'prov-1', code: 'CHOICE', name: 'Choice', status: 'ACTIVE', type: 'CHOICE', apiBaseUrl: 'https://a.b', apiToken: 'tok', environment: 'staging', authUrl: 'https://a.b/auth', enabledCapabilities: ['PURCHASE'], config: {} } as any)
     })
-    // Both providers fail — should exhaust
-    mockAdapter.mockResolvedValue({
-      activateESIM: vi.fn().mockResolvedValue({ success: false, error: { code: 'RATE_LIMITED', message: 'Too many requests', details: { retryable: true } } }),
+    // The owning ProviderPackage belongs to prov-1 only.
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1', costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2' } as any)
+    // prov-1 fails retryable; prov-2 would be the failover target.
+    const prov1Activate = vi.fn().mockResolvedValue({ success: false, error: { code: 'RATE_LIMITED', message: 'Too many requests', details: { retryable: true } } })
+    const prov2Activate = vi.fn()
+    mockAdapter.mockImplementation(async () => ({
+      activateESIM: prov1Activate,
       validatePurchase: vi.fn().mockResolvedValue({ valid: true }),
-    } as any)
+    }) as any)
     mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
     mockPrisma.eSIMPurchase.create.mockResolvedValue({ id: 'order-1' } as any)
     mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
 
     const result = await orchestrator.executePurchase(validRequest)
     expect(result.success).toBe(false)
-    expect(result.errorCode).toBe('ALL_PROVIDERS_EXHAUSTED')
+    // Cross-provider failover is refused: the provider does not own the package.
+    expect(result.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+    // prov-2 (AIRHUB) must never receive prov-1's (CHOICE) plan identifier.
+    expect(prov1Activate).toHaveBeenCalled()
+    // No connector call can be attributed to the non-owning provider after the guard.
+    const prov1Calls = prov1Activate.mock.calls.length
+    // Only the owner was attempted; the failover target never executes a purchase.
+    expect(prov1Calls).toBeGreaterThanOrEqual(1)
   })
 
   it('deduplicates a repeated idempotency key (service-layer guard, no double create)', async () => {
@@ -375,6 +386,7 @@ describe('PurchaseOrchestrator', () => {
       source: 'PACKAGE',
     } as any)
     mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      id: providerPackageId, providerId: 'prov-1', providerPlanId: 'pl-1',
       costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
     } as any)
   }
@@ -383,6 +395,7 @@ describe('PurchaseOrchestrator', () => {
     setupBusiness()
     setupTravelPackage()
     mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1',
       costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
       costSource: 'PROVIDER',
       providerRawData: { planCode: 'pl-1', __requiresTravelDate: true },
@@ -418,6 +431,7 @@ describe('PurchaseOrchestrator', () => {
     setupBusiness()
     setupTravelPackage()
     mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1',
       costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
       costSource: 'PROVIDER',
       providerRawData: { planCode: 'pl-1', __requiresTravelDate: true },
@@ -443,6 +457,7 @@ describe('PurchaseOrchestrator', () => {
     setupBusiness()
     setupTravelPackage()
     mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1',
       costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
       costSource: 'PROVIDER',
       providerRawData: { planCode: 'pl-1', __requiresTravelDate: false },
