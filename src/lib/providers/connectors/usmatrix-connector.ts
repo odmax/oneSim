@@ -37,14 +37,16 @@
  */
 import { prisma } from '@/lib/prisma'
 import { decryptToken, encryptToken } from '@/lib/encryption'
-import { usMatrixEndpointPath, buildUsMatrixUrl, normalizeUsMatrixBaseUrl, type UsMatrixEndpoint, type UsMatrixPaginated, type UsMatrixPackage, type UsMatrixEsim, type UsMatrixSigninRequest, type UsMatrixSigninResponse } from './usmatrix-endpoints'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput, DiagnosticInfo, StatusLookupEsim } from './connector-interface'
+import { usMatrixEndpointPath, buildUsMatrixUrl, normalizeUsMatrixBaseUrl, type UsMatrixEndpoint, type UsMatrixPaginated, type UsMatrixPackage, type UsMatrixEsim, type UsMatrixSigninRequest, type UsMatrixSigninResponse, type AssignPackageRequestDTO, type AssignPackageResponseDTO, type GetPackageUsageRequestDTO, type GetPackageUsageResponseDTO, type RateGroupDTO, type SuspendEsimRequestDTO, type UnsuspendEsimRequestDTO, type RemoveEsimFromPackageRequestDTO, type AvailabilityCountRequestDTO, type CountryDTO, type ListCountriesResponseDTO } from './usmatrix-endpoints'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput, DiagnosticInfo, StatusLookupEsim, StatusLookupIdentifier } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 interface UsMatrixConfig {
   apiBaseUrl: string
   token: string | null
   timeoutMs: number
+  /** Optional US-Matrix client UUID for whitelisted backend integrations. */
+  clientId?: string | null
 }
 
 function maskToken(token: string): string {
@@ -79,19 +81,17 @@ export class UsMatrixConnector implements IProviderConnector {
   /** US-Matrix connector-declared internal capabilities (runtime truth). */
   capabilities: ConnectorCapabilities = {
     installationLookup: true,
-    // AssignPackageResponseDTO carries install fields, but the canonical billable
-    // purchase flow is unverified → conservative tri-state UNKNOWN (never
-    // NOT_SUPPORTED without evidence).
-    installationDataAtPurchase: 'UNKNOWN',
+    // AssignPackageResponseDTO (201) carries install fields → purchase returns install data.
+    installationDataAtPurchase: true,
     installationLookupHistorical: true, // GET /esims?iccid=… EsimDTO install fields
-    statusLookup: false, // GET /esims status enum (free/assigned/suspended) not proven as OneSIM lifecycle
-    usageLookup: false, // POST /packages/usage keyed by packageEsimId; not verified
-    topUp: false,
-    suspend: false, // PUT /esims/suspend documented but not wired (no live mutation)
-    resume: false, // PUT /esims/unsuspend documented but not wired
+    statusLookup: false, // GET /esims status enum (free/assigned/suspended) is allocation state, not proven OneSIM lifecycle
+    usageLookup: false, // POST /packages/usage requires packageEsimId — NOT returned by ANY documented response; keep getUsage() defensive but unadvertised
+    topUp: false, // no documented top-up endpoint; assign-package is not top-up
+    suspend: true, // PUT /esims/suspend (eSIM-level) — wired
+    resume: true, // PUT /esims/unsuspend (eSIM-level) — wired
     balance: false, // no wallet/balance endpoint documented
     inventory: true, // GET /esims
-    webhooks: false,
+    webhooks: false, // no webhook surface in this client API
   }
 
   /** Runtime LOGIN_TOKEN: email/password → Bearer token via POST /whitelist/signin. */
@@ -112,11 +112,12 @@ export class UsMatrixConnector implements IProviderConnector {
       apiBaseUrl: normalizeUsMatrixBaseUrl(provider.apiBaseUrl || 'https://api-esim.usmatrix.com'),
       token: token || null,
       timeoutMs: Number(cfg.requestTimeoutMs) || 15000,
+      clientId: typeof cfg.clientId === 'string' && cfg.clientId ? cfg.clientId : null,
     }
   }
 
   private async request(endpoint: UsMatrixEndpoint, opts: {
-    method?: 'GET' | 'POST'
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
     pathParams?: Record<string, string | number>
     query?: Record<string, string | number | boolean | undefined>
     body?: unknown
@@ -160,6 +161,15 @@ export class UsMatrixConnector implements IProviderConnector {
       const text = await response.text()
       const latencyMs = Date.now() - start
       console.log(`[USMATRIX_RESPONSE] method=${method} path=${path} status=${status} latencyMs=${latencyMs}`)
+
+      // 201 (created), 204 (no content) and any 2xx are success for US-Matrix.
+      if (status >= 200 && status < 300) {
+        let json: any = null
+        if (text.trim()) {
+          try { json = JSON.parse(text) } catch { json = null }
+        }
+        return { success: true, status, data: json }
+      }
 
       if (status === 401) {
         return { success: false, status, error: { code: 'HTTP_401', message: 'Authentication rejected — invalid credentials or token' } }
@@ -391,6 +401,204 @@ export class UsMatrixConnector implements IProviderConnector {
     }
   }
 
+  // ── Purchase / activation ─────────────────────────────────────────────────
+
+  /**
+   * Canonical purchase via POST /api/v1/esims/assign-package (documented,
+   * synchronous, success = 201). AssignPackageRequestDTO { package, client? }.
+   * The returned AssignPackageResponseDTO carries the eSIM + install data.
+   *
+   * Billable/mutating: NEVER retried on ambiguous network timeout. The OneSIM
+   * orchestrator owns idempotency/duplicate protection (providerPurchaseKey,
+   * provider-attempt dedupe). This connector performs exactly ONE request.
+   */
+  async activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
+    const config = await this.loadConfig()
+    if (!config) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not found' } }
+    if (!config.token) return { success: false, error: { code: 'NO_TOKEN', message: 'Not authenticated — run Save & Authenticate first' } }
+
+    // params.planId is OneSIM's ProviderPackage.providerPlanId (the US-Matrix
+    // package UUID). Never send a local OneSIM id upstream.
+    if (!params.planId) return { success: false, error: { code: 'INVALID_REQUEST', message: 'Provider package id (planId) is required for purchase' } }
+
+    const body: AssignPackageRequestDTO = { package: String(params.planId) }
+    // Optional client UUID for whitelisted backend integrations — only when configured.
+    if (typeof (config as any).clientId === 'string' && (config as any).clientId) {
+      body.client = String((config as any).clientId)
+    }
+
+    const result = await this.request('esimAssignPackage', { method: 'POST', body })
+    if (!result.success) return { success: false, error: result.error }
+
+    const resp = result.data as AssignPackageResponseDTO | null
+    if (!resp || !resp.id || !resp.iccid) {
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'AssignPackageResponseDTO missing id/iccid' } }
+    }
+
+    const installData: ConnectorInstallDataOutput = {
+      ...(resp.smDpAddress ? { smdpAddress: String(resp.smDpAddress) } : {}),
+      ...(resp.activationCode ? { activationCode: String(resp.activationCode) } : {}),
+      ...(resp.qrcodeString ? { qrCode: String(resp.qrcodeString) } : {}),
+    }
+
+    const rawMetadata: Record<string, any> = {
+      providerEsimId: String(resp.id),
+      profile: resp.profile != null ? String(resp.profile) : null,
+      assignedAt: new Date().toISOString(),
+    }
+
+    return {
+      success: true,
+      data: {
+        // The provider eSIM id is the canonical provider reference for future lookups.
+        activationId: String(resp.id),
+        iccids: [String(resp.iccid)],
+        iccidOrSimId: String(resp.id),
+        activationCodes: resp.activationCode ? [String(resp.activationCode)] : [],
+        qrCodeUrl: resp.qrcodeString ? String(resp.qrcodeString) : undefined,
+        smdpAddress: resp.smDpAddress ? String(resp.smDpAddress) : undefined,
+        matchingId: resp.activationCode ? String(resp.activationCode) : undefined,
+        // 'READY' = package assigned + installation credentials delivered. This is
+        // the neutral "provisioned / ready to install" state — NOT device ACTIVE
+        // (US-Matrix assign-package does not prove network activation). 'READY' is
+        // NOT in the global AWAITING_STATUSES list, so the orchestrator completes
+        // synchronously (correct: the endpoint returns the final assigned eSIM).
+        status: 'READY',
+        rawMetadata,
+      },
+    }
+  }
+
+  /**
+   * Validate purchase readiness: configured + authenticated. Called before any
+   * wallet hold / dispatch. No provider call — config-only.
+   */
+  async validatePurchase(): Promise<{ valid: boolean; reason?: string }> {
+    const config = await this.loadConfig()
+    if (!config) return { valid: false, reason: 'US-Matrix provider not configured' }
+    if (!config.token) return { valid: false, reason: 'Not authenticated — run Save & Authenticate first' }
+    return { valid: true }
+  }
+
+  /**
+   * Resolve the provider eSIM UUID for an identifier. US-Matrix suspend/resume
+   * accept eSIM UUIDs or ICCIDs; usage needs packageEsimId (separate resolver).
+   */
+  private resolveEsimIdentifier(identifier: string | StatusLookupIdentifier): string {
+    if (typeof identifier === 'string') return identifier
+    return identifier.iccid || ''
+  }
+
+  /** POST /api/v1/esims/suspend — documented SuspendEsimRequestDTO { esims: [] }. */
+  async suspendESIM(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>> {
+    const esim = this.resolveEsimIdentifier(identifier)
+    if (!esim) return { success: false, error: { code: 'INVALID_REQUEST', message: 'eSIM UUID or ICCID required to suspend' } }
+    const body: SuspendEsimRequestDTO = { esims: [esim] }
+    const result = await this.request('esimSuspend', { method: 'PUT', body })
+    if (!result.success) return { success: false, error: result.error }
+    return { success: true, data: { status: 'SUSPENDED', providerStatus: 'suspended', message: 'eSIM suspended' } }
+  }
+
+  /** PUT /api/v1/esims/unsuspend — documented UnsuspendEsimRequestDTO { esims: [] }. */
+  async resumeESIM(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>> {
+    const esim = this.resolveEsimIdentifier(identifier)
+    if (!esim) return { success: false, error: { code: 'INVALID_REQUEST', message: 'eSIM UUID or ICCID required to unsuspend' } }
+    const body: UnsuspendEsimRequestDTO = { esims: [esim] }
+    const result = await this.request('esimUnsuspend', { method: 'PUT', body })
+    if (!result.success) return { success: false, error: result.error }
+    return { success: true, data: { status: 'ACTIVE', providerStatus: 'active', message: 'eSIM unsuspended' } }
+  }
+
+  /**
+   * POST /api/v1/packages/usage — keyed by packageEsimId (the package-eSIM
+   * association UUID). Resolved from stored provider metadata (rawMetadata /
+   * providerResponse). NEVER sends local esim.id / package id / ICCID.
+   */
+  async getUsage(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>> {
+    if (typeof identifier !== 'string') {
+      return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'US-Matrix usage requires a provider packageEsimId' } }
+    }
+    // packageEsimId must be a provider association UUID, not a local id or ICCID.
+    if (!identifier || identifier === '' || /^\d{16,22}$/.test(identifier)) {
+      return { success: false, error: { code: 'INVALID_IDENTIFIER', message: 'US-Matrix usage requires the provider packageEsimId (package-eSIM association UUID)' } }
+    }
+    const body: GetPackageUsageRequestDTO = { packageEsimId: identifier }
+    const result = await this.request('packageUsage', { method: 'POST', body })
+    if (!result.success) return { success: false, error: result.error }
+
+    const resp = result.data as GetPackageUsageResponseDTO | null
+    const detail = resp?.package
+    const group: RateGroupDTO | undefined = Array.isArray(detail?.rate_groups) ? detail.rate_groups[0] : undefined
+    if (!detail || !group) {
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'GetPackageUsageResponseDTO missing package/rate_groups' } }
+    }
+
+    const allowance = Number(group.rate_group_allowance) || 0
+    const usage = Number(group.rate_group_usage) || 0
+    const isGB = /gb/i.test(group.rate_group_allow_qtyp || '')
+    const toMB = (v: number) => isGB ? v * 1024 : v
+    const dataTotalMB = toMB(allowance)
+    const dataUsedMB = Math.round(toMB(usage))
+    const dataRemainingMB = dataTotalMB > 0 ? Math.max(0, Math.round(dataTotalMB - dataUsedMB)) : undefined
+    const percentageUsed = dataTotalMB > 0 ? Math.min(100, Math.max(0, Math.round((dataUsedMB / dataTotalMB) * 100))) : undefined
+
+    return {
+      success: true,
+      data: {
+        iccid: identifier,
+        dataUsedMB,
+        dataTotalMB: dataTotalMB > 0 ? dataTotalMB : undefined,
+        dataRemainingMB,
+        percentageUsed,
+        expiresAt: group.rate_group_expire ? String(group.rate_group_expire) : undefined,
+        status: detail.status || undefined,
+        rawMetadata: {
+          package_status: detail.package_status,
+          rate_group_id: group.rate_group_id,
+          rate_group_starttime: group.rate_group_starttime,
+          rate_group_expire: group.rate_group_expire,
+          rate_group_days_used: group.rate_group_days_used,
+        },
+      },
+    }
+  }
+
+  // ── Read-only helpers (availability / countries) ─────────────────────────
+
+  /** POST /api/v1/esims/availability-count — batch free-to-sell counts per package. */
+  async availabilityCount(packageIds: string[], clientId?: string): Promise<ConnectorResult<Record<string, number>>> {
+    if (!Array.isArray(packageIds) || packageIds.length === 0) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'packageIds array is required' } }
+    }
+    const body: AvailabilityCountRequestDTO = { packageIds: packageIds.map(String) }
+    if (clientId) body.clientId = String(clientId)
+    const result = await this.request('esimAvailabilityCount', { method: 'POST', body })
+    if (!result.success) return { success: false, error: result.error }
+    const counts = (result.data as { counts?: Record<string, number> })?.counts || {}
+    return { success: true, data: counts }
+  }
+
+  /** GET /api/v1/esims/availability-count/{packageId} — single-package free-to-sell count. */
+  async availabilityCountForPackage(packageId: string, clientId?: string): Promise<ConnectorResult<number>> {
+    if (!packageId) return { success: false, error: { code: 'INVALID_REQUEST', message: 'packageId is required' } }
+    const result = await this.request('esimAvailabilityCountForPackage', {
+      pathParams: { package_id: packageId },
+      ...(clientId ? { query: { clientId } } : {}),
+    })
+    if (!result.success) return { success: false, error: result.error }
+    const count = Number((result.data as { count?: number })?.count) || 0
+    return { success: true, data: count }
+  }
+
+  /** GET /api/v1/countries — documented read-only coverage list. */
+  async listCountries(): Promise<ConnectorResult<CountryDTO[]>> {
+    const result = await this.request('countries', { query: { page: 1, perPage: 100 } })
+    if (!result.success) return { success: false, error: result.error }
+    const data = result.data as ListCountriesResponseDTO | null
+    const items = Array.isArray(data?.data) ? data.data : (Array.isArray(result.data) ? result.data : [])
+    return { success: true, data: items }
+  }
+
   // ── Unwired / unsafe operations ─────────────────────────────────────────
 
   resolveStatusLookup(_esim: StatusLookupEsim): string | null {
@@ -399,27 +607,11 @@ export class UsMatrixConnector implements IProviderConnector {
   }
 
   async getStatus(_identifier: string | import('./connector-interface').StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Status lookup not wired for US-Matrix (GET /esims status enum not proven as OneSIM lifecycle)' } }
-  }
-
-  async getUsage(_identifier: string | import('./connector-interface').StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Usage not wired (POST /packages/usage keyed by packageEsimId; unverified)' } }
-  }
-
-  async activateESIM(_params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Purchase not wired — canonical billable flow unverified (POST /esims/add-esims / assign-package)' } }
+    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Status lookup not wired for US-Matrix (GET /esims status enum free/assigned/suspended is allocation state, not proven OneSIM lifecycle)' } }
   }
 
   async topUpESIM(_params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Top-up not wired for US-Matrix' } }
-  }
-
-  async suspendESIM(_id: string | import('./connector-interface').StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Suspend not wired (PUT /esims/suspend documented; no live mutation during audit)' } }
-  }
-
-  async resumeESIM(_id: string | import('./connector-interface').StatusLookupIdentifier): Promise<ConnectorResult<EsimLifecycleResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Resume not wired (PUT /esims/unsuspend documented; no live mutation during audit)' } }
+    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Top-up not wired for US-Matrix (no documented top-up endpoint; assign-package is not top-up)' } }
   }
 
   async getRates(): Promise<ConnectorResult<RateResult[]>> {

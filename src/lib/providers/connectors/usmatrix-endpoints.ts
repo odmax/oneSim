@@ -41,17 +41,29 @@ export const USMATRIX_ENDPOINTS = {
   currentClient: '/api/v1/clients/current',
   clients: '/api/v1/clients',
 
-  // Packages — catalog discovery (read-only).
+  // Packages — catalog discovery (read-only) + documented helpers.
   packages: '/api/v1/packages',
+  packageUsage: '/api/v1/packages/usage',
   packageClone: '/api/v1/packages/clone/{package_id}',
+  packageMetrics: '/api/v1/packages/metrics',
 
-  // eSIMs — inventory / profiles / info (read-only).
+  // eSIMs — inventory / profiles / info (read-only) + lifecycle.
   esims: '/api/v1/esims',
   esimInfo: '/api/v1/esims/info',
   esimProfiles: '/api/v1/esims/profiles',
   esimMobileDetail: '/api/v1/esims/mobile-detail/{esim_id}',
-  availableForPackage: '/api/v1/esims/available-for-package/{package_id}',
-  availabilityCount: '/api/v1/esims/availability-count',
+  esimMetrics: '/api/v1/esims/metrics',
+  esimFindPackages: '/api/v1/esims/find-packages',
+  esimAddEsims: '/api/v1/esims/add-esims',
+  esimAssignPackage: '/api/v1/esims/assign-package',
+  esimAvailabilityCount: '/api/v1/esims/availability-count',
+  esimAvailabilityCountForPackage: '/api/v1/esims/availability-count/{package_id}',
+  esimAvailableForPackage: '/api/v1/esims/available-for-package/{package_id}',
+  esimSuspend: '/api/v1/esims/suspend',
+  esimUnsuspend: '/api/v1/esims/unsuspend',
+  esimRemovePackages: '/api/v1/esims/remove-packages',
+  esimTransfer: '/api/v1/esims/transfer',
+  esimQrcode: '/api/v1/esims/qrcode',
 
   // Dashboard (read-only, diagnostic).
   dashboard: '/api/v1/dashboard',
@@ -157,4 +169,118 @@ export interface UsMatrixEsim {
   status: 'free' | 'assigned' | 'suspended' | string
   createdAt?: string
   updatedAt?: string
+}
+
+/**
+ * POST /api/v1/esims/assign-package request — documented AssignPackageRequestDTO.
+ * `package` (required) is the US-Matrix package UUID; `client` (optional) is the
+ * client UUID for whitelisted backend integrations. NEVER a local OneSIM id.
+ */
+export interface AssignPackageRequestDTO {
+  package: string
+  client?: string
+}
+
+/**
+ * POST /api/v1/esims/assign-package response — documented AssignPackageResponseDTO
+ * (all fields required; smDpAddress/activationCode/qrcodeString/profile nullable).
+ * Success status is 201.
+ */
+export interface AssignPackageResponseDTO {
+  id: string
+  iccid: string
+  smDpAddress: string | null
+  activationCode: string | null
+  qrcodeString: string | null
+  profile: string | null
+}
+
+/**
+ * POST /api/v1/packages/usage request — documented GetPackageUsageRequestDTO.
+ * `packageEsimId` is the package-eSIM association UUID (NOT the package id, NOT
+ * a local OneSIM id, NOT an ICCID).
+ */
+export interface GetPackageUsageRequestDTO {
+  packageEsimId: string
+}
+
+/** POST /api/v1/packages/usage response — documented GetPackageUsageResponseDTO. */
+export interface GetPackageUsageResponseDTO {
+  success: boolean
+  errmsg: string
+  package: PackageDetailDTO
+}
+
+/** Documented PackageDetailDTO. */
+export interface PackageDetailDTO {
+  package_status: string
+  status: string
+  rate_groups: RateGroupDTO[]
+}
+
+/** Documented RateGroupDTO (allowance/usage normalized to the quantity type). */
+export interface RateGroupDTO {
+  rate_group_id: string
+  rate_group_allowance: number
+  rate_group_allow_qtyp: string
+  rate_group_usage: number
+  rate_group_total_qty: number
+  rate_group_throttle_usage: number
+  rate_group_throttle_qtyp: string
+  rate_group_starttime: string
+  rate_group_expire: string
+  rate_group_days_used: number
+}
+
+/**
+ * PUT /api/v1/esims/suspend request — documented SuspendEsimRequestDTO.
+ * `esims` accepts eSIM UUIDs OR ICCIDs. Same shape as UnsuspendEsimRequestDTO.
+ */
+export interface SuspendEsimRequestDTO {
+  esims: string[]
+}
+
+/** PUT /api/v1/esims/unsuspend request — documented UnsuspendEsimRequestDTO. */
+export interface UnsuspendEsimRequestDTO {
+  esims: string[]
+}
+
+/**
+ * DELETE /api/v1/esims/remove-packages request — documented
+ * RemoveEsimFromPackageRequestDTO. Exactly one of packageEsimIds / combinations /
+ * (esims+packages) must be provided. packageEsimIds is the RECOMMENDED method.
+ */
+export interface RemoveEsimFromPackageRequestDTO {
+  packageEsimIds?: string[]
+  combinations?: Array<{ esimId: string; packageId: string }>
+  esims?: string[]
+  packages?: string[]
+}
+
+/** POST /api/v1/esims/availability-count request — documented AvailabilityCountRequestDTO. */
+export interface AvailabilityCountRequestDTO {
+  packageIds: string[]
+  clientId?: string
+}
+
+/** POST /api/v1/esims/availability-count response — { counts: { [packageId]: number } }. */
+export interface AvailabilityCountResponseDTO {
+  counts: Record<string, number>
+}
+
+/** CountryDTO (GET /api/v1/countries). */
+export interface CountryDTO {
+  id: string
+  name: string
+  region: string
+  iso3: string
+  imagePath?: string | null
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** ListCountriesResponseDTO (GET /api/v1/countries). */
+export interface ListCountriesResponseDTO {
+  data: CountryDTO[]
+  count: number
 }
