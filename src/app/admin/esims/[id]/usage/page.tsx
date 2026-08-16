@@ -3,7 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { deriveUsageMetrics } from '@/components/admin/esims/UsageBar'
+import { deriveUsageMetrics } from '@/lib/esim/usage-metrics'
 
 export default async function AdminEsimUsagePage({ params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions)

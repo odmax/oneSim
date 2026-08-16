@@ -3,7 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { deriveUsageMetrics } from '@/components/admin/esims/UsageBar'
+import { deriveUsageMetrics } from '@/lib/esim/usage-metrics'
 
 function UsagePill({ value, total }: { value: number; total: number }) {
   const pct = total > 0 ? Math.round((value / total) * 100) : 0

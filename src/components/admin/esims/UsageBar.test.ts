@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { deriveUsageMetrics, UsageBar, UsageSummary } from './UsageBar'
+import { UsageBar, UsageSummary } from './UsageBar'
 
 function renderUsageBar(props: Record<string, unknown>) {
   return renderToStaticMarkup(createElement(UsageBar as any, props))
@@ -11,31 +11,6 @@ function renderUsageBar(props: Record<string, unknown>) {
 function renderUsageSummary(props: Record<string, unknown>) {
   return renderToStaticMarkup(createElement(UsageSummary as any, props))
 }
-
-describe('deriveUsageMetrics', () => {
-  it('has no snapshot when neither total nor remaining is recorded', () => {
-    const m = deriveUsageMetrics(0, null, null)
-    expect(m.hasSnapshot).toBe(false)
-    expect(m).toMatchObject({ used: 0, total: 0, remaining: 0, percentage: 0 })
-  })
-
-  it('treats valid zero usage with a real total as a snapshot', () => {
-    const m = deriveUsageMetrics(0, 1024, 1024)
-    expect(m.hasSnapshot).toBe(true)
-    expect(m).toMatchObject({ used: 0, total: 1024, remaining: 1024, percentage: 0 })
-  })
-
-  it('derives the total from used + remaining when only remaining is recorded', () => {
-    const m = deriveUsageMetrics(512, null, 512)
-    expect(m.hasSnapshot).toBe(true)
-    expect(m).toMatchObject({ total: 1024, percentage: 50 })
-  })
-
-  it('clamps remaining to 0 when usage exceeds the allowance', () => {
-    const m = deriveUsageMetrics(1500, 1024, null)
-    expect(m).toMatchObject({ remaining: 0, percentage: 100 })
-  })
-})
 
 describe('UsageBar', () => {
   it('renders "Usage unavailable" when there is no snapshot', () => {
