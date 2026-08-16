@@ -111,7 +111,7 @@ export function classifyOrderRecovery(input: ClassificationInput): RecoveryClass
     'VALIDATION_FAILED', 'INVALID_INPUT', 'DUPLICATE', 'NOT_SUPPORTED',
     'PROVIDER_NO_PURCHASE', 'CONFIG_INVALID', 'ORDER_CREATE_FAILED',
     'BUSINESS_NOT_FOUND', 'BUSINESS_SUSPENDED', 'PACKAGE_UNAVAILABLE',
-    'PACKAGE_NOT_FOUND', 'NO_PROVIDER',
+    'PACKAGE_NOT_FOUND', 'NO_PROVIDER', 'OUT_OF_STOCK',
   ]
   if (lastAttempt && nonRetryableCodes.includes(lastAttempt.errorCode || '')) {
     return { action: 'NOT_RETRYABLE', reason: `Provider rejected with non-retryable error: ${lastAttempt.errorCode}` }

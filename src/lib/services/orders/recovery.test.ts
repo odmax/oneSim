@@ -91,6 +91,15 @@ describe('classifyOrderRecovery', () => {
     const input = makeOrder({ status: 'PENDING_PROVIDER' })
     expect(classifyOrderRecovery(input).action).toBe('REDISPATCH_PROVIDER')
   })
+
+  it('12. OUT_OF_STOCK → NOT_RETRYABLE (never re-dispatch the same provider on inventory exhaustion)', () => {
+    // Even though classifyRetry marks OUT_OF_STOCK as RETRYABLE (so the purchase
+    // loop may fail over to another provider), recovery must NOT redispatch the
+    // SAME provider against zero inventory.
+    const input = makeOrder({ status: 'FAILED' })
+    input.providerAttempts = [makeAttempt({ errorCode: 'OUT_OF_STOCK', retryClassification: 'RETRYABLE' })]
+    expect(classifyOrderRecovery(input).action).toBe('NOT_RETRYABLE')
+  })
 })
 
 describe('retry backoff', () => {

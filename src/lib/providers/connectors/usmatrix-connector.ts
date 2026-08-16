@@ -436,6 +436,25 @@ export class UsMatrixConnector implements IProviderConnector {
     // package UUID). Never send a local OneSIM id upstream.
     if (!params.planId) return { success: false, error: { code: 'INVALID_REQUEST', message: 'Provider package id (planId) is required for purchase' } }
 
+    // Pre-purchase inventory preflight (read-only, documented endpoint). When
+    // the provider CONFIRMS zero assignable eSIM inventory for the requested
+    // package, do NOT make the billable/mutating assign-package call. The
+    // preflight is the inventory signal: an assign-package HTTP_404 is never
+    // reinterpreted as out-of-stock, and a failed/unavailable/malformed
+    // preflight never fabricates zero (purchase proceeds so assign-package
+    // remains the authority — still exactly ONE non-retried request).
+    const availability = await this.checkPackageAvailability(String(params.planId))
+    console.log(`[USMATRIX_AVAILABILITY] ok=${availability.ok} count=${availability.count ?? 'n/a'} skipAssign=${availability.ok && availability.count === 0}${availability.reason ? ` reason=${availability.reason}` : ''}`)
+    if (availability.ok && availability.count === 0) {
+      return {
+        success: false,
+        error: {
+          code: 'OUT_OF_STOCK',
+          message: 'US-Matrix currently has no assignable eSIM inventory for the requested provider package',
+        },
+      }
+    }
+
     const body: AssignPackageRequestDTO = { package: String(params.planId) }
     // Optional client UUID for whitelisted backend integrations — only when configured.
     if (typeof (config as any).clientId === 'string' && (config as any).clientId) {
@@ -546,6 +565,34 @@ export class UsMatrixConnector implements IProviderConnector {
     if (!result.success) return { success: false, error: result.error }
     const count = Number((result.data as { count?: number })?.count) || 0
     return { success: true, data: count }
+  }
+
+  /**
+   * Read-only pre-purchase inventory preflight for a provider package UUID.
+   *
+   * Returns:
+   *  - `{ ok: true, count }` when the documented availability endpoint
+   *    succeeded and returned a valid non-negative integer count.
+   *  - `{ ok: false, reason }` when the endpoint failed, timed out, or returned
+   *    a malformed response — the caller MUST NOT treat that as zero inventory.
+   *
+   * The canonical preflight is GET /esims/availability-count/{packageId}
+   * (proven live). /esims/available-for-package is NOT used (live HTTP 500) and
+   * the local ProviderPackage.isAvailable flag is catalog state, not inventory.
+   */
+  private async checkPackageAvailability(packageId: string): Promise<{ ok: boolean; count?: number; reason?: string }> {
+    const result = await this.request('esimAvailabilityCountForPackage', {
+      pathParams: { package_id: packageId },
+    })
+    if (!result.success) {
+      return { ok: false, reason: result.error?.code || 'AVAILABILITY_CHECK_FAILED' }
+    }
+    const raw = result.data as { count?: unknown } | null
+    const count = Number(raw?.count)
+    if (!Number.isFinite(count) || count < 0) {
+      return { ok: false, reason: 'MALFORMED_AVAILABILITY_RESPONSE' }
+    }
+    return { ok: true, count }
   }
 
   /** GET /api/v1/countries — documented read-only coverage list. */

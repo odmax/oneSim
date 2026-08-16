@@ -373,9 +373,17 @@ describe('US-Matrix top-up + status + QR are unwired (documented endpoints, no O
 })
 
 describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
+  // Every purchase now performs a read-only availability preflight first, then
+  // (when inventory is confirmed > 0) exactly ONE assign-package request.
+  function withAvailability(overrides: Record<string, unknown> = {}, assignResponse: any, assignStatus = 201) {
+    return vi.fn()
+      .mockResolvedValueOnce(okJson({ count: 5, ...overrides }))
+      .mockResolvedValueOnce(okJson(assignResponse, assignStatus))
+  }
+
   it('posts the exact AssignPackageRequestDTO (package only, no local ids) with Bearer auth', async () => {
     const resp = { id: 'esim-uuid-1', iccid: '8955123456789012345', smDpAddress: 'rsp.truphone.com', activationCode: '1$rsp.truphone.com$EF1234ABCD5678', qrcodeString: 'LPA:1$rsp.truphone.com$EF1234ABCD5678', profile: 'CONSUMER' }
-    const fetchSpy = vi.fn().mockResolvedValue(okJson(resp, 201))
+    const fetchSpy = withAvailability({}, resp)
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const result = await connector.activateESIM({ planId: 'pkg-uuid-1', quantity: 1, subscriber: { email: 'a@b.com' } })
@@ -389,7 +397,9 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
     expect(result.data?.smdpAddress).toBe('rsp.truphone.com')
     expect(result.data?.matchingId).toBe('EF1234ABCD5678')
     expect(result.data?.status).toBe('READY')
-    const [url, init] = fetchSpy.mock.calls[0]
+    // First call is the availability preflight, second is assign-package.
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v1/esims/availability-count/pkg-uuid-1')
+    const [url, init] = fetchSpy.mock.calls[1]
     expect(String(url)).toContain('/api/v1/esims/assign-package')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body)).toEqual({ package: 'pkg-uuid-1' })
@@ -397,11 +407,11 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
   })
 
   it('never sends local OneSIM ids; package is the provider plan id', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(okJson({ id: 'e1', iccid: '8955123456789012345', smDpAddress: null, activationCode: null, qrcodeString: null, profile: null }, 201))
+    const fetchSpy = withAvailability({}, { id: 'e1', iccid: '8955123456789012345', smDpAddress: null, activationCode: null, qrcodeString: null, profile: null })
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     await connector.activateESIM({ planId: 'provider-plan-uuid', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'onesim-order-1', packageId: 'onesim-pkg-1' })
-    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    const body = JSON.parse(fetchSpy.mock.calls[1][1].body)
     expect(body.package).toBe('provider-plan-uuid')
     expect(String(body)).not.toContain('onesim-order-1')
     expect(String(body)).not.toContain('onesim-pkg-1')
@@ -409,15 +419,15 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
 
   it('includes optional client UUID only when configured', async () => {
     mockPrisma.provider.findUnique.mockResolvedValue(mockProvider({ config: { clientId: 'client-uuid-9' } }))
-    const fetchSpy = vi.fn().mockResolvedValue(okJson({ id: 'e1', iccid: '8955123456789012345', smDpAddress: null, activationCode: null, qrcodeString: null, profile: null }, 201))
+    const fetchSpy = withAvailability({}, { id: 'e1', iccid: '8955123456789012345', smDpAddress: null, activationCode: null, qrcodeString: null, profile: null })
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
-    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({ package: 'pkg-1', client: 'client-uuid-9' })
+    expect(JSON.parse(fetchSpy.mock.calls[1][1].body)).toEqual({ package: 'pkg-1', client: 'client-uuid-9' })
   })
 
   it('maps missing iccid to INVALID_RESPONSE', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({ id: 'e1', iccid: '', smDpAddress: null, activationCode: null, qrcodeString: null, profile: null }, 201))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(withAvailability({}, { id: 'e1', iccid: '', smDpAddress: null, activationCode: null, qrcodeString: null, profile: null }))
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const result = await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
     expect(result.success).toBe(false)
@@ -426,7 +436,7 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
 
   it('purchase does NOT claim device activation (status is READY/provisioned, never ACTIVE)', async () => {
     const resp = { id: 'esim-uuid-1', iccid: '8955123456789012345', smDpAddress: 'smdp.example.com', activationCode: 'LPA:1$smdp.example.com$c', qrcodeString: 'LPA:1$smdp.example.com$c', profile: 'CONSUMER' }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson(resp, 201))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(withAvailability({}, resp))
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const result = await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
     expect(result.success).toBe(true)
@@ -436,8 +446,8 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
     expect(result.data?.status).not.toBe('ACTIVE')
   })
 
-  it('maps 404 to HTTP_404 (no compatible eSIM / package not found)', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({}, 404))
+  it('availability > 0 + assign-package 404 → HTTP_404 (never rewritten to out-of-stock)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(withAvailability({ count: 5 }, {}, 404))
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const result = await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
     expect(result.success).toBe(false)
@@ -445,7 +455,7 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
   })
 
   it('maps 422 to HTTP_422 (package has no vendors / incompatible)', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({}, 422))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(withAvailability({ count: 5 }, {}, 422))
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const result = await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
     expect(result.success).toBe(false)
@@ -453,21 +463,25 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
   })
 
   it('maps 401 to HTTP_401 (token rejected)', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson({}, 401))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(withAvailability({ count: 5 }, {}, 401))
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const result = await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
     expect(result.success).toBe(false)
     expect(result.error?.code).toBe('HTTP_401')
   })
 
-  it('maps network timeout to TIMEOUT (no silent retry, exactly one request)', async () => {
-    const fetchSpy = vi.fn().mockRejectedValue(new DOMException('Aborted', 'AbortError'))
+  it('maps network timeout to TIMEOUT with exactly ONE assign-package request (no silent retry)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(okJson({ count: 5 }))
+      .mockRejectedValueOnce(new DOMException('Aborted', 'AbortError'))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     const result = await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
     expect(result.success).toBe(false)
     expect(result.error?.code).toBe('TIMEOUT')
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    // Availability preflight + exactly one billable assign-package attempt.
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('/api/v1/esims/assign-package')
   })
 
   it('fails with NO_TOKEN before any request when not authenticated', async () => {
@@ -484,7 +498,7 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
   it('never logs the full ICCID / activation code / qrcode string', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const resp = { id: 'e1', iccid: '8955123456789012345', smDpAddress: 'smdp.example.com', activationCode: 'LPA:1$smdp.example.com$code1', qrcodeString: 'LPA:1$smdp.example.com$code1', profile: 'CONSUMER' }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(okJson(resp, 201))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(withAvailability({}, resp))
     const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
     await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
     for (const [args] of logSpy.mock.calls as Array<[string]>) {
@@ -500,6 +514,74 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
     expect((await connector.validatePurchase()).valid).toBe(true)
     mockPrisma.provider.findUnique.mockResolvedValue(mockProvider({ apiToken: null }))
     expect((await connector.validatePurchase()).valid).toBe(false)
+  })
+})
+
+describe('US-Matrix purchase inventory preflight (GET /esims/availability-count/{packageId})', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+    mockPrisma.provider.update.mockResolvedValue({})
+  })
+
+  it('count = 0 → assign-package is NEVER called and OUT_OF_STOCK is returned', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(okJson({ count: 0 }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const result = await connector.activateESIM({ planId: 'pkg-uuid-1', quantity: 1, subscriber: { email: 'a@b.com' } })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('OUT_OF_STOCK')
+    expect(String(result.error?.message)).toContain('no assignable eSIM inventory')
+    // Exactly the availability call; the billable assign-package was NOT made.
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v1/esims/availability-count/pkg-uuid-1')
+    expect(String(fetchSpy.mock.calls[0][0])).not.toContain('/assign-package')
+  })
+
+  it('availability check uses params.planId (provider package UUID), never a local OneSIM id', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(okJson({ count: 1 }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    await connector.activateESIM({ planId: '3533dba2-7154-4ebf-af51-e4ff51dcf038', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'onesim-order-1', packageId: 'onesim-pkg-1' })
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v1/esims/availability-count/3533dba2-7154-4ebf-af51-e4ff51dcf038')
+    // No local id leaked into the availability URL.
+    expect(String(fetchSpy.mock.calls[0][0])).not.toContain('onesim-order-1')
+    expect(String(fetchSpy.mock.calls[0][0])).not.toContain('onesim-pkg-1')
+  })
+
+  it('count > 0 → exactly one assign-package request occurs', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(okJson({ count: 3 }))
+      .mockResolvedValueOnce(okJson({ id: 'e1', iccid: '8955123456789012345', smDpAddress: null, activationCode: null, qrcodeString: null, profile: null }, 201))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const result = await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
+    expect(result.success).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('/api/v1/esims/assign-package')
+  })
+
+  it('availability endpoint HTTP 500 → does NOT fabricate zero inventory (fail-open to assign-package)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(okJson({}, 500))
+      .mockResolvedValueOnce(okJson({ id: 'e1', iccid: '8955123456789012345', smDpAddress: null, activationCode: null, qrcodeString: null, profile: null }, 201))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const result = await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
+    // Purchase proceeds (assign-package is the authority); the result is NOT OUT_OF_STOCK.
+    expect(result.success).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('malformed availability response (no count) → does NOT fabricate zero inventory (fail-open)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(okJson({ success: true }))
+      .mockResolvedValueOnce(okJson({ id: 'e1', iccid: '8955123456789012345', smDpAddress: null, activationCode: null, qrcodeString: null, profile: null }, 201))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const result = await connector.activateESIM({ planId: 'pkg-1', quantity: 1, subscriber: { email: 'a@b.com' } })
+    expect(result.success).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 })
 

@@ -23,7 +23,7 @@ export function classifyRetry(error: { code?: string; message?: string; details?
   if (error.details?.retryable === true) return 'RETRYABLE'
   const code = (error.code || '').toUpperCase()
   const msg = (error.message || '').toLowerCase()
-  const retryableCodes = ['TIMEOUT', 'NETWORK_ERROR', 'PROVIDER_UNAVAILABLE', 'RATE_LIMITED', 'MAINTENANCE', 'GATEWAY_TIMEOUT', 'SERVICE_UNAVAILABLE']
+  const retryableCodes = ['TIMEOUT', 'NETWORK_ERROR', 'PROVIDER_UNAVAILABLE', 'RATE_LIMITED', 'MAINTENANCE', 'GATEWAY_TIMEOUT', 'SERVICE_UNAVAILABLE', 'OUT_OF_STOCK']
   const retryablePatterns = ['timeout', 'timed out', 'network', 'connection refused', 'dns', 'unavailable', 'rate limit', 'maintenance', 'gateway timeout', '502', '503', '504', 'temporary']
   if (retryableCodes.includes(code)) return 'RETRYABLE'
   if (retryablePatterns.some(p => msg.includes(p))) return 'RETRYABLE'

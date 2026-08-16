@@ -28,6 +28,20 @@ describe('classifyRetry', () => {
   it('4. explicit details.retryable=true overrides', () => {
     expect(classifyRetry({ code: 'SOMETHING', details: { retryable: true } })).toBe('RETRYABLE')
   })
+
+  it('5. OUT_OF_STOCK is RETRYABLE → eligible for GLOBAL provider failover', () => {
+    // Inventory exhaustion must not be terminal: the purchase loop failovers to
+    // another eligible provider (the same provider is never retried in-loop, and
+    // recovery treats OUT_OF_STOCK as NOT_RETRYABLE for same-provider redispatch).
+    expect(classifyRetry({ code: 'OUT_OF_STOCK', message: 'US-Matrix has no assignable eSIM inventory' })).toBe('RETRYABLE')
+  })
+
+  it('6. unrelated HTTP_404 stays distinguishable from OUT_OF_STOCK', () => {
+    // An assign-package HTTP_404 is a provider HTTP failure — never rewritten
+    // to an inventory code, so its classification remains the default.
+    expect(classifyRetry({ code: 'HTTP_404', message: 'Resource not found' })).toBe('NON_RETRYABLE')
+    expect(classifyRetry({ code: 'HTTP_404', message: 'Resource not found' })).not.toBe(classifyRetry({ code: 'OUT_OF_STOCK' }))
+  })
 })
 
 describe('classifyFailoverEligibility', () => {
