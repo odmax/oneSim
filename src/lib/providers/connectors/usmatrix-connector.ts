@@ -60,6 +60,21 @@ function maskIccid(iccid: string | null | undefined): string {
   return `${iccid.slice(0, 4)}••••${iccid.slice(-4)}`
 }
 
+/**
+ * Conservative extraction of the matching-id component from an LPA QR payload
+ * or activation code (format `1$<smdp>$<matching-id>` or `LPA:1$<smdp>$<id>`).
+ * Returns null when the shape is not an LPA-style string — never invents a
+ * matching id from arbitrary activation codes.
+ */
+export function extractMatchingId(value: string | null | undefined): string | null {
+  if (!value) return null
+  const cleaned = String(value).replace(/^LPA:/i, '')
+  const parts = cleaned.split('$')
+  if (parts.length !== 3) return null
+  const candidate = parts[2]?.trim()
+  return candidate ? candidate : null
+}
+
 function redactForDiagnostics(data: unknown, maxLen = 300): string | null {
   if (data == null) return null
   try {
@@ -435,12 +450,6 @@ export class UsMatrixConnector implements IProviderConnector {
       return { success: false, error: { code: 'INVALID_RESPONSE', message: 'AssignPackageResponseDTO missing id/iccid' } }
     }
 
-    const installData: ConnectorInstallDataOutput = {
-      ...(resp.smDpAddress ? { smdpAddress: String(resp.smDpAddress) } : {}),
-      ...(resp.activationCode ? { activationCode: String(resp.activationCode) } : {}),
-      ...(resp.qrcodeString ? { qrCode: String(resp.qrcodeString) } : {}),
-    }
-
     const rawMetadata: Record<string, any> = {
       providerEsimId: String(resp.id),
       profile: resp.profile != null ? String(resp.profile) : null,
@@ -455,9 +464,12 @@ export class UsMatrixConnector implements IProviderConnector {
         iccids: [String(resp.iccid)],
         iccidOrSimId: String(resp.id),
         activationCodes: resp.activationCode ? [String(resp.activationCode)] : [],
-        qrCodeUrl: resp.qrcodeString ? String(resp.qrcodeString) : undefined,
+        // qrcodeString is the QR/LPA payload — map to qrCode, NOT qrCodeUrl.
+        qrCode: resp.qrcodeString ? String(resp.qrcodeString) : undefined,
         smdpAddress: resp.smDpAddress ? String(resp.smDpAddress) : undefined,
-        matchingId: resp.activationCode ? String(resp.activationCode) : undefined,
+        // Do not conflate matchingId with the full activation code — extract the
+        // matching id component from the LPA payload when it is present.
+        matchingId: extractMatchingId(resp.qrcodeString || resp.activationCode) || undefined,
         // 'READY' = package assigned + installation credentials delivered. This is
         // the neutral "provisioned / ready to install" state — NOT device ACTIVE
         // (US-Matrix assign-package does not prove network activation). 'READY' is

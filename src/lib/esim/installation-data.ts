@@ -26,6 +26,88 @@ export interface ProviderInstallData {
 }
 
 /**
+ * Canonical QR/installation classification. A provider may return any subset:
+ *   - QR_IMAGE_URL    : HTTP(S) image URL to a hosted QR image
+ *   - QR_PAYLOAD/LPA  : the QR payload string (e.g. `LPA:1$<smdp>$<matching-id>`)
+ *   - ACTIVATION_CODE : a provider installation code
+ *   - SM_DP_ADDRESS / MATCHING_ID : manual-install pair
+ * OneSIM never treats a payload as an image URL (and vice versa).
+ */
+export type QrKind = 'QR_IMAGE_URL' | 'QR_PAYLOAD' | 'ACTIVATION_CODE' | 'MANUAL' | 'NONE'
+
+/** Canonical presentation model shared by API DTOs and UI rendering. */
+export interface InstallationPresentation {
+  kind: QrKind
+  qrImageUrl?: string | null
+  qrPayload?: string | null
+  activationCode?: string | null
+  smdpAddress?: string | null
+  matchingId?: string | null
+}
+
+const HTTP_URL = /^https?:\/\//i
+
+/** True when the value is an HTTP(S) image URL (never an LPA payload). */
+export function isHttpUrl(value: string | null | undefined): boolean {
+  return !!value && HTTP_URL.test(String(value).trim())
+}
+
+/** True when the value is a QR/LPA payload string (e.g. `LPA:1$...` or `1$...`). */
+export function isLpaPayload(value: string | null | undefined): boolean {
+  if (!value) return false
+  const v = String(value).trim()
+  return /^LPA:/i.test(v) || /^\d+\$[^$]+\$[^$]+$/.test(v)
+}
+
+/**
+ * Classify a QR-ish value into its kind:
+ *  - starts with http(s)://  → QR_IMAGE_URL
+ *  - LPA payload shape        → QR_PAYLOAD
+ *  - otherwise                → ACTIVATION_CODE (or a data URI → QR_IMAGE_URL)
+ */
+export function classifyQrValue(value: string | null | undefined): 'QR_IMAGE_URL' | 'QR_PAYLOAD' | 'ACTIVATION_CODE' | 'NONE' {
+  if (!value) return 'NONE'
+  const v = String(value).trim()
+  if (HTTP_URL.test(v) || v.startsWith('data:image/')) return 'QR_IMAGE_URL'
+  if (isLpaPayload(v)) return 'QR_PAYLOAD'
+  return 'ACTIVATION_CODE'
+}
+
+/**
+ * Build the canonical installation presentation from persisted ESIM install
+ * fields. Provider-neutral. UI/API consume this — never raw `qrCodeUrl`.
+ */
+export function buildInstallationPresentation(fields: InstallDataFields | null | undefined): InstallationPresentation {
+  if (!fields) return { kind: 'NONE' }
+
+  // A `qrCodeUrl` that is not actually a URL is a payload that was mislabeled;
+  // a `qrCode` that is an HTTP URL is actually an image.
+  const qrCodeUrlKind = classifyQrValue(fields.qrCodeUrl)
+  const qrCodeKind = classifyQrValue(fields.qrCode)
+
+  const qrImageUrl = qrCodeUrlKind === 'QR_IMAGE_URL' ? fields.qrCodeUrl
+    : qrCodeKind === 'QR_IMAGE_URL' ? fields.qrCode
+    : null
+
+  const qrPayload = qrCodeKind === 'QR_PAYLOAD' ? fields.qrCode
+    : qrCodeUrlKind === 'QR_PAYLOAD' ? fields.qrCodeUrl
+    : null
+
+  const activationCode = fields.activationCode || null
+  const smdpAddress = fields.smdpAddress || null
+  const matchingId = fields.matchingId || null
+
+  let kind: QrKind
+  if (qrImageUrl) kind = 'QR_IMAGE_URL'
+  else if (qrPayload) kind = 'QR_PAYLOAD'
+  else if (activationCode) kind = 'ACTIVATION_CODE'
+  else if (smdpAddress && matchingId) kind = 'MANUAL'
+  else kind = 'NONE'
+
+  return { kind, qrImageUrl, qrPayload, activationCode, smdpAddress, matchingId }
+}
+
+/**
  * Input shape for install data already normalized by a connector/adapter/webhook
  * layer. Provider-specific field names must be normalized before this point;
  * this helper only reconciles plural/singular and strips falsy values.

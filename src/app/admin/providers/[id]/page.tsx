@@ -19,7 +19,7 @@ import { detectUrlMismatch } from '@/lib/providers/url-resolver'
 import { SaveAsTemplateButton } from '@/components/admin/providers/SaveAsTemplateButton'
 import { getProviderAuthStatus } from '@/lib/actions/provider-auth'
 import { getRecentHealthLogs, type HealthEvent } from '@/lib/services/providers/health-monitor'
-import { inferProviderCapabilities } from '@/lib/providers/capabilities'
+import { getProviderCapabilityState } from '@/lib/providers/capability-state'
 import { getProviderCapabilities, CAPABILITY_LABELS, CAPABILITY_COLORS, providerSupports } from '@/lib/providers/capabilities/index'
 import { ProviderActionButton, ActionForm } from '@/components/admin/providers/ActionButtons'
 import { MappingValidator } from '@/components/admin/providers/MappingValidator'
@@ -84,6 +84,9 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
   if (!provider) redirect('/admin/providers?error=Provider+not+found')
 
   const authStatus = await getProviderAuthStatus(provider.id).catch(() => ({ hasToken: false, isConnected: false, status: 'error' as const }))
+
+  // Canonical capability state — connector is the implementation truth.
+  const capabilityState = await getProviderCapabilityState(provider.id).catch(() => null)
 
   // Provider-neutral auth profile (drives Save & Verify vs Save & Authenticate).
   let authMode: string | null = null
@@ -305,52 +308,35 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       <div className="grid gap-6 lg:grid-cols-2 mb-6">
         <div className="rounded-lg border bg-white p-6 shadow-sm">
           <h3 className="mb-4 text-lg font-semibold text-gray-900">Capabilities</h3>
-          {(() => {
-            const caps = inferProviderCapabilities(provider)
-            const entries: { key: string; label: string; yes: boolean }[] = [
-              { key: 'supportsESIM', label: 'eSIM Provisioning', yes: caps.supportsESIM },
-              { key: 'supportsPlanSync', label: 'Plan Sync', yes: caps.supportsPlanSync },
-              { key: 'supportsQRCode', label: 'QR Code', yes: caps.supportsQRCode },
-              { key: 'supportsTopUp', label: 'Top-Up', yes: caps.supportsTopUp },
-              { key: 'supportsRenewals', label: 'Renewals', yes: caps.supportsRenewals },
-              { key: 'supportsUsage', label: 'Usage Tracking', yes: caps.supportsUsage },
-              { key: 'supportsUsageSync', label: 'Usage Sync', yes: caps.supportsUsageSync },
-              { key: 'supportsSuspend', label: 'Suspend', yes: caps.supportsSuspend },
-              { key: 'supportsSuspendResume', label: 'Suspend/Resume', yes: caps.supportsSuspendResume },
-              { key: 'supportsWallet', label: 'Wallet', yes: caps.supportsWallet },
-              { key: 'supportsOrderLookup', label: 'Order Lookup', yes: caps.supportsOrderLookup },
-              { key: 'supportsInventory', label: 'Inventory', yes: caps.supportsInventory },
-              { key: 'supportsCountryCatalog', label: 'Country Catalog', yes: caps.supportsCountryCatalog },
-              { key: 'supportsWebhookPush', label: 'Webhook Push', yes: caps.supportsWebhookPush },
-              { key: 'supportsTemplates', label: 'Bundle Templates', yes: caps.supportsTemplates },
-            ]
-            return (
-              <>
-                <div className="grid grid-cols-2 gap-2">
-                  {entries.map(entry => (
-                    <div key={entry.key} className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
-                      <span className="text-sm text-gray-700">{entry.label}</span>
-                      {entry.yes ? (
-                        <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">Yes</span>
-                      ) : (
-                        <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">No</span>
-                      )}
+          {capabilityState ? (
+            <>
+              <p className="mb-2 text-xs text-gray-400">
+                Auto-detected from connector: <span className="font-medium">{capabilityState.connectorClass || 'none'}</span>
+              </p>
+              <div className="grid grid-cols-1 gap-2">
+                {capabilityState.states.map(state => (
+                  <div key={state.capability} className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
+                    <div>
+                      <span className="text-sm text-gray-700">{state.label}</span>
+                      <span className="ml-1 text-[10px] text-gray-400">{state.capability}</span>
                     </div>
-                  ))}
-                </div>
-                {caps.detectedFrom.endpointMappings.length > 0 && (
-                  <p className="mt-3 text-xs text-gray-400">
-                    Detected from endpointMappings: {caps.detectedFrom.endpointMappings.join(', ')}
-                  </p>
-                )}
-                {caps.detectedFrom.pathFields.length > 0 && (
-                  <p className="mt-1 text-xs text-gray-400">
-                    Detected from path fields: {caps.detectedFrom.pathFields.join(', ')}
-                  </p>
-                )}
-              </>
-            )
-          })()}
+                    <div className="flex items-center gap-1">
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${state.implementationState === 'SUPPORTED' ? 'bg-green-100 text-green-800' : state.implementationState === 'NOT_SUPPORTED' ? 'bg-gray-100 text-gray-500' : state.implementationState === 'UNKNOWN' ? 'bg-amber-100 text-amber-800' : 'bg-amber-100 text-amber-800'}`}>
+                        {state.implementationState}
+                      </span>
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${state.enabled ? 'bg-cyan-100 text-cyan-800' : 'bg-gray-100 text-gray-500'}`}>
+                        {state.enabled ? 'Enabled' : 'Off'}
+                      </span>
+                      {state.portalExposed && <span className="text-[10px] text-gray-400">Portal</span>}
+                      {state.apiExposed && <span className="text-[10px] text-gray-400">API</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-gray-400">Capability state unavailable.</p>
+          )}
 
           {/* Capability Framework Badges */}
           {(() => {

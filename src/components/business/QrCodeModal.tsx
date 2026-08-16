@@ -40,7 +40,7 @@ function QrCodeModal({ esim, onClose }: { esim: QREsimProps; onClose: () => void
   const [imgLoading, setImgLoading] = useState(!!esim.qrCodeUrl)
   const [imgError, setImgError] = useState(false)
 
-  const lpaValue = esim.lpaValue
+  const lpaValue = esim.lpaValue || esim.qrCode || null
   const smdpAddress = esim.smdpAddress
   const matchingId = esim.matchingId
   const displayActivationCode = esim.activationCode || extractActivationCode(lpaValue ?? null)
@@ -158,6 +158,10 @@ function QrCodeModal({ esim, onClose }: { esim: QREsimProps; onClose: () => void
                 </div>
               )}
             </div>
+          ) : lpaValue ? (
+            <div className="flex justify-center">
+              <LocalQr payload={lpaValue} />
+            </div>
           ) : esim.qrCode ? (
             <div className="flex justify-center">
               <img src={esim.qrCode} alt="eSIM QR Code" className="w-48 h-48 rounded-lg border" />
@@ -250,6 +254,25 @@ function extractActivationCode(lpaValue: string | null): string | null {
     return parts[2] || null
   }
   return null
+}
+
+/** Client-side local QR renderer (browser-safe SVG data URL). */
+function LocalQr({ payload, size = 192 }: { payload: string; size?: number }) {
+  const src = useLocalQrDataUrl(payload, size)
+  if (!src) return <div className="w-48 h-48 rounded-lg border bg-gray-50 flex items-center justify-center"><p className="text-xs text-gray-400">Rendering QR…</p></div>
+  return <img src={src} alt="eSIM QR Code" className="w-48 h-48 rounded-lg border" />
+}
+
+function useLocalQrDataUrl(payload: string, size: number): string | null {
+  const [src, setSrc] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    import('@/lib/esim/qr-encoder-browser').then(mod => mod.renderQrPayloadSvg(payload, 8, size).then(url => {
+      if (!cancelled) setSrc(url)
+    })).catch(() => { if (!cancelled) setSrc(null) })
+    return () => { cancelled = true }
+  }, [payload, size])
+  return src
 }
 
 export type { QREsimProps }

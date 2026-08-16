@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hasUsableInstallData, installationStatusFromData, extractInstallDataFromProviderResponse, mergeInstallData, normalizeConnectorInstallData } from './installation-data'
+import { hasUsableInstallData, installationStatusFromData, extractInstallDataFromProviderResponse, mergeInstallData, normalizeConnectorInstallData, buildInstallationPresentation, classifyQrValue, isHttpUrl, isLpaPayload } from './installation-data'
 
 describe('hasUsableInstallData', () => {
   it('is true for qrCode alone', () => {
@@ -147,5 +147,70 @@ describe('normalizeConnectorInstallData', () => {
   it('handles null/undefined input', () => {
     expect(normalizeConnectorInstallData(null)).toEqual({})
     expect(normalizeConnectorInstallData(undefined)).toEqual({})
+  })
+})
+
+describe('QR classification (provider-neutral)', () => {
+  it('classifies an HTTP URL as QR_IMAGE_URL', () => {
+    expect(isHttpUrl('https://provider.example/qr/123.png')).toBe(true)
+    expect(isHttpUrl('LPA:1$smdp.example.com$123')).toBe(false)
+    expect(classifyQrValue('https://provider.example/qr.png')).toBe('QR_IMAGE_URL')
+    expect(classifyQrValue('data:image/png;base64,AAAA')).toBe('QR_IMAGE_URL')
+  })
+
+  it('classifies LPA payloads as QR_PAYLOAD', () => {
+    expect(isLpaPayload('LPA:1$smdp.example.com$123456')).toBe(true)
+    expect(isLpaPayload('1$smdp.example.com$123456')).toBe(true)
+    expect(classifyQrValue('LPA:1$smdp.example.com$123456')).toBe('QR_PAYLOAD')
+  })
+
+  it('classifies a plain code as ACTIVATION_CODE', () => {
+    expect(classifyQrValue('TN2023041314334227F18CAD')).toBe('ACTIVATION_CODE')
+    expect(classifyQrValue('')).toBe('NONE')
+    expect(classifyQrValue(null)).toBe('NONE')
+  })
+})
+
+describe('buildInstallationPresentation (canonical install model)', () => {
+  it('US-Matrix purchase: qrcodeString persisted as qrCode → presented as QR_PAYLOAD', () => {
+    // US-Matrix activateESIM now maps qrcodeString → qrCode (not qrCodeUrl).
+    const p = buildInstallationPresentation({
+      activationCode: '1$smdp.example.com$mid',
+      qrCode: 'LPA:1$smdp.example.com$mid',
+      smdpAddress: 'smdp.example.com',
+      matchingId: 'mid',
+    })
+    expect(p.kind).toBe('QR_PAYLOAD')
+    expect(p.qrPayload).toBe('LPA:1$smdp.example.com$mid')
+    expect(p.qrImageUrl).toBeNull()
+    expect(p.activationCode).toBe('1$smdp.example.com$mid')
+  })
+
+  it('a payload mislabeled into qrCodeUrl is still recognized as a payload', () => {
+    const p = buildInstallationPresentation({ qrCodeUrl: 'LPA:1$smdp.example.com$mid' })
+    expect(p.kind).toBe('QR_PAYLOAD')
+    expect(p.qrPayload).toBe('LPA:1$smdp.example.com$mid')
+    expect(p.qrImageUrl).toBeNull()
+  })
+
+  it('Choice: qr_code_link as qrCodeUrl → QR_IMAGE_URL', () => {
+    const p = buildInstallationPresentation({ qrCodeUrl: 'https://qr.example/q.png', activationCode: 'LPA:1$smdp$mid' })
+    expect(p.kind).toBe('QR_IMAGE_URL')
+    expect(p.qrImageUrl).toBe('https://qr.example/q.png')
+  })
+
+  it('manual-install pair → MANUAL', () => {
+    const p = buildInstallationPresentation({ smdpAddress: 'smdp.example.com', matchingId: 'mid-1' })
+    expect(p.kind).toBe('MANUAL')
+  })
+
+  it('activation code only → ACTIVATION_CODE', () => {
+    const p = buildInstallationPresentation({ activationCode: 'CODE123' })
+    expect(p.kind).toBe('ACTIVATION_CODE')
+  })
+
+  it('nothing → NONE', () => {
+    expect(buildInstallationPresentation({}).kind).toBe('NONE')
+    expect(buildInstallationPresentation(null).kind).toBe('NONE')
   })
 })

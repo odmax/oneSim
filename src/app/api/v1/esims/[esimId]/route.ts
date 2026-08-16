@@ -6,6 +6,7 @@ import { authenticateAndCheck, respond } from '@/lib/api/v1-response'
 import { apiError } from '@/lib/api/error-contract'
 import { stripPackageProviderFields, stripEsimProviderFields } from '@/lib/analytics/safe-fields'
 import { getActivationInstructions } from '@/lib/esim/activation-instructions'
+import { buildInstallationPresentation } from '@/lib/esim/installation-data'
 import { getPackageDisplayName, getPackageDataGB, PurchaseSnapshot } from '@/lib/packages/snapshot-utils'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 
@@ -40,7 +41,15 @@ export async function GET(
 
   const safeEsim = stripEsimProviderFields(esim)
   const dataUsedMB = esim.dataUsedMB || esim.usageRecords.reduce((sum, r) => sum + r.dataUsedMB, 0)
-  const instructions = getActivationInstructions(!!esim.qrCodeUrl)
+  // Canonical installation model: classify image vs LPA payload vs manual.
+  const install = buildInstallationPresentation({
+    activationCode: esim.activationCode,
+    qrCodeUrl: esim.qrCodeUrl,
+    qrCode: esim.qrCode,
+    smdpAddress: esim.smdpAddress,
+    matchingId: esim.matchingId,
+  })
+  const instructions = getActivationInstructions(install.kind === 'QR_IMAGE_URL' || install.kind === 'QR_PAYLOAD')
 
   const snap = (esim.packageSnapshot || esim.purchase.packageSnapshot) as PurchaseSnapshot | null
   const packageInfo = snap ? {
@@ -67,8 +76,13 @@ export async function GET(
       imsi: safeEsim.imsi || undefined,
       status: esim.status,
       statusLabel: getEsimStatusLabel(esim.status).label,
-      qrCodeUrl: safeEsim.qrCodeUrl,
-      activationCode: safeEsim.activationCode || undefined,
+      qrCodeUrl: install.qrImageUrl,
+      qrCode: install.qrPayload,
+      qrPayload: install.qrPayload,
+      qrKind: install.kind,
+      activationCode: install.activationCode || undefined,
+      smdpAddress: install.smdpAddress || undefined,
+      matchingId: install.matchingId || undefined,
       activatedAt: esim.activatedAt,
       activationDetectedAt: esim.activationDetectedAt,
       lastUsageAt: esim.lastUsageAt,

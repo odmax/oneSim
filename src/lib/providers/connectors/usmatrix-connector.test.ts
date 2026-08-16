@@ -19,7 +19,7 @@ vi.mock('@/lib/encryption', () => ({
 }))
 
 import { prisma } from '@/lib/prisma'
-import { UsMatrixConnector, maskIccid } from './usmatrix-connector'
+import { UsMatrixConnector, maskIccid, extractMatchingId } from './usmatrix-connector'
 import { resolveConnectorType, createConnector } from './connector-factory'
 import { buildUsMatrixUrl, normalizeUsMatrixBaseUrl, usMatrixEndpointPath } from './usmatrix-endpoints'
 
@@ -381,8 +381,11 @@ describe('US-Matrix purchase (POST /api/v1/esims/assign-package)', () => {
     expect(result.data?.activationId).toBe('esim-uuid-1')
     expect(result.data?.iccids).toEqual(['8955123456789012345'])
     expect(result.data?.activationCodes).toEqual(['1$rsp.truphone.com$EF1234ABCD5678'])
-    expect(result.data?.qrCodeUrl).toBe('LPA:1$rsp.truphone.com$EF1234ABCD5678')
+    // qrcodeString is the QR/LPA PAYLOAD — mapped to qrCode, never qrCodeUrl.
+    expect(result.data?.qrCode).toBe('LPA:1$rsp.truphone.com$EF1234ABCD5678')
+    expect(result.data?.qrCodeUrl).toBeUndefined()
     expect(result.data?.smdpAddress).toBe('rsp.truphone.com')
+    expect(result.data?.matchingId).toBe('EF1234ABCD5678')
     expect(result.data?.status).toBe('READY')
     const [url, init] = fetchSpy.mock.calls[0]
     expect(String(url)).toContain('/api/v1/esims/assign-package')
@@ -662,5 +665,36 @@ describe('US-Matrix security (logging)', () => {
     expect(maskIccid('8944501234567890123')).toBe('8944••••0123')
     expect(maskIccid(null)).toBe('')
     expect(maskIccid('')).toBe('')
+  })
+})
+
+describe('extractMatchingId (conservative LPA component extraction)', () => {
+  it('extracts the matching id from a standard LPA payload', () => {
+    expect(extractMatchingId('LPA:1$rsp.example.com$ABCDEF1234567890')).toBe('ABCDEF1234567890')
+    expect(extractMatchingId('1$rsp.example.com$ABCDEF1234567890')).toBe('ABCDEF1234567890')
+  })
+
+  it('returns null for a plain activation code (not an LPA shape)', () => {
+    expect(extractMatchingId('TN2023041314334227F18CAD')).toBeNull()
+  })
+
+  it('returns null for an HTTP URL', () => {
+    expect(extractMatchingId('https://provider.example/qr/123.png')).toBeNull()
+  })
+
+  it('returns null for malformed / missing components', () => {
+    expect(extractMatchingId('LPA:1$only-two$parts$x')).toBeNull() // extra $
+    expect(extractMatchingId('LPA:1$smdp$')).toBeNull() // empty third
+    expect(extractMatchingId('1$smdp')).toBeNull() // two parts only
+    expect(extractMatchingId(null)).toBeNull()
+    expect(extractMatchingId('')).toBeNull()
+  })
+
+  it('never returns the entire activation code as a matching id', () => {
+    // If the value is a full LPA payload the extracted id is the LAST segment,
+    // never the whole string.
+    const full = 'LPA:1$smdp.example.com$MID-42'
+    expect(extractMatchingId(full)).toBe('MID-42')
+    expect(extractMatchingId(full)).not.toBe(full)
   })
 })

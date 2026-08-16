@@ -8,6 +8,7 @@ import { computeProviderHealth } from '@/lib/services/operations/provider-health
 import { prisma } from '@/lib/prisma'
 import { getChoiceEndpointCoverage, getDocumentedUnusedEndpoints } from '@/lib/providers/telemetry/endpoint-telemetry'
 import { getProviderCapabilityProfile } from '@/lib/providers/capability-profile'
+import { getProviderCapabilityState } from '@/lib/providers/capability-state'
 
 const SEVERITY_COLORS: Record<string, string> = {
   HEALTHY: 'bg-emerald-100 text-emerald-800',
@@ -40,6 +41,7 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
 
   const health = await computeProviderHealth(params.id)
   const profile = await getProviderCapabilityProfile(params.id).catch(() => null)
+  const capState = await getProviderCapabilityState(params.id).catch(() => null)
 
   return (
     <div className="p-6 space-y-6 max-w-5xl">
@@ -113,6 +115,35 @@ export default async function ProviderDiagnosticDetailPage({ params }: { params:
                 </tbody>
               </table>
             </div>
+          </div>
+        </Section>
+      )}
+
+      {/* Capability State — dynamic from connector (implementation truth) */}
+      {capState && (
+        <Section title="Capability State">
+          <p className="mb-2 text-xs text-gray-400">Connector: {capState.connectorClass || 'none'} — auto-detected from the resolved connector implementation.</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-left text-gray-400"><tr>
+                <th className="pb-2 pr-2">Capability</th><th className="pb-2 pr-2">Implementation</th>
+                <th className="pb-2 pr-2">Enabled</th><th className="pb-2 pr-2">Portal</th><th className="pb-2 pr-2">API</th>
+              </tr></thead>
+              <tbody className="divide-y">
+                {capState.states.map(s => (
+                  <tr key={s.capability}>
+                    <td className="py-1.5 pr-2">
+                      <span className="font-medium text-gray-700">{s.label}</span>
+                      <span className="ml-1 text-[10px] text-gray-400">{s.capability}</span>
+                    </td>
+                    <td className={`py-1.5 pr-2 ${s.implementationState === 'SUPPORTED' ? 'text-emerald-600' : s.implementationState === 'NOT_SUPPORTED' ? 'text-gray-400' : s.implementationState === 'UNKNOWN' ? 'text-amber-600' : 'text-amber-600'}`}>{s.implementationState}</td>
+                    <td className={`py-1.5 pr-2 ${s.enabled ? 'text-emerald-600' : 'text-gray-400'}`}>{s.enabled ? 'YES' : 'NO'}</td>
+                    <td className="py-1.5 pr-2">{s.portalExposed ? 'ON' : 'OFF'}</td>
+                    <td className="py-1.5">{s.apiExposed ? 'ON' : 'OFF'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </Section>
       )}

@@ -35,6 +35,10 @@ export interface ActivateESIMResult {
   imsis?: string[]
   activationCodes?: string[]
   qrCodeUrl?: string
+  /** QR/LPA installation payload string (e.g. `LPA:1$<smdp>$<matching-id>`),
+   *  NOT an HTTP image URL. Connectors may return either qrCodeUrl (image) or
+   *  qrCode (payload). */
+  qrCode?: string
   matchingId?: string
   smdpAddress?: string
   status?: string
