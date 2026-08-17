@@ -23,6 +23,21 @@ export const TELNA_ENDPOINTS = {
   simSessions: '/usage/sessions/{iccid}',
   simBalances: '/usage/balances/{iccid}',
   consumption: '/usage/consumption',
+
+  // ── Phase 1 documented contract (package purchase / status / usage) ────
+  // Telna v2 documented surface: package templates, packages, sim-registries,
+  // euicc-profiles, open-data-sessions. Distinct keys so the legacy /pcr/* and
+  // /inventory/* surfaces remain untouched.
+  createPackage: '/packages',                              // POST { sim, package_template, time_allowance? }
+  packageList: '/packages',                                // GET ?sim=&package_template=&status=
+  packageDetail: '/packages/{package_id}',                 // GET
+  packageUpdate: '/packages/{package_id}',                 // PUT { package_status: ACTIVE|TERMINATED }
+  simRegistriesV2: '/sim-registries',                      // GET (documented SIM inventory)
+  simRegistryV2: '/sim-registries/{iccid}',                // GET
+  euiccProfile: '/euicc-profiles/{iccid}',                 // GET (installation data)
+  openDataSessions: '/open-data-sessions',                 // GET ?iccid=
+  packageTemplatesV2: '/package-templates',                // GET
+  packageTemplateV2: '/package-templates/{package_template_id}', // GET
 } as const
 
 export type TelnaEndpoint = keyof typeof TELNA_ENDPOINTS
@@ -524,4 +539,78 @@ export interface MappedTelnaConsumption {
   fromDate: string | null
   toDate: string | null
   rawData: Record<string, unknown>
+}
+
+// ── Phase 1 documented contract DTOs (v2 package / sim / euicc surface) ──
+
+/** Documented package template fields (data/voice/sms allowances in BYTES). */
+export interface TelnaV2PackageTemplate {
+  id?: number | string
+  name?: string
+  supported_countries?: string[]
+  data_usage_allowance?: number              // BYTES
+  voice_usage_allowance?: number             // minutes
+  sms_usage_allowance?: number               // messages
+  activation_time_allowance?: number         // seconds
+  activation_type?: 'AUTO' | 'MANUAL' | string
+  earliest_activation_date?: string
+  earliest_available_date?: string
+  latest_available_date?: string
+  time_allowance?: number
+  status?: string
+  inventory?: Array<{ id?: number | string; name?: string }>
+  apn?: string
+  [key: string]: unknown
+}
+
+/** Documented POST /packages request. */
+export interface TelnaCreatePackageRequest {
+  sim: string               // existing Telna ICCID
+  package_template: number  // Telna package template integer ID
+  time_allowance?: number   // optional seconds
+}
+
+/** Documented created / listed package instance. */
+export interface TelnaV2Package {
+  id?: string | number
+  sim?: string                        // ICCID
+  created_date?: string
+  expiry_date?: string
+  activated_date?: string
+  terminated_date?: string
+  window_activation_start?: string
+  window_activation_end?: string
+  status?: 'NOT_ACTIVE' | 'ACTIVE' | 'TERMINATED' | string
+  voice_usage_remaining?: number
+  data_usage_remaining?: number       // BYTES
+  sms_usage_remaining?: number
+  time_allowance?: number
+  package_template?: TelnaV2PackageTemplate | { id?: number | string; name?: string }
+  apn?: string
+  [key: string]: unknown
+}
+
+/** Documented SIM registry entry (v2). */
+export interface TelnaV2SimRegistry {
+  iccid?: string
+  status?: 'WAITING_FOR_ASSIGNMENT' | 'PRE_SERVICE' | 'IN_SERVICE' | 'TERMINATED' | string
+  inventory?: { id?: number | string; name?: string }
+  group?: { id?: number | string; name?: string }
+  [key: string]: unknown
+}
+
+/** Documented eUICC profile (installation/lifecycle data). */
+export interface TelnaEuiccProfile {
+  iccid?: string
+  imsi?: string
+  state?: 'AVAILABLE' | 'ALLOCATED' | 'LINKED' | 'CONFIRMED' | 'RELEASED' | 'DOWNLOADED' | 'INSTALLED' | 'ENABLED' | 'DISABLED' | 'ERROR' | 'UNAVAILABLE' | 'DELETED' | string
+  last_operation_date?: string
+  activation_code?: string
+  reuse_remaining_count?: number
+  reuse_enabled?: boolean
+  release_date?: string
+  cc_required?: boolean
+  cc_retries?: number
+  eid?: string
+  [key: string]: unknown
 }

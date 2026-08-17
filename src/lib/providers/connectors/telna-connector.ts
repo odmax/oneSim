@@ -1,8 +1,10 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
-import { telnaEndpointPath, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption } from './telna-endpoints'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, StatusLookupEsim, StatusLookupIdentifier } from './connector-interface'
+import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
+import { telnaEndpointPath, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption, type TelnaV2PackageTemplate, type TelnaCreatePackageRequest, type TelnaV2Package, type TelnaV2SimRegistry, type TelnaEuiccProfile } from './telna-endpoints'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, StatusLookupEsim, StatusLookupIdentifier, ConnectorInstallDataOutput, InstallationLookupInput, InstallationLookupResult } from './connector-interface'
 import { normalizeSimStatus } from '../mappers/telna-sim-mapper'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 interface TelnaRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
@@ -48,21 +50,16 @@ export class TelnaConnector implements IProviderConnector {
 
   /** Telna (legacy) connector-declared internal capabilities. */
   capabilities: ConnectorCapabilities = {
-    // Installation: the official v2.1 endpoint-mapping doc does NOT provide a QR
-    // / activation-code / installation-data endpoint, but its absence there is NOT
-    // proof Telna lacks installation data elsewhere. Conservative tri-state
-    // 'UNKNOWN' (never claimed NOT_SUPPORTED without explicit evidence). The
-    // connector does not wire an install-data method yet.
-    installationLookup: 'UNKNOWN',
+    installationLookup: true, // documented GET /euicc-profiles/{iccid} — activation_code
     installationDataAtPurchase: 'UNKNOWN',
-    installationLookupHistorical: 'UNKNOWN',
-    statusLookup: true, // read-only GET /pcr/sim-pcr-profiles/{iccid} (Endpoint Mapping #36)
-    usageLookup: false,
+    installationLookupHistorical: true,
+    statusLookup: true, // SIM registry + eUICC profile evidence
+    usageLookup: true, // package data_usage_remaining (BYTES)
     topUp: false,
     suspend: false,
     resume: false,
     balance: true, // getWallet
-    inventory: true, // listSimRegistries / listInventories
+    inventory: true, // GET /sim-registries
     webhooks: false,
   }
 
@@ -236,25 +233,237 @@ export class TelnaConnector implements IProviderConnector {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Plan sync not implemented for Telna connector' } }
   }
 
-  async activateESIM(_params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Activation not implemented for Telna connector' } }
+  /**
+   * Telna purchase: creates a service package on an EXISTING Telna SIM ICCID.
+   *
+   * Flow:
+   *  1. Resolve the provider template id from params.planId (the configured
+   *     ProviderPackage.providerPlanId maps to the TELNA PACKAGE TEMPLATE id).
+   *  2. If a template inventory is known, filter eligible SIMs to it.
+   *  3. Select an eligible (non-terminated) Telna ICCID from the SIM registry.
+   *  4. No eligible SIM → canonical OUT_OF_STOCK (NO POST /packages).
+   *  5. POST /packages { sim: ICCID, package_template: templateId }.
+   *  6. Return the created package instance id (provider package ref) + ICCID.
+   *
+   * NEVER sends a local OneSIM id (esim.id / Package.id / ProviderPackage.id).
+   */
+  async activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
+    const config = await this.loadProvider()
+    if (!config) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not found or KeyID not configured' } }
+
+    // params.planId = ProviderPackage.providerPlanId = Telna package template id.
+    if (!params.planId) return { success: false, error: { code: 'INVALID_REQUEST', message: 'Provider package template id (planId) is required for purchase' } }
+    const templateId = Number(params.planId)
+    if (!Number.isFinite(templateId) || templateId <= 0) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'planId must be the numeric Telna package template id' } }
+    }
+    const orderId = params.orderId
+
+    // Determine the template's inventory (a template is tied to an inventory;
+    // only SIMs in that inventory can use it). Read-only, best-effort.
+    let templateInventoryId: number | string | undefined
+    try {
+      const tpl = await this.getV2PackageTemplate(templateId)
+      if (tpl.success && tpl.data?.template?.inventory && Array.isArray(tpl.data.template.inventory)) {
+        const first = tpl.data.template.inventory[0]
+        if (first?.id != null) templateInventoryId = Number(first.id) || String(first.id)
+      }
+    } catch { /* fall through to unconstrained selection */ }
+
+    // Enumerate eligible PRE_SERVICE candidates (in template inventory, unused).
+    const candidates = await this.listEligibleIccids(templateInventoryId)
+    if (candidates.length === 0) {
+      return {
+        success: false,
+        error: { code: 'OUT_OF_STOCK', message: 'No eligible Telna SIM inventory available for the requested package template' },
+      }
+    }
+
+    // ATOMIC local claim BEFORE any Telna mutation. For each candidate, attempt
+    // a durable OneSIM eSIM pre-claim bounded to this order via the `@unique
+    // iccid` constraint. Only after a successful local claim is the billable
+    // POST /packages made. A collision simply moves to the next candidate.
+    let claimError: string | null = null
+    if (!orderId) {
+      // No durable purchase identity → cannot make an ownership-safe claim.
+      // Safety barrier: never an unowned provider mutation.
+      return {
+        success: false,
+        error: { code: 'OUT_OF_STOCK', message: 'A purchase order (orderId) is required to claim and purchase Telna eSIM inventory' },
+      }
+    }
+    for (const iccid of candidates) {
+      // Neutral OneSIM atomic claim (ESIM.iccid @unique). Replace direct DB ops.
+      const claim = await claimProviderIccid({ purchaseId: orderId, iccid })
+      if (!claim.ok) {
+        // CLAIM_LOST (P2002) — another concurrent purchase claimed this ICCID.
+        continue
+      }
+
+      // Claim succeeded & owned by this order — call Telna (exactly one mutation).
+      const body: TelnaCreatePackageRequest = { sim: iccid, package_template: templateId }
+      const result = await this.createPackage(body)
+
+      if (!result.success || !result.data?.pkg) {
+        // Telna failed → neutral ownership-safe release of this purchase's claim.
+        await releaseProviderIccidClaim({ purchaseId: orderId, iccid })
+        claimError = result.error?.code || 'PACKAGE_CREATE_FAILED'
+        return { success: false, error: result.error || { code: 'PACKAGE_CREATE_FAILED', message: 'Telna package creation failed' } }
+      }
+
+      const pkg = result.data.pkg
+      const packageInstanceId = pkg.id != null ? String(pkg.id) : undefined
+      const rawMetadata: Record<string, any> = {
+        // Three distinct identities:
+        //  - iccid                     = Telna eSIM identity (A)
+        //  - providerTemplateId        = Telna package template id = catalog plan (B)
+        //  - providerPackageInstanceId = exact created Telna package instance (C)
+        iccid,
+        providerTemplateId: templateId,
+        providerPackageInstanceId: packageInstanceId ?? null,
+        packageStatus: pkg.status ?? null,
+      }
+
+      return {
+        success: true,
+        data: {
+          // activationId = provider package instance (C); esim identity (A) is
+          // the claimed ICCID. The package instance id is preserved verbatim so
+          // later usage can address the EXACT package.
+          activationId: packageInstanceId || iccid,
+          iccids: [iccid],
+          iccidOrSimId: iccid,
+          // Package creation does NOT prove device installation or network
+          // activation — stay PENDING_ACTIVATION ("ready to install"). The status
+          // sync will promote via canonical evidence.
+          status: 'PENDING_ACTIVATION',
+          rawMetadata,
+        },
+      }
+    }
+
+    return {
+      success: false,
+      error: { code: claimError || 'OUT_OF_STOCK', message: claimError ? 'All eligible Telna SIMs were claimed by concurrent purchases; no free inventory remains' : 'No eligible Telna SIM inventory available for the requested package template' },
+    }
+  }
+
+  /**
+   * Enumerate eligible Telna ICCIDs for a new OneSIM purchase. Only PRE_SERVICE
+   * SIMs are candidates; IN_SERVICE / TERMINATED / WAITING_FOR_ASSIGNMENT are
+   * never selected, and ICCIDs already bound to an existing OneSIM eSIM are
+   * excluded. Returns [] → OUT_OF_STOCK.
+   */
+  private async listEligibleIccids(inventoryId?: number | string): Promise<string[]> {
+    const result = await this.listV2SimRegistries(
+      inventoryId != null ? Number(inventoryId) : undefined,
+    )
+    if (!result.success || !result.data) return []
+    const sims = result.data.items || []
+    const candidates = sims
+      .filter(s => s?.iccid && String(s.iccid).trim() !== '' && String(s.status || '').toUpperCase() === 'PRE_SERVICE')
+      .map(s => String(s.iccid))
+    if (candidates.length === 0) return []
+
+    const used = await prisma.eSIM.findMany({ where: { iccid: { in: candidates } }, select: { iccid: true } })
+    const usedSet = new Set(used.map(u => u.iccid))
+    return candidates.filter(c => !usedSet.has(c))
   }
 
   async getStatus(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
-    // Telna v2.1 uses the ICCID directly as the identifier for SIM PCR Profile
-    // lookups (Endpoint Mapping #36). NEVER a local OneSIM id.
+    // Telna status is keyed by ICCID (provider-owned). Never a local OneSIM id.
     const iccid = typeof identifier === 'string' ? identifier : (identifier as StatusLookupIdentifier)?.iccid
     if (!iccid) {
       return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'ICCID is required for Telna status lookup' } }
     }
-    const result = await this.getSimPCRProfile(iccid)
-    if (!result.success || !result.data) return { success: false, error: result.error }
-    const profile = result.data.profile
-    const status = normalizeSimStatus(profile.status || 'UNKNOWN')
+
+    // Evidence set: SIM registry (PRE_SERVICE/IN_SERVICE/TERMINATED), eUICC
+    // profile (RELEASED/DOWNLOADED/INSTALLED/ENABLED/DISABLED), and any package
+    // status (NOT_ACTIVE/ACTIVE/TERMINATED). All read-only, provider-owned.
+    let simStatus: string | null = null
+    let profileState: string | null = null
+    let packageStatus: string | null = null
+    let expiryDate: string | undefined
+
+    // 1) SIM registry (best-effort — availability of /sim-registries is live-proven).
+    const reg = await this.getV2SimRegistry(iccid)
+    if (reg.success && reg.data?.sim?.status) {
+      simStatus = String(reg.data.sim.status).toUpperCase()
+    }
+
+    // 2) eUICC profile (best-effort — conveys install/enable evidence, not network usage).
+    const prof = await this.getEuiccProfile(iccid)
+    if (prof.success && prof.data?.profile?.state) {
+      profileState = String(prof.data.profile.state).toUpperCase()
+    }
+
+    // 3) Package status (best-effort).
+    const pkgRes = await this.listV2Packages({ sim: iccid })
+    if (pkgRes.success && Array.isArray(pkgRes.data?.items) && pkgRes.data.items.length > 0) {
+      const p = pkgRes.data.items.find(x => String(x.status).toUpperCase() !== 'TERMINATED') || pkgRes.data.items[0]
+      packageStatus = String(p?.status || '').toUpperCase() || null
+      expiryDate = p?.expiry_date || undefined
+    }
+
+    // Conservative, provider-neutral normalization. Evidence is mapped into the
+    // canonical StatusResult.evidence contract; the generic lifecycle engine
+    // decides the final stored status via deriveEsimLifecycleStatus.
+    //
+    // Lifecycle precedence: SIM TERMINATED is STRONG terminal SIM evidence and
+    // wins. A TERMINATED PACKAGE alone does NOT terminate the physical eSIM —
+    // Telna supports another package / top-up on that SIM — so it must never
+    // force EXPIRED. Package status is supplemental (expiry) only, never the
+    // authority for PROFILECOMPLETION/device lifecycle.
+    const rawStatus = profileState || simStatus || packageStatus || 'UNKNOWN'
+    let status: string
+    let evidence: StatusResult['evidence']
+
+    if (simStatus === 'TERMINATED' || profileState === 'DELETED' || profileState === 'UNAVAILABLE' || profileState === 'ERROR') {
+      // Strong terminal SIM / profile evidence.
+      status = 'EXPIRED'
+      evidence = { reason: 'telna-sim-terminated' }
+    } else if (simStatus === 'SUSPENDED' || profileState === 'DISABLED') {
+      // SIM/profile locally suspended or disabled.
+      status = 'SUSPENDED'
+      evidence = { reason: 'telna-suspended-or-disabled' }
+    } else if (simStatus === 'IN_SERVICE') {
+      // IN_SERVICE SIM = has generated network traffic — strong network-use evidence.
+      status = 'ACTIVE'
+      evidence = { networkAttached: true, reason: 'sim-in-service' }
+    } else if (profileState === 'INSTALLED' || profileState === 'ENABLED') {
+      // Profile installed/enabled on device — device-install evidence, not network-active.
+      status = 'INSTALLED'
+      evidence = { deviceInstalled: true, reason: 'euicc-installed-or-enabled' }
+    } else if (simStatus === 'PRE_SERVICE' || profileState === 'RELEASED' || profileState === 'DOWNLOADED' || simStatus === 'WAITING_FOR_ASSIGNMENT') {
+      // Ready / provisioned but not network-active.
+      status = 'PENDING_ACTIVATION'
+      evidence = { reason: 'telna-ready-not-active' }
+    } else {
+      status = 'PENDING_ACTIVATION'
+      evidence = { reason: 'telna-no-strong-evidence' }
+    }
+
     return {
       success: true,
-      data: { status, rawStatus: profile.status, iccid },
+      data: {
+        status,
+        rawStatus,
+        iccid,
+        expiresAt: expiryDate,
+        evidence,
+        rawMetadata: { source: 'sim-registry+euicc-profiles+packages', rawStatus, simStatus, profileState, packageStatus },
+      },
     }
+  }
+
+  /** GET /sim-registries/{iccid} — documented SIM registry detail. */
+  async getV2SimRegistry(iccid: string): Promise<ConnectorResult<{ sim: TelnaV2SimRegistry }>> {
+    const result = await this.request({ method: 'GET', endpoint: 'simRegistryV2', pathParams: { iccid } })
+    const sim = result.success && result.data ? (result.data as { data: TelnaV2SimRegistry }).data : null
+    if (!result.success || !sim) {
+      return { success: false, error: result.error || { code: 'SIM_REGISTRY_FAILED', message: 'SIM registry entry not found' } }
+    }
+    return { success: true, data: { sim } }
   }
 
   /** Telna status is keyed by ICCID — a provider-owned identifier, never a local esim.id. */
@@ -262,8 +471,109 @@ export class TelnaConnector implements IProviderConnector {
     return esim.iccid || null
   }
 
-  async getUsage(_iccid: string): Promise<ConnectorResult<UsageResult>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Usage not implemented for Telna connector' } }
+  async getUsage(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<UsageResult>> {
+    // Telna usage is keyed by the EXACT package instance (C) associated with the
+    // purchase. When the identifier carries providerSubscriptionId (the persisted
+    // package instance id), address that package directly. Only fall back to the
+    // ICCID when no package instance id is known AND uniqueness can be proven
+    // (exactly one non-TERMINATED package on the SIM). Never arbitrarily select
+    // the first/non-terminated package among several.
+    const iccid = typeof identifier === 'string' ? identifier : (identifier as StatusLookupIdentifier)?.iccid
+    if (!iccid) {
+      return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'ICCID is required for Telna usage lookup' } }
+    }
+    const packageInstanceId = typeof identifier === 'object' && identifier
+      ? (identifier as StatusLookupIdentifier)?.providerSubscriptionId
+      : undefined
+
+    // 1) Exact package instance path (preferred).
+    let packageInstance: TelnaV2Package | null = null
+    if (packageInstanceId && String(packageInstanceId).trim() !== '') {
+      try {
+        const detail = await this.getV2Package(String(packageInstanceId))
+        if (detail.success && detail.data?.pkg) {
+          packageInstance = detail.data.pkg
+        }
+      } catch { /* fall through to iccid refinement */ }
+    }
+
+    // 2) Fallback: ICCID lookup, only used when exactly one non-TERMINATED
+    //    package exists (provable uniqueness).
+    if (!packageInstance) {
+      const pkgRes = await this.listV2Packages({ sim: iccid })
+      if (pkgRes.success && Array.isArray(pkgRes.data?.items)) {
+        const nonTerminated = pkgRes.data.items.filter(p => String(p.status).toUpperCase() !== 'TERMINATED')
+        if (nonTerminated.length === 1) {
+          packageInstance = nonTerminated[0]
+        } else if (nonTerminated.length > 1) {
+          // Multiple package instances — cannot safely pick one → require the
+          // exact package instance id (persisted at purchase).
+          return { success: false, error: { code: 'DATA_UNAVAILABLE', message: 'Multiple Telna packages on this ICCID — exact package instance id required' } }
+        }
+      }
+      if (pkgRes.success && pkgRes.success && (pkgRes.data?.items?.length ?? 0) === 0) {
+        return { success: false, error: { code: 'DATA_UNAVAILABLE', message: 'No Telna package instance found for this ICCID' } }
+      }
+      if (!packageInstance) {
+        return { success: false, error: { code: 'DATA_UNAVAILABLE', message: 'No Telna package instance found for this ICCID' } }
+      }
+    }
+
+    // 3) Total allowance: prefer the template's data_usage_allowance (BYTES).
+    let templateAllowanceBytes = 0
+    if (packageInstance.package_template && typeof (packageInstance.package_template as any)?.data_usage_allowance === 'number') {
+      templateAllowanceBytes = Number((packageInstance.package_template as any).data_usage_allowance)
+    } else {
+      const templateId = Number((packageInstance.package_template as any)?.id)
+      if (Number.isFinite(templateId) && templateId > 0) {
+        try {
+          const tpl = await this.getV2PackageTemplate(templateId)
+          if (tpl.success && tpl.data?.template && typeof tpl.data.template.data_usage_allowance === 'number') {
+            templateAllowanceBytes = Number(tpl.data.template.data_usage_allowance)
+          }
+        } catch { /* keep 0 */ }
+      }
+    }
+
+    const remainingBytes = Number(packageInstance.data_usage_remaining)
+    if (!Number.isFinite(remainingBytes) || remainingBytes < 0) {
+      return { success: false, error: { code: 'DATA_UNAVAILABLE', message: 'No data_usage_remaining in Telna package response' } }
+    }
+    const totalMB = templateAllowanceBytes > 0 ? templateAllowanceBytes / (1024 * 1024) : undefined
+    const remainingMB = remainingBytes / (1024 * 1024)
+    const usedMB = totalMB != null ? Math.max(0, totalMB - remainingMB) : undefined
+
+    const status = String(packageInstance.status || '').toUpperCase()
+    return {
+      success: true,
+      data: {
+        iccid,
+        dataUsedMB: usedMB != null ? Math.round(usedMB) : 0,
+        dataTotalMB: totalMB != null ? Math.round(totalMB) : undefined,
+        dataRemainingMB: Math.round(remainingMB),
+        expiresAt: packageInstance.expiry_date ? String(packageInstance.expiry_date) : undefined,
+        status: status === 'ACTIVE' ? 'ACTIVE' : status === 'TERMINATED' ? 'EXPIRED' : status === 'NOT_ACTIVE' ? 'PENDING_ACTIVATION' : undefined,
+        rawMetadata: { source: packageInstanceId && String(packageInstanceId).trim() !== '' ? 'packages/{package_id}' : 'packages?sim=', packageId: packageInstance.id ? String(packageInstance.id) : undefined, remainingBytes: Math.round(remainingBytes) },
+      },
+    }
+  }
+
+  /**
+   * Telna usage is keyed by the EXACT purchased package instance, identified by
+   * the ICCID (A) + the persisted providerPackageInstanceId (C). Returns a
+   * structured StatusLookupIdentifier so getUsage can address the precise
+   * package rather than arbitrarily picking one among several on the SIM.
+   */
+  resolveUsageLookup(esim: StatusLookupEsim): string | StatusLookupIdentifier | null {
+    if (!esim.iccid) return null
+    const raw = esim.providerResponse && typeof esim.providerResponse === 'object'
+      ? (esim.providerResponse as Record<string, unknown>)
+      : undefined
+    const packageInstanceId = raw?.providerPackageInstanceId
+    return {
+      iccid: esim.iccid,
+      ...(typeof packageInstanceId === 'string' && packageInstanceId ? { providerSubscriptionId: packageInstanceId } : {}),
+    }
   }
 
   async suspendESIM(_subscriptionId: string): Promise<ConnectorResult<EsimLifecycleResult>> {
@@ -278,8 +588,124 @@ export class TelnaConnector implements IProviderConnector {
     return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Rates not implemented for Telna connector' } }
   }
 
-  async getQRCode(_iccid: string): Promise<ConnectorResult<{ qrCodeUrl: string }>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'QR code not implemented for Telna connector' } }
+  async getQRCode(_iccid: string): Promise<ConnectorResult<import('./connector-interface').QRCodeResult>> {
+    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Use lookupInstallationData — Telna QR is conveyed as a documented activation_code, never an HTTP image URL' } }
+  }
+
+  /**
+   * Documented read-only installation lookup: GET /euicc-profiles/{iccid}.
+   * Maps the documented `activation_code` into the neutral installation result.
+   * A profile state of INSTALLED/ENABLED is added as safe evidence metadata.
+   * Never logs ICCID/IMSI/EID/activation_code.
+   */
+  async lookupInstallationData(input: InstallationLookupInput): Promise<InstallationLookupResult> {
+    const iccid = input?.iccid || input?.esimId || null
+    if (!iccid) {
+      return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'IDENTIFIER_MISSING', diagnostics: { methodUsed: 'euiccProfiles', identifierType: 'none' } }
+    }
+    const result = await this.getEuiccProfile(iccid)
+    if (!result.success || !result.data?.profile) {
+      if (result.error?.code === 'HTTP_401' || result.error?.code === 'HTTP_403') {
+        return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'PROVIDER_AUTH_FAILED', diagnostics: { methodUsed: 'euiccProfiles', identifierType: 'iccid' } }
+      }
+      return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: result.error?.code === 'HTTP_404' ? 'PROVIDER_HTTP_ERROR' : (result.error?.code || 'PROVIDER_TIMEOUT'), diagnostics: { methodUsed: 'euiccProfiles', identifierType: 'iccid' } }
+    }
+    const p = result.data.profile
+    const profileState = String(p.state || '').toUpperCase()
+
+    const data: ConnectorInstallDataOutput = {
+      ...(p.activation_code ? { activationCode: String(p.activation_code) } : {}),
+    }
+    if (hasUsableInstallData(data)) {
+      return {
+        success: true,
+        state: 'READY',
+        data,
+        diagnostics: { methodUsed: 'euiccProfiles', identifierType: 'iccid', httpMethod: 'GET', endpointName: 'euiccProfile', responseKeys: Object.keys(p), note: `profile_state=${profileState}` },
+      }
+    }
+    return {
+      success: false,
+      state: 'NOT_AVAILABLE_YET',
+      errorCode: 'NO_INSTALL_DATA',
+      diagnostics: { methodUsed: 'euiccProfiles', identifierType: 'iccid', httpMethod: 'GET', endpointName: 'euiccProfile', responseKeys: Object.keys(p), note: `profile_state=${profileState}` },
+    }
+  }
+
+  /** GET /euicc-profiles/{iccid} — documented read-only profile + activation data. */
+  async getEuiccProfile(iccid: string): Promise<ConnectorResult<{ profile: TelnaEuiccProfile }>> {
+    const result = await this.request({ method: 'GET', endpoint: 'euiccProfile', pathParams: { iccid } })
+    const profile = result.success && result.data ? (result.data as { data: TelnaEuiccProfile }).data : null
+    if (!result.success || !profile) {
+      return { success: false, error: result.error || { code: 'PROFILE_FAILED', message: 'eUICC profile not found' } }
+    }
+    return { success: true, data: { profile } }
+  }
+
+  // ── Phase 1: documented v2 package / SIM / template surface ────────────
+
+  /** GET /package-templates/{package_template_id} — documented template detail. */
+  async getV2PackageTemplate(packageTemplateId: number): Promise<ConnectorResult<{ template: TelnaV2PackageTemplate }>> {
+    const result = await this.request({ method: 'GET', endpoint: 'packageTemplateV2', pathParams: { package_template_id: packageTemplateId } })
+    const template = result.success && result.data ? (result.data as { data: TelnaV2PackageTemplate }).data : null
+    if (!result.success || !template) {
+      return { success: false, error: result.error || { code: 'TEMPLATE_FAILED', message: 'Package template not found' } }
+    }
+    return { success: true, data: { template } }
+  }
+
+  /**
+   * GET /sim-registries — documented SIM inventory. Returns eligible (non-
+   * terminated) SIM registries, optionally filtered by inventory.
+   * inventoryId/groupId are passed through as documented filters.
+   */
+  async listV2SimRegistries(inventoryId?: number, groupId?: number, iccid?: string, imsi?: string, status?: string, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaV2SimRegistry[]; total: number }>> {
+    const result = await this.request({
+      method: 'GET', endpoint: 'simRegistriesV2',
+      query: { inventory_id: inventoryId, group: groupId, iccid, imsi, status, count, offset },
+    })
+    const items = (result.success && result.data && (result.data as any).data) ? (result.data as any).data as TelnaV2SimRegistry[] : []
+    const total = (result.success && result.data && (result.data as any).total) ? (result.data as any).total : items.length
+    if (!result.success) {
+      return { success: false, error: result.error || { code: 'INVENTORY_FAILED', message: 'Failed to list SIM registries' } }
+    }
+    return { success: true, data: { items, total } }
+  }
+
+  /** GET /packages — documented package filter surface (sim / template / status). */
+  async listV2Packages(filters: { sim?: string; package_template?: number | string; status?: string; count?: number; offset?: number } = {}): Promise<ConnectorResult<{ items: TelnaV2Package[]; total: number }>> {
+    const result = await this.request({ method: 'GET', endpoint: 'packageList', query: filters })
+    const items = (result.success && result.data && (result.data as any).data) ? (result.data as any).data as TelnaV2Package[] : []
+    const total = (result.success && result.data && (result.data as any).total) ? (result.data as any).total : items.length
+    if (!result.success) {
+      return { success: false, error: result.error || { code: 'PACKAGES_FAILED', message: 'Failed to list packages' } }
+    }
+    return { success: true, data: { items, total } }
+  }
+
+  /** GET /packages/{package_id} — documented exact package instance detail. */
+  async getV2Package(packageId: string | number): Promise<ConnectorResult<{ pkg: TelnaV2Package }>> {
+    const result = await this.request({ method: 'GET', endpoint: 'packageDetail', pathParams: { package_id: packageId } })
+    const pkg = result.success && result.data ? (result.data as { data?: TelnaV2Package }).data || (result.data as TelnaV2Package) : null
+    if (!result.success || !pkg) {
+      return { success: false, error: result.error || { code: 'PACKAGE_FAILED', message: 'Package instance not found' } }
+    }
+    return { success: true, data: { pkg } }
+  }
+
+  /**
+   * POST /packages — creates a service package on an EXISTING Telna SIM.
+   * Documented body: { sim, package_template, time_allowance? }.
+   * NEVER a local OneSIM id; only the provider-owned ICCID + template id.
+   */
+  async createPackage(req: TelnaCreatePackageRequest): Promise<ConnectorResult<{ pkg: TelnaV2Package }>> {
+    const result = await this.request({ method: 'POST', endpoint: 'createPackage', body: req })
+    if (!result.success) return { success: false, error: result.error }
+    const pkg = (result.data as { data?: TelnaV2Package })?.data || (result.data as TelnaV2Package)
+    if (!pkg || (pkg.id == null && pkg.sim == null)) {
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'POST /packages response missing id/sim' } }
+    }
+    return { success: true, data: { pkg } }
   }
 
   async topUpESIM(_params: TopUpESIMParams): Promise<ConnectorResult<TopUpESIMResult>> {

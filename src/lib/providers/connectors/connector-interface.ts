@@ -126,6 +126,9 @@ export interface StatusLookupIdentifier {
    *  mobile-detail packageEsims[].package.id). Never a local OneSIM id. */
   providerPackageId?: string
   providerPlanId?: string
+  /** Optional provider-owned subscription / package-instance reference (e.g.
+   *  Telna exact package instance id). Never a local OneSIM id. */
+  providerSubscriptionId?: string
 }
 
 /**
