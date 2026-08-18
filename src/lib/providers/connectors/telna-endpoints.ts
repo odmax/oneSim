@@ -24,23 +24,83 @@ export const TELNA_ENDPOINTS = {
   simBalances: '/usage/balances/{iccid}',
   consumption: '/usage/consumption',
 
-  // ── Phase 1 documented contract (package purchase / status / usage) ────
-  // Telna v2 documented surface: package templates, packages, sim-registries,
-  // euicc-profiles, open-data-sessions. Distinct keys so the legacy /pcr/* and
-  // /inventory/* surfaces remain untouched.
-  createPackage: '/packages',                              // POST { sim, package_template, time_allowance? }
-  packageList: '/packages',                                // GET ?sim=&package_template=&status=
-  packageDetail: '/packages/{package_id}',                 // GET
-  packageUpdate: '/packages/{package_id}',                 // PUT { package_status: ACTIVE|TERMINATED }
-  simRegistriesV2: '/sim-registries',                      // GET (documented SIM inventory)
-  simRegistryV2: '/sim-registries/{iccid}',                // GET
-  euiccProfile: '/euicc-profiles/{iccid}',                 // GET (installation data)
-  openDataSessions: '/open-data-sessions',                 // GET ?iccid=
-  packageTemplatesV2: '/package-templates',                // GET
-  packageTemplateV2: '/package-templates/{package_template_id}', // GET
+  // ── Phase 1F: documented eSIM RSP + session surfaces (Bearer).
+  // Distinct, documented legacy surfaces (NOT under /pcr or /inventory):
+  //   eUICC profile     = eSIM RSP surface  (Bearer)
+  //   open-data-sessions = session surface   (Bearer)
+  euiccProfile: '/euicc-profiles/{iccid}',                 // GET (installation data) — RSP, Bearer
+  openDataSessions: '/open-data-sessions',                 // GET ?iccid= — SESSION, Bearer
 } as const
 
 export type TelnaEndpoint = keyof typeof TELNA_ENDPOINTS
+
+/**
+ * Telna auth families, derived from the DOCUMENTED path prefixes:
+ *   /core/*      → CORE
+ *   /pcr/*       → PCR (ApiKey + Basic)
+ *   /inventory/* → INVENTORY (Bearer)
+ *   /usage/*     → USAGE (Bearer in practice)
+ * plus the documented eSIM RSP (/euicc-profiles/{iccid}) = ESIM_RSP (Bearer) and
+ * session management (/open-data-sessions) = SESSION (Bearer).
+ *
+ * ENDPOINTS ARE CLASSIFIED ONLY FROM DOCUMENTED PATHS. The bare Phase-1D
+ * duplicate keys (/packages, /sim-registries, /package-templates) were removed
+ * in favour of the canonical documented keys (PCR /pcr/*, INVENTORY
+ * /inventory/*). The eSIM RSP and session surfaces are exactly
+ * /euicc-profiles/{iccid} and /open-data-sessions respectively (Bearer), now
+ * marked proven. No endpoint keeps a bare, unproven path with a concrete family.
+ */
+export type TelnaAuthFamily =
+  | 'PCR'
+  | 'INVENTORY'
+  | 'ESIM_RSP'
+  | 'SESSION'
+  | 'CORE'
+  | 'USAGE'
+  | 'UNVERIFIED'
+
+const TELNA_ENDPOINT_AUTH: Record<TelnaEndpoint, TelnaAuthFamily> = {
+  // /core/*
+  countries: 'CORE',
+  company: 'CORE',
+  companies: 'CORE',
+  // /inventory/*
+  inventories: 'INVENTORY',
+  inventory: 'INVENTORY',
+  groups: 'INVENTORY',
+  group: 'INVENTORY',
+  simRegistries: 'INVENTORY',
+  simRegistry: 'INVENTORY',
+  // /pcr/*
+  packageTemplates: 'PCR',
+  packageTemplate: 'PCR',
+  packages: 'PCR',
+  package: 'PCR',
+  simPCRProfiles: 'PCR',
+  simPCRProfile: 'PCR',
+  simProfiles: 'PCR',
+  wallet: 'PCR',
+  wallets: 'PCR',
+  trafficPolicies: 'PCR',
+  trafficPolicy: 'PCR',
+  // /usage/*
+  simUsage: 'USAGE',
+  simSessions: 'USAGE',
+  simBalances: 'USAGE',
+  consumption: 'USAGE',
+  // Documented eSIM RSP + session surfaces (Bearer), proven.
+  euiccProfile: 'ESIM_RSP',
+  openDataSessions: 'SESSION',
+}
+
+export function telnaEndpointAuthFamily(endpoint: TelnaEndpoint): TelnaAuthFamily {
+  return TELNA_ENDPOINT_AUTH[endpoint]
+}
+
+/** True when an endpoint has a documented, proven path/prefix (non-UNVERIFIED). */
+export function isTelnaEndpointProven(endpoint: TelnaEndpoint): boolean {
+  return TELNA_ENDPOINT_AUTH[endpoint] !== 'UNVERIFIED'
+}
 
 /**
  * Single source of truth for a Telna endpoint PATH (relative). Every Telna

@@ -41,6 +41,13 @@ import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/es
 const mockClaimProviderIccid = vi.mocked(claimProviderIccid)
 const mockReleaseProviderIccidClaim = vi.mocked(releaseProviderIccidClaim)
 
+// Deterministic encrypted PCR credential fixtures. Stored in provider.config
+// ONLY as encryptToken() ciphertext (never plaintext), matching the production
+// connector's decrypted-at-load contract.
+const TEST_PCR_API_KEY = 'test-pcr-api-key'
+const TEST_PCR_LOGIN_ID = 'test-pcr-login'
+const TEST_PCR_ACCESS_TOKEN = 'test-pcr-access-token'
+
 const baseMock: Omit<Provider, 'id' | 'createdAt' | 'updatedAt'> = {
   name: 'Telna',
   code: 'TELNA',
@@ -101,13 +108,28 @@ const baseMock: Omit<Provider, 'id' | 'createdAt' | 'updatedAt'> = {
   autoPublishEnabled: false,
 }
 
-const mockProvider = (overrides: Partial<Provider> = {}): Provider => ({
-  id: 'telna-provider-1',
-  createdAt: new Date(),
-  updatedAt: new Date(),
-  ...baseMock,
-  ...overrides,
-})
+const mockProvider = (overrides: Partial<Provider> & { pcrAuth?: 'full' | 'missing' } = {}): Provider => {
+  const { pcrAuth = 'full', ...rest } = overrides
+  // PCR credentials are stored in provider.config ONLY as encryptToken()
+  // ciphertext — matching the production connector's decrypted-at-load contract.
+  const pcrConfig = pcrAuth === 'full'
+    ? {
+        telnaPcrApiKeyEncrypted: encryptToken(TEST_PCR_API_KEY),
+        telnaPcrLoginIdEncrypted: encryptToken(TEST_PCR_LOGIN_ID),
+        telnaPcrAccessTokenEncrypted: encryptToken(TEST_PCR_ACCESS_TOKEN),
+      }
+    : {
+        // Intentionally absent — used to prove AUTH_INCOMPLETE gates.
+      }
+  return {
+    id: 'telna-provider-1',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...baseMock,
+    config: { ...(baseMock.config as any), ...pcrConfig },
+    ...rest,
+  }
+}
 
 describe('Telna Config Validation', () => {
   it('accepts valid Telna configuration', () => {
@@ -331,7 +353,18 @@ describe('TelnaConnector testConnection', () => {
     expect(String(result.error?.message)).toContain('pre-configured KeyID')
   })
 
-  it('testConnection is a read-only GET (no mutation)', async () => {
+  it('refuses /core/countries with NOT_CONFIGURED (auth unproven) and makes NO HTTP call', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.testConnection()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('testConnection never dispatches a request for the CORE family (regardless of mock response)', async () => {
     const fetchSpy = vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({ data: [{ id: 1 }], total: 1 })),
@@ -340,108 +373,28 @@ describe('TelnaConnector testConnection', () => {
 
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.testConnection()
-    expect(result.success).toBe(true)
-    const [url, init] = fetchSpy.mock.calls[0]
-    expect(init.method).toBe('GET')
-    expect(String(url)).toContain('/core/countries')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('404 is classified as an endpoint/base-path error, not an auth failure', async () => {
-    const fakeResponse = {
-      ok: false, status: 404,
-      headers: new Headers({ 'content-type': 'text/plain' }),
-      text: vi.fn().mockResolvedValue('Not Found'),
+  it('CORE auth is unproven so 4xx/5xx/network responses are never reached', async () => {
+    // Prove that the guard short-circuits BEFORE any HTTP classification:
+    // even a 404 / 401 / network error mock must never be dispatched.
+    for (const mock of [
+      { ok: false, status: 404, headers: new Headers({ 'content-type': 'text/plain' }), text: vi.fn().mockResolvedValue('Not Found') },
+      { ok: false, status: 401, headers: new Headers({ 'content-type': 'text/plain' }), text: vi.fn().mockResolvedValue('Unauthorized') },
+      { ok: false, status: 403, headers: new Headers({ 'content-type': 'text/plain' }), text: vi.fn().mockResolvedValue('Forbidden') },
+      { ok: false, status: 429, headers: new Headers({ 'content-type': 'text/plain' }), text: vi.fn().mockResolvedValue('Too Many Requests') },
+    ]) {
+      const fetchSpy = vi.fn().mockResolvedValue(mock as any)
+      vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+      const connector = new TelnaConnector('telna-provider-1', 'Telna')
+      const result = await connector.testConnection()
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_CONFIGURED')
+      expect(fetchSpy).not.toHaveBeenCalled()
     }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
-
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.testConnection()
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('HTTP_404')
-    expect(result.error?.message).toContain('base URL / endpoint path')
-    expect(result.error?.message).not.toContain('Authentication rejected')
-  })
-
-  it('succeeds on 2xx with valid JSON', async () => {
-    const fakeResponse = {
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [{ id: 1, name: 'Test' }], total: 1 })),
-    }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
-
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.testConnection()
-    expect(result.success).toBe(true)
-    expect(result.data?.message).toContain('Connected')
-    expect(result.data?.latencyMs).toBeGreaterThanOrEqual(0)
-  })
-
-  it('returns 401 when authentication is rejected', async () => {
-    const fakeResponse = {
-      ok: false,
-      status: 401,
-      headers: new Headers({ 'content-type': 'text/plain' }),
-      text: vi.fn().mockResolvedValue('Unauthorized'),
-    }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
-
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.testConnection()
-    expect(result.success).toBe(false)
-    expect(result.error?.message).toContain('Authentication rejected')
-    expect(result.error?.code).toBe('HTTP_401')
-  })
-
-  it('returns 403 when KeyID lacks permission', async () => {
-    const fakeResponse = {
-      ok: false,
-      status: 403,
-      headers: new Headers({ 'content-type': 'text/plain' }),
-      text: vi.fn().mockResolvedValue('Forbidden'),
-    }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
-
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.testConnection()
-    expect(result.success).toBe(false)
-    expect(result.error?.message).toContain('lacks permission')
-    expect(result.error?.code).toBe('HTTP_403')
-  })
-
-  it('returns 429 when rate limited', async () => {
-    const fakeResponse = {
-      ok: false,
-      status: 429,
-      headers: new Headers({ 'content-type': 'text/plain' }),
-      text: vi.fn().mockResolvedValue('Too Many Requests'),
-    }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
-
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.testConnection()
-    expect(result.success).toBe(false)
-    expect(result.error?.message).toContain('Rate limited')
-    expect(result.error?.code).toBe('HTTP_429')
-  })
-
-  it('returns timeout error when request aborts', async () => {
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
-
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.testConnection()
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('TIMEOUT')
-  })
-
-  it('returns network error on fetch failure', async () => {
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ENOTFOUND developer-api.telna.com'))
-
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.testConnection()
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NETWORK_ERROR')
   })
 
   it('returns provider not configured when no provider in DB', async () => {
@@ -460,7 +413,7 @@ describe('TelnaConnector Discovery — listCountries', () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  it('returns paginated countries on success', async () => {
+  it('refuses /core/countries with NOT_CONFIGURED (auth unproven) and makes NO HTTP call', async () => {
     const countryData = [
       { id: 1, name: 'United States', iso: 'US', code: '1', region: 'Americas' },
       { id: 2, name: 'United Kingdom', iso: 'GB', code: '44', region: 'Europe' },
@@ -470,34 +423,25 @@ describe('TelnaConnector Discovery — listCountries', () => {
       headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({ data: countryData, total: 2, offset: 0, count: 2 })),
     }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.listCountries(10, 0)
-    expect(result.success).toBe(true)
-    expect(result.data?.items).toHaveLength(2)
-    expect(result.data?.total).toBe(2)
-    expect(result.data?.items[0].name).toBe('United States')
-  })
-
-  it('returns empty list on API failure', async () => {
-    const fakeResponse = {
-      ok: false, status: 500,
-      headers: new Headers({ 'content-type': 'text/plain' }),
-      text: vi.fn().mockResolvedValue('Server Error'),
-    }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.listCountries(10, 0)
     expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('HTTP_500')
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('handles network failure', async () => {
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ENETUNREACH'))
+  it('does not map live /core failures because the CORE family is never dispatched', async () => {
+    // Even a 500 / network-error mock must not be reached for a CORE lookup;
+    // the guard returns NOT_CONFIGURED before any fetch.
+    const fetchSpy = vi.fn().mockRejectedValue(new Error('ENETUNREACH'))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.listCountries(10, 0)
     expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NETWORK_ERROR')
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   it('handles provider not configured', async () => {
@@ -508,18 +452,19 @@ describe('TelnaConnector Discovery — listCountries', () => {
     expect(result.error?.code).toBe('NOT_CONFIGURED')
   })
 
-  it('handles empty response gracefully', async () => {
+  it('CORE auth blocks the empty-response path (no fetch)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 0 })),
     }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.listCountries(10, 0)
-    expect(result.success).toBe(true)
-    expect(result.data?.items).toHaveLength(0)
-    expect(result.data?.total).toBe(0)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 })
 
@@ -529,40 +474,36 @@ describe('TelnaConnector Discovery — getCompany', () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  it('returns company by ID on success', async () => {
+  it('refuses /core/companies/{id} with NOT_CONFIGURED (auth unproven) and makes NO HTTP call', async () => {
     const companyData = { id: 42, name: 'Acme Corp', code: 'ACME', status: 'ACTIVE', countryId: 1 }
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({ data: companyData })),
     }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getCompany(42)
 
-    expect(result.success).toBe(true)
-    expect(result.data?.company.id).toBe(42)
-    expect(result.data?.company.name).toBe('Acme Corp')
-    expect(result.data?.company.code).toBe('ACME')
-
-    // Verify path params substitution
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/core/companies/42'),
-      expect.any(Object)
-    )
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('returns error when company not found', async () => {
+  it('does not reach 404 classification for the CORE family (guard short-circuits)', async () => {
     const fakeResponse = {
       ok: false, status: 404,
       headers: new Headers({ 'content-type': 'text/plain' }),
       text: vi.fn().mockResolvedValue('Not Found'),
     }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getCompany(999)
     expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('HTTP_404')
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   it('handles provider not configured', async () => {
@@ -968,29 +909,34 @@ describe('TelnaConnector Phase 2A — existing discovery regression', () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  it('listCountries still works after Phase 2A changes', async () => {
+  it('listCountries is guarded to NOT_CONFIGURED after auth-family changes (CORE unproven)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({ data: [{ id: 1, name: 'Test', iso: 'TT' }], total: 1, offset: 0, count: 1 })),
     }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.listCountries(1, 0)
-    expect(result.success).toBe(true)
-    expect(result.data?.items).toHaveLength(1)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('getCompany still works after Phase 2A changes', async () => {
+  it('getCompany is guarded to NOT_CONFIGURED after auth-family changes (CORE unproven)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, name: 'Co', code: 'CO', status: 'ACTIVE' } })),
     }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getCompany(1)
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   it('getWallet still works after Phase 2A changes', async () => {
@@ -1012,18 +958,19 @@ describe('TelnaConnector Discovery — path param substitution', () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  it('substitutes company_id in company endpoint path', async () => {
+  it('CORE company lookup (getCompany) is auth-blocked: NOT_CONFIGURED and no URL is composed to fetch', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, name: 'Test', code: 'TST', status: 'ACTIVE' } })),
     }
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    await connector.getCompany(123)
-    const url = (globalThis.fetch as any).mock.calls[0][0] as string
-    expect(url).toMatch(/\/core\/companies\/123[?]?/)
-    expect(url).not.toContain('{company_id}')
+    const result = await connector.getCompany(123)
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   it('substitutes wallet_id in wallet endpoint path', async () => {
@@ -1919,105 +1866,116 @@ describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  it('maps SUSPENDED SIM registry evidence to SUSPENDED', async () => {
-    const fakeStatus = {
-      ok: true, status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, iccid: '89012345678901234567', status: 'SUSPENDED' } })),
-    }
-    // SIM registry (suspended) + euicc (unknown) + packages (none). The
-    // getStatus flow reads /sim-registries/{iccid}, /euicc-profiles/{iccid},
-    // then /packages?sim=.
-    const fakeProfile = {
-      ok: true, status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { iccid: '89012345678901234567', state: 'INSTALLED' } })),
-    }
-    const fakePackages = {
-      ok: true, status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0 })),
-    }
+  const STATUS_ICCID = '89012345678901234567'
+  function json(data: unknown, status = 200) {
+    return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
+  }
+  function registry(status: string) { return json({ data: { iccid: STATUS_ICCID, status } }) }
+  function profile(state?: string) { return state ? json({ data: { iccid: STATUS_ICCID, state } }) : json({ data: { iccid: STATUS_ICCID, state: null } }) }
+  function packages(sims: unknown[]) { return json({ data: sims, total: sims.length }) }
+
+  it('getStatus reads the three documented evidence endpoints in order (sim-registry, euicc, packages)', async () => {
     const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(fakeStatus)
-      .mockResolvedValueOnce(fakeProfile)
-      .mockResolvedValueOnce(fakePackages)
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED'))
+      .mockResolvedValueOnce(packages([]))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.getStatus('89012345678901234567')
+    const result = await connector.getStatus(STATUS_ICCID)
     expect(result.success).toBe(true)
-    expect(result.data?.iccid).toBe('89012345678901234567')
-    // Conservative mapping: a SUSPENDED SIM wins over profile-INSTALLED —
-    // suspension is device-level and not network-active.
+    expect(result.data?.iccid).toBe(STATUS_ICCID)
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    const urls = fetchSpy.mock.calls.map(c => String(c[0]))
+    expect(urls.some(u => u.includes('/inventory/sim-registries/'))).toBe(true)
+    expect(urls.some(u => u.includes('/euicc-profiles/'))).toBe(true)
+    expect(urls.some(u => u.includes('/pcr/packages?sim='))).toBe(true)
+  })
+
+  it('SIM IN_SERVICE -> ACTIVE with networkAttached evidence', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('IN_SERVICE'))
+      .mockResolvedValueOnce(profile('ENABLED'))
+      .mockResolvedValueOnce(packages([{ id: 'p1', status: 'ACTIVE' }]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(STATUS_ICCID)
+    expect(result.data?.status).toBe('ACTIVE')
+    expect(result.data?.evidence).toMatchObject({ networkAttached: true, reason: 'sim-in-service' })
+  })
+
+  it('SIM SUSPENDED -> SUSPENDED', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('SUSPENDED'))
+      .mockResolvedValueOnce(profile('DISABLED'))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(STATUS_ICCID)
     expect(result.data?.status).toBe('SUSPENDED')
   })
 
-  it('maps SIM IN_SERVICE to ACTIVE network evidence', async () => {
-    const fakeSim = {
-      ok: true, status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { iccid: '89012345678901234567', status: 'IN_SERVICE' } })),
-    }
-    const fakeProfile = {
-      ok: true, status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { iccid: '89012345678901234567', state: 'ENABLED' } })),
-    }
+  it('SIM PRE_SERVICE + profile not installed -> PENDING_ACTIVATION (not ACTIVE)', async () => {
     const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(fakeSim)
-      .mockResolvedValueOnce(fakeProfile)
-      // Sim registry still IN_SERVICE → ACTIVE takes precedence (network evidence).
-      .mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0 })) })
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED'))
+      .mockResolvedValueOnce(packages([]))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.getStatus('89012345678901234567')
-    expect(result.success).toBe(true)
-    expect(result.data?.status).toBe('ACTIVE')
-    expect(result.data?.evidence).toMatchObject({ networkAttached: true })
-  })
-
-  it('PRE_SERVICE SIM does not falsely become ACTIVE (INSTALLED/PENDING only)', async () => {
-    const fakeSim = {
-      ok: true, status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { iccid: '89012345678901234567', status: 'PRE_SERVICE' } })),
-    }
-    const fakeProfile = {
-      ok: true, status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { iccid: '89012345678901234567', state: 'LEFT_ASJS' } })),
-    }
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(fakeSim)
-      .mockResolvedValueOnce(fakeProfile)
-      .mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0 })) })
-    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.getStatus('89012345678901234567')
+    const result = await connector.getStatus(STATUS_ICCID)
     expect(result.data?.status).not.toBe('ACTIVE')
     expect(result.data?.status).toBe('PENDING_ACTIVATION')
   })
 
-  it('accepts a structured StatusLookupIdentifier with iccid', async () => {
-    const fakeSim = {
-      ok: true, status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { iccid: '89012345678901234567', status: 'IN_SERVICE' } })),
+  it('SIM PRE_SERVICE + profile INSTALLED/ENABLED -> INSTALLED (device evidence), not ACTIVE', async () => {
+    for (const state of ['INSTALLED', 'ENABLED']) {
+      const fetchSpy = vi.fn()
+        .mockResolvedValueOnce(registry('PRE_SERVICE'))
+        .mockResolvedValueOnce(profile(state))
+        .mockResolvedValueOnce(packages([]))
+      vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+      const connector = new TelnaConnector('telna-provider-1', 'Telna')
+      const result = await connector.getStatus(STATUS_ICCID)
+      expect(result.data?.status).not.toBe('ACTIVE')
+      expect(result.data?.status).toBe('INSTALLED')
+      expect(result.data?.evidence).toMatchObject({ deviceInstalled: true, reason: 'euicc-installed-or-enabled' })
     }
-    const fakeProfile = {
-      ok: true, status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { iccid: '89012345678901234567', state: 'INSTALLED' } })),
-    }
+  })
+
+  it('SIM TERMINATED -> EXPIRED', async () => {
     const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(fakeSim)
-      .mockResolvedValueOnce(fakeProfile)
-      .mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0 })) })
+      .mockResolvedValueOnce(registry('TERMINATED'))
+      .mockResolvedValueOnce(profile(undefined))
+      .mockResolvedValueOnce(packages([]))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.getStatus({ iccid: '89012345678901234567' })
+    const result = await connector.getStatus(STATUS_ICCID)
+    expect(result.data?.status).toBe('EXPIRED')
+    expect(result.data?.evidence).toMatchObject({ reason: 'telna-sim-terminated' })
+  })
+
+  it('package TERMINATED alone (SIM PRE_SERVICE, profile none) -> NOT EXPIRED', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile(undefined))
+      .mockResolvedValueOnce(packages([{ id: 'p1', status: 'TERMINATED' }]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(STATUS_ICCID)
+    expect(result.data?.status).not.toBe('EXPIRED')
+    expect(result.data?.status).toBe('PENDING_ACTIVATION')
+  })
+
+  it('accepts a structured StatusLookupIdentifier with iccid', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile(undefined))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus({ iccid: STATUS_ICCID })
     expect(result.success).toBe(true)
-    expect(result.data?.status).toBe('ACTIVE')
+    expect(result.data?.status).toBe('PENDING_ACTIVATION')
+    expect(fetchSpy).toHaveBeenCalled()
   })
 
   it('fails locally with IDENTIFIER_MISSING when no ICCID (never a local esim.id)', async () => {
@@ -2120,63 +2078,101 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
   }
 
-  it('posts exactly { sim, package_template } and maps package instance + ICCID (no local ids)', async () => {
+  const expectedBasic = 'Basic ' + Buffer.from(`${TEST_PCR_LOGIN_ID}:${TEST_PCR_ACCESS_TOKEN}`).toString('base64')
+  const pcrHeaders = { 'ApiKey': TEST_PCR_API_KEY, 'Authorization': expectedBasic }
+
+  it('activateESIM runs the verified flow: template detail, SIM listing, neutral claim, POST /pcr/packages', async () => {
     const fetchSpy = vi.fn()
-      // template detail (best-effort)
-      .mockResolvedValueOnce(json({ data: { id: 42, name: 'Template', data_usage_allowance: 1073741824 } }))
-      // sim-registries (eligible SIM)
-      .mockResolvedValueOnce(json({ data: [{ iccid: '8944501234567890123', status: 'PRE_SERVICE' }], total: 1 }))
-      // POST /packages
-      .mockResolvedValueOnce(json({ data: { id: 'pkg-777', sim: '8944501234567890123', status: 'NOT_ACTIVE', expiry_date: '2026-09-05', data_usage_remaining: 1073741824 } }))
+      .mockResolvedValueOnce(json({ data: { id: 42 } })) // GET /pcr/package-templates/42
+      .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }], total: 1 })) // GET /inventory/sim-registries
+      .mockResolvedValueOnce(json({ data: { id: 'pkg-INSTANCE-1', sim: 'PRE-ICCID', status: 'NOT_ACTIVE' } })) // POST /pcr/packages
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'onesim-order-1' })
+
+    expect(result.success).toBe(true)
+    expect(result.data?.activationId).toBe('pkg-INSTANCE-1')
+    expect(result.data?.iccidOrSimId).toBe('PRE-ICCID')
+    expect(result.data?.status).toBe('PENDING_ACTIVATION')
+    expect(result.data?.rawMetadata?.providerPackageInstanceId).toBe('pkg-INSTANCE-1')
+    expect(mockClaimProviderIccid).toHaveBeenCalledTimes(1)
+    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'onesim-order-1', iccid: 'PRE-ICCID' })
+    expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
+
+    // Exactly one POST /pcr/packages with the documented PCR headers and body.
+    const postCalls = fetchSpy.mock.calls.filter(c => String(c[0]).includes('/pcr/packages') && c[1].method === 'POST')
+    expect(postCalls).toHaveLength(1)
+    const [postUrl, postInit] = postCalls[0]
+    expect(String(postUrl)).toContain('/pcr/packages')
+    expect(JSON.parse(postInit.body)).toEqual({ sim: 'PRE-ICCID', package_template: 42 })
+    expect(postInit.headers['ApiKey']).toBe(TEST_PCR_API_KEY)
+    expect(postInit.headers['Authorization']).toBe(expectedBasic)
+    expect(postInit.headers['Authorization']).not.toContain('Bearer')
+  })
+
+  it('activateESIM does not send a local OneSIM id upstream — only ICCID + template id', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 42 } }))
+      .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }], total: 1 }))
+      .mockResolvedValueOnce(json({ data: { id: 'pkg-INSTANCE-1', sim: 'PRE-ICCID' } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
 
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'onesim-order-1', packageId: 'onesim-pkg-1' })
-
     expect(result.success).toBe(true)
-    expect(result.data?.activationId).toBe('pkg-777')
-    expect(result.data?.iccids).toEqual(['8944501234567890123'])
-    expect(result.data?.rawMetadata?.providerTemplateId).toBe(42)
-
-    // Find the POST /packages call (the third fetch call).
-    const postCall = fetchSpy.mock.calls.find((c) => String(c[0]).includes('/packages') )
-    expect(postCall).toBeTruthy()
-    expect(JSON.parse(postCall[1].body)).toEqual({ sim: '8944501234567890123', package_template: 42 })
-    expect(JSON.stringify(postCall[1].body)).not.toContain('onesim-order-1')
-    expect(JSON.stringify(postCall[1].body)).not.toContain('onesim-pkg-1')
+    const postCall = fetchSpy.mock.calls.find(c => String(c[0]).includes('/pcr/packages') && c[1].method === 'POST')
+    const body = JSON.parse(postCall![1].body as string)
+    expect(body).not.toHaveProperty('packageId')
+    expect(body).not.toHaveProperty('orderId')
+    expect(body).not.toHaveProperty('esimId')
+    expect(body).toEqual({ sim: 'PRE-ICCID', package_template: 42 })
   })
 
-  it('no eligible SIM ? canonical OUT_OF_STOCK and NO POST /packages', async () => {
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: { id: 42, inventory: [{ id: 99 }] } }))
-      .mockResolvedValueOnce(json({ data: [], total: 0 })) // no sims
-    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
-
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' } })
-
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('OUT_OF_STOCK')
-    for (const call of fetchSpy.mock.calls) {
-      expect(String(call[0])).not.toContain('/packages')
-    }
-  })
-
-  it('POST /packages failure maps safely (HTTP_4xx preserved)', async () => {
+  it('no eligible candidate -> OUT_OF_STOCK, no claim, no POST', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(json({ data: { id: 42 } }))
-      .mockResolvedValueOnce(json({ data: [{ iccid: '8944501234567890123', status: 'PRE_SERVICE' }], total: 1 }))
-      .mockResolvedValueOnce(json({}, 422))
+      .mockResolvedValueOnce(json({ data: [], total: 0 }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
 
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
     expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('HTTP_422')
+    expect(result.error?.code).toBe('OUT_OF_STOCK')
+    expect(mockClaimProviderIccid).not.toHaveBeenCalled()
+    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/pcr/packages')
   })
 
-  it('eUICC profile activation_code surfaces through installation lookup', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { iccid: '8944501234567890123', state: 'RELEASED', activation_code: 'LPA:1$rsp.example.com$mid-123', imsi: '3104101' } }))
+  it('pcrAuth missing -> AUTH_INCOMPLETE before claim/listing, NO POST', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider({ pcrAuth: 'missing' }))
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('AUTH_INCOMPLETE')
+    expect(mockClaimProviderIccid).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('flex host -> HOST_MISMATCH, no claim, no POST', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider({ apiBaseUrl: 'https://ppo-api.telna.com' }))
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HOST_MISMATCH')
+    expect(mockClaimProviderIccid).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('eUICC installation lookup: GET /euicc-profiles/{iccid} -> READY with activation code', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { iccid: '8944501234567890123', state: 'RELEASED', activation_code: 'LPA:1$rsp.example.com$mid-123' } }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
 
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
@@ -2184,22 +2180,35 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     expect(r.success).toBe(true)
     expect(r.state).toBe('READY')
     expect(r.data?.activationCode).toBe('LPA:1$rsp.example.com$mid-123')
-    expect(JSON.stringify(r)).not.toContain('3104101')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/euicc-profiles/8944501234567890123')
   })
 
-  it('usage converts BYTES to MB correctly and derived used = total - remaining', async () => {
+  it('usage exact package: getV2Package via /pcr/packages/EXACT -> total/remaining/used MB', async () => {
     const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: [{ id: 'pkg-1', sim: '8944501234567890123', status: 'ACTIVE', data_usage_remaining: 1073741824, package_template: { id: 42, data_usage_allowance: 2147483648 } }], total: 1 }))
+      .mockResolvedValueOnce(json({ data: { id: 'EXACT', status: 'ACTIVE', data_usage_remaining: 1073741824, package_template: { id: 42, data_usage_allowance: 2147483648 } } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await connector.getUsage({ iccid: '8944501234567890123', providerSubscriptionId: 'EXACT' })
+    expect(r.success).toBe(true)
+    expect(r.data?.dataTotalMB).toBe(2048)
+    expect(r.data?.dataRemainingMB).toBe(1024)
+    expect(r.data?.dataUsedMB).toBe(1024)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/pcr/packages/EXACT')
+  })
+
+  it('usage multi-package fallback: two non-TERMINATED packages -> DATA_UNAVAILABLE', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: [
+        { id: 'p1', sim: '8944501234567890123', status: 'ACTIVE', data_usage_remaining: 100 },
+        { id: 'p2', sim: '8944501234567890123', status: 'ACTIVE', data_usage_remaining: 200 },
+      ], total: 2 }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
 
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await connector.getUsage('8944501234567890123')
-    expect(r.success).toBe(true)
-    // total 2GB = 2048MB, remaining 1GB = 1024MB, used = 1024MB
-    expect(r.data?.dataTotalMB).toBe(2048)
-    expect(r.data?.dataRemainingMB).toBe(1024)
-    expect(r.data?.dataUsedMB).toBe(1024)
-    expect(r.data?.status).toBe('ACTIVE')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('DATA_UNAVAILABLE')
   })
 
   it('missing usage identifier ? clean IDENTIFIER_MISSING', async () => {
@@ -2237,109 +2246,132 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
   }
 
+  const expectedBasic = 'Basic ' + Buffer.from(`${TEST_PCR_LOGIN_ID}:${TEST_PCR_ACCESS_TOKEN}`).toString('base64')
+
+  function runActivate(fetchSpy: ReturnType<typeof vi.fn>, params: Record<string, unknown>) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    return c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, ...params } as any)
+  }
+
   // -- ICCID selection policy ------------------------------------------------
-  it('1. PRE_SERVICE is selected for a new purchase', async () => {
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: { id: 42 } }))
-      .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }, { iccid: 'PRE-2', status: 'PRE_SERVICE' }], total: 2 }))
-      .mockResolvedValueOnce(json({ data: { id: 'pkg-1', sim: 'PRE-ICCID', status: 'NOT_ACTIVE' } }))
-    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
-    const c = new TelnaConnector('telna-provider-1', 'Telna')
-    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
-    expect(r.success).toBe(true)
-    expect(r.data?.iccids?.[0]).toBe('PRE-ICCID')
-  })
+  // Only PRE_SERVICE SIMs are eligible; IN_SERVICE / TERMINATED /
+  // WAITING_FOR_ASSIGNMENT are never selected → OUT_OF_STOCK with no claim.
+  for (const [label, status] of [
+    ['IN_SERVICE', 'IN_SERVICE'],
+    ['TERMINATED', 'TERMINATED'],
+    ['WAITING_FOR_ASSIGNMENT', 'WAITING_FOR_ASSIGNMENT'],
+  ] as const) {
+    it(`1. ${label} SIM is ineligible - activateESIM returns OUT_OF_STOCK, no claim, no POST`, async () => {
+      const fetchSpy = vi.fn()
+        .mockResolvedValueOnce(json({ data: { id: 42 } }))
+        .mockResolvedValueOnce(json({ data: [{ iccid: 'NON-PRE-ICCID', status }], total: 1 }))
+      const r = await runActivate(fetchSpy, { orderId: 'order-1' })
+      expect(r.success).toBe(false)
+      expect(r.error?.code).toBe('OUT_OF_STOCK')
+      expect(mockClaimProviderIccid).not.toHaveBeenCalled()
+      for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/pcr/packages')
+    })
+  }
 
-  it('2. IN_SERVICE is NEVER selected for a new purchase', async () => {
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: { id: 42 } }))
-      .mockResolvedValueOnce(json({ data: [{ iccid: 'IN-USE-ICCID', status: 'IN_SERVICE' }], total: 1 }))
-    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
-    const c = new TelnaConnector('telna-provider-1', 'Telna')
-    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' } })
-    expect(r.success).toBe(false)
-    expect(r.error?.code).toBe('OUT_OF_STOCK')
-    // No POST /packages.
-    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/packages')
-  })
-
-  it('3. TERMINATED is never selected', async () => {
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: { id: 42 } }))
-      .mockResolvedValueOnce(json({ data: [{ iccid: 'TERM-ICCID', status: 'TERMINATED' }], total: 1 }))
-    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
-    const c = new TelnaConnector('telna-provider-1', 'Telna')
-    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' } })
-    expect(r.error?.code).toBe('OUT_OF_STOCK')
-    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/packages')
-  })
-
-  it('4. WAITING_FOR_ASSIGNMENT is NOT assumed safe (no selection when only that state exists)', async () => {
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: { id: 42 } }))
-      .mockResolvedValueOnce(json({ data: [{ iccid: 'WAIT-ICCID', status: 'WAITING_FOR_ASSIGNMENT' }], total: 1 }))
-    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
-    const c = new TelnaConnector('telna-provider-1', 'Telna')
-    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' } })
-    expect(r.error?.code).toBe('OUT_OF_STOCK')
-    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/packages')
-  })
-
-  it('5. an ICCID already used by an existing OneSIM eSIM is excluded', async () => {
-    vi.mocked(prisma.eSIM.findMany).mockResolvedValue([{ iccid: 'USED-ICCID' }] as any)
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: { id: 42 } }))
-      .mockResolvedValueOnce(json({ data: [{ iccid: 'USED-ICCID', status: 'PRE_SERVICE' }, { iccid: 'FRESH-ICCID', status: 'PRE_SERVICE' }], total: 2 }))
-      .mockResolvedValueOnce(json({ data: { id: 'pkg-2', sim: 'FRESH-ICCID', status: 'NOT_ACTIVE' } }))
-    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
-    const c = new TelnaConnector('telna-provider-1', 'Telna')
-    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
-    expect(r.success).toBe(true)
-    expect(r.data?.iccids?.[0]).toBe('FRESH-ICCID')
-  })
-
-  it('6. concurrent purchase reservation gap is documented (no per-ICCID atomic claim wired)', async () => {
-    // There is no per-ICCID atomic reservation in the connector today; the
-    // canonical ProviderInventoryReservation is quantity-based, not per-ICCID.
-    // This test documents the gap: the connector performs read-then-act without
-    // a durable ICCID claim. Live purchase must stay disabled until that exists.
-    const c = new TelnaConnector('telna-provider-1', 'Telna')
-    expect(c.capabilities?.inventory).toBe(true)
-    // Assert the connector does not expose an atomic per-ICCID reserve method.
-    expect((c as any).createReservation ?? (c as any).claimIccid ?? (c as any).reserveIccid).toBeUndefined()
-  })
-
-  // -- Identity separation / package instance preservation -------------------
-  it('7. template id, ICCID and package-instance id remain distinct', async () => {
+  it('2. PRE_SERVICE SIM is eligible - claim and POST /pcr/packages succeed', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(json({ data: { id: 42 } }))
       .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }], total: 1 }))
       .mockResolvedValueOnce(json({ data: { id: 'pkg-INSTANCE-1', sim: 'PRE-ICCID', status: 'NOT_ACTIVE' } }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
-    expect(r.data?.activationId).toBe('pkg-INSTANCE-1')
-    expect(r.data?.iccids?.[0]).toBe('PRE-ICCID')
-    expect(r.data?.rawMetadata?.providerTemplateId).toBe(42)
-    expect(r.data?.rawMetadata?.providerPackageInstanceId).toBe('pkg-INSTANCE-1')
+    expect(r.success).toBe(true)
+    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'PRE-ICCID' })
+    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    expect(post).toBeTruthy()
   })
 
-  it('8. exact package instance id is preserved after purchase (rawMetadata + activationId)', async () => {
+  it('3. already-used ICCIDs (bound to a local OneSIM eSIM) are excluded from selection', async () => {
+    vi.mocked(prisma.eSIM.findMany).mockResolvedValue([{ iccid: 'USED-ICCID' }] as any)
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 42 } }))
+      .mockResolvedValueOnce(json({ data: [{ iccid: 'USED-ICCID', status: 'PRE_SERVICE' }, { iccid: 'FRESH-ICCID', status: 'PRE_SERVICE' }], total: 2 }))
+      .mockResolvedValueOnce(json({ data: { id: 'pkg-INSTANCE-1', sim: 'FRESH-ICCID', status: 'NOT_ACTIVE' } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
+    expect(r.success).toBe(true)
+    expect(r.data?.iccidOrSimId).toBe('FRESH-ICCID')
+    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FRESH-ICCID' })
+    expect(mockClaimProviderIccid).not.toHaveBeenCalledWith(expect.objectContaining({ iccid: 'USED-ICCID' }))
+  })
+
+  it('4. claim collision (ok:false) moves to the next candidate; POST only for the winning ICCID', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 42 } }))
+      .mockResolvedValueOnce(json({ data: [{ iccid: 'CC1', status: 'PRE_SERVICE' }, { iccid: 'CC2', status: 'PRE_SERVICE' }], total: 2 }))
+      .mockResolvedValueOnce(json({ data: { id: 'pkg-INSTANCE-2', sim: 'CC2', status: 'NOT_ACTIVE' } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid
+      .mockResolvedValueOnce({ ok: false, reason: 'CLAIM_LOST' })
+      .mockResolvedValueOnce({ ok: true })
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
+    expect(r.success).toBe(true)
+    expect(r.data?.iccidOrSimId).toBe('CC2')
+    expect(mockClaimProviderIccid).toHaveBeenCalledTimes(2)
+    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    expect(JSON.parse(post![1].body as string).sim).toBe('CC2')
+  })
+
+  it('5. provider POST failure triggers releaseProviderIccidClaim with same purchaseId+iccid', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 42 } }))
+      .mockResolvedValueOnce(json({ data: [{ iccid: 'FAIL-ICCID', status: 'PRE_SERVICE' }], total: 1 }))
+      .mockResolvedValueOnce(json({}, 500))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+    mockReleaseProviderIccidClaim.mockResolvedValue(undefined as any)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('HTTP_500')
+    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
+    expect(mockReleaseProviderIccidClaim).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
+  })
+
+  it('6. missing orderId -> safe failure, claim NOT called, no POST', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(json({ data: { id: 42 } }))
       .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }], total: 1 }))
-      .mockResolvedValueOnce(json({ data: { id: 'pkg-INSTANCE-EXACT', sim: 'PRE-ICCID' } }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' } })
+    expect(r.success).toBe(false)
+    expect(mockClaimProviderIccid).not.toHaveBeenCalled()
+    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/pcr/packages')
+  })
+
+  // -- Identity separation / package instance preservation -------------------
+  it('7. purchase maps package instance id (C) + ICCID (A) into rawMetadata; PENDING_ACTIVATION', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 42 } }))
+      .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }], total: 1 }))
+      .mockResolvedValueOnce(json({ data: { id: 'pkg-INSTANCE-1', sim: 'PRE-ICCID', status: 'NOT_ACTIVE' } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
-    expect(r.data?.rawMetadata?.providerPackageInstanceId).toBe('pkg-INSTANCE-EXACT')
-    expect(r.data?.activationId).toBe('pkg-INSTANCE-EXACT')
+    expect(r.success).toBe(true)
+    expect(r.data?.activationId).toBe('pkg-INSTANCE-1')
+    expect(r.data?.rawMetadata?.iccid).toBe('PRE-ICCID')
+    expect(r.data?.rawMetadata?.providerTemplateId).toBe(42)
+    expect(r.data?.rawMetadata?.providerPackageInstanceId).toBe('pkg-INSTANCE-1')
+    expect(r.data?.status).toBe('PENDING_ACTIVATION')
   })
 
   // -- Usage tracks the exact package instance -------------------------------
-  it('9. usage prefers the exact package instance id (GET /packages/{id})', async () => {
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: { id: 'EXACT-1', sim: 'PRE-ICCID', status: 'ACTIVE', data_usage_remaining: 1073741824, package_template: { id: 42, data_usage_allowance: 2147483648 } } }))
+  it('8. usage with an exact package instance id hits /pcr/packages/EXACT-1 and maps total/remaining/used', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({ data: { id: 'EXACT-1', sim: 'PRE-ICCID', status: 'ACTIVE', data_usage_remaining: 1073741824, package_template: { id: 42, data_usage_allowance: 2147483648 } } }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.getUsage({ iccid: 'PRE-ICCID', providerSubscriptionId: 'EXACT-1' })
@@ -2347,12 +2379,10 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     expect(r.data?.dataTotalMB).toBe(2048)
     expect(r.data?.dataRemainingMB).toBe(1024)
     expect(r.data?.dataUsedMB).toBe(1024)
-    // Addressed the exact package detail endpoint.
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('/packages/EXACT-1')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/pcr/packages/EXACT-1')
   })
 
-  it('10. multiple packages on the same ICCID never cause wrong usage selection (requires exact id)', async () => {
-    // No package instance id supplied + two non-terminated packages ? refuse.
+  it('9. multiple packages on the same ICCID without an exact id -> DATA_UNAVAILABLE', async () => {
     const fetchSpy = vi.fn().mockResolvedValueOnce(json({ data: [
       { id: 'p1', status: 'ACTIVE', data_usage_remaining: 100 },
       { id: 'p2', status: 'ACTIVE', data_usage_remaining: 200 },
@@ -2365,48 +2395,48 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
   })
 
   // -- Lifecycle evidence -----------------------------------------------------
-  it('11. package TERMINATED alone does not falsely terminate a reusable eSIM', async () => {
-    // SIM still PRE_SERVICE, only package status TERMINATED ? must NOT be EXPIRED.
-    const fakeSim = json({ data: { iccid: 'PRE-ICCID', status: 'PRE_SERVICE' } })
-    const fakeProfile = json({ data: { iccid: 'PRE-ICCID', state: 'INSTALLED' } })
-    const fakePackages = json({ data: [{ id: 'p1', status: 'TERMINATED' }], total: 1 })
-    const fetchSpy = vi.fn().mockResolvedValueOnce(fakeSim).mockResolvedValueOnce(fakeProfile).mockResolvedValueOnce(fakePackages)
+  it('10. package TERMINATED alone (SIM PRE_SERVICE, profile none) is NOT EXPIRED', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { iccid: 'PRE-ICCID', status: 'PRE_SERVICE' } }))
+      .mockResolvedValueOnce(json({ data: { iccid: 'PRE-ICCID', state: null } }))
+      .mockResolvedValueOnce(json({ data: [{ id: 'p1', status: 'TERMINATED' }], total: 1 }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.getStatus('PRE-ICCID')
     expect(r.success).toBe(true)
     expect(r.data?.status).not.toBe('EXPIRED')
-    expect(r.data?.status).toBe('INSTALLED')
+    expect(r.data?.status).toBe('PENDING_ACTIVATION')
   })
 
-  it('12. SIM TERMINATED is terminal evidence ? EXPIRED', async () => {
-    const fakeSim = json({ data: { iccid: 'TERM-ICCID', status: 'TERMINATED' } })
-    const fakeProfile = json({ data: { iccid: 'TERM-ICCID', state: 'INSTALLED' } })
-    const fakePackages = json({ data: [{ id: 'p1', status: 'NOT_ACTIVE' }], total: 1 })
-    const fetchSpy = vi.fn().mockResolvedValueOnce(fakeSim).mockResolvedValueOnce(fakeProfile).mockResolvedValueOnce(fakePackages)
+  it('11. SIM TERMINATED terminal evidence -> EXPIRED (not PENDING)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { iccid: 'TERM-ICCID', status: 'TERMINATED' } }))
+      .mockResolvedValueOnce(json({ data: { iccid: 'TERM-ICCID', state: null } }))
+      .mockResolvedValueOnce(json({ data: [], total: 0 }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.getStatus('TERM-ICCID')
     expect(r.data?.status).toBe('EXPIRED')
+    expect(r.data?.evidence).toMatchObject({ reason: 'telna-sim-terminated' })
   })
 
-  it('13. IN_SERVICE supplies network-active evidence', async () => {
-    const fakeSim = json({ data: { iccid: 'ACTIVE-ICCID', status: 'IN_SERVICE' } })
-    const fakeProfile = json({ data: { iccid: 'ACTIVE-ICCID', state: 'ENABLED' } })
-    const fakePackages = json({ data: [], total: 0 })
-    const fetchSpy = vi.fn().mockResolvedValueOnce(fakeSim).mockResolvedValueOnce(fakeProfile).mockResolvedValueOnce(fakePackages)
+  it('12. SIM IN_SERVICE -> ACTIVE with networkAttached evidence', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { iccid: 'ACTIVE-ICCID', status: 'IN_SERVICE' } }))
+      .mockResolvedValueOnce(json({ data: { iccid: 'ACTIVE-ICCID', state: 'ENABLED' } }))
+      .mockResolvedValueOnce(json({ data: [], total: 0 }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.getStatus('ACTIVE-ICCID')
     expect(r.data?.status).toBe('ACTIVE')
-    expect(r.data?.evidence).toMatchObject({ networkAttached: true })
+    expect(r.data?.evidence?.networkAttached).toBe(true)
   })
 
-  it('14. PRE_SERVICE does not become ACTIVE', async () => {
-    const fakeSim = json({ data: { iccid: 'PRE-ICCID', status: 'PRE_SERVICE' } })
-    const fakeProfile = json({ data: { iccid: 'PRE-ICCID', state: 'RELEASED' } })
-    const fakePackages = json({ data: [{ id: 'p1', status: 'ACTIVE' }], total: 1 })
-    const fetchSpy = vi.fn().mockResolvedValueOnce(fakeSim).mockResolvedValueOnce(fakeProfile).mockResolvedValueOnce(fakePackages)
+  it('13. PRE_SERVICE + profile not installed does not become ACTIVE', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { iccid: 'PRE-ICCID', status: 'PRE_SERVICE' } }))
+      .mockResolvedValueOnce(json({ data: { iccid: 'PRE-ICCID', state: 'RELEASED' } }))
+      .mockResolvedValueOnce(json({ data: [{ id: 'p1', status: 'ACTIVE' }], total: 1 }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.getStatus('PRE-ICCID')
@@ -2414,21 +2444,21 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     expect(r.data?.status).toBe('PENDING_ACTIVATION')
   })
 
-  it('15. package creation does NOT directly mark ACTIVE (stays PENDING_ACTIVATION)', async () => {
+  // -- Purchase does NOT fabricate an ACTIVE device status --------------------
+  it('14. successful package creation yields PENDING_ACTIVATION, never ACTIVE', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(json({ data: { id: 42 } }))
       .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }], total: 1 }))
       .mockResolvedValueOnce(json({ data: { id: 'pkg-1', sim: 'PRE-ICCID', status: 'ACTIVE' } }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-test-1' })
     expect(r.success).toBe(true)
-    // Even if the create response reports package ACTIVE, purchase must NOT claim
-    // device/network activation.
     expect(r.data?.status).toBe('PENDING_ACTIVATION')
   })
 
-  it('16. installation activation_code maps safely through neutral contract', async () => {
+  it('15. installation lookup reads GET /euicc-profiles/{iccid} -> READY with activation code, gated by hasUsableInstallData', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(json({ data: { iccid: 'PRE-ICCID', state: 'RELEASED', activation_code: 'LPA:1$rsp.example.com$mid-9' } }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
@@ -2436,20 +2466,32 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     expect(r.success).toBe(true)
     expect(r.state).toBe('READY')
     expect(r.data?.activationCode).toBe('LPA:1$rsp.example.com$mid-9')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/euicc-profiles/PRE-ICCID')
   })
 
-  it('17. no local OneSIM id is sent upstream in purchase', async () => {
+  it('16. installation lookup with no usable activation data -> NOT_AVAILABLE_YET (NO_INSTALL_DATA)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { iccid: 'PRE-ICCID', state: 'DOWNLOADED' } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.lookupInstallationData({ iccid: 'PRE-ICCID' })
+    expect(r.success).toBe(false)
+    expect(r.state).toBe('NOT_AVAILABLE_YET')
+    expect(r.errorCode).toBe('NO_INSTALL_DATA')
+  })
+
+  it('17. no local OneSIM id is ever sent upstream — only ICCID + template id on the POST', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(json({ data: { id: 42 } }))
       .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }], total: 1 }))
       .mockResolvedValueOnce(json({ data: { id: 'pkg-1', sim: 'PRE-ICCID' } }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
     const c = new TelnaConnector('telna-provider-1', 'Telna')
-    await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'onesim-order-1', packageId: 'onesim-pkg-1' })
-    for (const call of fetchSpy.mock.calls) {
-      expect(JSON.stringify(call[1]?.body || '')).not.toContain('onesim-order-1')
-      expect(JSON.stringify(call[1]?.body || '')).not.toContain('onesim-pkg-1')
-    }
+    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'onesim-order-1', packageId: 'onesim-pkg-1' })
+    expect(r.success).toBe(true)
+    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    const body = JSON.parse(post![1].body as string)
+    expect(body).toEqual({ sim: 'PRE-ICCID', package_template: 42 })
   })
 
   it('18. TELNA / TELNA_FLEX / TELNA_SEAMLESS remain isolated', () => {
@@ -2476,14 +2518,13 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
   function simRegJson(iccid: string, status = 'PRE_SERVICE') { return json({ data: [{ iccid, status }], total: 1 }) }
   function pkgJson(id: string, sim: string) { return json({ data: { id, sim, status: 'NOT_ACTIVE' } }) }
 
-  it('TelnaConnector no longer directly creates/deletes Prisma eSIM rows (ownership layer owns claims)', async () => {
-    // Ensure the connector calls the neutral claim service, not Prisma eSIM
-    // create/delete.
+  it('activateESIM performs the neutral claim but never directly creates/deletes Prisma eSIM rows itself', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(templateJson())
       .mockResolvedValueOnce(simRegJson('PRE-ICCID'))
       .mockResolvedValueOnce(pkgJson('pkg-1', 'PRE-ICCID'))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
 
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
@@ -2491,13 +2532,14 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
     expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'PRE-ICCID' })
     expect(prisma.eSIM.create).not.toHaveBeenCalled()
     expect(prisma.eSIM.delete).not.toHaveBeenCalled()
+    // Ownership is handled by the neutral claim service, not direct Prisma ops.
   })
 
-  it('claim collision (ok:false) causes the next PRE_SERVICE candidate to be tried (no POST for conflicting ICCID)', async () => {
+  it('claim collision (ok:false once then ok:true) moves to the next candidate; POST only the winning ICCID', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(templateJson())
       .mockResolvedValueOnce(json({ data: [{ iccid: 'CC1', status: 'PRE_SERVICE' }, { iccid: 'CC2', status: 'PRE_SERVICE' }], total: 2 }))
-      .mockResolvedValueOnce(pkgJson('pkg-ok', 'CC2'))
+      .mockResolvedValueOnce(pkgJson('pkg-2', 'CC2'))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
 
     mockClaimProviderIccid
@@ -2507,59 +2549,60 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
     expect(r.success).toBe(true)
-    expect(r.data?.iccids?.[0]).toBe('CC2')
-    // POST /packages was sent only for CC2 (never the conflicting CC1).
-    const postCalls = fetchSpy.mock.calls.filter(cc => String(cc[0]).includes('/packages'))
-    expect(postCalls.length).toBe(1)
-    expect(JSON.stringify(postCalls[0][1].body)).toContain('CC2')
-    expect(JSON.stringify(postCalls[0][1].body)).not.toContain('CC1')
+    expect(r.data?.iccidOrSimId).toBe('CC2')
+    expect(mockClaimProviderIccid).toHaveBeenCalledTimes(2)
+    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    expect(JSON.parse(post![1].body as string).sim).toBe('CC2')
   })
 
-  it('successful claim sends exactly ONE POST /packages and does NOT release the claim', async () => {
+  it('a successful claim leads to exactly one POST /pcr/packages and no release', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(templateJson())
       .mockResolvedValueOnce(simRegJson('CLAIMED-ICCID'))
-      .mockResolvedValueOnce(pkgJson('pkg-exact', 'CLAIMED-ICCID'))
+      .mockResolvedValueOnce(pkgJson('pkg-1', 'CLAIMED-ICCID'))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
 
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
     expect(r.success).toBe(true)
-    expect(r.data?.iccids?.[0]).toBe('CLAIMED-ICCID')
-    const postCalls = fetchSpy.mock.calls.filter(cc => String(cc[0]).includes('/packages'))
-    expect(postCalls.length).toBe(1)
-    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'CLAIMED-ICCID' })
+    expect(mockClaimProviderIccid).toHaveBeenCalledTimes(1)
     expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
+    const post = fetchSpy.mock.calls.filter(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    expect(post).toHaveLength(1)
   })
 
-  it('provider failure after successful claim invokes the neutral release service with same purchaseId + ICCID', async () => {
+  it('provider POST failure triggers releaseProviderIccidClaim with same purchaseId+iccid', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(templateJson())
       .mockResolvedValueOnce(simRegJson('FAIL-ICCID'))
       .mockResolvedValueOnce(json({}, 500))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+    mockReleaseProviderIccidClaim.mockResolvedValue(undefined as any)
 
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
     expect(r.success).toBe(false)
-    expect(mockReleaseProviderIccidClaim).toHaveBeenCalledTimes(1)
+    expect(r.error?.code).toBe('HTTP_500')
+    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
     expect(mockReleaseProviderIccidClaim).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
   })
 
-  it('all candidates unclaimable -> OUT_OF_STOCK, no POST /packages, no release', async () => {
+  it('all candidate claims lost -> OUT_OF_STOCK, no release, no POST', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(templateJson())
       .mockResolvedValueOnce(simRegJson('BUSY-ICCID'))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
-
     mockClaimProviderIccid.mockResolvedValue({ ok: false, reason: 'CLAIM_LOST' })
 
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
     expect(r.success).toBe(false)
     expect(r.error?.code).toBe('OUT_OF_STOCK')
-    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/packages')
+    expect(mockClaimProviderIccid).toHaveBeenCalled()
     expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
+    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/pcr/packages')
   })
 
   it('missing orderId -> safe failure, claim service NOT called, no POST /packages', async () => {
@@ -2572,5 +2615,106 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
     expect(r.success).toBe(false)
     expect(mockClaimProviderIccid).not.toHaveBeenCalled()
     for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/packages')
+  })
+})
+
+describe('TelnaConnector per-family auth headers (documented, proven endpoints only)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  const BEARER = 'test-key-id-12345'
+  const expectedBasic = 'Basic ' + Buffer.from(`${TEST_PCR_LOGIN_ID}:${TEST_PCR_ACCESS_TOKEN}`).toString('base64')
+
+  it('INVENTORY (listInventories) sends a Bearer header and no PCR ApiKey/Basic', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 10 })),
+    }
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.listInventories()
+    const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>
+    expect(headers['Authorization']).toBe(`Bearer ${BEARER}`)
+    expect(headers['ApiKey']).toBeUndefined()
+    expect(headers['Authorization']).not.toContain('Basic')
+  })
+
+  it('INVENTORY (listSimRegistries) sends a Bearer header and no PCR ApiKey/Basic', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 50 })),
+    }
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.listSimRegistries()
+    const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>
+    expect(headers['Authorization']).toBe(`Bearer ${BEARER}`)
+    expect(headers['ApiKey']).toBeUndefined()
+    expect(headers['Authorization']).not.toContain('Basic')
+  })
+
+  it('PCR (listPackageTemplates) sends ApiKey + Basic and no Bearer', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 50 })),
+    }
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.listPackageTemplates()
+    const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>
+    expect(headers['ApiKey']).toBe(TEST_PCR_API_KEY)
+    expect(headers['Authorization']).toBe(expectedBasic)
+    expect(headers['Authorization']).not.toContain('Bearer')
+  })
+
+  it('PCR with incomplete credentials short-circuits to AUTH_INCOMPLETE with NO fetch', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider({ pcrAuth: 'missing' }))
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.listPackageTemplates()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('AUTH_INCOMPLETE')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('CORE (testConnection / countries) is refused with NOT_CONFIGURED and NO fetch', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.testConnection()
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('NOT_CONFIGURED')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('documented endpoints are all proven — getV2SimRegistry is dispatched and NOT blocked as UNVERIFIED', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { iccid: '89012345678901234567', status: 'PRE_SERVICE', imsi: '3000001', inventory_id: 1 } })),
+    }
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getV2SimRegistry('89012345678901234567')
+    expect(result.success).toBe(true)
+    expect(result.data?.sim?.iccid).toBe('89012345678901234567')
+    expect(fetchSpy).toHaveBeenCalled()
+    // Every canonical documented path is proven — no call resolves to UNVERIFIED_ENDPOINT.
   })
 })

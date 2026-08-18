@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
-import { telnaEndpointPath, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption, type TelnaV2PackageTemplate, type TelnaCreatePackageRequest, type TelnaV2Package, type TelnaV2SimRegistry, type TelnaEuiccProfile } from './telna-endpoints'
+import { telnaEndpointPath, telnaEndpointAuthFamily, isTelnaEndpointProven, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaAuthFamily, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption, type TelnaV2PackageTemplate, type TelnaCreatePackageRequest, type TelnaV2Package, type TelnaV2SimRegistry, type TelnaEuiccProfile } from './telna-endpoints'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, StatusLookupEsim, StatusLookupIdentifier, ConnectorInstallDataOutput, InstallationLookupInput, InstallationLookupResult } from './connector-interface'
 import { normalizeSimStatus } from '../mappers/telna-sim-mapper'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
@@ -76,8 +76,10 @@ export class TelnaConnector implements IProviderConnector {
   private async loadProvider(): Promise<{
     apiBaseUrl: string
     keyId: string
-    authorizationMode: 'BEARER' | 'RAW'
     apiVersion: string
+    pcrApiKey: string | null
+    pcrLoginId: string | null
+    pcrAccessToken: string | null
   } | null> {
     const provider = await prisma.provider.findUnique({ where: { id: this.providerId } })
     if (!provider) return null
@@ -86,12 +88,67 @@ export class TelnaConnector implements IProviderConnector {
     const keyId = decryptToken(provider.apiToken)
     if (!keyId) return null
 
+    // PCR credentials are stored in provider.config ONLY as encryptToken()
+    // ciphertext — NEVER plaintext. Read + decrypt each; missing or failed
+    // decryption yields null (never a plaintext fallback).
+    const pcrApiKey = decryptToken(typeof config.telnaPcrApiKeyEncrypted === 'string' ? config.telnaPcrApiKeyEncrypted : null)
+    const pcrLoginId = decryptToken(typeof config.telnaPcrLoginIdEncrypted === 'string' ? config.telnaPcrLoginIdEncrypted : null)
+    const pcrAccessToken = decryptToken(typeof config.telnaPcrAccessTokenEncrypted === 'string' ? config.telnaPcrAccessTokenEncrypted : null)
+
     return {
       apiBaseUrl: (provider.apiBaseUrl || 'https://developer-api.telna.com').replace(/\/+$/, ''),
       keyId,
-      authorizationMode: (config.authorizationMode as 'BEARER' | 'RAW') || 'BEARER',
       apiVersion: provider.apiVersion || '2.1',
+      pcrApiKey,
+      pcrLoginId,
+      pcrAccessToken,
     }
+  }
+
+  /**
+   * Detect an obvious TELNA vs TELNA_FLEX host mismatch. The legacy Telna
+   * connector's documented host is developer-api.telna.com; TELNA_FLEX owns
+   * ppo-api.telna.com /v1/* and is a separate connector. Returning true here
+   * blocks TELNA mutations (and warns) so the legacy connector never silently
+   * operates against the Flex host.
+   */
+  private isFlexHost(apiBaseUrl: string): boolean {
+    const host = (apiBaseUrl || '').toLowerCase()
+    return host.includes('ppo-api.telna.com') || host.includes('ppo-api')
+  }
+
+  /** Build the per-family Authorization headers for a documented endpoint. */
+  private buildAuthHeaders(opts: { endpoint: TelnaEndpoint; cfg: { apiBaseUrl: string; keyId: string; pcrApiKey: string | null; pcrLoginId: string | null; pcrAccessToken: string | null } }): {
+    headers: Record<string, string>
+    error?: { code: string; message: string }
+  } {
+    const family: TelnaAuthFamily = telnaEndpointAuthFamily(opts.endpoint)
+    const { cfg } = opts
+
+    // PCR: ApiKey + Basic(loginId:accessToken). Never Bearer.
+    if (family === 'PCR') {
+      if (!cfg.pcrApiKey || !cfg.pcrLoginId || !cfg.pcrAccessToken) {
+        return { headers: {}, error: { code: 'AUTH_INCOMPLETE', message: 'PCR credentials (ApiKey + loginId + accessToken) are not fully configured for this TELNA operation' } }
+      }
+      const basic = 'Basic ' + Buffer.from(`${cfg.pcrLoginId}:${cfg.pcrAccessToken}`).toString('base64')
+      return { headers: { 'ApiKey': cfg.pcrApiKey, 'Authorization': basic } }
+    }
+
+    // Bearer-only families: Inventory, eSIM RSP, Session (and USAGE by Bearer).
+    if (family === 'INVENTORY' || family === 'ESIM_RSP' || family === 'SESSION' || family === 'USAGE') {
+      if (!cfg.keyId) {
+        return { headers: {}, error: { code: 'AUTH_INCOMPLETE', message: 'Bearer token not configured for this TELNA operation' } }
+      }
+      return { headers: { 'Authorization': `Bearer ${cfg.keyId}` } }
+    }
+
+    // CORE: documented legacy auth is unproven for reads — do not invent a scheme.
+    if (family === 'CORE') {
+      return { headers: {}, error: { code: 'NOT_CONFIGURED', message: 'TELNA /core endpoint auth is not documented as Bearer; supply a documented scheme' } }
+    }
+
+    // UNVERIFIED bare Phase-1D paths: never attempt.
+    return { headers: {}, error: { code: 'UNVERIFIED_ENDPOINT', message: 'TELNA endpoint path is not proven by documentation; refusing to call it' } }
   }
 
   private async request(opts: TelnaRequestOptions): Promise<TelnaRequestResult> {
@@ -102,10 +159,25 @@ export class TelnaConnector implements IProviderConnector {
       return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not found or KeyID not configured' }, requestId }
     }
 
-    const { apiBaseUrl, keyId, authorizationMode } = providerConfig
+    const { apiBaseUrl, keyId, pcrApiKey, pcrLoginId, pcrAccessToken } = providerConfig
     const method = opts.method || 'GET'
     // Canonical, single-source path/URL composition (shared with Discovery).
     const path = telnaEndpointPath(opts.endpoint)
+    const family = telnaEndpointAuthFamily(opts.endpoint)
+
+    // Host/surface safety: the legacy TELNA connector must never silently run
+    // against the TELNA_FLEX host (ppo-api.telna.com) — that is Flex's surface.
+    if (this.isFlexHost(apiBaseUrl)) {
+      console.warn(`[TELNA_HOST_MISMATCH] configured apiBaseUrl=${apiBaseUrl} is the TELNA_FLEX host; legacy TELNA connector refusing request path=${path} requestId=${requestId}`)
+      return { success: false, error: { code: 'HOST_MISMATCH', message: 'Configured Telna base URL is the TELNA_FLEX host; use the developer-api.telna.com surface or the TELNA_FLEX connector' }, latencyMs: 0, requestId }
+    }
+
+    // UNVERIFIED bare Phase-1D endpoints are never called — no auth family is
+    // proven for them, so they must not be dispatched.
+    if (!isTelnaEndpointProven(opts.endpoint)) {
+      return { success: false, error: { code: 'UNVERIFIED_ENDPOINT', message: 'TELNA endpoint path is not proven by documentation; refusing to call it' }, latencyMs: 0, requestId }
+    }
+
     let url = buildTelnaEndpointUrl(apiBaseUrl, opts.endpoint, opts.pathParams)
     const timeoutMs = opts.timeoutMs || 15000
 
@@ -120,21 +192,19 @@ export class TelnaConnector implements IProviderConnector {
       if (qs) url += `?${qs}`
     }
 
-    const headers: Record<string, string> = {
-      'Accept': 'application/json',
+    // Per-family auth (PCR → ApiKey + Basic; Inventory/eSIM/Session/USage → Bearer).
+    const auth = this.buildAuthHeaders({ endpoint: opts.endpoint, cfg: { apiBaseUrl, keyId, pcrApiKey, pcrLoginId, pcrAccessToken } })
+    if (auth.error) {
+      return { success: false, error: auth.error, latencyMs: 0, requestId }
     }
 
-    if (authorizationMode === 'RAW') {
-      headers['Authorization'] = keyId
-    } else {
-      headers['Authorization'] = `Bearer ${keyId}`
-    }
+    const headers: Record<string, string> = { 'Accept': 'application/json', ...auth.headers }
 
     if (opts.body !== undefined) {
       headers['Content-Type'] = 'application/json'
     }
 
-    console.log(`[TELNA_REQUEST] method=${method} path=${path} authorizationMode=${authorizationMode} hasToken=true requestId=${requestId}`)
+    console.log(`[TELNA_REQUEST] method=${method} path=${path} authFamily=${family} requestId=${requestId}`)
 
     try {
       const controller = new AbortController()
@@ -250,6 +320,25 @@ export class TelnaConnector implements IProviderConnector {
   async activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
     const config = await this.loadProvider()
     if (!config) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not found or KeyID not configured' } }
+
+    // Host/surface safety: never purchase against the TELNA_FLEX host.
+    if (this.isFlexHost(config.apiBaseUrl)) {
+      return { success: false, error: { code: 'HOST_MISMATCH', message: 'Configured Telna base URL is the TELNA_FLEX host; TELNA purchase is not permitted against the Flex surface' } }
+    }
+
+    // PCR auth readiness is checked BEFORE any ICCID listing, claim, or mutation.
+    // Telna package creation (POST /packages) is a PCR operation requiring the
+    // documented ApiKey + Basic(loginId:accessToken). Without all three, no
+    // claim and no POST /packages may occur.
+    if (!config.pcrApiKey || !config.pcrLoginId || !config.pcrAccessToken) {
+      return { success: false, error: { code: 'AUTH_INCOMPLETE', message: 'PCR credentials (ApiKey + loginId + accessToken) are not fully configured; Telna purchase is disabled' } }
+    }
+
+    // The documented PCR package surface (/pcr/packages) is proven; proceed only
+    // when it exists in the endpoint map/authorization contract.
+    if (!isTelnaEndpointProven('packages')) {
+      return { success: false, error: { code: 'UNVERIFIED_ENDPOINT', message: 'Telna POST /pcr/packages path is not proven; purchase disabled' } }
+    }
 
     // params.planId = ProviderPackage.providerPlanId = Telna package template id.
     if (!params.planId) return { success: false, error: { code: 'INVALID_REQUEST', message: 'Provider package template id (planId) is required for purchase' } }
@@ -458,7 +547,7 @@ export class TelnaConnector implements IProviderConnector {
 
   /** GET /sim-registries/{iccid} — documented SIM registry detail. */
   async getV2SimRegistry(iccid: string): Promise<ConnectorResult<{ sim: TelnaV2SimRegistry }>> {
-    const result = await this.request({ method: 'GET', endpoint: 'simRegistryV2', pathParams: { iccid } })
+    const result = await this.request({ method: 'GET', endpoint: 'simRegistry', pathParams: { iccid } })
     const sim = result.success && result.data ? (result.data as { data: TelnaV2SimRegistry }).data : null
     if (!result.success || !sim) {
       return { success: false, error: result.error || { code: 'SIM_REGISTRY_FAILED', message: 'SIM registry entry not found' } }
@@ -646,7 +735,7 @@ export class TelnaConnector implements IProviderConnector {
 
   /** GET /package-templates/{package_template_id} — documented template detail. */
   async getV2PackageTemplate(packageTemplateId: number): Promise<ConnectorResult<{ template: TelnaV2PackageTemplate }>> {
-    const result = await this.request({ method: 'GET', endpoint: 'packageTemplateV2', pathParams: { package_template_id: packageTemplateId } })
+    const result = await this.request({ method: 'GET', endpoint: 'packageTemplate', pathParams: { package_template_id: packageTemplateId } })
     const template = result.success && result.data ? (result.data as { data: TelnaV2PackageTemplate }).data : null
     if (!result.success || !template) {
       return { success: false, error: result.error || { code: 'TEMPLATE_FAILED', message: 'Package template not found' } }
@@ -661,7 +750,7 @@ export class TelnaConnector implements IProviderConnector {
    */
   async listV2SimRegistries(inventoryId?: number, groupId?: number, iccid?: string, imsi?: string, status?: string, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaV2SimRegistry[]; total: number }>> {
     const result = await this.request({
-      method: 'GET', endpoint: 'simRegistriesV2',
+      method: 'GET', endpoint: 'simRegistries',
       query: { inventory_id: inventoryId, group: groupId, iccid, imsi, status, count, offset },
     })
     const items = (result.success && result.data && (result.data as any).data) ? (result.data as any).data as TelnaV2SimRegistry[] : []
@@ -674,7 +763,7 @@ export class TelnaConnector implements IProviderConnector {
 
   /** GET /packages — documented package filter surface (sim / template / status). */
   async listV2Packages(filters: { sim?: string; package_template?: number | string; status?: string; count?: number; offset?: number } = {}): Promise<ConnectorResult<{ items: TelnaV2Package[]; total: number }>> {
-    const result = await this.request({ method: 'GET', endpoint: 'packageList', query: filters })
+    const result = await this.request({ method: 'GET', endpoint: 'packages', query: filters })
     const items = (result.success && result.data && (result.data as any).data) ? (result.data as any).data as TelnaV2Package[] : []
     const total = (result.success && result.data && (result.data as any).total) ? (result.data as any).total : items.length
     if (!result.success) {
@@ -685,7 +774,7 @@ export class TelnaConnector implements IProviderConnector {
 
   /** GET /packages/{package_id} — documented exact package instance detail. */
   async getV2Package(packageId: string | number): Promise<ConnectorResult<{ pkg: TelnaV2Package }>> {
-    const result = await this.request({ method: 'GET', endpoint: 'packageDetail', pathParams: { package_id: packageId } })
+    const result = await this.request({ method: 'GET', endpoint: 'package', pathParams: { package_id: packageId } })
     const pkg = result.success && result.data ? (result.data as { data?: TelnaV2Package }).data || (result.data as TelnaV2Package) : null
     if (!result.success || !pkg) {
       return { success: false, error: result.error || { code: 'PACKAGE_FAILED', message: 'Package instance not found' } }
@@ -699,7 +788,7 @@ export class TelnaConnector implements IProviderConnector {
    * NEVER a local OneSIM id; only the provider-owned ICCID + template id.
    */
   async createPackage(req: TelnaCreatePackageRequest): Promise<ConnectorResult<{ pkg: TelnaV2Package }>> {
-    const result = await this.request({ method: 'POST', endpoint: 'createPackage', body: req })
+    const result = await this.request({ method: 'POST', endpoint: 'packages', body: req })
     if (!result.success) return { success: false, error: result.error }
     const pkg = (result.data as { data?: TelnaV2Package })?.data || (result.data as TelnaV2Package)
     if (!pkg || (pkg.id == null && pkg.sim == null)) {
