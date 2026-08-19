@@ -44,6 +44,7 @@ const mockReleaseProviderIccidClaim = vi.mocked(releaseProviderIccidClaim)
 // Deterministic encrypted PCR credential fixtures. Stored in provider.config
 // ONLY as encryptToken() ciphertext (never plaintext), matching the production
 // connector's decrypted-at-load contract.
+const TEST_KEY_ID = 'test-key-id-12345'
 const TEST_PCR_API_KEY = 'test-pcr-api-key'
 const TEST_PCR_LOGIN_ID = 'test-pcr-login'
 const TEST_PCR_ACCESS_TOKEN = 'test-pcr-access-token'
@@ -57,7 +58,7 @@ const baseMock: Omit<Provider, 'id' | 'createdAt' | 'updatedAt'> = {
   tokenPlacement: 'BEARER_HEADER',
   apiVersion: '2.1',
   apiBaseUrl: 'https://developer-api.telna.com',
-  apiToken: 'enc:test-key-id-12345',
+  apiToken: `enc:${TEST_KEY_ID}`,
   authUrl: null,
   environment: 'staging',
   status: 'ACTIVE' as const,
@@ -252,8 +253,8 @@ describe('Telna Provider Template Defaults', () => {
 })
 
 describe('KeyID Encryption', () => {
-  it('encrypts and decrypts correctly', () => {
-    const keyId = 'test-key-id-12345'
+it('encrypts and decrypts correctly', () => {
+    const keyId = TEST_KEY_ID
     const encrypted = encryptToken(keyId)
     expect(encrypted).toBeTruthy()
     expect(encrypted).not.toBe(keyId)
@@ -353,18 +354,7 @@ describe('TelnaConnector testConnection', () => {
     expect(String(result.error?.message)).toContain('pre-configured KeyID')
   })
 
-  it('refuses /core/countries with NOT_CONFIGURED (auth unproven) and makes NO HTTP call', async () => {
-    const fetchSpy = vi.fn()
-    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
-
-    const connector = new TelnaConnector('telna-provider-1', 'Telna')
-    const result = await connector.testConnection()
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
-  })
-
-  it('testConnection never dispatches a request for the CORE family (regardless of mock response)', async () => {
+it('testConnection succeeds on a 200 from GET /v2.1/core/countries with raw Authorization API key', async () => {
     const fetchSpy = vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({ data: [{ id: 1 }], total: 1 })),
@@ -373,27 +363,28 @@ describe('TelnaConnector testConnection', () => {
 
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.testConnection()
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    // CORE is proven: the request IS dispatched to /v2.1/core/countries with the
+    // raw API_ACCESS_KEY_ID (no Bearer prefix, no Basic, no ApiKey).
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/core/countries')
+    expect(init.headers['Authorization']).toBe('test-key-id-12345')
+    expect(init.headers['Authorization']).not.toContain('Bearer')
+    expect(init.headers['ApiKey']).toBeUndefined()
   })
 
-  it('CORE auth is unproven so 4xx/5xx/network responses are never reached', async () => {
-    // Prove that the guard short-circuits BEFORE any HTTP classification:
-    // even a 404 / 401 / network error mock must never be dispatched.
-    for (const mock of [
-      { ok: false, status: 404, headers: new Headers({ 'content-type': 'text/plain' }), text: vi.fn().mockResolvedValue('Not Found') },
-      { ok: false, status: 401, headers: new Headers({ 'content-type': 'text/plain' }), text: vi.fn().mockResolvedValue('Unauthorized') },
-      { ok: false, status: 403, headers: new Headers({ 'content-type': 'text/plain' }), text: vi.fn().mockResolvedValue('Forbidden') },
-      { ok: false, status: 429, headers: new Headers({ 'content-type': 'text/plain' }), text: vi.fn().mockResolvedValue('Too Many Requests') },
-    ]) {
-      const fetchSpy = vi.fn().mockResolvedValue(mock as any)
+  it('testConnection classifies a real provider 401/403/404/429', async () => {
+    for (const [status, code] of [[401, 'HTTP_401'], [403, 'HTTP_403'], [404, 'HTTP_404'], [429, 'HTTP_429']] as Array<[number, string]>) {
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: false, status, headers: new Headers({ 'content-type': 'text/plain' }), text: vi.fn().mockResolvedValue('x'),
+      })
       vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
       const connector = new TelnaConnector('telna-provider-1', 'Telna')
       const result = await connector.testConnection()
       expect(result.success).toBe(false)
-      expect(result.error?.code).toBe('NOT_CONFIGURED')
-      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(result.error?.code).toBe(code)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
     }
   })
 
@@ -427,9 +418,14 @@ describe('TelnaConnector Discovery — listCountries', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.listCountries(10, 0)
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(2)
+    expect(result.data?.total).toBe(2)
+    // Dispatches to /v2.1/core/countries with the raw authorization API key.
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/core/countries')
+    expect(init.headers['Authorization']).toBe('test-key-id-12345')
+    expect(init.headers['Authorization']).not.toContain('Bearer')
   })
 
   it('does not map live /core failures because the CORE family is never dispatched', async () => {
@@ -440,8 +436,8 @@ describe('TelnaConnector Discovery — listCountries', () => {
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.listCountries(10, 0)
     expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.error?.code).toBe('NETWORK_ERROR')
+    expect(fetchSpy).toHaveBeenCalled()
   })
 
   it('handles provider not configured', async () => {
@@ -452,7 +448,7 @@ describe('TelnaConnector Discovery — listCountries', () => {
     expect(result.error?.code).toBe('NOT_CONFIGURED')
   })
 
-  it('CORE auth blocks the empty-response path (no fetch)', async () => {
+  it('listCountries parses an empty country list (CORE proven)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -462,9 +458,8 @@ describe('TelnaConnector Discovery — listCountries', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.listCountries(10, 0)
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(0)
   })
 })
 
@@ -481,17 +476,20 @@ describe('TelnaConnector Discovery — getCompany', () => {
       headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({ data: companyData })),
     }
-    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getCompany(42)
 
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    expect(result.data?.company?.name).toBe('Acme Corp')
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/core/companies/42')
+    expect(init.headers['Authorization']).toBe('test-key-id-12345')
+    expect(init.headers['Authorization']).not.toContain('Bearer')
   })
 
-  it('does not reach 404 classification for the CORE family (guard short-circuits)', async () => {
+  it('maps a real 404 from GET /v2.1/core/companies/{id}', async () => {
     const fakeResponse = {
       ok: false, status: 404,
       headers: new Headers({ 'content-type': 'text/plain' }),
@@ -502,8 +500,8 @@ describe('TelnaConnector Discovery — getCompany', () => {
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getCompany(999)
     expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.error?.code).toBe('HTTP_404')
+    expect(fetchSpy).toHaveBeenCalled()
   })
 
   it('handles provider not configured', async () => {
@@ -855,7 +853,7 @@ describe('TelnaConnector Phase 2A — getPackageTemplate', () => {
     expect(result.data?.template.price).toBe(30.00)
     // Verify path param substitution
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/pcr/package-templates/201'),
+      expect.stringContaining('/v2.1/pcr/package-templates/201'),
       expect.any(Object)
     )
   })
@@ -909,7 +907,7 @@ describe('TelnaConnector Phase 2A — existing discovery regression', () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  it('listCountries is guarded to NOT_CONFIGURED after auth-family changes (CORE unproven)', async () => {
+  it('listCountries reads /v2.1/core/countries with raw Authorization API key (CORE proven)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -919,12 +917,15 @@ describe('TelnaConnector Phase 2A — existing discovery regression', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.listCountries(1, 0)
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    expect(result.data?.items).toHaveLength(1)
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/core/countries')
+    expect(init.headers['Authorization']).toBe(TEST_KEY_ID)
+    expect(init.headers['Authorization']).not.toContain('Bearer')
   })
 
-  it('getCompany is guarded to NOT_CONFIGURED after auth-family changes (CORE unproven)', async () => {
+  it('getCompany reads /v2.1/core/companies/{id} with raw Authorization API key (CORE proven)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -934,9 +935,9 @@ describe('TelnaConnector Phase 2A — existing discovery regression', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getCompany(1)
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    expect(result.data?.company?.name).toBe('Co')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/core/companies/1')
   })
 
   it('getWallet still works after Phase 2A changes', async () => {
@@ -958,7 +959,7 @@ describe('TelnaConnector Discovery — path param substitution', () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  it('CORE company lookup (getCompany) is auth-blocked: NOT_CONFIGURED and no URL is composed to fetch', async () => {
+  it('CORE company lookup (getCompany) substitutes the company_id path param under /v2.1/core/companies', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -968,9 +969,8 @@ describe('TelnaConnector Discovery — path param substitution', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getCompany(123)
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/core/companies/123')
   })
 
   it('substitutes wallet_id in wallet endpoint path', async () => {
@@ -1256,7 +1256,7 @@ describe('TelnaConnector Phase 2B — getPackage', () => {
     expect(result.data?.pkg.name).toBe('5GB Monthly Data')
     expect(result.data?.pkg.price).toBe(25.00)
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/pcr/packages/1001'),
+      expect.stringContaining('/v2.1/pcr/packages/1001'),
       expect.any(Object)
     )
   })
@@ -1488,7 +1488,7 @@ describe('TelnaConnector Phase 3 — getSimRegistry', () => {
     expect(result.data?.sim.imsi).toBe('310150123456789')
     expect(result.data?.sim.status).toBe('ACTIVE')
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/inventory/sim-registries/89012345678901234567'),
+      expect.stringContaining('/v2.1/inventory/sim-registries/89012345678901234567'),
       expect.any(Object)
     )
   })
@@ -1886,9 +1886,9 @@ describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
     expect(result.data?.iccid).toBe(STATUS_ICCID)
     expect(fetchSpy).toHaveBeenCalledTimes(3)
     const urls = fetchSpy.mock.calls.map(c => String(c[0]))
-    expect(urls.some(u => u.includes('/inventory/sim-registries/'))).toBe(true)
-    expect(urls.some(u => u.includes('/euicc-profiles/'))).toBe(true)
-    expect(urls.some(u => u.includes('/pcr/packages?sim='))).toBe(true)
+    expect(urls.some(u => u.includes('/v2.1/inventory/sim-registries/'))).toBe(true)
+    expect(urls.some(u => u.includes('/v2.1/esim-rsp/euicc-profiles/'))).toBe(true)
+    expect(urls.some(u => u.includes('/v2.1/pcr/packages?sim='))).toBe(true)
   })
 
   it('SIM IN_SERVICE -> ACTIVE with networkAttached evidence', async () => {
@@ -2004,9 +2004,9 @@ describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
     expect(caps.resume).toBe(false)
   })
 
-  it('declares installation + usage capabilities as enabled (documented v2 contract)', () => {
+  it('declares installation + usage capabilities as enabled (documented V2.1 contract)', () => {
     const caps = new TelnaConnector('telna-provider-1', 'Telna').capabilities!
-    // GET /euicc-profiles/{iccid} activation_code proves historical install lookup.
+    // GET /v2.1/esim-rsp/euicc-profiles/{iccid} activation_code proves historical install lookup.
     expect(caps.installationLookup).toBe(true)
     expect(caps.installationLookupHistorical).toBe(true)
     // Package usage (data_usage_remaining bytes) + ICCID resolver.
@@ -2014,6 +2014,15 @@ describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
     // We still never claim purchase-time install or webhooks.
     expect(caps.installationDataAtPurchase).not.toBe(true)
     expect(caps.webhooks).toBe(false)
+  })
+
+  it('paid add-ons (session/SMS/webhooks) stay capability-disabled on the standard account', () => {
+    const caps = new TelnaConnector('telna-provider-1', 'Telna').capabilities!
+    // SESSION (/v2.1/session-management/open-data-sessions) is a paid add-on — no
+    // connector method calls it, and it is not a required/usage source.
+    expect(caps.webhooks).toBe(false)
+    // Usage does not depend on the paid open-data-session surface.
+    expect(caps.usageLookup).toBe(true)
   })
 
   it('never logs the full ICCID', async () => {
@@ -2039,32 +2048,35 @@ describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
 })
 
 describe('canonical Telna endpoint path/URL composition', () => {
-  it('buildTelnaEndpointUrl composes base + endpoint with no double path', () => {
+it('buildTelnaEndpointUrl composes base + V2.1 endpoint with no double path', () => {
     const url = buildTelnaEndpointUrl('https://developer-api.telna.com', 'countries')
-    expect(url).toBe('https://developer-api.telna.com/core/countries')
+    expect(url).toBe('https://developer-api.telna.com/v2.1/core/countries')
   })
 
   it('tolerates a trailing slash on the base URL', () => {
-    expect(buildTelnaEndpointUrl('https://developer-api.telna.com/', 'countries')).toBe('https://developer-api.telna.com/core/countries')
-    expect(buildTelnaEndpointUrl('https://developer-api.telna.com///', 'countries')).toBe('https://developer-api.telna.com/core/countries')
+    expect(buildTelnaEndpointUrl('https://developer-api.telna.com/', 'countries')).toBe('https://developer-api.telna.com/v2.1/core/countries')
+    expect(buildTelnaEndpointUrl('https://developer-api.telna.com///', 'countries')).toBe('https://developer-api.telna.com/v2.1/core/countries')
   })
 
-  it('preserves a path prefix already present in apiBaseUrl (no duplicate /core)', () => {
+  it('preserves a path prefix already present in apiBaseUrl (no duplicate /v2.1 or /core)', () => {
+    // Prefixed /v2 base is preserved and the endpoint path (already /v2.1/...) is
+    // appended once — never duplicated.
     const url = buildTelnaEndpointUrl('https://developer-api.telna.com/v2', 'countries')
-    expect(url).toBe('https://developer-api.telna.com/v2/core/countries')
+    expect(url).toBe('https://developer-api.telna.com/v2/v2.1/core/countries')
+    expect(url.split('/v2.1').length).toBe(2)
     expect(url.split('/core').length).toBe(2)
   })
 
   it('substitutes path parameters', () => {
-    expect(buildTelnaEndpointUrl('https://developer-api.telna.com', 'company', { company_id: 42 })).toBe('https://developer-api.telna.com/core/companies/42')
+    expect(buildTelnaEndpointUrl('https://developer-api.telna.com', 'company', { company_id: 42 })).toBe('https://developer-api.telna.com/v2.1/core/companies/42')
   })
 
   it('testConnection and Discovery (listCountries) resolve the SAME canonical endpoint path', () => {
     // Single-source path map: both go through telnaEndpointPath('countries').
     const tcPath = telnaEndpointPath('countries')
     const discoveryPath = telnaEndpointPath('countries')
-    expect(tcPath).toBe('/core/countries')
-    expect(discoveryPath).toBe('/core/countries')
+    expect(tcPath).toBe('/v2.1/core/countries')
+    expect(discoveryPath).toBe('/v2.1/core/countries')
   })
 })
 
@@ -2078,14 +2090,14 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
   }
 
-  const expectedBasic = 'Basic ' + Buffer.from(`${TEST_PCR_LOGIN_ID}:${TEST_PCR_ACCESS_TOKEN}`).toString('base64')
-  const pcrHeaders = { 'ApiKey': TEST_PCR_API_KEY, 'Authorization': expectedBasic }
+  // V2.1 PCR auth: collection Authorization API key (raw, no Bearer/Basic) + ApiKey.
+  const pcrHeaders = { 'ApiKey': TEST_PCR_API_KEY, 'Authorization': TEST_KEY_ID }
 
-  it('activateESIM runs the verified flow: template detail, SIM listing, neutral claim, POST /pcr/packages', async () => {
+  it('activateESIM runs the verified flow: template detail, SIM listing, neutral claim, POST /v2.1/pcr/packages', async () => {
     const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: { id: 42 } })) // GET /pcr/package-templates/42
-      .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }], total: 1 })) // GET /inventory/sim-registries
-      .mockResolvedValueOnce(json({ data: { id: 'pkg-INSTANCE-1', sim: 'PRE-ICCID', status: 'NOT_ACTIVE' } })) // POST /pcr/packages
+      .mockResolvedValueOnce(json({ data: { id: 42 } })) // GET /v2.1/pcr/package-templates/42
+      .mockResolvedValueOnce(json({ data: [{ iccid: 'PRE-ICCID', status: 'PRE_SERVICE' }], total: 1 })) // GET /v2.1/inventory/sim-registries
+      .mockResolvedValueOnce(json({ data: { id: 'pkg-INSTANCE-1', sim: 'PRE-ICCID', status: 'NOT_ACTIVE' } })) // POST /v2.1/pcr/packages
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     mockClaimProviderIccid.mockResolvedValue({ ok: true })
 
@@ -2101,15 +2113,16 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'onesim-order-1', iccid: 'PRE-ICCID' })
     expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
 
-    // Exactly one POST /pcr/packages with the documented PCR headers and body.
-    const postCalls = fetchSpy.mock.calls.filter(c => String(c[0]).includes('/pcr/packages') && c[1].method === 'POST')
+    // Exactly one POST /v2.1/pcr/packages with the documented PCR headers + body.
+    const postCalls = fetchSpy.mock.calls.filter(c => String(c[0]).includes('/v2.1/pcr/packages') && c[1].method === 'POST')
     expect(postCalls).toHaveLength(1)
     const [postUrl, postInit] = postCalls[0]
-    expect(String(postUrl)).toContain('/pcr/packages')
+    expect(String(postUrl)).toContain('/v2.1/pcr/packages')
     expect(JSON.parse(postInit.body)).toEqual({ sim: 'PRE-ICCID', package_template: 42 })
     expect(postInit.headers['ApiKey']).toBe(TEST_PCR_API_KEY)
-    expect(postInit.headers['Authorization']).toBe(expectedBasic)
+    expect(postInit.headers['Authorization']).toBe(TEST_KEY_ID)
     expect(postInit.headers['Authorization']).not.toContain('Bearer')
+    expect(postInit.headers['Authorization']).not.toContain('Basic')
   })
 
   it('activateESIM does not send a local OneSIM id upstream — only ICCID + template id', async () => {
@@ -2123,7 +2136,7 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'onesim-order-1', packageId: 'onesim-pkg-1' })
     expect(result.success).toBe(true)
-    const postCall = fetchSpy.mock.calls.find(c => String(c[0]).includes('/pcr/packages') && c[1].method === 'POST')
+    const postCall = fetchSpy.mock.calls.find(c => String(c[0]).includes('/v2.1/pcr/packages') && c[1].method === 'POST')
     const body = JSON.parse(postCall![1].body as string)
     expect(body).not.toHaveProperty('packageId')
     expect(body).not.toHaveProperty('orderId')
@@ -2142,7 +2155,7 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     expect(result.success).toBe(false)
     expect(result.error?.code).toBe('OUT_OF_STOCK')
     expect(mockClaimProviderIccid).not.toHaveBeenCalled()
-    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/pcr/packages')
+    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/v2.1/pcr/packages')
   })
 
   it('pcrAuth missing -> AUTH_INCOMPLETE before claim/listing, NO POST', async () => {
@@ -2180,7 +2193,7 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     expect(r.success).toBe(true)
     expect(r.state).toBe('READY')
     expect(r.data?.activationCode).toBe('LPA:1$rsp.example.com$mid-123')
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('/euicc-profiles/8944501234567890123')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/esim-rsp/euicc-profiles/8944501234567890123')
   })
 
   it('usage exact package: getV2Package via /pcr/packages/EXACT -> total/remaining/used MB', async () => {
@@ -2194,7 +2207,7 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     expect(r.data?.dataTotalMB).toBe(2048)
     expect(r.data?.dataRemainingMB).toBe(1024)
     expect(r.data?.dataUsedMB).toBe(1024)
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('/pcr/packages/EXACT')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/packages/EXACT')
   })
 
   it('usage multi-package fallback: two non-TERMINATED packages -> DATA_UNAVAILABLE', async () => {
@@ -2270,7 +2283,7 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
       expect(r.success).toBe(false)
       expect(r.error?.code).toBe('OUT_OF_STOCK')
       expect(mockClaimProviderIccid).not.toHaveBeenCalled()
-      for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/pcr/packages')
+      for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/v2.1/pcr/packages')
     })
   }
 
@@ -2285,7 +2298,7 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
     expect(r.success).toBe(true)
     expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'PRE-ICCID' })
-    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/v2.1/pcr/packages') && x[1].method === 'POST')
     expect(post).toBeTruthy()
   })
 
@@ -2319,7 +2332,7 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     expect(r.success).toBe(true)
     expect(r.data?.iccidOrSimId).toBe('CC2')
     expect(mockClaimProviderIccid).toHaveBeenCalledTimes(2)
-    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/v2.1/pcr/packages') && x[1].method === 'POST')
     expect(JSON.parse(post![1].body as string).sim).toBe('CC2')
   })
 
@@ -2348,7 +2361,7 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' } })
     expect(r.success).toBe(false)
     expect(mockClaimProviderIccid).not.toHaveBeenCalled()
-    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/pcr/packages')
+    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/v2.1/pcr/packages')
   })
 
   // -- Identity separation / package instance preservation -------------------
@@ -2379,7 +2392,7 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     expect(r.data?.dataTotalMB).toBe(2048)
     expect(r.data?.dataRemainingMB).toBe(1024)
     expect(r.data?.dataUsedMB).toBe(1024)
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('/pcr/packages/EXACT-1')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/packages/EXACT-1')
   })
 
   it('9. multiple packages on the same ICCID without an exact id -> DATA_UNAVAILABLE', async () => {
@@ -2466,7 +2479,7 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     expect(r.success).toBe(true)
     expect(r.state).toBe('READY')
     expect(r.data?.activationCode).toBe('LPA:1$rsp.example.com$mid-9')
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('/euicc-profiles/PRE-ICCID')
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/esim-rsp/euicc-profiles/PRE-ICCID')
   })
 
   it('16. installation lookup with no usable activation data -> NOT_AVAILABLE_YET (NO_INSTALL_DATA)', async () => {
@@ -2489,7 +2502,7 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'onesim-order-1', packageId: 'onesim-pkg-1' })
     expect(r.success).toBe(true)
-    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/v2.1/pcr/packages') && x[1].method === 'POST')
     const body = JSON.parse(post![1].body as string)
     expect(body).toEqual({ sim: 'PRE-ICCID', package_template: 42 })
   })
@@ -2551,7 +2564,7 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
     expect(r.success).toBe(true)
     expect(r.data?.iccidOrSimId).toBe('CC2')
     expect(mockClaimProviderIccid).toHaveBeenCalledTimes(2)
-    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    const post = fetchSpy.mock.calls.find(x => String(x[0]).includes('/v2.1/pcr/packages') && x[1].method === 'POST')
     expect(JSON.parse(post![1].body as string).sim).toBe('CC2')
   })
 
@@ -2568,7 +2581,7 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
     expect(r.success).toBe(true)
     expect(mockClaimProviderIccid).toHaveBeenCalledTimes(1)
     expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
-    const post = fetchSpy.mock.calls.filter(x => String(x[0]).includes('/pcr/packages') && x[1].method === 'POST')
+    const post = fetchSpy.mock.calls.filter(x => String(x[0]).includes('/v2.1/pcr/packages') && x[1].method === 'POST')
     expect(post).toHaveLength(1)
   })
 
@@ -2602,7 +2615,7 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
     expect(r.error?.code).toBe('OUT_OF_STOCK')
     expect(mockClaimProviderIccid).toHaveBeenCalled()
     expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
-    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/pcr/packages')
+    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/v2.1/pcr/packages')
   })
 
   it('missing orderId -> safe failure, claim service NOT called, no POST /packages', async () => {
@@ -2624,10 +2637,10 @@ describe('TelnaConnector per-family auth headers (documented, proven endpoints o
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  const BEARER = 'test-key-id-12345'
-  const expectedBasic = 'Basic ' + Buffer.from(`${TEST_PCR_LOGIN_ID}:${TEST_PCR_ACCESS_TOKEN}`).toString('base64')
+  // V2.1 collection-level auth: raw API_ACCESS_KEY_ID in Authorization (no Bearer/Basic).
+  const API_KEY = TEST_KEY_ID
 
-  it('INVENTORY (listInventories) sends a Bearer header and no PCR ApiKey/Basic', async () => {
+  it('INVENTORY (listInventories) sends a raw Authorization API key and no PCR ApiKey/Basic', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -2639,12 +2652,12 @@ describe('TelnaConnector per-family auth headers (documented, proven endpoints o
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     await connector.listInventories()
     const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>
-    expect(headers['Authorization']).toBe(`Bearer ${BEARER}`)
+    expect(headers['Authorization']).toBe(API_KEY)
+    expect(headers['Authorization']).not.toContain('Bearer')
     expect(headers['ApiKey']).toBeUndefined()
-    expect(headers['Authorization']).not.toContain('Basic')
   })
 
-  it('INVENTORY (listSimRegistries) sends a Bearer header and no PCR ApiKey/Basic', async () => {
+  it('INVENTORY (listSimRegistries) sends a raw Authorization API key and no PCR ApiKey/Basic', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -2656,12 +2669,12 @@ describe('TelnaConnector per-family auth headers (documented, proven endpoints o
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     await connector.listSimRegistries()
     const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>
-    expect(headers['Authorization']).toBe(`Bearer ${BEARER}`)
+    expect(headers['Authorization']).toBe(API_KEY)
+    expect(headers['Authorization']).not.toContain('Bearer')
     expect(headers['ApiKey']).toBeUndefined()
-    expect(headers['Authorization']).not.toContain('Basic')
   })
 
-  it('PCR (listPackageTemplates) sends ApiKey + Basic and no Bearer', async () => {
+  it('PCR (listPackageTemplates) sends raw Authorization API key + ApiKey (no Bearer, no Basic)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -2674,11 +2687,29 @@ describe('TelnaConnector per-family auth headers (documented, proven endpoints o
     await connector.listPackageTemplates()
     const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>
     expect(headers['ApiKey']).toBe(TEST_PCR_API_KEY)
-    expect(headers['Authorization']).toBe(expectedBasic)
+    expect(headers['Authorization']).toBe(API_KEY)
     expect(headers['Authorization']).not.toContain('Bearer')
+    expect(headers['Authorization']).not.toContain('Basic')
   })
 
-  it('PCR with incomplete credentials short-circuits to AUTH_INCOMPLETE with NO fetch', async () => {
+  it('CORE (listCountries) sends a raw Authorization API key and no ApiKey', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [], total: 0, offset: 0, count: 0 })),
+    }
+    const fetchSpy = vi.fn().mockResolvedValue(fakeResponse as any)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    await connector.listCountries()
+    const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>
+    expect(headers['Authorization']).toBe(API_KEY)
+    expect(headers['Authorization']).not.toContain('Bearer')
+    expect(headers['ApiKey']).toBeUndefined()
+  })
+
+  it('PCR with incomplete ApiKey short-circuits to AUTH_INCOMPLETE with NO fetch', async () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider({ pcrAuth: 'missing' }))
     const fetchSpy = vi.fn()
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
@@ -2690,15 +2721,22 @@ describe('TelnaConnector per-family auth headers (documented, proven endpoints o
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('CORE (testConnection / countries) is refused with NOT_CONFIGURED and NO fetch', async () => {
-    const fetchSpy = vi.fn()
+  it('CORE (testConnection / countries) dispatches to /v2.1/core/countries with raw Authorization API key', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: [{ id: 1 }], total: 1 })),
+    })
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
 
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.testConnection()
-    expect(result.success).toBe(false)
-    expect(result.error?.code).toBe('NOT_CONFIGURED')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(result.success).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/core/countries')
+    expect(init.headers['Authorization']).toBe(TEST_KEY_ID)
+    expect(init.headers['Authorization']).not.toContain('Bearer')
   })
 
   it('documented endpoints are all proven — getV2SimRegistry is dispatched and NOT blocked as UNVERIFIED', async () => {

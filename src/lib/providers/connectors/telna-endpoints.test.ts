@@ -6,7 +6,7 @@ import {
   type TelnaEndpoint,
 } from './telna-endpoints'
 
-describe('TELNA endpoint map — Phase 1F reconciliation invariants', () => {
+describe('TELNA endpoint map — V2.1 vendor-contract invariants', () => {
   it('every endpoint key has a concrete auth family (total metadata, compile-time-safe)', () => {
     const keys = Object.keys(TELNA_ENDPOINTS) as TelnaEndpoint[]
     for (const key of keys) {
@@ -15,11 +15,18 @@ describe('TELNA endpoint map — Phase 1F reconciliation invariants', () => {
     }
   })
 
-  it('no duplicate bare package/template/sim-registry paths remain', () => {
+  it('every endpoint path carries the /v2.1 module prefix and never doubles it', () => {
     const paths = Object.values(TELNA_ENDPOINTS)
-    for (const p of ['/packages', '/package-templates', '/sim-registries']) {
-      // Exact bare matches only (a documented prefix like /pcr/packages is fine).
-      expect(paths.filter(x => x === p).length, `bare path ${p} must not exist`).toBe(0)
+    for (const p of paths) {
+      expect(p.startsWith('/v2.1/'), `path ${p} must start with /v2.1/`).toBe(true)
+      expect(p.includes('/v2.1/v2.1'), `path ${p} must not double the /v2.1 prefix`).toBe(false)
+    }
+  })
+
+  it('no unversioned bare paths remain', () => {
+    const paths = Object.values(TELNA_ENDPOINTS)
+    for (const p of ['/v2.1/packages', '/v2.1/package-templates', '/v2.1/sim-registries', '/v2.1/euicc-profiles', '/v2.1/open-data-sessions']) {
+      expect(paths.some(x => x === p), `unversioned/bare path ${p} must not exist`).toBe(false)
     }
   })
 
@@ -30,29 +37,40 @@ describe('TELNA endpoint map — Phase 1F reconciliation invariants', () => {
     }
   })
 
-  it('documented PCR/Inventory/RSP/Session families are correct', () => {
-    expect(telnaEndpointAuthFamily('packages')).toBe('PCR') // /pcr/packages
-    expect(telnaEndpointAuthFamily('package')).toBe('PCR') // /pcr/packages/{id}
+  it('documented V2.1 module paths are exact', () => {
+    expect(TELNA_ENDPOINTS.packages).toBe('/v2.1/pcr/packages')
+    expect(TELNA_ENDPOINTS.package).toBe('/v2.1/pcr/packages/{package_id}')
+    expect(TELNA_ENDPOINTS.packageTemplates).toBe('/v2.1/pcr/package-templates')
+    expect(TELNA_ENDPOINTS.packageTemplate).toBe('/v2.1/pcr/package-templates/{package_template_id}')
+    expect(TELNA_ENDPOINTS.simRegistries).toBe('/v2.1/inventory/sim-registries')
+    expect(TELNA_ENDPOINTS.simRegistry).toBe('/v2.1/inventory/sim-registries/{iccid}')
+    expect(TELNA_ENDPOINTS.euiccProfile).toBe('/v2.1/esim-rsp/euicc-profiles/{iccid}')
+    expect(TELNA_ENDPOINTS.openDataSessions).toBe('/v2.1/session-management/open-data-sessions')
+    expect(TELNA_ENDPOINTS.countries).toBe('/v2.1/core/countries')
+  })
+
+  it('documented families are correct', () => {
+    expect(telnaEndpointAuthFamily('packages')).toBe('PCR')
+    expect(telnaEndpointAuthFamily('package')).toBe('PCR')
     expect(telnaEndpointAuthFamily('packageTemplates')).toBe('PCR')
     expect(telnaEndpointAuthFamily('packageTemplate')).toBe('PCR')
-    expect(telnaEndpointAuthFamily('simRegistries')).toBe('INVENTORY') // /inventory/sim-registries
+    expect(telnaEndpointAuthFamily('simRegistries')).toBe('INVENTORY')
     expect(telnaEndpointAuthFamily('simRegistry')).toBe('INVENTORY')
-    expect(telnaEndpointAuthFamily('euiccProfile')).toBe('ESIM_RSP') // /euicc-profiles/{iccid}
-    expect(telnaEndpointAuthFamily('openDataSessions')).toBe('SESSION') // /open-data-sessions
+    expect(telnaEndpointAuthFamily('euiccProfile')).toBe('ESIM_RSP')
+    expect(telnaEndpointAuthFamily('openDataSessions')).toBe('SESSION')
     expect(telnaEndpointAuthFamily('countries')).toBe('CORE')
   })
 
-  it('every currently-declared endpoint is proven (no UNVERIFIED runtime-blocked endpoint)', () => {
+  it('every currently-declared endpoint is proven', () => {
     const keys = Object.keys(TELNA_ENDPOINTS) as TelnaEndpoint[]
     for (const key of keys) {
       expect(isTelnaEndpointProven(key), `endpoint ${key} must be proven`).toBe(true)
     }
   })
 
-  it('future endpoints added to the map require an auth family (Record totality is enforced by the type layer)', () => {
+  it('future endpoints added to the map require an auth family (Record totality)', () => {
     // The map is typed `Record<TelnaEndpoint, TelnaAuthFamily>`, so adding a key
-    // to TELNA_ENDPOINTS without a family fails to compile. This test documents
-    // the invariant and the canonical purchase path.
-    expect(TELNA_ENDPOINTS.packages).toBe('/pcr/packages')
+    // to TELNA_ENDPOINTS without a family fails to compile.
+    expect(TELNA_ENDPOINTS.packages).toBe('/v2.1/pcr/packages')
   })
 })

@@ -1,54 +1,61 @@
 export const TELNA_ENDPOINTS = {
-  countries: '/core/countries',
-  company: '/core/companies/{company_id}',
-  companies: '/core/companies',
-  inventories: '/inventory/inventories',
-  inventory: '/inventory/inventories/{inventory_id}',
-  groups: '/inventory/groups',
-  group: '/inventory/groups/{group_id}',
-  packageTemplates: '/pcr/package-templates',
-  packageTemplate: '/pcr/package-templates/{package_template_id}',
-  packages: '/pcr/packages',
-  package: '/pcr/packages/{package_id}',
-  simRegistries: '/inventory/sim-registries',
-  simRegistry: '/inventory/sim-registries/{iccid}',
-  simPCRProfiles: '/pcr/sim-pcr-profiles',
-  simPCRProfile: '/pcr/sim-pcr-profiles/{iccid}',
-  simProfiles: '/pcr/sim-pcr-profiles',
-  wallet: '/pcr/wallets/{wallet_id}',
-  wallets: '/pcr/wallets',
-  trafficPolicies: '/pcr/traffic-policies',
-  trafficPolicy: '/pcr/traffic-policies/{traffic_policy_id}',
-  simUsage: '/usage/{iccid}',
-  simSessions: '/usage/sessions/{iccid}',
-  simBalances: '/usage/balances/{iccid}',
-  consumption: '/usage/consumption',
-
-  // ── Phase 1F: documented eSIM RSP + session surfaces (Bearer).
-  // Distinct, documented legacy surfaces (NOT under /pcr or /inventory):
-  //   eUICC profile     = eSIM RSP surface  (Bearer)
-  //   open-data-sessions = session surface   (Bearer)
-  euiccProfile: '/euicc-profiles/{iccid}',                 // GET (installation data) — RSP, Bearer
-  openDataSessions: '/open-data-sessions',                 // GET ?iccid= — SESSION, Bearer
+  // ── Telna Connect V2.1 (authoritative vendor collection "V2.1 APIs - One Global") ──
+  // Every path carries the /v2.1 module prefix. No unversioned paths remain.
+  // CORE
+  countries: '/v2.1/core/countries',
+  company: '/v2.1/core/companies/{company_id}',
+  companies: '/v2.1/core/companies',
+  // INVENTORY
+  inventories: '/v2.1/inventory/inventories',
+  inventory: '/v2.1/inventory/inventories/{inventory_id}',
+  groups: '/v2.1/inventory/groups',
+  group: '/v2.1/inventory/groups/{group_id}',
+  simRegistries: '/v2.1/inventory/sim-registries',
+  simRegistry: '/v2.1/inventory/sim-registries/{iccid}',
+  // PCR
+  packageTemplates: '/v2.1/pcr/package-templates',
+  packageTemplate: '/v2.1/pcr/package-templates/{package_template_id}',
+  packages: '/v2.1/pcr/packages',
+  package: '/v2.1/pcr/packages/{package_id}',
+  simPCRProfiles: '/v2.1/pcr/sim-pcr-profiles',
+  simPCRProfile: '/v2.1/pcr/sim-pcr-profiles/{iccid}',
+  simProfiles: '/v2.1/pcr/sim-pcr-profiles',
+  wallet: '/v2.1/pcr/wallets/{wallet_id}',
+  wallets: '/v2.1/pcr/wallets',
+  trafficPolicies: '/v2.1/pcr/traffic-policies',
+  trafficPolicy: '/v2.1/pcr/traffic-policies/{traffic_policy_id}',
+  // USAGE (legacy read helpers; usage is primarily served via /v2.1/pcr/packages)
+  simUsage: '/v2.1/usage/{iccid}',
+  simSessions: '/v2.1/usage/sessions/{iccid}',
+  simBalances: '/v2.1/usage/balances/{iccid}',
+  consumption: '/v2.1/usage/consumption',
+  // ESIM RSP (eUICC profile)
+  euiccProfile: '/v2.1/esim-rsp/euicc-profiles/{iccid}', // GET installation data
+  // SESSION management (paid add-on — not enabled on the standard account)
+  openDataSessions: '/v2.1/session-management/open-data-sessions', // GET ?iccid= — add-on, disabled
 } as const
 
 export type TelnaEndpoint = keyof typeof TELNA_ENDPOINTS
 
 /**
- * Telna auth families, derived from the DOCUMENTED path prefixes:
- *   /core/*      → CORE
- *   /pcr/*       → PCR (ApiKey + Basic)
- *   /inventory/* → INVENTORY (Bearer)
- *   /usage/*     → USAGE (Bearer in practice)
- * plus the documented eSIM RSP (/euicc-profiles/{iccid}) = ESIM_RSP (Bearer) and
- * session management (/open-data-sessions) = SESSION (Bearer).
+ * Telna Connect V2.1 auth families, from the authoritative vendor collection.
  *
- * ENDPOINTS ARE CLASSIFIED ONLY FROM DOCUMENTED PATHS. The bare Phase-1D
- * duplicate keys (/packages, /sim-registries, /package-templates) were removed
- * in favour of the canonical documented keys (PCR /pcr/*, INVENTORY
- * /inventory/*). The eSIM RSP and session surfaces are exactly
- * /euicc-profiles/{iccid} and /open-data-sessions respectively (Bearer), now
- * marked proven. No endpoint keeps a bare, unproven path with a concrete family.
+ * COLLECTION-LEVEL AUTH (default for every request):
+ *   Authorization: <API_ACCESS_KEY_ID>     (raw API key — NO "Bearer " prefix)
+ *
+ * PCR package-template/package requests additionally carry:
+ *   ApiKey: <api_key>                      (explicit header shown in the collection)
+ *
+ * NO HTTP Basic and NO Bearer prefix are used anywhere. PCR does not use a
+ * loginId/accessToken pair. Core reads are proven and included.
+ *
+ * Endpoints are classified by documented V2.1 module prefix:
+ *   /v2.1/core/*      → CORE      (Authorization API key)
+ *   /v2.1/pcr/*       → PCR       (Authorization API key + ApiKey)
+ *   /v2.1/inventory/* → INVENTORY (Authorization API key)
+ *   /v2.1/esim-rsp/*  → ESIM_RSP  (Authorization API key)
+ *   /v2.1/session-management/* → SESSION (Authorization API key; paid add-on)
+ *   /v2.1/usage/*     → USAGE     (Authorization API key)
  */
 export type TelnaAuthFamily =
   | 'PCR'
@@ -60,18 +67,18 @@ export type TelnaAuthFamily =
   | 'UNVERIFIED'
 
 const TELNA_ENDPOINT_AUTH: Record<TelnaEndpoint, TelnaAuthFamily> = {
-  // /core/*
+  // /v2.1/core/*
   countries: 'CORE',
   company: 'CORE',
   companies: 'CORE',
-  // /inventory/*
+  // /v2.1/inventory/*
   inventories: 'INVENTORY',
   inventory: 'INVENTORY',
   groups: 'INVENTORY',
   group: 'INVENTORY',
   simRegistries: 'INVENTORY',
   simRegistry: 'INVENTORY',
-  // /pcr/*
+  // /v2.1/pcr/*
   packageTemplates: 'PCR',
   packageTemplate: 'PCR',
   packages: 'PCR',
@@ -83,12 +90,12 @@ const TELNA_ENDPOINT_AUTH: Record<TelnaEndpoint, TelnaAuthFamily> = {
   wallets: 'PCR',
   trafficPolicies: 'PCR',
   trafficPolicy: 'PCR',
-  // /usage/*
+  // /v2.1/usage/*
   simUsage: 'USAGE',
   simSessions: 'USAGE',
   simBalances: 'USAGE',
   consumption: 'USAGE',
-  // Documented eSIM RSP + session surfaces (Bearer), proven.
+  // ESIM RSP + SESSION (Authorization API key; session is a paid add-on).
   euiccProfile: 'ESIM_RSP',
   openDataSessions: 'SESSION',
 }

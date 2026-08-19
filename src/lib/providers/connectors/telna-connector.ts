@@ -78,38 +78,34 @@ export class TelnaConnector implements IProviderConnector {
     keyId: string
     apiVersion: string
     pcrApiKey: string | null
-    pcrLoginId: string | null
-    pcrAccessToken: string | null
   } | null> {
     const provider = await prisma.provider.findUnique({ where: { id: this.providerId } })
     if (!provider) return null
 
     const config = (provider.config as Record<string, unknown>) || {}
+    // provider.apiToken = Telna API_ACCESS_KEY_ID, sent raw in the Authorization
+    // header (V2.1 collection-level auth): `Authorization: <API_ACCESS_KEY_ID>`.
     const keyId = decryptToken(provider.apiToken)
     if (!keyId) return null
 
-    // PCR credentials are stored in provider.config ONLY as encryptToken()
-    // ciphertext — NEVER plaintext. Read + decrypt each; missing or failed
-    // decryption yields null (never a plaintext fallback).
+    // PCR may require a SECOND value as the explicit `ApiKey:` header (shown in
+    // the collection's PCR requests). Stored in provider.config ONLY as
+    // encryptToken() ciphertext — NEVER plaintext. Missing/decrypt-failure → null.
     const pcrApiKey = decryptToken(typeof config.telnaPcrApiKeyEncrypted === 'string' ? config.telnaPcrApiKeyEncrypted : null)
-    const pcrLoginId = decryptToken(typeof config.telnaPcrLoginIdEncrypted === 'string' ? config.telnaPcrLoginIdEncrypted : null)
-    const pcrAccessToken = decryptToken(typeof config.telnaPcrAccessTokenEncrypted === 'string' ? config.telnaPcrAccessTokenEncrypted : null)
 
     return {
       apiBaseUrl: (provider.apiBaseUrl || 'https://developer-api.telna.com').replace(/\/+$/, ''),
       keyId,
       apiVersion: provider.apiVersion || '2.1',
       pcrApiKey,
-      pcrLoginId,
-      pcrAccessToken,
     }
   }
 
   /**
-   * Detect an obvious TELNA vs TELNA_FLEX host mismatch. The legacy Telna
+   * Detect an obvious TELNA vs TELNA_FLEX host mismatch. The Telna Connect
    * connector's documented host is developer-api.telna.com; TELNA_FLEX owns
    * ppo-api.telna.com /v1/* and is a separate connector. Returning true here
-   * blocks TELNA mutations (and warns) so the legacy connector never silently
+   * blocks TELNA mutations (and warns) so the Connect connector never silently
    * operates against the Flex host.
    */
   private isFlexHost(apiBaseUrl: string): boolean {
@@ -117,38 +113,41 @@ export class TelnaConnector implements IProviderConnector {
     return host.includes('ppo-api.telna.com') || host.includes('ppo-api')
   }
 
-  /** Build the per-family Authorization headers for a documented endpoint. */
-  private buildAuthHeaders(opts: { endpoint: TelnaEndpoint; cfg: { apiBaseUrl: string; keyId: string; pcrApiKey: string | null; pcrLoginId: string | null; pcrAccessToken: string | null } }): {
+  /**
+   * Build the V2.1 per-family auth headers.
+   *
+   * Collection-level auth (every request):
+   *   Authorization: <API_ACCESS_KEY_ID>     (raw — NO "Bearer " prefix)
+   *
+   * PCR additionally requires:
+   *   ApiKey: <api_key>
+   *
+   * NO HTTP Basic anywhere. No loginId/accessToken pair.
+   */
+  private buildAuthHeaders(opts: { endpoint: TelnaEndpoint; cfg: { keyId: string; pcrApiKey: string | null } }): {
     headers: Record<string, string>
     error?: { code: string; message: string }
   } {
     const family: TelnaAuthFamily = telnaEndpointAuthFamily(opts.endpoint)
     const { cfg } = opts
+    if (!cfg.keyId) {
+      return { headers: {}, error: { code: 'AUTH_INCOMPLETE', message: 'Telna API access key (Authorization) not configured for this operation' } }
+    }
 
-    // PCR: ApiKey + Basic(loginId:accessToken). Never Bearer.
+    const base: Record<string, string> = { 'Authorization': cfg.keyId }
+
+    // PCR: collection Authorization API key + explicit ApiKey header.
     if (family === 'PCR') {
-      if (!cfg.pcrApiKey || !cfg.pcrLoginId || !cfg.pcrAccessToken) {
-        return { headers: {}, error: { code: 'AUTH_INCOMPLETE', message: 'PCR credentials (ApiKey + loginId + accessToken) are not fully configured for this TELNA operation' } }
+      if (!cfg.pcrApiKey) {
+        return { headers: {}, error: { code: 'AUTH_INCOMPLETE', message: 'PCR ApiKey header credential is not configured for this TELNA PCR operation' } }
       }
-      const basic = 'Basic ' + Buffer.from(`${cfg.pcrLoginId}:${cfg.pcrAccessToken}`).toString('base64')
-      return { headers: { 'ApiKey': cfg.pcrApiKey, 'Authorization': basic } }
+      base['ApiKey'] = cfg.pcrApiKey
+      return { headers: base }
     }
 
-    // Bearer-only families: Inventory, eSIM RSP, Session (and USAGE by Bearer).
-    if (family === 'INVENTORY' || family === 'ESIM_RSP' || family === 'SESSION' || family === 'USAGE') {
-      if (!cfg.keyId) {
-        return { headers: {}, error: { code: 'AUTH_INCOMPLETE', message: 'Bearer token not configured for this TELNA operation' } }
-      }
-      return { headers: { 'Authorization': `Bearer ${cfg.keyId}` } }
-    }
-
-    // CORE: documented legacy auth is unproven for reads — do not invent a scheme.
-    if (family === 'CORE') {
-      return { headers: {}, error: { code: 'NOT_CONFIGURED', message: 'TELNA /core endpoint auth is not documented as Bearer; supply a documented scheme' } }
-    }
-
-    // UNVERIFIED bare Phase-1D paths: never attempt.
-    return { headers: {}, error: { code: 'UNVERIFIED_ENDPOINT', message: 'TELNA endpoint path is not proven by documentation; refusing to call it' } }
+    // All other families (INVENTORY / ESIM_RSP / SESSION / USAGE / CORE) use only
+    // the collection-level Authorization API key.
+    return { headers: base }
   }
 
   private async request(opts: TelnaRequestOptions): Promise<TelnaRequestResult> {
@@ -159,7 +158,7 @@ export class TelnaConnector implements IProviderConnector {
       return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not found or KeyID not configured' }, requestId }
     }
 
-    const { apiBaseUrl, keyId, pcrApiKey, pcrLoginId, pcrAccessToken } = providerConfig
+    const { apiBaseUrl, keyId, pcrApiKey } = providerConfig
     const method = opts.method || 'GET'
     // Canonical, single-source path/URL composition (shared with Discovery).
     const path = telnaEndpointPath(opts.endpoint)
@@ -172,8 +171,7 @@ export class TelnaConnector implements IProviderConnector {
       return { success: false, error: { code: 'HOST_MISMATCH', message: 'Configured Telna base URL is the TELNA_FLEX host; use the developer-api.telna.com surface or the TELNA_FLEX connector' }, latencyMs: 0, requestId }
     }
 
-    // UNVERIFIED bare Phase-1D endpoints are never called — no auth family is
-    // proven for them, so they must not be dispatched.
+    // UNVERIFIED endpoints are never called — no auth family is proven for them.
     if (!isTelnaEndpointProven(opts.endpoint)) {
       return { success: false, error: { code: 'UNVERIFIED_ENDPOINT', message: 'TELNA endpoint path is not proven by documentation; refusing to call it' }, latencyMs: 0, requestId }
     }
@@ -192,8 +190,8 @@ export class TelnaConnector implements IProviderConnector {
       if (qs) url += `?${qs}`
     }
 
-    // Per-family auth (PCR → ApiKey + Basic; Inventory/eSIM/Session/USage → Bearer).
-    const auth = this.buildAuthHeaders({ endpoint: opts.endpoint, cfg: { apiBaseUrl, keyId, pcrApiKey, pcrLoginId, pcrAccessToken } })
+    // V2.1 per-family auth (collection Authorization API key; PCR also ApiKey).
+    const auth = this.buildAuthHeaders({ endpoint: opts.endpoint, cfg: { keyId, pcrApiKey } })
     if (auth.error) {
       return { success: false, error: auth.error, latencyMs: 0, requestId }
     }
@@ -327,11 +325,11 @@ export class TelnaConnector implements IProviderConnector {
     }
 
     // PCR auth readiness is checked BEFORE any ICCID listing, claim, or mutation.
-    // Telna package creation (POST /packages) is a PCR operation requiring the
-    // documented ApiKey + Basic(loginId:accessToken). Without all three, no
-    // claim and no POST /packages may occur.
-    if (!config.pcrApiKey || !config.pcrLoginId || !config.pcrAccessToken) {
-      return { success: false, error: { code: 'AUTH_INCOMPLETE', message: 'PCR credentials (ApiKey + loginId + accessToken) are not fully configured; Telna purchase is disabled' } }
+    // Telna package creation (POST /v2.1/pcr/packages) is a PCR operation
+    // requiring the collection Authorization API key + the explicit ApiKey
+    // header. Without both, no claim and no POST may occur.
+    if (!config.pcrApiKey) {
+      return { success: false, error: { code: 'AUTH_INCOMPLETE', message: 'PCR ApiKey header credential is not configured; Telna purchase is disabled' } }
     }
 
     // The documented PCR package surface (/pcr/packages) is proven; proceed only
