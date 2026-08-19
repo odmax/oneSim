@@ -33,7 +33,7 @@ vi.mock('@/lib/services/esims/esim-inventory-claim', () => ({
 
 import type { Provider } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { TelnaConnector, normalizeTelnaState } from './telna-connector'
+import { TelnaConnector, normalizeTelnaState, normalizeTelnaTimeAllowance } from './telna-connector'
 import { resolveConnectorType, createConnector } from './connector-factory'
 import { encryptToken, decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
@@ -110,25 +110,25 @@ const baseMock: Omit<Provider, 'id' | 'createdAt' | 'updatedAt'> = {
 }
 
 const mockProvider = (overrides: Partial<Provider> & { pcrAuth?: 'full' | 'missing' } = {}): Provider => {
-  const { pcrAuth = 'full', ...rest } = overrides
-  // PCR credentials are stored in provider.config ONLY as encryptToken()
-  // ciphertext — matching the production connector's decrypted-at-load contract.
+  const { pcrAuth = 'full', config: overrideConfig, ...rest } = overrides
   const pcrConfig = pcrAuth === 'full'
     ? {
         telnaPcrApiKeyEncrypted: encryptToken(TEST_PCR_API_KEY),
-        telnaPcrLoginIdEncrypted: encryptToken(TEST_PCR_LOGIN_ID),
-        telnaPcrAccessTokenEncrypted: encryptToken(TEST_PCR_ACCESS_TOKEN),
       }
-    : {
-        // Intentionally absent — used to prove AUTH_INCOMPLETE gates.
-      }
+    : {}
   return {
     id: 'telna-provider-1',
     createdAt: new Date(),
     updatedAt: new Date(),
     ...baseMock,
-    config: { ...(baseMock.config as any), ...pcrConfig },
     ...rest,
+    // Merge: base config → default encrypted PCR auth → test-specific override,
+    // so `config: { walletId }` keeps telnaPcrApiKeyEncrypted unless pcrAuth:missing.
+    config: {
+      ...(baseMock.config as Record<string, unknown>),
+      ...pcrConfig,
+      ...(overrideConfig as Record<string, unknown> | undefined),
+    },
   }
 }
 
@@ -2889,5 +2889,256 @@ describe('Telna Connect V2.1 � live named-envelope + state normalization', () 
       expect(String(args)).not.toContain('8944501234567890123')
     }
     logSpy.mockRestore()
+  })
+})
+
+describe('Telna Connect V2.1 � plan sync + vendor balance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+    vi.mocked(prisma.eSIM.findMany).mockResolvedValue([])
+  })
+
+  function json(data: unknown, status = 200) {
+    return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
+  }
+
+  it('plan sync: live { total, offset, count, package_templates } envelope → ConnectorPlan rows', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({
+      total: 2, offset: 0, count: 2,
+      package_templates: [
+        { id: 101, name: 'Africa 10GB', status: 'Active', data_usage_allowance: 10737418240, time_allowance: 2592000, supported_countries: ['ZAF'] },
+        { id: 102, name: 'Global 5GB', status: 'De-activated', data_usage_allowance: 5368709120, time_allowance: 2592000 },
+      ],
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    expect(r.success).toBe(true)
+    const plans = r.data || []
+    // Active and deactivated templates BOTH return so canonical sync can update
+    // the same ProviderPackage row. providerPlanId = template id.
+    expect(plans).toHaveLength(2)
+    const active = plans.find(p => p.id === '101')!
+    const deactivated = plans.find(p => p.id === '102')!
+    expect(active.id).toBe('101')
+    expect(active.data_gb).toBe(10)
+    expect(active.validity_days).toBe(30)
+    expect(active.sku).toBe('101')
+    expect(active.isAvailable).toBe(true)
+    expect(active.currency).toBeUndefined() // not provider-supplied
+    expect(deactivated.isAvailable).toBe(false)
+    expect(deactivated.raw_data?.providerStatus).toBe('DE_ACTIVATED')
+    // price_usd is the zero sentinel (not a real provider cost).
+    expect(active.price_usd).toBe(0)
+  })
+
+  it('plan sync: no-cost template is NOT fabricating a genuine cost', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({
+      total: 1, offset: 0, count: 1,
+      package_templates: [{ id: 3, name: 'NoCost', status: 'Active', data_usage_allowance: 1073741824, time_allowance: { duration: 1, unit: 'DAY' } }],
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    const plan = r.data![0]
+    expect(plan.price_usd).toBe(0)
+    // No currency field → canonical sync records COST_UNAVAILABLE, not USD-supplied.
+    expect(plan.currency).toBeUndefined()
+    expect(plan.isAvailable).toBe(true)
+  })
+
+  it('plan sync: bytes ? GB and time_allowance(seconds) ? days', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({
+      total: 1, offset: 0, count: 1,
+      package_templates: [{ id: 7, name: 'X', status: 'Active', data_usage_allowance: 32212254720, time_allowance: 86400 }],
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    expect(r.data?.[0].data_gb).toBe(30)
+    expect(r.data?.[0].validity_days).toBe(1)
+  })
+
+  it('plan sync: paginates multiple Telna pages without duplication', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ total: 150, offset: 0, count: 100, package_templates: Array.from({ length: 100 }, (_, i) => ({ id: 1000 + i, name: `P${i}`, status: 'Active', data_usage_allowance: 1073741824, time_allowance: 2592000 })) }))
+      .mockResolvedValueOnce(json({ total: 150, offset: 100, count: 50, package_templates: Array.from({ length: 50 }, (_, i) => ({ id: 1100 + i, name: `P${100 + i}`, status: 'Active', data_usage_allowance: 1073741824, time_allowance: 2592000 })) }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    expect(r.data?.length).toBe(150)
+    const ids = new Set(r.data?.map(p => p.id))
+    expect(ids.size).toBe(150)
+  })
+
+  it('plan sync: De-activated template returned with isAvailable:false (same-id reconciliation signal)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({
+      total: 2, offset: 0, count: 2,
+      package_templates: [
+        { id: 1, name: 'A', status: 'De-activated', data_usage_allowance: 5368709120 },
+        { id: 2, name: 'B', status: 'Active', data_usage_allowance: 5368709120 },
+      ],
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    expect(r.data?.map(p => `${p.id}:${p.isAvailable}`)).toEqual(['1:false', '2:true'])
+  })
+
+  it('balance: configured walletId maps balance + currency', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider({ config: { walletId: 42 } }) as any)
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { id: 42, name: 'Operating', currency: 'USD', balance: 123.45, status: 'ACTIVE', companyId: 1 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.getBalance()
+    expect(r.success).toBe(true)
+    expect(r.data?.balance).toBe(123.45)
+    expect(r.data?.currency).toBe('USD')
+    expect(r.data?.accountId).toBe('42')
+  })
+
+  it('balance: single auto-discovered wallet works when walletId unset', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider({ config: {} }) as any)
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { total: 1, offset: 0, count: 1, wallets: [{ id: 9, name: 'Default', currency: 'USD', balance: 50, status: 'ACTIVE', companyId: 1 }] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.getBalance()
+    expect(r.success).toBe(true)
+    expect(r.data?.balance).toBe(50)
+  })
+
+  it('balance: multiple wallets without walletId is AMBIGUOUS (never fabricate)', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider({ config: {} }) as any)
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { total: 2, offset: 0, count: 2, wallets: [
+      { id: 1, name: 'A', currency: 'USD', balance: 10, status: 'ACTIVE', companyId: 1 },
+      { id: 2, name: 'B', currency: 'USD', balance: 20, status: 'ACTIVE', companyId: 1 },
+    ] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.getBalance()
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('BALANCE_AMBIGUOUS')
+  })
+
+  it('balance: no wallets without walletId ? NOT_CONFIGURED (no fake zero)', async () => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider({ config: {} }) as any)
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { total: 0, offset: 0, count: 0, wallets: [] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.getBalance()
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('NOT_CONFIGURED')
+  })
+
+  it('balance: no secrets logged', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider({ config: { walletId: 1 } }) as any)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(json({ data: { id: 1, name: 'W', currency: 'USD', balance: 5, status: 'ACTIVE', companyId: 1 } }))
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    await c.getBalance()
+    for (const [args] of logSpy.mock.calls as Array<[string]>) {
+      expect(String(args)).not.toContain('test-key-id')
+    }
+    logSpy.mockRestore()
+  })
+
+  it('fixture A: config:{walletId} keeps PCR ApiKey encrypted present', () => {
+    const fp = mockProvider({ config: { walletId: 42 } })
+    const cfg = fp.config as Record<string, unknown>
+    expect(cfg.walletId).toBe(42)
+    expect(cfg.telnaPcrApiKeyEncrypted).toBeTruthy()
+    expect(decryptToken(cfg.telnaPcrApiKeyEncrypted as string)).toBe(TEST_PCR_API_KEY)
+  })
+
+  it('fixture B: pcrAuth:missing with config:{walletId} keeps walletId but drops PCR ApiKey', () => {
+    const fp = mockProvider({ pcrAuth: 'missing', config: { walletId: 42 } })
+    const cfg = fp.config as Record<string, unknown>
+    expect(cfg.walletId).toBe(42)
+    expect(cfg.telnaPcrApiKeyEncrypted).toBeUndefined()
+  })
+})
+
+describe('Telna Plan Sync � final contract hardening (time_allowance object + bytes)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+    vi.mocked(prisma.eSIM.findMany).mockResolvedValue([])
+  })
+
+  function json(data: unknown, status = 200) {
+    return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
+  }
+
+  it('normalizeTelnaTimeAllowance: exact live {duration:1, unit:CALENDAR_MONTH} -> 30 days', () => {
+    expect(normalizeTelnaTimeAllowance({ time_allowance: { duration: 1, unit: 'CALENDAR_MONTH' } })).toMatchObject({ validityDays: 30, validitySource: 'time_allowance:CALENDAR_MONTH' })
+    expect(normalizeTelnaTimeAllowance({ time_allowance: { duration: 1, unit: 'MONTH' } }).validityDays).toBe(30)
+  })
+
+  it('normalizeTelnaTimeAllowance: DAY / WEEK / YEAR units', () => {
+    expect(normalizeTelnaTimeAllowance({ time_allowance: { duration: 30, unit: 'DAY' } }).validityDays).toBe(30)
+    expect(normalizeTelnaTimeAllowance({ time_allowance: { duration: 2, unit: 'WEEK' } }).validityDays).toBe(14)
+    expect(normalizeTelnaTimeAllowance({ time_allowance: { duration: 1, unit: 'YEAR' } }).validityDays).toBe(365)
+  })
+
+  it('normalizeTelnaTimeAllowance: malformed object uses fallback + diagnostic', () => {
+    expect(normalizeTelnaTimeAllowance({ time_allowance: { duration: 0, unit: 'DAY' } }).validitySource).toContain('malformed')
+    expect(normalizeTelnaTimeAllowance({ time_allowance: {} as any }).validitySource).toContain('malformed')
+    // unsupported unit
+    expect(normalizeTelnaTimeAllowance({ time_allowance: { duration: 1, unit: 'FORTNIGHT' } as any }).validitySource).toContain('unsupported-unit')
+  })
+
+  it('plan sync: exact live template maps time_allowance object + bytes to canonical plan', async () => {
+    const live = { id: 1264275, name: 'EU_1G_1M', status: 'Active', data_usage_allowance: 1048576000, activation_type: 'MANUAL', time_allowance: { duration: 1, unit: 'CALENDAR_MONTH' }, supported_countries: ['CHE', 'FRA'] }
+    const fetchSpy = vi.fn().mockResolvedValue(json({ total: 1, offset: 0, count: 1, package_templates: [live] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    expect(r.data).toHaveLength(1)
+    const p = r.data![0]
+    expect(p.id).toBe('1264275')
+    expect(p.data_gb).toBe(1)
+    expect(p.validity_days).toBe(30)
+    expect(p.raw_data?._validitySource).toContain('CALENDAR_MONTH')
+  })
+
+  it('plan sync: 1048576000 bytes -> 1 GB (retail-normalized, not fractional GiB)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ total: 1, offset: 0, count: 1, package_templates: [{ id: 1, name: 'X', status: 'Active', data_usage_allowance: 1048576000, time_allowance: { duration: 1, unit: 'CALENDAR_MONTH' } }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    expect(r.data?.[0].data_gb).toBe(1)
+  })
+
+  it('plan sync: pagination final short page advances offset by returned count and stops', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ total: 3, offset: 0, count: 2, package_templates: Array.from({ length: 2 }, (_, i) => ({ id: 100 + i, status: 'Active', data_usage_allowance: 1048576000, time_allowance: { duration: 1, unit: 'DAY' } })) }))
+      .mockResolvedValueOnce(json({ total: 3, offset: 2, count: 1, package_templates: [{ id: 102, status: 'Active', data_usage_allowance: 1048576000, time_allowance: { duration: 1, unit: 'DAY' } }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    expect(r.data?.length).toBe(3)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('plan sync: empty page breaks pagination (no infinite loop)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({ total: 0, offset: 0, count: 0, package_templates: [] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    expect(r.data).toHaveLength(0)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('plan sync: De-activated template returned with isAvailable:false (no row deleted)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ total: 1, offset: 0, count: 1, package_templates: [{ id: 9, name: 'X', status: 'De-activated', data_usage_allowance: 1048576000, time_allowance: { duration: 1, unit: 'DAY' } }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.syncPlans()
+    expect(r.data).toHaveLength(1)
+    expect(r.data?.[0].isAvailable).toBe(false)
+    expect(r.data?.[0].raw_data?.providerStatus).toBe('DE_ACTIVATED')
+    // Exactly one page requested; the connector never issues ProviderPackage deletes.
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 })

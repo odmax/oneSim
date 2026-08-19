@@ -17,7 +17,15 @@ export interface ConnectorPlan {
   raw_data?: any
   /** Whether the plan requires a travel date in the purchase payload. */
   requiresTravelDate?: boolean
+  /**
+   * Generic availability signal. Providers that can observe a plan/template is
+   * NOT sellable (e.g. deactivated) set this false so the canonical sync marks
+   * the persisted ProviderPackage unavailable instead of leaving it sellable.
+   * Defaults to true for connectors that do not set it (backward-compatible).
+   */
+  isAvailable?: boolean
 }
+
 
 export interface ActivateESIMParams {
   planId: string

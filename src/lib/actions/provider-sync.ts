@@ -181,7 +181,10 @@ export async function syncProviderPlans(providerId: string) {
         country: raw.country || raw.region || null,
         region: raw.region || null,
         planType: (raw.planType || raw.type || 'STANDARD') as string,
-        isAvailable: true,
+        // Availability is provider-declared (e.g. a deactivated Telna template).
+        // Defaults to true when a connector does not set it. Never set to true
+        // for a plan the provider marks unavailable.
+        isAvailable: plan.isAvailable !== false,
         providerRawData: withTravelDateMarker(raw, normalizeTravelDateRequirement(raw)),
       }
 

@@ -89,6 +89,63 @@ export function normalizeTelnaState(value: string | null | undefined): string {
   return String(value).trim().toUpperCase().replace(/[\s-]+/g, '_')
 }
 
+/**
+ * Provider-local time_allowance → validityDays.
+ *
+ * The real V2.1 template contract uses an OBJECT form:
+ *   { duration: number, unit: string }
+ * (e.g. `{ duration: 1, unit: 'CALENDAR_MONTH' }`), NOT seconds. This helper
+ * converts deterministically to whole OneSIM validity days:
+ *
+ *   SECOND/MINUTE/HOUR → duration converted to days (rounded up, min 1)
+ *   DAY / CALENDAR_DAY → duration
+ *   WEEK               → duration * 7
+ *   MONTH/CALENDAR_MONTH → duration * 30   (documented canonical approximation)
+ *   YEAR               → duration * 365
+ *
+ * A legacy numeric value is treated as SECONDS (previous behaviour) only as a
+ * compatibility fallback. Unsupported/malformed units use the explicit
+ * `fallbackDays` (default 30) but return a diagnostic `validitySource` so the
+ * caller records WHY the fallback was used — never a silent assumption.
+ */
+export function normalizeTelnaTimeAllowance(
+  raw: Record<string, unknown>,
+  key: 'time_allowance' | 'activation_time_allowance' = 'time_allowance',
+  fallbackDays = 30,
+): { validityDays: number; validitySource: string } {
+  const value = raw[key]
+  if (value == null) return { validityDays: fallbackDays, validitySource: 'missing' }
+
+  // Object form { duration, unit }
+  if (typeof value === 'object') {
+    const v = value as { duration?: number; unit?: string }
+    const duration = Number(v.duration)
+    const unit = String(v.unit || '').trim().toUpperCase()
+    if (!Number.isFinite(duration) || duration <= 0 || !unit) {
+      return { validityDays: fallbackDays, validitySource: `malformed:${key}` }
+    }
+    switch (unit) {
+      case 'SECOND': return { validityDays: Math.max(1, Math.ceil(duration / 86400)), validitySource: `${key}:${unit}` }
+      case 'MINUTE': return { validityDays: Math.max(1, Math.ceil(duration / 1440)), validitySource: `${key}:${unit}` }
+      case 'HOUR': return { validityDays: Math.max(1, Math.ceil(duration / 24)), validitySource: `${key}:${unit}` }
+      case 'DAY':
+      case 'CALENDAR_DAY': return { validityDays: Math.max(1, Math.round(duration)), validitySource: `${key}:${unit}` }
+      case 'WEEK': return { validityDays: Math.max(1, Math.round(duration * 7)), validitySource: `${key}:${unit}` }
+      case 'MONTH':
+      case 'CALENDAR_MONTH': return { validityDays: Math.max(1, Math.round(duration * 30)), validitySource: `${key}:${unit}` }
+      case 'YEAR': return { validityDays: Math.max(1, Math.round(duration * 365)), validitySource: `${key}:${unit}` }
+      default: return { validityDays: fallbackDays, validitySource: `unsupported-unit:${unit}` }
+    }
+  }
+
+  // Legacy numeric: treat as SECONDS (compat).
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return { validityDays: Math.max(1, Math.round(seconds / 86400)), validitySource: `${key}:seconds` }
+  }
+  return { validityDays: fallbackDays, validitySource: 'malformed' }
+}
+
 export class TelnaConnector implements IProviderConnector {
   readonly providerId: string
   readonly name: string
@@ -347,8 +404,75 @@ export class TelnaConnector implements IProviderConnector {
     return false
   }
 
+  /**
+   * Plan sync: consume the live V2.1 PCR package-templates surface
+   * `{ total, offset, count, package_templates:[...] }` into the canonical
+   * `ConnectorPlan[]` used by the shared `syncProviderPlans` pipeline.
+   *
+   * - Paginates ALL pages (stops when offset+count >= total or an empty page).
+   * - Normalizes only active/sellable templates into ConnectorPlan rows.
+   * - providerPlanId (plan.id) remains the Telna template id. No local ids.
+   * - data_usage_allowance (bytes) → data_gb (GB). time_allowance → validity_days.
+   */
   async syncPlans(): Promise<ConnectorResult<ConnectorPlan[]>> {
-    return { success: false, error: { code: 'NOT_IMPLEMENTED', message: 'Plan sync not implemented for Telna connector' } }
+    const plans: ConnectorPlan[] = []
+    const perPage = 100
+    let offset = 0
+
+    for (let guard = 0; guard < 50; guard++) {
+      const page = await this.listPackageTemplates(undefined, perPage, offset)
+      if (!page.success || !page.data) return { success: false, error: page.error || { code: 'SYNC_FAILED', message: 'Failed to list package templates' } }
+      const items = page.data.items || []
+      const total = page.data.total || items.length
+
+      for (const t of items) {
+        const templateId = t?.id
+        if (templateId == null) continue
+        // Return BOTH active and deactivated templates so the canonical sync can
+        // persist/update the same ProviderPackage row safely. Availability is
+        // derived from the live template status; canonical sync marks a
+        // deactivated provider plan unavailable (never deleted).
+        const status = normalizeTelnaState(t.status)
+        const isAvailable = status === 'ACTIVE' || status === ''
+        plans.push(this.normalizeTelnaTemplateToPlan(t, isAvailable, status))
+      }
+
+      if (items.length === 0) break
+      const loaded = offset + items.length
+      if (total > 0 && loaded >= total) break
+      offset += items.length
+    }
+
+    return { success: true, data: plans }
+  }
+
+  /**
+   * Map a raw Telna V2.1 package-template into the canonical ConnectorPlan.
+   * data_usage_allowance is BYTES → GB (round up to at least 1). time_allowance
+   * is seconds → whole days (min 1). Identifiers are provider-owned only.
+   */
+  private normalizeTelnaTemplateToPlan(t: TelnaPackageTemplate, isAvailable = true, providerStatus = 'ACTIVE'): ConnectorPlan {
+    const templateId = String(t.id)
+    const raw = (t as unknown as Record<string, unknown>)
+    const allowanceBytes = Number(raw.data_usage_allowance) || 0
+    // Live Telna data_usage_allowance is BYTES. Convert to retail GB using
+    // OneSIM's integer dataGB semantics. 1048576000 bytes => 1 GB (rounded).
+    const dataGB = allowanceBytes > 0 ? Math.max(1, Math.round(allowanceBytes / (1024 * 1024 * 1024))) : 1
+    const { validityDays, validitySource } = normalizeTelnaTimeAllowance(raw, 'time_allowance', 30)
+    return {
+      id: templateId,
+      name: String(raw.name || '') || `Telna ${dataGB}GB`,
+      data_gb: dataGB,
+      validity_days: validityDays,
+      // Telna templates do not carry provider cost/currency — never fabricate a
+      // real cost. price_usd=0 is the zero sentinel; currency is omitted so it is
+      // NOT presented as provider-supplied (canonical sync defaults to its own
+      // neutral currency and records COST_UNAVAILABLE).
+      price_usd: 0,
+      isAvailable,
+      sku: templateId,
+      raw_data: { ...t, _validitySource: validitySource, providerStatus },
+    }
   }
 
   /**
@@ -906,12 +1030,12 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'wallet', pathParams: { wallet_id: walletId } })
     const duration = Date.now() - start
-    const wallet = result.success && result.data ? (result.data as { data: TelnaWallet }).data : null
+    const wallet = result.success && result.data ? unwrapTelnaDetail(result.data, 'wallet') : null
     console.log(`[TELNA_DISCOVERY] method=getWallet walletId=${walletId} success=${result.success} status=${result.status} durationMs=${duration} requestId=${result.requestId}`)
     if (!result.success || !wallet) {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Wallet not found' } }
     }
-    return { success: true, data: { wallet } }
+    return { success: true, data: { wallet: wallet as TelnaWallet } }
   }
 
   /** Documented v2.1 read-only: GET /inventory/inventories/{inventory_id} (Endpoint Mapping #14). */
@@ -957,17 +1081,38 @@ export class TelnaConnector implements IProviderConnector {
     const provider = await prisma.provider.findUnique({ where: { id: this.providerId }, select: { config: true } })
     if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }
     const cfg = (provider.config as any) || {}
-    const walletId = cfg.walletId
-    if (walletId == null) {
-      return { success: false, error: { code: 'NOT_CONFIGURED', message: 'No walletId configured in provider config' } }
+    const configuredWalletId = cfg.walletId
+
+    // Resolve which wallet represents the usable vendor balance.
+    // 1) Explicit walletId in provider config when present.
+    // 2) Else list wallets: exactly one → use it; multiple → AMBIGUOUS (never
+    //    pick the first silently); none → NOT_CONFIGURED (no fake zero).
+    let wallet: TelnaWallet | null = null
+    if (configuredWalletId != null) {
+      const result = await this.getWallet(Number(configuredWalletId))
+      if (!result.success || !result.data?.wallet) {
+        return { success: false, error: result.error || { code: 'WALLET_FAILED', message: 'Failed to fetch wallet' } }
+      }
+      wallet = result.data.wallet
+    } else {
+      const list = await this.listWallets(100, 0)
+      if (!list.success || !list.data) {
+        return { success: false, error: list.error || { code: 'WALLET_FAILED', message: 'Failed to list Telna wallets' } }
+      }
+      const items = list.data.items || []
+      if (items.length === 0) {
+        return { success: false, error: { code: 'NOT_CONFIGURED', message: 'No Telna wallet found; configure walletId or an account wallet' } }
+      }
+      if (items.length > 1) {
+        // Multiple wallets — ambiguous without a config-selected walletId.
+        return { success: false, error: { code: 'BALANCE_AMBIGUOUS', message: 'Multiple Telna wallets; set walletId in provider config to select the operating wallet' } }
+      }
+      wallet = items[0]
     }
 
-    const result = await this.getWallet(Number(walletId))
-    if (!result.success || !result.data?.wallet) {
-      return { success: false, error: result.error || { code: 'WALLET_FAILED', message: 'Failed to fetch wallet' } }
+    if (!wallet) {
+      return { success: false, error: { code: 'WALLET_FAILED', message: 'Telna wallet could not be resolved' } }
     }
-
-    const wallet = result.data.wallet
     return {
       success: true,
       data: {
@@ -1137,12 +1282,12 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'wallets', query: { count, offset } })
     const duration = Date.now() - start
-    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaWallet>).data : []) || []
-    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaWallet>).total : 0) || 0
+    const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'wallets') : []) || []
+    const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || items.length : items.length)
     console.log(`[TELNA_WALLETS] status=${result.status} requestId=${result.requestId} itemCount=${items.length} durationMs=${duration}`)
     if (!result.success) {
       return { success: false, error: { code: result.error?.code || 'WALLET_FAILED', message: result.error?.message || 'Failed to list wallets' } }
     }
-    return { success: true, data: { items, total } }
+    return { success: true, data: { items: items as TelnaWallet[], total } }
   }
 }

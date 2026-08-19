@@ -15,6 +15,11 @@ export interface ProviderPlan {
   sku?: string
   templateVersion?: string
   raw_data?: any
+  /** Generic availability signal. Defaults to true; providers that observe a
+   *  plan is not sellable (e.g. deactivated) set false so the canonical sync
+   *  marks the persisted ProviderPackage unavailable instead of leaving it
+   *  sellable. */
+  isAvailable?: boolean
 }
 
 export interface ActivateESIMParams {
