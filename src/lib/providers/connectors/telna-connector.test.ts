@@ -33,7 +33,7 @@ vi.mock('@/lib/services/esims/esim-inventory-claim', () => ({
 
 import type { Provider } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { TelnaConnector } from './telna-connector'
+import { TelnaConnector, normalizeTelnaState } from './telna-connector'
 import { resolveConnectorType, createConnector } from './connector-factory'
 import { encryptToken, decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
@@ -2754,5 +2754,140 @@ describe('TelnaConnector per-family auth headers (documented, proven endpoints o
     expect(result.data?.sim?.iccid).toBe('89012345678901234567')
     expect(fetchSpy).toHaveBeenCalled()
     // Every canonical documented path is proven — no call resolves to UNVERIFIED_ENDPOINT.
+  })
+})
+
+describe('Telna Connect V2.1 � live named-envelope + state normalization', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+    vi.mocked(prisma.eSIM.findMany).mockResolvedValue([])
+  })
+
+  function json(data: unknown, status = 200) {
+    return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
+  }
+
+  it('1. live Core named envelope { total, offset, count, countries } parses', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ total: 2, offset: 0, count: 2, countries: [{ id: 1, name: 'ZA', iso: 'ZAF' }, { id: 2, name: 'NG', iso: 'NGA' }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.listCountries(2, 0)
+    expect(r.success).toBe(true)
+    expect(r.data?.items).toHaveLength(2)
+    expect(r.data?.total).toBe(2)
+  })
+
+  it('2. live Inventory named envelope { total, offset, count, sims } parses', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({
+      total: 4, offset: 0, count: 4,
+      sims: [
+        { iccid: '89A', status: 'PRE-SERVICE' },
+        { iccid: '89B', status: 'PRE-SERVICE' },
+        { iccid: '89C', status: 'IN-SERVICE' },
+        { iccid: '89D', status: 'PRE-SERVICE' },
+      ],
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.listV2SimRegistries()
+    expect(r.success).toBe(true)
+    expect(r.data?.items).toHaveLength(4)
+    expect(r.data?.total).toBe(4)
+  })
+
+  it('3. live PCR named envelope { total, offset, count, package_templates } parses', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({
+      total: 1, offset: 0, count: 1,
+      package_templates: [{ id: 42, name: 'Africa 10GB', status: 'ACTIVE', data_usage_allowance: 10737418240, time_allowance: 30 }],
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.listPackageTemplates()
+    expect(r.success).toBe(true)
+    expect(r.data?.items).toHaveLength(1)
+    expect(r.data?.items[0].id).toBe(42)
+  })
+
+  it('4. package named envelope { total, offset, count, packages } parses', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({
+      total: 1, offset: 0, count: 1,
+      packages: [{ id: 'pkg-1', sim: '89A', status: 'ACTIVE', data_usage_remaining: 100 }],
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.listV2Packages({ sim: '89A' })
+    expect(r.success).toBe(true)
+    expect(r.data?.items).toHaveLength(1)
+    expect(r.data?.items[0].id).toBe('pkg-1')
+  })
+
+  it('5. normalizeTelnaState: PRE-SERVICE -> PRE_SERVICE, IN-SERVICE -> IN_SERVICE', () => {
+    expect(normalizeTelnaState('PRE-SERVICE')).toBe('PRE_SERVICE')
+    expect(normalizeTelnaState('IN-SERVICE')).toBe('IN_SERVICE')
+    expect(normalizeTelnaState('De-activated')).toBe('DE_ACTIVATED')
+    expect(normalizeTelnaState('  active ')).toBe('ACTIVE')
+    expect(normalizeTelnaState(null)).toBe('')
+  })
+
+  it('6+7. PRE-SERVICE rows normalize and become eligible; IN-SERVICE stays excluded', async () => {
+    // activateESIM: template detail → SIM list (named sims envelope) → POST.
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 42, name: 'Template', data_usage_allowance: 1024 } })) // template detail
+      .mockResolvedValueOnce(json({
+        total: 4, offset: 0, count: 4,
+        sims: [
+          { iccid: 'PRE1', status: 'PRE-SERVICE' },
+          { iccid: 'PRE2', status: 'PRE_SERVICE' },
+          { iccid: 'USE1', status: 'IN-SERVICE' },
+          { iccid: 'PRE3', status: 'TERMINATED' },
+        ],
+      }))
+      .mockResolvedValueOnce(json({ data: { id: 'pkg-1', sim: 'PRE1', status: 'NOT_ACTIVE' } })) // POST /pcr/packages
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
+    expect(r.success).toBe(true)
+    expect(r.data?.iccids?.[0]).toBe('PRE1')
+    expect(r.data?.iccids).not.toContain('USE1')
+    expect(r.data?.iccids).not.toContain('PRE3')
+  })
+
+  it('8+9. data.data + bare-array tolerance retained on SIM list', async () => {
+    // data.data envelope
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { data: [{ iccid: '89A', status: 'PRE_SERVICE' }] } }))
+      .mockResolvedValueOnce(json([{ iccid: '89B', status: 'PRE_SERVICE' }])) // bare array
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r1 = await c.listV2SimRegistries()
+    const r2 = await c.listV2SimRegistries()
+    expect(r1.data?.items).toHaveLength(1)
+    expect(r2.data?.items).toHaveLength(1)
+  })
+
+  it('10. template without an inventory field does not break parsing', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { package_templates: [{ id: 42, name: 'X', status: 'ACTIVE' }] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.listPackageTemplates()
+    expect(r.success).toBe(true)
+    expect(r.data?.items).toHaveLength(1)
+  })
+
+  it('11. no secrets/identifiers logged in envelope parsing', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fetchSpy = vi.fn().mockResolvedValue(json({
+      total: 1, offset: 0, count: 1,
+      sims: [{ iccid: '8944501234567890123', status: 'PRE-SERVICE' }],
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    await c.listV2SimRegistries()
+    for (const [args] of logSpy.mock.calls as Array<[string]>) {
+      expect(String(args)).not.toContain('8944501234567890123')
+    }
+    logSpy.mockRestore()
   })
 })

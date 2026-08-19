@@ -39,6 +39,56 @@ function maskIccid(iccid: string): string {
   return `${iccid.slice(0, 4)}••••${iccid.slice(-4)}`
 }
 
+/**
+ * Provider-local V2.1 envelope/label normalization.
+ *
+ * Telna Connect returns NAMED list envelopes: { total, offset, count, <label> }.
+ * Accept the named key first, then fall back to the older { data:{...} } / bare
+ * shapes so existing tolerance is retained. Provider-local — not a cross-provider
+ * helper.
+ */
+export function unwrapTelnaNamedList(body: unknown, namedKey: string): unknown[] {
+  if (!body || typeof body !== 'object') return []
+  const b = body as Record<string, unknown>
+  const direct = b[namedKey]
+  if (Array.isArray(direct)) return direct
+  // { data: { namedKey: [...] } }
+  const data = b.data
+  if (data && typeof data === 'object') {
+    const d = data as Record<string, unknown>
+    if (Array.isArray(d[namedKey])) return d[namedKey]
+    if (Array.isArray(d.data)) return d.data
+  }
+  if (Array.isArray(b.data)) return b.data
+  if (Array.isArray(body)) return body as unknown[]
+  return []
+}
+
+/** Detail unwrap: { data: { data: {...} } } → { data: {...} } → bare object. */
+export function unwrapTelnaDetail(body: unknown, namedKey?: string): unknown {
+  if (!body || typeof body !== 'object') return body
+  const b = body as Record<string, unknown>
+  if (namedKey && b[namedKey] && typeof b[namedKey] === 'object') return b[namedKey]
+  const data = b.data
+  if (data && typeof data === 'object') {
+    if ((data as Record<string, unknown>).data && typeof (data as Record<string, unknown>).data === 'object') {
+      return (data as Record<string, unknown>).data
+    }
+    return data
+  }
+  return body
+}
+
+/**
+ * Telna enum/state normalization: trim, uppercase, and replace spaces/hyphens
+ * with underscore. E.g. "PRE-SERVICE" → "PRE_SERVICE", "IN-SERVICE" →
+ * "IN_SERVICE", "De-activated" → "DE_ACTIVATED". Provider-local.
+ */
+export function normalizeTelnaState(value: string | null | undefined): string {
+  if (!value) return ''
+  return String(value).trim().toUpperCase().replace(/[\s-]+/g, '_')
+}
+
 export class TelnaConnector implements IProviderConnector {
   readonly providerId: string
   readonly name: string
@@ -448,7 +498,7 @@ export class TelnaConnector implements IProviderConnector {
     if (!result.success || !result.data) return []
     const sims = result.data.items || []
     const candidates = sims
-      .filter(s => s?.iccid && String(s.iccid).trim() !== '' && String(s.status || '').toUpperCase() === 'PRE_SERVICE')
+      .filter(s => s?.iccid && normalizeTelnaState(s.iccid).trim() !== '' && normalizeTelnaState(s.status) === 'PRE_SERVICE')
       .map(s => String(s.iccid))
     if (candidates.length === 0) return []
 
@@ -475,20 +525,20 @@ export class TelnaConnector implements IProviderConnector {
     // 1) SIM registry (best-effort — availability of /sim-registries is live-proven).
     const reg = await this.getV2SimRegistry(iccid)
     if (reg.success && reg.data?.sim?.status) {
-      simStatus = String(reg.data.sim.status).toUpperCase()
+      simStatus = normalizeTelnaState(reg.data.sim.status)
     }
 
     // 2) eUICC profile (best-effort — conveys install/enable evidence, not network usage).
     const prof = await this.getEuiccProfile(iccid)
     if (prof.success && prof.data?.profile?.state) {
-      profileState = String(prof.data.profile.state).toUpperCase()
+      profileState = normalizeTelnaState(prof.data.profile.state)
     }
 
     // 3) Package status (best-effort).
     const pkgRes = await this.listV2Packages({ sim: iccid })
     if (pkgRes.success && Array.isArray(pkgRes.data?.items) && pkgRes.data.items.length > 0) {
-      const p = pkgRes.data.items.find(x => String(x.status).toUpperCase() !== 'TERMINATED') || pkgRes.data.items[0]
-      packageStatus = String(p?.status || '').toUpperCase() || null
+      const p = pkgRes.data.items.find(x => normalizeTelnaState(x.status) !== 'TERMINATED') || pkgRes.data.items[0]
+      packageStatus = normalizeTelnaState(p?.status) || null
       expiryDate = p?.expiry_date || undefined
     }
 
@@ -543,14 +593,14 @@ export class TelnaConnector implements IProviderConnector {
     }
   }
 
-  /** GET /sim-registries/{iccid} — documented SIM registry detail. */
+  /** GET /v2.1/inventory/sim-registries/{iccid} — SIM registry detail (tolerant unwrap). */
   async getV2SimRegistry(iccid: string): Promise<ConnectorResult<{ sim: TelnaV2SimRegistry }>> {
     const result = await this.request({ method: 'GET', endpoint: 'simRegistry', pathParams: { iccid } })
-    const sim = result.success && result.data ? (result.data as { data: TelnaV2SimRegistry }).data : null
+    const sim = result.success && result.data ? unwrapTelnaDetail(result.data, 'sim') : null
     if (!result.success || !sim) {
       return { success: false, error: result.error || { code: 'SIM_REGISTRY_FAILED', message: 'SIM registry entry not found' } }
     }
-    return { success: true, data: { sim } }
+    return { success: true, data: { sim: sim as TelnaV2SimRegistry } }
   }
 
   /** Telna status is keyed by ICCID — a provider-owned identifier, never a local esim.id. */
@@ -719,65 +769,64 @@ export class TelnaConnector implements IProviderConnector {
     }
   }
 
-  /** GET /euicc-profiles/{iccid} — documented read-only profile + activation data. */
+  /** GET /v2.1/esim-rsp/euicc-profiles/{iccid} — profile + activation data (tolerant unwrap). */
   async getEuiccProfile(iccid: string): Promise<ConnectorResult<{ profile: TelnaEuiccProfile }>> {
     const result = await this.request({ method: 'GET', endpoint: 'euiccProfile', pathParams: { iccid } })
-    const profile = result.success && result.data ? (result.data as { data: TelnaEuiccProfile }).data : null
+    const profile = result.success && result.data ? unwrapTelnaDetail(result.data, 'profile') : null
     if (!result.success || !profile) {
       return { success: false, error: result.error || { code: 'PROFILE_FAILED', message: 'eUICC profile not found' } }
     }
-    return { success: true, data: { profile } }
+    return { success: true, data: { profile: profile as TelnaEuiccProfile } }
   }
 
   // ── Phase 1: documented v2 package / SIM / template surface ────────────
 
-  /** GET /package-templates/{package_template_id} — documented template detail. */
+  /** GET /v2.1/pcr/package-templates/{id} — template detail (tolerant unwrap). */
   async getV2PackageTemplate(packageTemplateId: number): Promise<ConnectorResult<{ template: TelnaV2PackageTemplate }>> {
     const result = await this.request({ method: 'GET', endpoint: 'packageTemplate', pathParams: { package_template_id: packageTemplateId } })
-    const template = result.success && result.data ? (result.data as { data: TelnaV2PackageTemplate }).data : null
+    const template = result.success && result.data ? unwrapTelnaDetail(result.data, 'template') : null
     if (!result.success || !template) {
       return { success: false, error: result.error || { code: 'TEMPLATE_FAILED', message: 'Package template not found' } }
     }
-    return { success: true, data: { template } }
+    return { success: true, data: { template: template as TelnaV2PackageTemplate } }
   }
 
   /**
-   * GET /sim-registries — documented SIM inventory. Returns eligible (non-
-   * terminated) SIM registries, optionally filtered by inventory.
-   * inventoryId/groupId are passed through as documented filters.
+   * GET /v2.1/inventory/sim-registries — SIM inventory (named `sims` envelope
+   * with `{ total, offset, count, sims:[...] }`, tolerant fallback).
    */
   async listV2SimRegistries(inventoryId?: number, groupId?: number, iccid?: string, imsi?: string, status?: string, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaV2SimRegistry[]; total: number }>> {
     const result = await this.request({
       method: 'GET', endpoint: 'simRegistries',
       query: { inventory_id: inventoryId, group: groupId, iccid, imsi, status, count, offset },
     })
-    const items = (result.success && result.data && (result.data as any).data) ? (result.data as any).data as TelnaV2SimRegistry[] : []
-    const total = (result.success && result.data && (result.data as any).total) ? (result.data as any).total : items.length
+    const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'sims') : []) || []
+    const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || items.length : items.length)
     if (!result.success) {
       return { success: false, error: result.error || { code: 'INVENTORY_FAILED', message: 'Failed to list SIM registries' } }
     }
-    return { success: true, data: { items, total } }
+    return { success: true, data: { items: items as TelnaV2SimRegistry[], total } }
   }
 
-  /** GET /packages — documented package filter surface (sim / template / status). */
+  /** GET /v2.1/pcr/packages — package filter surface (named `packages` envelope, tolerant). */
   async listV2Packages(filters: { sim?: string; package_template?: number | string; status?: string; count?: number; offset?: number } = {}): Promise<ConnectorResult<{ items: TelnaV2Package[]; total: number }>> {
     const result = await this.request({ method: 'GET', endpoint: 'packages', query: filters })
-    const items = (result.success && result.data && (result.data as any).data) ? (result.data as any).data as TelnaV2Package[] : []
-    const total = (result.success && result.data && (result.data as any).total) ? (result.data as any).total : items.length
+    const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'packages') : []) || []
+    const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || items.length : items.length)
     if (!result.success) {
       return { success: false, error: result.error || { code: 'PACKAGES_FAILED', message: 'Failed to list packages' } }
     }
-    return { success: true, data: { items, total } }
+    return { success: true, data: { items: items as TelnaV2Package[], total } }
   }
 
-  /** GET /packages/{package_id} — documented exact package instance detail. */
+  /** GET /v2.1/pcr/packages/{package_id} — exact package instance detail (tolerant). */
   async getV2Package(packageId: string | number): Promise<ConnectorResult<{ pkg: TelnaV2Package }>> {
     const result = await this.request({ method: 'GET', endpoint: 'package', pathParams: { package_id: packageId } })
-    const pkg = result.success && result.data ? (result.data as { data?: TelnaV2Package }).data || (result.data as TelnaV2Package) : null
+    const pkg = result.success && result.data ? unwrapTelnaDetail(result.data, 'pkg') : null
     if (!result.success || !pkg) {
       return { success: false, error: result.error || { code: 'PACKAGE_FAILED', message: 'Package instance not found' } }
     }
-    return { success: true, data: { pkg } }
+    return { success: true, data: { pkg: pkg as TelnaV2Package } }
   }
 
   /**
@@ -805,39 +854,39 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'countries', query: { count, offset } })
     const duration = Date.now() - start
-    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaCountry>).data : []) || []
-    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaCountry>).total : 0) || 0
+    const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'countries') : []) || []
+    const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || 0 : 0) || 0
     console.log(`[TELNA_DISCOVERY] method=listCountries success=${result.success} status=${result.status} itemCount=${items.length} total=${total} durationMs=${duration} requestId=${result.requestId}`)
     if (!result.success) {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Failed to list countries' } }
     }
-    return { success: true, data: { items, total } }
+    return { success: true, data: { items: items as TelnaCountry[], total } }
   }
 
   async getCompany(companyId: number): Promise<ConnectorResult<{ company: TelnaCompany }>> {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'company', pathParams: { company_id: companyId } })
     const duration = Date.now() - start
-    const company = result.success && result.data ? (result.data as { data: TelnaCompany }).data : null
+    const company = result.success && result.data ? unwrapTelnaDetail(result.data, 'company') : null
     console.log(`[TELNA_DISCOVERY] method=getCompany companyId=${companyId} success=${result.success} status=${result.status} durationMs=${duration} requestId=${result.requestId}`)
     if (!result.success || !company) {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Company not found' } }
     }
-    return { success: true, data: { company } }
+    return { success: true, data: { company: company as TelnaCompany } }
   }
 
   async listInventories(company?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaInventory[]; total: number }>> {
     const start = Date.now()
-    // Documented v2.1 filter (Endpoint Mapping #3/#13): company=<company_id>
+    // Documented v2.1 filter: company=<company_id>
     const result = await this.request({ method: 'GET', endpoint: 'inventories', query: { company, count, offset } })
     const duration = Date.now() - start
-    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaInventory>).data : []) || []
-    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaInventory>).total : 0) || 0
+    const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'inventories') : []) || []
+    const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || items.length : items.length)
     console.log(`[TELNA_DISCOVERY] method=listInventories company=${company} success=${result.success} status=${result.status} itemCount=${items.length} total=${total} durationMs=${duration} requestId=${result.requestId}`)
     if (!result.success) {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Failed to list inventories' } }
     }
-    return { success: true, data: { items, total } }
+    return { success: true, data: { items: items as TelnaInventory[], total } }
   }
 
   async listGroups(inventoryId?: number, company?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaGroup[]; total: number }>> {
@@ -883,25 +932,25 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'group', pathParams: { group_id: groupId } })
     const duration = Date.now() - start
-    const group = result.success && result.data ? (result.data as { data: TelnaGroup }).data : null
+    const group = result.success && result.data ? unwrapTelnaDetail(result.data, 'group') : null
     console.log(`[TELNA_GROUP_DETAIL] groupId=${groupId} success=${result.success} status=${result.status} durationMs=${duration} requestId=${result.requestId}`)
     if (!result.success || !group) {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Group not found' } }
     }
-    return { success: true, data: { group } }
+    return { success: true, data: { group: group as TelnaGroup } }
   }
 
-  /** Documented v2.1 read-only: GET /pcr/traffic-policies/{traffic_policy_id} (Endpoint Mapping #42). */
+  /** GET /v2.1/pcr/traffic-policies/{traffic_policy_id} — traffic policy detail. */
   async getTrafficPolicy(trafficPolicyId: number): Promise<ConnectorResult<{ trafficPolicy: Record<string, unknown> }>> {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'trafficPolicy', pathParams: { traffic_policy_id: trafficPolicyId } })
     const duration = Date.now() - start
-    const trafficPolicy = result.success && result.data ? (result.data as { data: Record<string, unknown> }).data : null
+    const trafficPolicy = result.success && result.data ? unwrapTelnaDetail(result.data, 'trafficPolicy') : null
     console.log(`[TELNA_TRAFFIC_POLICY] trafficPolicyId=${trafficPolicyId} success=${result.success} status=${result.status} durationMs=${duration} requestId=${result.requestId}`)
     if (!result.success || !trafficPolicy) {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Traffic policy not found' } }
     }
-    return { success: true, data: { trafficPolicy } }
+    return { success: true, data: { trafficPolicy: trafficPolicy as Record<string, unknown> } }
   }
 
   async getBalance(): Promise<ConnectorResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>> {
@@ -936,13 +985,13 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'packageTemplates', query: { inventory_id: inventoryId, count, offset } })
     const duration = Date.now() - start
-    const items = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaPackageTemplate>).data : []) || []
-    const total = (result.success && result.data ? (result.data as TelnaPaginatedResponse<TelnaPackageTemplate>).total : 0) || 0
+    const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'package_templates') : []) || []
+    const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || items.length : items.length)
     console.log(`[TELNA_PACKAGE_TEMPLATES] status=${result.status} requestId=${result.requestId} itemCount=${items.length} durationMs=${duration} inventoryId=${inventoryId}`)
     if (!result.success) {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Failed to list package templates' } }
     }
-    return { success: true, data: { items, total } }
+    return { success: true, data: { items: items as TelnaPackageTemplate[], total } }
   }
 
   async getPackageTemplate(packageTemplateId: number): Promise<ConnectorResult<{ template: TelnaPackageTemplateDetail }>> {
