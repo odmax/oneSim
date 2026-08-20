@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { classifyRetry, classifyFailoverEligibility, type FailoverCheckInput } from './provider-failover-engine'
+import { classifyRetry, classifyProviderOutcome, classifyFailoverEligibility, type FailoverCheckInput } from './provider-failover-engine'
 
 function checkInput(overrides: Partial<FailoverCheckInput> = {}): FailoverCheckInput {
   return {
@@ -41,6 +41,37 @@ describe('classifyRetry', () => {
     // to an inventory code, so its classification remains the default.
     expect(classifyRetry({ code: 'HTTP_404', message: 'Resource not found' })).toBe('NON_RETRYABLE')
     expect(classifyRetry({ code: 'HTTP_404', message: 'Resource not found' })).not.toBe(classifyRetry({ code: 'OUT_OF_STOCK' }))
+  })
+})
+
+describe('classifyProviderOutcome', () => {
+  it('TIMEOUT is AMBIGUOUS (never retry a billable mutation)', () => {
+    expect(classifyProviderOutcome({ code: 'TIMEOUT', message: 'Request timed out' })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+  })
+
+  it('explicit details.ambiguous is AMBIGUOUS', () => {
+    expect(classifyProviderOutcome({ code: 'NETWORK_ERROR', message: 'fetch failed', details: { ambiguous: true } })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+  })
+
+  it('connection reset (ECONNRESET) is AMBIGUOUS', () => {
+    expect(classifyProviderOutcome({ code: 'NETWORK_ERROR', message: 'socket hang up', details: { causeCode: 'ECONNRESET' } })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+  })
+
+  it('connection refused (ECONNREFUSED) is RETRYABLE_PRE_DISPATCH', () => {
+    expect(classifyProviderOutcome({ code: 'NETWORK_ERROR', message: 'fetch failed', details: { causeCode: 'ECONNREFUSED' } })).toBe('RETRYABLE_PRE_DISPATCH')
+  })
+
+  it('DNS failure (ENOTFOUND) is RETRYABLE_PRE_DISPATCH', () => {
+    expect(classifyProviderOutcome({ code: 'NETWORK_ERROR', message: 'getaddrinfo ENOTFOUND' })).toBe('RETRYABLE_PRE_DISPATCH')
+  })
+
+  it('explicit provider rejection is DEFINITIVE_FAILURE', () => {
+    expect(classifyProviderOutcome({ code: 'PROVIDER_FAILED', message: 'Bundle allocation failed' })).toBe('DEFINITIVE_FAILURE')
+  })
+
+  it('null/undefined error is DEFINITIVE_FAILURE', () => {
+    expect(classifyProviderOutcome(null)).toBe('DEFINITIVE_FAILURE')
+    expect(classifyProviderOutcome(undefined)).toBe('DEFINITIVE_FAILURE')
   })
 })
 

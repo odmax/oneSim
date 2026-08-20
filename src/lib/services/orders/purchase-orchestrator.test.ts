@@ -52,7 +52,7 @@ import { isProviderOperational, getAdapterForType } from '@/lib/providers/adapte
 import { getProviderBalance } from '@/lib/services/providers/provider-balance'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { reserveWalletFunds, captureReservedFunds, releaseReservedFunds } from './wallet-actions'
-import { failOrder } from './order-state-machine'
+import { failOrder, transitionOrder } from './order-state-machine'
 import { completeProviderFinalization } from './fulfillment'
 import { PurchaseOrchestrator } from './purchase-orchestrator'
 
@@ -62,6 +62,7 @@ const mockReserve = vi.mocked(reserveWalletFunds)
 const mockCapture = vi.mocked(captureReservedFunds)
 const mockRelease = vi.mocked(releaseReservedFunds)
 const mockFailOrder = vi.mocked(failOrder)
+const mockTransition = vi.mocked(transitionOrder)
 const mockBalance = vi.mocked(getProviderBalance)
 const mockAdapter = vi.mocked(getAdapterForType)
 
@@ -580,6 +581,24 @@ describe('PurchaseOrchestrator', () => {
     expect(result.errorCode).toBe('PACKAGE_UNAVAILABLE')
     expect(mockReserve).not.toHaveBeenCalled()
     expect(mockAdapter).not.toHaveBeenCalled()
+  })
+
+  it('ambiguous provider timeout → PROVIDER_RECONCILIATION, no failover, no wallet release', async () => {
+    setupBoundBacking({ providerId: 'prov-choice', providerPlanId: 'choice-sku', providerName: 'Choice', providerCode: 'CHOICE' })
+    mockAdapter.mockResolvedValue({
+      activateESIM: vi.fn().mockResolvedValue({ success: false, error: { code: 'TIMEOUT', message: 'Request timed out', details: { ambiguous: true } } }),
+      validatePurchase: vi.fn().mockResolvedValue({ valid: true }),
+    } as any)
+
+    const result = await orchestrator.executePurchase(validRequest)
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+    expect(result.status).toBe('PROVIDER_RECONCILIATION')
+    expect(mockTransition).toHaveBeenCalledWith('order-1', 'PROVIDER_RECONCILIATION', expect.anything())
+    // Ambiguous outcome must NOT release reserved funds or fail the order definitively.
+    expect(mockRelease).not.toHaveBeenCalled()
+    expect(mockFailOrder).not.toHaveBeenCalled()
   })
 
   // ── Unbound / legacy backing resolution (no generic routing of retail id) ──

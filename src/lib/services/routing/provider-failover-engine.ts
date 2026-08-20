@@ -4,6 +4,46 @@ import type { ProviderScore } from './provider-routing-engine'
 
 export type RetryClassification = 'RETRYABLE' | 'NON_RETRYABLE'
 
+/**
+ * Outcome of a provider operation, used by the purchase orchestrator to decide
+ * whether a failure is safe to retry/fail-over or is AMBIGUOUS (the provider may
+ * have already completed a billable mutation, e.g. a POST that timed out).
+ */
+export type ProviderOutcome =
+  | 'DEFINITIVE_FAILURE'
+  | 'RETRYABLE_PRE_DISPATCH'
+  | 'AMBIGUOUS_PROVIDER_OUTCOME'
+
+/**
+ * Classify a provider error into a safe outcome. The key distinction:
+ *  - AMBIGUOUS_PROVIDER_OUTCOME: the request may have reached the provider
+ *    (TIMEOUT / connection reset / socket hang-up). Never retry/fail-over.
+ *  - RETRYABLE_PRE_DISPATCH: the connection was never established (refused/DNS).
+ *  - DEFINITIVE_FAILURE: the provider explicitly rejected the operation.
+ */
+export function classifyProviderOutcome(error: { code?: string; message?: string; details?: any } | undefined | null): ProviderOutcome {
+  if (!error) return 'DEFINITIVE_FAILURE'
+  if (error.details?.ambiguous === true) return 'AMBIGUOUS_PROVIDER_OUTCOME'
+  if (error.details?.preDispatch === true) return 'RETRYABLE_PRE_DISPATCH'
+
+  const code = (error.code || '').toUpperCase()
+  const msg = (error.message || '').toLowerCase()
+  const causeCode = String(error.details?.causeCode || '').toUpperCase()
+
+  const ambiguousCodes = ['TIMEOUT', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'ERR_SOCKET_CLOSED']
+  if (ambiguousCodes.includes(code) || ambiguousCodes.includes(causeCode)) return 'AMBIGUOUS_PROVIDER_OUTCOME'
+  if (code.includes('TIMEOUT')) return 'AMBIGUOUS_PROVIDER_OUTCOME'
+  if (/(timeout|timed out|socket hang up|connection reset|econnreset|etimedout|read econnreset|socket closed)/.test(msg)) return 'AMBIGUOUS_PROVIDER_OUTCOME'
+
+  const preDispatchCodes = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'DNS', 'UND_ERR_CONNECT_TIMEOUT']
+  if (preDispatchCodes.includes(code) || preDispatchCodes.includes(causeCode)) return 'RETRYABLE_PRE_DISPATCH'
+  if (/(connection refused|econnrefused|dns|enotfound|getaddrinfo|eai_again)/.test(msg)) return 'RETRYABLE_PRE_DISPATCH'
+
+  if (error.details?.retryable === true) return 'RETRYABLE_PRE_DISPATCH'
+
+  return 'DEFINITIVE_FAILURE'
+}
+
 export interface FailoverAttempt {
   attempt: number
   providerId: string

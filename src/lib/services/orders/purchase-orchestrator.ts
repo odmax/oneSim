@@ -427,6 +427,17 @@ export class PurchaseOrchestrator {
         return { success: true, orderId, status: 'PROCESSING', provider: currentProviderName, providerReference: result.providerReference, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD' }
       }
 
+      // Ambiguous provider outcome: the mutating activation may have completed.
+      // Do NOT fail over, do NOT release reserved funds, do NOT mark definitively
+      // failed. Move to a reconciliation state for review/re-read.
+      if (result.status === 'AMBIGUOUS') {
+        await transitionOrder(orderId, 'PROVIDER_RECONCILIATION', { reason: result.errorMessage || 'Provider outcome ambiguous (timeout)' })
+        await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION', message: `Provider activation outcome ambiguous for ${currentProviderName}: ${result.errorMessage || 'timeout'}`, metadata: { providerId: currentProviderId, ambiguous: true } })
+        await this.writeAudit(businessId, userId, currentProviderId, pkg.id, displayName, totalAmount, 'RECONCILIATION_REQUIRED', result.errorMessage)
+        trace(correlationId, 'PROVIDER_ATTEMPT', 'AMBIGUOUS', { providerName: currentProviderName, attemptNum })
+        return { success: false, orderId, status: 'PROVIDER_RECONCILIATION', errorCode: 'AMBIGUOUS_PROVIDER_OUTCOME', message: 'This purchase requires reconciliation — the provider may have completed it. We are verifying the outcome.', retryable: false }
+      }
+
       // Not retryable — fail immediately
       if (result.status !== 'RETRYABLE') {
         await releaseReservedFunds(orderId, businessId, totalAmount)

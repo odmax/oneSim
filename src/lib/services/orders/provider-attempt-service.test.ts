@@ -15,6 +15,7 @@ vi.mock('@/lib/providers/adapter-manager', () => ({
 
 vi.mock('@/lib/services/routing/provider-failover-engine', () => ({
   classifyRetry: vi.fn(() => 'NON_RETRYABLE'),
+  classifyProviderOutcome: vi.fn(() => 'DEFINITIVE_FAILURE'),
 }))
 
 vi.mock('@/lib/services/jobs/provider-finalizer', () => ({
@@ -29,11 +30,13 @@ vi.mock('@/lib/services/orders/order-state-machine', () => ({
 const { prisma } = await import('@/lib/prisma')
 const { getAdapterForType } = await import('@/lib/providers/adapter-manager')
 const { completeProviderOperation } = await import('@/lib/services/jobs/provider-finalizer')
+const { classifyProviderOutcome } = await import('@/lib/services/routing/provider-failover-engine')
 const { executeProviderAttempt } = await import('./provider-attempt-service')
 
 const mockPrisma = vi.mocked(prisma)
 const mockGetAdapter = vi.mocked(getAdapterForType)
 const mockComplete = vi.mocked(completeProviderOperation)
+const mockClassifyOutcome = vi.mocked(classifyProviderOutcome)
 
 const ORDER_ID = 'order-1'
 const PROVIDER_ID = 'p-1'
@@ -260,6 +263,26 @@ describe('executeProviderAttempt — cross-provider plan-binding ownership guard
     const result = await executeProviderAttempt(baseInput())
     expect(result.success).toBe(true)
     expect(activate).toHaveBeenCalledWith(expect.objectContaining({ planId: 'plan-1' }))
+  })
+
+  it('ambiguous TIMEOUT → AMBIGUOUS status, attempt marked AMBIGUOUS, no finalizer', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockGetAdapter.mockResolvedValue({
+      validatePurchase: undefined,
+      activateESIM: vi.fn().mockResolvedValue({ success: false, error: { code: 'TIMEOUT', message: 'Request timed out', details: { ambiguous: true } } }),
+    } as any)
+    mockClassifyOutcome.mockReturnValue('AMBIGUOUS_PROVIDER_OUTCOME')
+
+    const result = await executeProviderAttempt(baseInput())
+
+    expect(result.success).toBe(false)
+    expect(result.status).toBe('AMBIGUOUS')
+    expect(result.errorCode).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+    const updateCall = mockPrisma.providerAttempt.update.mock.calls[0][0] as any
+    expect(updateCall.data.status).toBe('AMBIGUOUS')
+    expect(updateCall.data.retryClassification).toBe('NON_RETRYABLE')
+    expect(updateCall.data.metadata).toMatchObject({ ambiguous: true, reconciliationRequired: true })
+    expect(mockComplete).not.toHaveBeenCalled()
   })
 })
 

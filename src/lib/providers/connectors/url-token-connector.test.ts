@@ -19,6 +19,7 @@ function makeChoiceConfig(overrides: any = {}) {
     resumePath: overrides.resumePath,
     currency: overrides.currency,
     timeoutMs: overrides.timeoutMs,
+    activationTimeoutMs: overrides.activationTimeoutMs,
   }
 }
 
@@ -394,6 +395,50 @@ describe('UrlTokenConnector', () => {
       expect(result.error?.code).toBe('PROVIDER_FAILED')
       expect(result.error?.message).toBe('Insufficient balance')
 
+      vi.unstubAllGlobals()
+    })
+  })
+
+  describe('activateESIM — mutation timeout policy', () => {
+    const choiceParams = { planId: 'sku-abc', quantity: 1, subscriber: { email: 'test@test.com' } }
+    function choiceConnector(overrides: any = {}) {
+      return new UrlTokenConnector('choice-1', 'Choice', makeChoiceConfig({
+        fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'test-user-1' },
+        ...overrides,
+      }))
+    }
+
+    it('activation uses a 60s purchase timeout, not the 15s read default', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: 'icc', imsi: 'imsi' }] } }))
+      vi.stubGlobal('fetch', mockFetch)
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+      await c.activateESIM(choiceParams)
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 60000)
+      vi.unstubAllGlobals()
+      setTimeoutSpy.mockRestore()
+    })
+
+    it('respects an explicit activationTimeoutMs override', async () => {
+      const c = choiceConnector({ activationTimeoutMs: 90000 })
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ data: { imsis: [{ iccid: 'icc', imsi: 'imsi' }] } }))
+      vi.stubGlobal('fetch', mockFetch)
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+      await c.activateESIM(choiceParams)
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 90000)
+      vi.unstubAllGlobals()
+      setTimeoutSpy.mockRestore()
+    })
+
+    it('abort/timeout is classified ambiguous (details.ambiguous=true)', async () => {
+      const c = choiceConnector()
+      const abort = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })
+      const mockFetch = vi.fn().mockRejectedValue(abort)
+      vi.stubGlobal('fetch', mockFetch)
+      const result = await c.activateESIM(choiceParams)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('TIMEOUT')
+      expect(result.error?.details?.ambiguous).toBe(true)
       vi.unstubAllGlobals()
     })
   })

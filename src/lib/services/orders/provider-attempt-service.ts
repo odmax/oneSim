@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
-import { classifyRetry } from '@/lib/services/routing/provider-failover-engine'
+import { classifyRetry, classifyProviderOutcome } from '@/lib/services/routing/provider-failover-engine'
 import { completeProviderOperation, failProviderOperation } from '@/lib/services/jobs/provider-finalizer'
 import { createTimelineEvent } from '@/lib/services/orders/order-state-machine'
 import { normalizeConnectorInstallData } from '@/lib/esim/installation-data'
@@ -135,12 +135,29 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
 
     if (!result.success || !result.data) {
       const err = result.error
-      const classification = classifyRetry(err)
+      const outcome = classifyProviderOutcome(err)
+
+      if (outcome === 'AMBIGUOUS_PROVIDER_OUTCOME') {
+        // The mutating activation may have reached the provider; the outcome is
+        // UNKNOWN. Never retry the same provider, never fail over, never release
+        // funds as though it definitely failed. Record enough for reconciliation.
+        await prisma.providerAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            status: 'AMBIGUOUS', completedAt: new Date(), latencyMs, retryClassification: 'NON_RETRYABLE',
+            errorCode: err?.code, errorMessage: err?.message,
+            metadata: { ambiguous: true, reconciliationRequired: true, causeCode: err?.details?.causeCode ?? null },
+          },
+        })
+        return { success: false, status: 'AMBIGUOUS', errorCode: 'AMBIGUOUS_PROVIDER_OUTCOME', errorMessage: 'Provider activation outcome is unknown (request may have completed); reconciliation required' }
+      }
+
+      const retryable = outcome === 'RETRYABLE_PRE_DISPATCH'
       await prisma.providerAttempt.update({
         where: { id: attempt.id },
-        data: { status: 'FAILED', completedAt: new Date(), latencyMs, retryClassification: classification, errorCode: err?.code, errorMessage: err?.message, providerReference: (result.data as any)?.activationId },
+        data: { status: 'FAILED', completedAt: new Date(), latencyMs, retryClassification: retryable ? 'RETRYABLE' : 'NON_RETRYABLE', errorCode: err?.code, errorMessage: err?.message, providerReference: (result.data as any)?.activationId },
       })
-      return { success: false, status: classification === 'RETRYABLE' ? 'RETRYABLE' : 'FAILED', errorCode: err?.code, errorMessage: err?.message }
+      return { success: false, status: retryable ? 'RETRYABLE' : 'FAILED', errorCode: err?.code, errorMessage: err?.message }
     }
 
     const data = result.data
@@ -199,6 +216,14 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
 
     return { success: true, status: 'SUCCEEDED', providerReference: providerOrderId, iccids, qrCode: extractString(data.qrCodeUrl) || undefined }
   } catch (e: any) {
+    const outcome = classifyProviderOutcome({ code: 'PROVIDER_ERROR', message: e.message })
+    if (outcome === 'AMBIGUOUS_PROVIDER_OUTCOME') {
+      await prisma.providerAttempt.update({
+        where: { id: attempt.id },
+        data: { status: 'AMBIGUOUS', completedAt: new Date(), latencyMs: Date.now() - startedAt.getTime(), retryClassification: 'NON_RETRYABLE', errorCode: 'AMBIGUOUS_PROVIDER_OUTCOME', errorMessage: e.message?.substring(0, 500), metadata: { ambiguous: true, reconciliationRequired: true } },
+      })
+      return { success: false, status: 'AMBIGUOUS', errorCode: 'AMBIGUOUS_PROVIDER_OUTCOME', errorMessage: 'Provider activation outcome is unknown (request may have completed); reconciliation required' }
+    }
     const classification = classifyRetry({ code: 'PROVIDER_ERROR', message: e.message })
     await prisma.providerAttempt.update({
       where: { id: attempt.id },

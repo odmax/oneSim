@@ -14,9 +14,18 @@ interface UrlTokenConfig extends RestCatalogConfig {
   resumePath?: string
   currency?: string
   timeoutMs?: number
+  /**
+   * Timeout (ms) for the MUTATING activation/purchase POST. Kept separate from
+   * `timeoutMs` (read/catalog/status calls) so a slow provider activation does
+   * not use the short read timeout and does not inflate unrelated reads.
+   * Defaults to 60s (conservative) — a billable activation is never retried on
+   * an ambiguous timeout, so the window must be long enough to receive a
+   * definitive response.
+   */
+  activationTimeoutMs?: number
 }
 
-async function fetchText(url: string, opts?: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }): Promise<{ text?: string; error?: { code: string; message: string }; status?: number; contentType?: string }> {
+async function fetchText(url: string, opts?: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }): Promise<{ text?: string; error?: { code: string; message: string; details?: Record<string, any> }; status?: number; contentType?: string }> {
   const timeout = opts?.timeoutMs || 15000
   try {
     const controller = new AbortController()
@@ -34,8 +43,23 @@ async function fetchText(url: string, opts?: { method?: string; headers?: Record
     if (!response.ok) return { error: { code: `HTTP_${status}`, message: text.substring(0, 300) }, status, contentType }
     return { text, status, contentType }
   } catch (e: any) {
-    if (e.name === 'AbortError') return { error: { code: 'TIMEOUT', message: 'Request timed out' } }
-    return { error: { code: 'NETWORK_ERROR', message: e.message } }
+    const causeCode = (e?.cause?.code || e?.code || '').toString().toUpperCase()
+    // AbortController timeout: the request MAY have reached the provider — the
+    // outcome is AMBIGUOUS (never safe to blindly retry a billable activation).
+    if (e.name === 'AbortError') {
+      return { error: { code: 'TIMEOUT', message: 'Request timed out', details: { ambiguous: true, causeCode: 'ABORT' } } }
+    }
+    // Ambiguous transport failures where the request may have been processed.
+    const ambiguousCodes = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ERR_SOCKET_CLOSED']
+    if (ambiguousCodes.includes(causeCode)) {
+      return { error: { code: 'NETWORK_ERROR', message: e.message || 'Network error', details: { ambiguous: true, causeCode } } }
+    }
+    // Pre-dispatch failures (connection never established) are safe to retry.
+    const preDispatchCodes = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT']
+    if (preDispatchCodes.includes(causeCode)) {
+      return { error: { code: 'NETWORK_ERROR', message: e.message || 'Network error', details: { preDispatch: true, causeCode } } }
+    }
+    return { error: { code: 'NETWORK_ERROR', message: e.message || 'Network error', details: { causeCode } } }
   }
 }
 
@@ -755,8 +779,13 @@ export class UrlTokenConnector extends RestCatalogConnector {
     // Remove undefined values
     Object.keys(body).forEach(k => { if (body[k] === undefined) delete body[k] })
 
+    // MUTATING activation uses a dedicated purchase timeout (default 60s), NOT
+    // the short read/catalog timeout. A slow provider must not be marked failed
+    // at 15s; and an ambiguous timeout must not be blindly retried.
+    const activationTimeoutMs = this.config.activationTimeoutMs ?? 60_000
+
     const { text, error, status } = await fetchText(this.baseUrl(path), {
-      method: 'POST', headers: this.headers, body: JSON.stringify(body),
+      method: 'POST', headers: this.headers, body: JSON.stringify(body), timeoutMs: activationTimeoutMs,
     })
 
     if (error) {
