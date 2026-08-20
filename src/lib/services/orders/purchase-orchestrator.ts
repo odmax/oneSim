@@ -6,12 +6,13 @@ import { reserveWalletFunds, captureReservedFunds, releaseReservedFunds } from '
 import { getProviderBalance } from '@/lib/services/providers/provider-balance'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { executeProviderAttempt, tryFailoverAfterAttempt } from './provider-attempt-service'
-import { ProviderRoutingEngine } from '@/lib/services/routing/provider-routing-engine'
+import type { ProviderScore } from '@/lib/services/routing/provider-routing-engine'
 import { requiresTravelDateForPackage, isValidTravelDate, resolveEffectiveTravelDate } from '@/lib/providers/travel-date-utils'
 import { resolveEffectiveProviderRequirements } from '@/lib/providers/provider-requirements-resolver'
 import { consumeQuoteAndCreateOrder } from '@/lib/pricing/purchase-quote-service'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
+import { resolveCustomPackageBackings } from '@/lib/services/custom-package/custom-package'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 
 function trace(correlationId: string | undefined, stage: string, status: string, extra?: Record<string, any>) {
@@ -99,14 +100,67 @@ export class PurchaseOrchestrator {
     const pkg = resolution.package
     trace(correlationId, 'PACKAGE_RESOLVED', 'SUCCESS', { orderPackageId: pkg.id, providerBound: Boolean(pkg.providerId) })
 
+    // ── Authoritative backing resolution (single source of truth) ─────────────
+    // Resolution order (provider-neutral — never guesses a provider, never routes
+    // the retail package id through a generic provider ranking):
+    //   1. bound single ProviderPackage (pkg.providerPackageId)
+    //   2. explicit multi-backing providerBindings (custom package)
+    //   3. legacy denormalized providerId+providerPlanId → a UNIQUE matching
+    //      ProviderPackage (compatibility only)
+    //   4. otherwise → BACKING_NOT_CONFIGURED (fail safe)
+    let customBackings: Array<{ providerPackageId: string; providerId: string; providerName: string; priority: number }> | null = null
+    let boundBacking: { providerPackageId: string; providerId: string; providerPlanId: string } | null = null
+
+    if (pkg.providerPackageId) {
+      const bb = await prisma.providerPackage.findUnique({
+        where: { id: pkg.providerPackageId },
+        select: { id: true, providerId: true, providerPlanId: true, isAvailable: true },
+      })
+      if (!bb || bb.isAvailable === false) {
+        trace(correlationId, 'BACKING_RESOLUTION', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', providerPackageId: pkg.providerPackageId })
+        return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', true)
+      }
+      boundBacking = { providerPackageId: bb.id, providerId: bb.providerId, providerPlanId: bb.providerPlanId }
+      trace(correlationId, 'BACKING_RESOLUTION', 'SUCCESS', { providerPackageId: bb.id, providerId: bb.providerId, providerPlanId: bb.providerPlanId })
+    } else {
+      customBackings = await resolveCustomPackageBackings(pkg.id).catch(() => [])
+      if (customBackings.length === 0) {
+        // Legacy compatibility: a sellable package with no bound ProviderPackage
+        // and no bindings may carry denormalized providerId+providerPlanId. Resolve
+        // ONLY a unique matching ProviderPackage; anything else fails safe.
+        if (pkg.providerId && pkg.providerPlanId) {
+          const legacy = await prisma.providerPackage.findMany({
+            where: { providerId: pkg.providerId, providerPlanId: pkg.providerPlanId, isAvailable: true },
+            select: { id: true, providerId: true, providerPlanId: true },
+          })
+          if (legacy.length === 1) {
+            boundBacking = { providerPackageId: legacy[0].id, providerId: legacy[0].providerId, providerPlanId: legacy[0].providerPlanId }
+            // Not a multi-backing custom package — clear so the bound path drives
+            // readiness/dispatch (an empty [] is truthy and would wrongly select the
+            // custom multi-backing branch).
+            customBackings = null
+            trace(correlationId, 'BACKING_RESOLUTION', 'LEGACY_UNIQUE', { providerPackageId: legacy[0].id, providerId: legacy[0].providerId, providerPlanId: legacy[0].providerPlanId })
+          } else {
+            trace(correlationId, 'BACKING_RESOLUTION', 'FAILED', { internalCode: 'BACKING_NOT_CONFIGURED', matchCount: legacy.length })
+            return this.fail('BACKING_NOT_CONFIGURED', 'This package is not configured with a valid provider backing. Please contact support.', false)
+          }
+        } else {
+          trace(correlationId, 'BACKING_RESOLUTION', 'FAILED', { internalCode: 'BACKING_NOT_CONFIGURED' })
+          return this.fail('BACKING_NOT_CONFIGURED', 'This package is not configured with a valid provider backing. Please contact support.', false)
+        }
+      }
+    }
+
     // Step 4: Validate pricing availability using centralized readiness
     trace(correlationId, 'PURCHASE_READINESS', 'START')
+    const backingPkgId = boundBacking?.providerPackageId ?? pkg.providerPackageId ?? null
     const readiness = getPackagePurchaseReadiness({
-      pkg: { isActive: pkg.isActive, hiddenFromCatalog: pkg.hiddenFromCatalog, archivedAt: pkg.archivedAt, source: pkg.source, providerPackageId: pkg.providerPackageId },
-      providerPkg: pkg.providerPackageId ? await prisma.providerPackage.findUnique({
-        where: { id: pkg.providerPackageId },
+      pkg: { isActive: pkg.isActive, hiddenFromCatalog: pkg.hiddenFromCatalog, archivedAt: pkg.archivedAt, source: pkg.source, providerPackageId: backingPkgId },
+      providerPkg: backingPkgId ? await prisma.providerPackage.findUnique({
+        where: { id: backingPkgId },
         select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true },
       }) : null,
+      ...(customBackings ? { customBackingCount: customBackings.length, customSellingPrice: parseFloat(pkg.priceUSD.toString()) } : {}),
     })
     if (!readiness.ready) {
       trace(correlationId, 'PURCHASE_READINESS', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', reasonsCount: readiness.reasons.length })
@@ -121,9 +175,9 @@ export class PurchaseOrchestrator {
     if (normalizedTravelDate !== undefined && !isValidTravelDate(normalizedTravelDate)) {
       return this.fail('TRAVEL_DATE_INVALID', `travelDate must be a valid date in YYYY-MM-DD format, got "${normalizedTravelDate}"`, false)
     }
-    if (pkg.providerPackageId) {
+    if (backingPkgId) {
       const travelPkg = await prisma.providerPackage.findUnique({
-        where: { id: pkg.providerPackageId },
+        where: { id: backingPkgId },
         select: {
           activationPolicy: true, travelDateRequirement: true, travelDateLeadDays: true, travelDateSource: true,
           provider: { select: { code: true, config: true, adapterStrategy: true } },
@@ -165,19 +219,14 @@ export class PurchaseOrchestrator {
       return this.fail('INSUFFICIENT_WALLET', `Wallet balance $${business.walletBalance} is insufficient for $${totalAmount}`, false)
     }
 
-    // Step 5: Validate provider — use routing engine if not assigned
-    let providerId = pkg.providerId
+    // Step 5: Resolve the execution provider from the authoritative backing.
+    // Backing resolution above guarantees a backing (bound or custom). Never
+    // route the retail package id through a generic provider ranking.
+    let providerId = boundBacking ? boundBacking.providerId : (customBackings ? customBackings[0].providerId : undefined)
     trace(correlationId, 'PROVIDER_ROUTING', providerId ? 'ASSIGNED' : 'ROUTING_REQUIRED', { providerId: providerId || 'null' })
     if (!providerId) {
-      const { ProviderRoutingEngine } = await import('@/lib/services/routing/provider-routing-engine')
-      const engine = new ProviderRoutingEngine()
-      const route = await engine.selectBestProvider({ packageId: pkg.id, quantity })
-      if (!route.success || !route.selected) {
-        trace(correlationId, 'PROVIDER_ROUTING', 'FAILED', { internalCode: 'NO_PROVIDER' })
-        return this.fail('NO_PROVIDER', 'No eligible provider found via routing', false)
-      }
-      providerId = route.selected.providerId
-      console.log(`[ROUTING] Selected provider=${route.selected.providerName}(${providerId}) score=${route.selected.score}`)
+      trace(correlationId, 'PROVIDER_ROUTING', 'FAILED', { internalCode: 'BACKING_NOT_CONFIGURED' })
+      return this.fail('BACKING_NOT_CONFIGURED', 'This package is not configured with a valid provider backing. Please contact support.', false)
     }
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
@@ -336,29 +385,60 @@ export class PurchaseOrchestrator {
     await transitionOrder(orderId, 'PAYMENT_RESERVED')
     await createTimelineEvent(orderId, { eventType: 'WALLET_RESERVED', message: `Reserved $${totalAmount}` })
 
-    const planId = pkg.providerPlanId || pkg.id
+    // Provider-owned plan id comes from the authoritative backing when bound —
+    // never the local retail package id (which must not go upstream).
+    const planId = boundBacking ? boundBacking.providerPlanId : (pkg.providerPlanId || pkg.id)
 
-    // Step 13-14: Dispatch to provider with failover via shared service
+    // Step 13-14: Dispatch to provider with failover via shared service.
+    // Custom retail packages (one retail → many backing ProviderPackages) are
+    // resolved provider-neutrally into the SAME routing/failover flow — the
+    // connectors receive only their own ProviderPackage/providerPlanId.
     const nameParts = (customer?.name || 'Business Order').trim().split(/\s+/)
     const subscriber = { email: customer?.email || '', first_name: nameParts[0] || '', last_name: nameParts.slice(1).join(' ') || undefined }
 
-    const rankedProviders = await new ProviderRoutingEngine().getRankedProviders({ packageId: pkg.id, quantity })
+    let rankedProviders: ProviderScore[]
+    let currentProviderId: string
+    let currentProviderName: string
+    if (customBackings) {
+      // Priority-ordered backing providers drive the routing/failover list.
+      rankedProviders = customBackings.map((b, i) => ({
+        providerId: b.providerId, providerName: b.providerName, providerCode: '', score: 100 - i,
+        breakdown: { health: 100, price: 100, latency: 100, balance: 100, successRate: 100, priority: 100 },
+      }))
+      currentProviderId = customBackings[0].providerId
+      currentProviderName = customBackings[0].providerName
+    } else if (boundBacking) {
+      // Single bound backing → exactly one provider. No cross-provider failover:
+      // the backing (and its provider-owned plan id) is the only execution path.
+      rankedProviders = []
+      currentProviderId = boundBacking.providerId
+      currentProviderName = provider.name
+    } else {
+      // Unreachable: backing resolution guarantees a bound or custom backing.
+      // Defensive fallback — no provider ranking of the retail package id.
+      rankedProviders = []
+      currentProviderId = provider.id
+      currentProviderName = provider.name
+    }
 
-    let currentProviderId = provider.id
-    let currentProviderName = provider.name
     const attemptedIds: string[] = []
     attemptedIds.push(currentProviderId)
 
     for (let attemptNum = 1; attemptNum <= 3; attemptNum++) {
+      // The backing ProviderPackage bound to the CURRENT provider (ownership
+      // guard derives the provider plan id from it). Null for unbound packages.
+      const attemptProviderPackageId = customBackings
+        ? (customBackings.find(b => b.providerId === currentProviderId)?.providerPackageId ?? undefined)
+        : boundBacking
+          ? boundBacking.providerPackageId
+          : (pkg.providerPackageId || undefined)
+
       const result = await executeProviderAttempt({
         orderId, businessId, providerId: currentProviderId, providerName: currentProviderName,
         planId, quantity, subscriber, totalAmount, displayName, packageId: pkg.id,
         packageSnapshot, pkg, customerId, rankedProviders, policy: 'PREFERRED',
         travelDate: normalizedTravelDate,
-        // Canonical ProviderPackage bound to this retail package — the
-        // execution boundary derives the provider plan id from it and refuses
-        // any attempt whose provider does not own it.
-        providerPackageId: pkg.providerPackageId || undefined,
+        providerPackageId: attemptProviderPackageId,
       })
 
       if (result.success && (result.status === 'SUCCEEDED' || result.status === 'ALREADY_COMPLETE')) {

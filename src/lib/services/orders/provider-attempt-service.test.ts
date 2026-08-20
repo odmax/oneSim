@@ -209,7 +209,7 @@ describe('executeProviderAttempt — cross-provider plan-binding ownership guard
     expect(updateCall.data.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
   })
 
-  it('providerPackage not found → blocked before connector', async () => {
+  it('providerPackage not found → PACKAGE_UNAVAILABLE (stale backing, retryable) before connector', async () => {
     mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
     mockPrisma.providerPackage.findUnique.mockResolvedValue(null)
     const activate = vi.fn()
@@ -217,7 +217,8 @@ describe('executeProviderAttempt — cross-provider plan-binding ownership guard
 
     const result = await executeProviderAttempt(guardedInput())
     expect(result.success).toBe(false)
-    expect(result.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+    expect(result.errorCode).toBe('PACKAGE_UNAVAILABLE')
+    expect(result.status).toBe('PACKAGE_UNAVAILABLE')
     expect(activate).not.toHaveBeenCalled()
   })
 

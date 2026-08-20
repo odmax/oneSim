@@ -47,6 +47,10 @@ vi.mock('./fulfillment', () => ({
   resumeProviderFinalization: vi.fn(),
 }))
 
+vi.mock('@/lib/services/custom-package/custom-package', () => ({
+  resolveCustomPackageBackings: vi.fn(),
+}))
+
 import { prisma } from '@/lib/prisma'
 import { isProviderOperational, getAdapterForType } from '@/lib/providers/adapter-manager'
 import { getProviderBalance } from '@/lib/services/providers/provider-balance'
@@ -54,6 +58,7 @@ import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { reserveWalletFunds, captureReservedFunds, releaseReservedFunds } from './wallet-actions'
 import { failOrder } from './order-state-machine'
 import { completeProviderFinalization } from './fulfillment'
+import { resolveCustomPackageBackings } from '@/lib/services/custom-package/custom-package'
 import { PurchaseOrchestrator } from './purchase-orchestrator'
 
 const mockPrisma = vi.mocked(prisma)
@@ -64,6 +69,7 @@ const mockRelease = vi.mocked(releaseReservedFunds)
 const mockFailOrder = vi.mocked(failOrder)
 const mockBalance = vi.mocked(getProviderBalance)
 const mockAdapter = vi.mocked(getAdapterForType)
+const mockBackings = vi.mocked(resolveCustomPackageBackings)
 
 describe('PurchaseOrchestrator', () => {
   let orchestrator: PurchaseOrchestrator
@@ -308,13 +314,15 @@ describe('PurchaseOrchestrator', () => {
 
     const result = await orchestrator.executePurchase(validRequest)
     expect(result.success).toBe(false)
-    // Cross-provider failover is refused: the provider does not own the package.
-    expect(result.errorCode).toBe('PROVIDER_PACKAGE_MISMATCH')
+    // A single-bound package has NO failover list, so a retryable provider failure
+    // never dispatches to a second provider; the order fails without cross-provider
+    // routing (the provider owns the package exclusively).
+    expect(result.errorCode).toBe('ALL_PROVIDERS_EXHAUSTED')
     // prov-2 (AIRHUB) must never receive prov-1's (CHOICE) plan identifier.
     expect(prov1Activate).toHaveBeenCalled()
-    // No connector call can be attributed to the non-owning provider after the guard.
-    const prov1Calls = prov1Activate.mock.calls.length
+    expect(prov2Activate).not.toHaveBeenCalled()
     // Only the owner was attempted; the failover target never executes a purchase.
+    const prov1Calls = prov1Activate.mock.calls.length
     expect(prov1Calls).toBeGreaterThanOrEqual(1)
   })
 
@@ -478,5 +486,181 @@ describe('PurchaseOrchestrator', () => {
     expect(activateESIM).toHaveBeenCalled()
     // NOT_REQUIRED packages do not receive a synthesized travel date
     expect(activateESIM.mock.calls[0][0].travelDate).toBeUndefined()
+  })
+
+  // ── Bound-backing single-source-of-truth routing (provider-agnostic) ──────
+
+  function setupBoundBacking(owner: { providerId: string; providerPlanId: string; providerName: string; providerCode: string }) {
+    setupBusiness()
+    setupCustomer()
+    // Denormalized retail fields are deliberately STALE/WRONG — the authoritative
+    // ProviderPackage (owner + providerPlanId) must win, never pkg.providerId.
+    mockResolve.mockResolvedValue({
+      package: {
+        id: 'pkg-1', displayName: 'Test Plan', dataGB: 1, validityDays: 7,
+        priceUSD: { toString: () => '5' }, localPrice: { toString: () => '5' }, currency: 'USD',
+        source: 'CATALOG',
+        providerId: 'stale-prov', providerPlanId: 'stale-local-plan', providerName: 'STALE',
+        providerPackageId: 'pp-1', sku: 'SKU1', packageCode: 'PC1', customerDescription: null,
+      } as any,
+      source: 'PACKAGE',
+    } as any)
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      id: 'pp-1', providerId: owner.providerId, providerPlanId: owner.providerPlanId, isAvailable: true,
+      costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
+    } as any)
+    mockPrisma.provider.findUnique.mockResolvedValue({
+      id: owner.providerId, code: owner.providerCode, name: owner.providerName, status: 'ACTIVE', type: 'CUSTOM',
+      apiBaseUrl: 'https://a.b', apiToken: 'tok', environment: 'staging', authUrl: 'https://a.b/auth',
+      enabledCapabilities: ['PURCHASE'], config: {},
+    } as any)
+    mockPrisma.provider.findMany.mockResolvedValue([])
+    mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockPrisma.providerAttempt.create.mockResolvedValue({ id: 'att-1' } as any)
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
+    mockPrisma.eSIMPurchase.create.mockResolvedValue({ id: 'order-1' } as any)
+    mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
+    mockCapture.mockResolvedValue({ success: true })
+    mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
+  }
+
+  it('routes to the bound ProviderPackage owner, never the denormalized pkg.providerId', async () => {
+    setupBoundBacking({ providerId: 'prov-choice', providerPlanId: 'choice-sku', providerName: 'Choice', providerCode: 'CHOICE' })
+    const activateESIM = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'act-1', iccids: ['89012345678901234567'], status: 'ACTIVE', qrCodeUrl: 'https://qr', activationCodes: ['CODE'] } })
+    mockAdapter.mockResolvedValue({ activateESIM, validatePurchase: vi.fn().mockResolvedValue({ valid: true }) } as any)
+
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(true)
+    // Connector received the BACKING's provider-owned plan id.
+    expect(activateESIM).toHaveBeenCalledWith(expect.objectContaining({ planId: 'choice-sku' }))
+    // Provider was resolved from the backing's owner, not the stale denormalized id.
+    const providerLookups = mockPrisma.provider.findUnique.mock.calls.map(c => (c[0] as any)?.where?.id)
+    expect(providerLookups).toContain('prov-choice')
+    // Local retail id / stale denormalized plan id never reach the connector.
+    expect(JSON.stringify(activateESIM.mock.calls[0][0])).not.toContain('stale-local-plan')
+    expect(JSON.stringify(activateESIM.mock.calls[0][0])).not.toContain('pkg-1')
+  })
+
+  it('a future provider (unknown code) participates via bound backing with no provider branch', async () => {
+    setupBoundBacking({ providerId: 'prov-future', providerPlanId: 'future-plan-uuid', providerName: 'FutureVendor', providerCode: 'FUTURE_VENDOR' })
+    const activateESIM = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'act-1', iccids: ['89012345678901234567'], status: 'ACTIVE' } })
+    mockAdapter.mockResolvedValue({ activateESIM, validatePurchase: vi.fn().mockResolvedValue({ valid: true }) } as any)
+
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(true)
+    expect(activateESIM).toHaveBeenCalledWith(expect.objectContaining({ planId: 'future-plan-uuid' }))
+  })
+
+  it('Airhub-backed package routes to Airhub with Airhub providerPlanId (M2M regression baseline)', async () => {
+    setupBoundBacking({ providerId: 'prov-airhub', providerPlanId: 'airhub-plan-id', providerName: 'AirHub', providerCode: 'AIRHUB' })
+    const activateESIM = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'act-1', iccids: ['89012345678901234567'], status: 'ACTIVE' } })
+    mockAdapter.mockResolvedValue({ activateESIM, validatePurchase: vi.fn().mockResolvedValue({ valid: true }) } as any)
+
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(true)
+    expect(activateESIM).toHaveBeenCalledWith(expect.objectContaining({ planId: 'airhub-plan-id' }))
+    expect(mockPrisma.provider.findUnique.mock.calls.some(c => (c[0] as any)?.where?.id === 'prov-airhub')).toBe(true)
+  })
+
+  it('US-Matrix-backed package routes to US-Matrix with US-Matrix providerPlanId (M2M regression baseline)', async () => {
+    setupBoundBacking({ providerId: 'prov-usm', providerPlanId: 'usm-uuid-123', providerName: 'US-Matrix', providerCode: 'USMATRIX' })
+    const activateESIM = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'act-1', iccids: ['89012345678901234567'], status: 'ACTIVE' } })
+    mockAdapter.mockResolvedValue({ activateESIM, validatePurchase: vi.fn().mockResolvedValue({ valid: true }) } as any)
+
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(true)
+    expect(activateESIM).toHaveBeenCalledWith(expect.objectContaining({ planId: 'usm-uuid-123' }))
+    expect(mockPrisma.provider.findUnique.mock.calls.some(c => (c[0] as any)?.where?.id === 'prov-usm')).toBe(true)
+  })
+
+  it('stale/deactivated backing fails safely with PACKAGE_UNAVAILABLE before any provider HTTP', async () => {
+    setupBusiness()
+    mockResolve.mockResolvedValue({
+      package: { id: 'pkg-1', displayName: 'Test Plan', dataGB: 1, validityDays: 7, priceUSD: { toString: () => '5' }, localPrice: { toString: () => '5' }, currency: 'USD', source: 'CATALOG', providerPackageId: 'pp-1', sku: 'SKU1', packageCode: 'PC1', customerDescription: null } as any,
+      source: 'PACKAGE',
+    } as any)
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1', isAvailable: false } as any)
+
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('PACKAGE_UNAVAILABLE')
+    expect(mockReserve).not.toHaveBeenCalled()
+    expect(mockAdapter).not.toHaveBeenCalled()
+  })
+
+  // ── Unbound / legacy backing resolution (no generic routing of retail id) ──
+
+  function setupLegacyPackage(legacy: { providerId: string | null; providerPlanId: string | null }, findManyResult: any[]) {
+    setupBusiness()
+    setupCustomer()
+    mockBackings.mockResolvedValue([])
+    mockResolve.mockResolvedValue({
+      package: {
+        id: 'pkg-1', displayName: 'Legacy Plan', dataGB: 1, validityDays: 7,
+        priceUSD: { toString: () => '5' }, localPrice: { toString: () => '5' }, currency: 'USD',
+        source: 'CATALOG', providerId: legacy.providerId, providerPlanId: legacy.providerPlanId,
+        providerPackageId: null, sku: 'SKU1', packageCode: 'PC1', customerDescription: null,
+      } as any,
+      source: 'PACKAGE',
+    } as any)
+    mockPrisma.providerPackage.findMany.mockResolvedValue(findManyResult)
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({
+      id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1', isAvailable: true,
+      costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2',
+    } as any)
+    mockPrisma.provider.findUnique.mockResolvedValue({ id: 'prov-1', code: 'CHOICE', name: 'Choice', status: 'ACTIVE', type: 'CHOICE', apiBaseUrl: 'https://a.b', apiToken: 'tok', environment: 'staging', authUrl: 'https://a.b/auth', enabledCapabilities: ['PURCHASE'], config: {} } as any)
+    mockPrisma.provider.findMany.mockResolvedValue([])
+    mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockPrisma.providerAttempt.create.mockResolvedValue({ id: 'att-1' } as any)
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({ id: 'order-1', businessId: 'biz-1', userId: 'user-1', status: 'CREATED', totalAmount: { toString: () => '5' }, esims: [], providerId: undefined, packageId: 'pkg-1', packageSnapshot: {}, packageName: 'Test', packageDataGB: 1, packageValidityDays: 7 } as any)
+    mockPrisma.eSIMPurchase.create.mockResolvedValue({ id: 'order-1' } as any)
+    mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
+    mockCapture.mockResolvedValue({ success: true })
+    mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
+  }
+
+  it('unbound package with no backing fails with BACKING_NOT_CONFIGURED before any provider HTTP', async () => {
+    setupLegacyPackage({ providerId: null, providerPlanId: null }, [])
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('BACKING_NOT_CONFIGURED')
+    expect(mockReserve).not.toHaveBeenCalled()
+    expect(mockAdapter).not.toHaveBeenCalled()
+  })
+
+  it('legacy unique providerId+providerPlanId resolves to a single backing and purchases', async () => {
+    setupLegacyPackage({ providerId: 'prov-1', providerPlanId: 'pl-1' }, [{ id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1' }])
+    const activateESIM = vi.fn().mockResolvedValue({ success: true, data: { activationId: 'act-1', iccids: ['89012345678901234567'], status: 'ACTIVE' } })
+    mockAdapter.mockResolvedValue({ activateESIM, validatePurchase: vi.fn().mockResolvedValue({ valid: true }) } as any)
+
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(true)
+    // Connector received the backing's provider-owned plan id.
+    expect(activateESIM).toHaveBeenCalledWith(expect.objectContaining({ planId: 'pl-1' }))
+  })
+
+  it('ambiguous legacy mapping fails with BACKING_NOT_CONFIGURED before provider HTTP', async () => {
+    setupLegacyPackage(
+      { providerId: 'prov-1', providerPlanId: 'pl-1' },
+      [
+        { id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1' },
+        { id: 'pp-2', providerId: 'prov-1', providerPlanId: 'pl-1' },
+      ],
+    )
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('BACKING_NOT_CONFIGURED')
+    expect(mockReserve).not.toHaveBeenCalled()
+    expect(mockAdapter).not.toHaveBeenCalled()
+  })
+
+  it('legacy mapping with zero matches fails with BACKING_NOT_CONFIGURED before provider HTTP', async () => {
+    setupLegacyPackage({ providerId: 'prov-1', providerPlanId: 'pl-1' }, [])
+    const result = await orchestrator.executePurchase(validRequest)
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('BACKING_NOT_CONFIGURED')
+    expect(mockReserve).not.toHaveBeenCalled()
+    expect(mockAdapter).not.toHaveBeenCalled()
   })
 })

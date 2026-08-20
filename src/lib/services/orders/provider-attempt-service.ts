@@ -96,12 +96,17 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
   if (input.providerPackageId) {
     const providerPackage = await prisma.providerPackage.findUnique({
       where: { id: input.providerPackageId },
-      select: { id: true, providerId: true, providerPlanId: true },
+      select: { id: true, providerId: true, providerPlanId: true, isAvailable: true },
     })
 
     if (!providerPackage) {
-      await prisma.providerAttempt.update({ where: { id: attempt.id }, data: { status: 'SKIPPED', completedAt: new Date(), retryClassification: 'NON_RETRYABLE', errorCode: 'PROVIDER_PACKAGE_MISMATCH', errorMessage: 'ProviderPackage not found for purchase attempt', metadata: { providerId, providerPackageId: input.providerPackageId } } })
-      return { success: false, status: 'PROVIDER_PACKAGE_MISMATCH', errorCode: 'PROVIDER_PACKAGE_MISMATCH', errorMessage: 'ProviderPackage not found for purchase attempt' }
+      await prisma.providerAttempt.update({ where: { id: attempt.id }, data: { status: 'SKIPPED', completedAt: new Date(), retryClassification: 'RETRYABLE', errorCode: 'PACKAGE_UNAVAILABLE', errorMessage: 'ProviderPackage not found for purchase attempt', metadata: { providerId, providerPackageId: input.providerPackageId } } })
+      return { success: false, status: 'PACKAGE_UNAVAILABLE', errorCode: 'PACKAGE_UNAVAILABLE', errorMessage: 'ProviderPackage not found for purchase attempt' }
+    }
+
+    if (providerPackage.isAvailable === false) {
+      await prisma.providerAttempt.update({ where: { id: attempt.id }, data: { status: 'SKIPPED', completedAt: new Date(), retryClassification: 'RETRYABLE', errorCode: 'PACKAGE_UNAVAILABLE', errorMessage: 'ProviderPackage is no longer available', metadata: { providerId, providerPackageId: input.providerPackageId } } })
+      return { success: false, status: 'PACKAGE_UNAVAILABLE', errorCode: 'PACKAGE_UNAVAILABLE', errorMessage: 'This package is temporarily unavailable. Please try again later.' }
     }
 
     if (providerPackage.providerId !== provider.id) {
