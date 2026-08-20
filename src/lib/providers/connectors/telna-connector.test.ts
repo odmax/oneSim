@@ -3301,12 +3301,43 @@ describe('Telna V2.1 � remaining standard endpoints + custom package creation 
     expect(url.searchParams.get('offset')).toBe('0')
   })
 
-  it('create/modify company and inventory write endpoints stay excluded (no connector methods wired)', () => {
+  it('create/modify company and inventory write endpoints are mapped but DISABLED (block before HTTP)', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c: any = new TelnaConnector('telna-provider-1', 'Telna')
-    expect(typeof c.createCompany).toBe('undefined')
-    expect(typeof c.updateCompany).toBe('undefined')
-    expect(typeof c.createInventory).toBe('undefined')
-    expect(typeof c.updateInventory).toBe('undefined')
+    // Methods exist (mapped contract) but always gate with NOT_STANDARD_PLAN, no HTTP.
+    expect((await c.createCompany({ name: 'X' })).error?.code).toBe('NOT_STANDARD')
+    expect((await c.updateCompany(1, {})).error?.code).toBe('NOT_STANDARD')
+    expect((await c.createInventory({ name: 'X', company_id: 1 })).error?.code).toBe('NOT_STANDARD')
+    expect((await c.updateInventory(1, {})).error?.code).toBe('NOT_STANDARD')
+    // SIM purge is DANGEROUS → NOT_ENABLED gate (never exposed via ordinary admin).
+    expect((await c.purgeSimRegistry('89441000000000000000')).error?.code).toBe('NOT_ENABLED')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('updatePackageInstance uses PUT /v2.1/pcr/packages/{package_id} (distinct from sim-pcr PUT)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { id: 500, package_template: 7 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna' as any) as any
+    const r = await c.updatePackageInstance(500, { package_template: 7 })
+    expect(r.success).toBe(true)
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/pcr/packages/500')
+    expect(init.method).toBe('PUT')
+    const body = JSON.parse(init.body)
+    expect(body.package_template).toBe(7)
+  })
+
+  it('updateWallet uses PATCH /v2.1/pcr/wallets/{wallet_id} (distinct from balance GET)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { id: 5, name: 'W', balance: 10 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna' as any) as any
+    const r = await c.updateWallet(5, { minimum_balance: 1 })
+    expect(r.success).toBe(true)
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/pcr/wallets/5')
+    expect(init.method).toBe('PATCH')
+    expect(JSON.parse(init.body).minimum_balance).toBe(1)
   })
 
   it('wallet entitlement state is unaffected (balance capability present; no fake zero)', async () => {

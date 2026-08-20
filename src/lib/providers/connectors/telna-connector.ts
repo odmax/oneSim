@@ -1,14 +1,15 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
-import { telnaEndpointPath, telnaEndpointAuthFamily, isTelnaEndpointProven, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaAuthFamily, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption, type TelnaV2PackageTemplate, type TelnaCreatePackageRequest, type TelnaCreatePackageTemplateRequest, type TelnaV2Package, type TelnaV2SimRegistry, type TelnaEuiccProfile } from './telna-endpoints'
+import { telnaEndpointPath, telnaEndpointAuthFamily, telnaEndpointMethod, telnaEndpointMutation, telnaEndpointEntitlement, isTelnaEndpointProven, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaAuthFamily, type TelnaHttpMethod, type TelnaPaginatedResponse,
+ type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption, type TelnaV2PackageTemplate, type TelnaCreatePackageRequest, type TelnaCreatePackageTemplateRequest, type TelnaV2Package, type TelnaV2SimRegistry, type TelnaEuiccProfile, type TelnaCreateCompanyRequest, type TelnaUpdateCompanyRequest, type TelnaCreateInventoryRequest, type TelnaUpdateInventoryRequest, type TelnaWalletPatchRequest, type TelnaPackageUpdateRequest } from './telna-endpoints'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, StatusLookupEsim, StatusLookupIdentifier, ConnectorInstallDataOutput, InstallationLookupInput, InstallationLookupResult, CustomPackageDefinitionResult, CustomPackageCreateInput, CustomPackageCreateResult } from './connector-interface'
 import { normalizeSimStatus } from '../mappers/telna-sim-mapper'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { getCustomPackageCreationReadiness } from '@/lib/providers/capability-state'
 
 interface TelnaRequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  method?: TelnaHttpMethod
   endpoint: TelnaEndpoint
   pathParams?: Record<string, string | number>
   query?: Record<string, string | number | undefined>
@@ -272,7 +273,9 @@ export class TelnaConnector implements IProviderConnector {
     }
 
     const { apiBaseUrl, keyId, pcrApiKey } = providerConfig
-    const method = opts.method || 'GET'
+    // HTTP method defaults to the registry's canonical method for this endpoint
+    // (e.g. walletUpdate → PATCH); an explicit override is still honoured.
+    const method = opts.method || telnaEndpointMethod(opts.endpoint)
     // Canonical, single-source path/URL composition (shared with Discovery).
     const path = telnaEndpointPath(opts.endpoint)
     const family = telnaEndpointAuthFamily(opts.endpoint)
@@ -1453,5 +1456,62 @@ export class TelnaConnector implements IProviderConnector {
         rawMetadata: { name: input.name, dataGB: input.dataGB, validityDays: input.validityDays },
       },
     }
+  }
+
+  // ── Mapped-but-disabled CORE / INVENTORY mutations (NOT_STANDARD_PLAN) ──
+  // Contract is registered only so the operation can be supported later if the
+  // Telna add-on is enabled — without an architectural rewrite. These methods
+  // ALWAYS block before any HTTP and are never exposed as enabled capabilities.
+  private gateDisabledEndpoint(endpoint: TelnaEndpoint, label: string): { success: false; error: { code: string; message: string } } {
+    const entitlement = telnaEndpointEntitlement(endpoint)
+    return {
+      success: false,
+      error: { code: entitlement === 'NOT_STANDARD' ? 'NOT_STANDARD' : 'NOT_ENABLED', message: `${label} is not enabled for this provider (${entitlement})` },
+    }
+  }
+
+  async createCompany(body: TelnaCreateCompanyRequest): Promise<ConnectorResult<{ id: string | number }>> {
+    return this.gateDisabledEndpoint('companiesCreate', 'Create company')
+  }
+  async updateCompany(companyId: number, body: TelnaUpdateCompanyRequest): Promise<ConnectorResult<{ id: string | number }>> {
+    return this.gateDisabledEndpoint('companyUpdate', 'Modify company')
+  }
+  async createInventory(body: TelnaCreateInventoryRequest): Promise<ConnectorResult<{ id: string | number }>> {
+    return this.gateDisabledEndpoint('inventoryCreate', 'Create inventory')
+  }
+  async updateInventory(inventoryId: number, body: TelnaUpdateInventoryRequest): Promise<ConnectorResult<{ id: string | number }>> {
+    return this.gateDisabledEndpoint('inventoryUpdate', 'Modify inventory')
+  }
+
+  /** Irreversible SIM purge/destroy — DANGEROUS: always refused, never an ordinary admin action. */
+  async purgeSimRegistry(iccid: string): Promise<ConnectorResult<{ ok: true }>> {
+    return this.gateDisabledEndpoint('simRegistryPurge', 'Purge SIM registry entry')
+  }
+
+  /**
+   * PUT /v2.1/pcr/packages/{package_id} — provider method exists and is mapped,
+   * but no OneSIM lifecycle operation maps unambiguously to its documented
+   * payload. Kept as internal provider-level method; capability is NOT exposed.
+   */
+  async updatePackageInstance(packageId: string | number, body: TelnaPackageUpdateRequest): Promise<ConnectorResult<{ package: TelnaV2Package }>> {
+    const result = await this.request({ endpoint: 'packageUpdate', pathParams: { package_id: packageId }, body })
+    const pkg = result.success && result.data ? unwrapTelnaDetail(result.data, 'data') : null
+    if (!result.success) {
+      return { success: false, error: result.error || { code: 'PACKAGE_UPDATE_FAILED', message: 'Package update failed' } }
+    }
+    return { success: true, data: { package: (pkg || {}) as TelnaV2Package } }
+  }
+
+  /**
+   * PATCH /v2.1/pcr/wallets/{wallet_id} — mapped and provider method available,
+   * but NOT a normal OneSIM capability (wallet remains entitlement-pending).
+   */
+  async updateWallet(walletId: number, body: TelnaWalletPatchRequest): Promise<ConnectorResult<{ wallet: TelnaWallet }>> {
+    const result = await this.request({ endpoint: 'walletUpdate', pathParams: { wallet_id: walletId }, body })
+    const wallet = result.success && result.data ? unwrapTelnaDetail(result.data, 'wallet') : null
+    if (!result.success) {
+      return { success: false, error: result.error || { code: 'WALLET_UPDATE_FAILED', message: 'Wallet update failed' } }
+    }
+    return { success: true, data: { wallet: (wallet || {}) as TelnaWallet } }
   }
 }
