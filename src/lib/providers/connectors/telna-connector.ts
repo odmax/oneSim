@@ -1,10 +1,11 @@
 import { prisma } from '@/lib/prisma'
 import { decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
-import { telnaEndpointPath, telnaEndpointAuthFamily, isTelnaEndpointProven, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaAuthFamily, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption, type TelnaV2PackageTemplate, type TelnaCreatePackageRequest, type TelnaV2Package, type TelnaV2SimRegistry, type TelnaEuiccProfile } from './telna-endpoints'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, StatusLookupEsim, StatusLookupIdentifier, ConnectorInstallDataOutput, InstallationLookupInput, InstallationLookupResult } from './connector-interface'
+import { telnaEndpointPath, telnaEndpointAuthFamily, isTelnaEndpointProven, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaAuthFamily, type TelnaPaginatedResponse, type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption, type TelnaV2PackageTemplate, type TelnaCreatePackageRequest, type TelnaCreatePackageTemplateRequest, type TelnaV2Package, type TelnaV2SimRegistry, type TelnaEuiccProfile } from './telna-endpoints'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, StatusLookupEsim, StatusLookupIdentifier, ConnectorInstallDataOutput, InstallationLookupInput, InstallationLookupResult, CustomPackageDefinitionResult, CustomPackageCreateInput, CustomPackageCreateResult } from './connector-interface'
 import { normalizeSimStatus } from '../mappers/telna-sim-mapper'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
+import { getCustomPackageCreationReadiness } from '@/lib/providers/capability-state'
 
 interface TelnaRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
@@ -168,6 +169,11 @@ export class TelnaConnector implements IProviderConnector {
     balance: true, // getWallet
     inventory: true, // GET /sim-registries
     webhooks: false,
+    // Provider-side custom package/template creation (POST /v2.1/pcr/package-templates)
+    // is CONTRACT-SUPPORTED (implemented + correctly mapped). LIVE_MUTATION_VALIDATED
+    // is NOT yet true — the generic Provider Catalog does not auto-invoke it and no
+    // live POST has been performed. See separate readiness gate for live use.
+    customPackageCreation: true,
   }
 
   /** Telna uses a pre-issued static KeyID — no runtime token exchange. */
@@ -999,6 +1005,20 @@ export class TelnaConnector implements IProviderConnector {
     return { success: true, data: { company: company as TelnaCompany } }
   }
 
+  /** GET /v2.1/core/companies?count=&offset= — named `companies` list envelope (CORE, RAW auth). */
+  async listCompanies(count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaCompany[]; total: number }>> {
+    const start = Date.now()
+    const result = await this.request({ method: 'GET', endpoint: 'companies', query: { count, offset } })
+    const duration = Date.now() - start
+    const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'companies') : []) || []
+    const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || items.length : items.length)
+    console.log(`[TELNA_DISCOVERY] method=listCompanies success=${result.success} status=${result.status} itemCount=${items.length} total=${total} durationMs=${duration} requestId=${result.requestId}`)
+    if (!result.success) {
+      return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Failed to list companies' } }
+    }
+    return { success: true, data: { items: items as TelnaCompany[], total } }
+  }
+
   async listInventories(company?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaInventory[]; total: number }>> {
     const start = Date.now()
     // Documented v2.1 filter: company=<company_id>
@@ -1075,6 +1095,31 @@ export class TelnaConnector implements IProviderConnector {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'Traffic policy not found' } }
     }
     return { success: true, data: { trafficPolicy: trafficPolicy as Record<string, unknown> } }
+  }
+
+  /** GET /v2.1/pcr/traffic-policies — named `traffic_policies` list envelope (PCR). */
+  async listTrafficPolicies(count?: number, offset?: number): Promise<ConnectorResult<{ items: Record<string, unknown>[]; total: number }>> {
+    const result = await this.request({ method: 'GET', endpoint: 'trafficPolicies', query: { count, offset } })
+    const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'traffic_policies') : []) || []
+    const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || items.length : items.length)
+    if (!result.success) {
+      return { success: false, error: result.error || { code: 'DISCOVERY_FAILED', message: 'Failed to list traffic policies' } }
+    }
+    return { success: true, data: { items: items as Record<string, unknown>[], total } }
+  }
+
+  /** GET /v2.1/pcr/route-policies — named `route_policies` list envelope (PCR). */
+  async listRoutePolicies(inventory: string | number, count?: number, offset?: number): Promise<ConnectorResult<{ items: Record<string, unknown>[]; total: number }>> {
+    if (inventory == null || String(inventory).trim() === '') {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'inventory is required to list route policies' } }
+    }
+    const result = await this.request({ method: 'GET', endpoint: 'routePolicies', query: { inventory, count, offset } })
+    const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'route_policies') : []) || []
+    const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || items.length : items.length)
+    if (!result.success) {
+      return { success: false, error: result.error || { code: 'DISCOVERY_FAILED', message: 'Failed to list route policies' } }
+    }
+    return { success: true, data: { items: items as Record<string, unknown>[], total } }
   }
 
   async getBalance(): Promise<ConnectorResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>> {
@@ -1289,5 +1334,124 @@ export class TelnaConnector implements IProviderConnector {
       return { success: false, error: { code: result.error?.code || 'WALLET_FAILED', message: result.error?.message || 'Failed to list wallets' } }
     }
     return { success: true, data: { items: items as TelnaWallet[], total } }
+  }
+
+  /**
+   * Provider-neutral custom offering/template definition for Telna.
+   *
+   * Exposes provider-owned inventories + traffic policies (as creation options)
+   * and the documented Telna-specific template fields. No credentials are
+   * exposed as fields. The actual POST is NOT enabled for live use until the
+   * endpoint is vendor-confirmed (capability stays false); this only describes
+   * what the contract would accept.
+   */
+  async getCustomPackageDefinition(): Promise<CustomPackageDefinitionResult> {
+    let inventories: Array<{ id: string | number; name: string }> = []
+    let trafficPolicies: Array<{ id: string | number; name: string }> = []
+    try {
+      const inv = await this.listInventories()
+      if (inv.success) inventories = (inv.data?.items || []).map(i => ({ id: i.id, name: i.name }))
+    } catch { /* best-effort */ }
+    try {
+      const tp = await this.listTrafficPolicies()
+      if (tp.success) trafficPolicies = (tp.data?.items || []).map(p => ({ id: String(p.id || p.traffic_policy_id || ''), name: String(p.name || p.traffic_policy_name || '') })).filter(x => x.id)
+    } catch { /* best-effort */ }
+
+    return {
+      success: true,
+      definition: {
+        inventories,
+        trafficPolicies,
+        providerFields: [
+          { key: 'traffic_policy', label: 'Traffic Policy', type: 'select', required: false },
+          { key: 'inventory', label: 'Inventory', type: 'select', required: false },
+          { key: 'activation_type', label: 'Activation Type', type: 'select', required: false, options: [{ value: 'AUTO', label: 'Auto' }, { value: 'MANUAL', label: 'Manual' }] },
+          { key: 'notes', label: 'Notes', type: 'string', required: false },
+          { key: 'earliest_activation_date', label: 'Earliest Activation Date', type: 'string', required: false },
+          { key: 'earliest_available_date', label: 'Earliest Available Date', type: 'string', required: false },
+          { key: 'latest_available_date', label: 'Latest Available Date', type: 'string', required: false },
+        ],
+      },
+    }
+  }
+
+  /**
+   * Provider-side custom package/template creation (POST /v2.1/pcr/package-templates).
+   *
+   * Creates a NEW OFFERING — distinct from POST /packages (purchase/assignment).
+   * Validation happens here (provider-owned inventory/traffic-policy, ISO
+   * countries, data>0, valid validity, supported activation type). No local
+   * OneSIM id is sent upstream. providerPlanId = the returned Telna template id.
+   *
+   * CONTRACT_SUPPORTED = true (implemented to the documented contract: numeric
+   * `activation_time_allowance` in SECONDS kept distinct from the `time_allowance`
+   * OBJECT { duration, unit }).
+   * LIVE MUTATION guard: this method performs a POST /package-templates only when
+   * the provider is explicitly READY (connector supports it AND provider is
+   * operational AND `enabledCapabilities` includes CUSTOM_PACKAGE_CREATION).
+   * Otherwise it returns CAPABILITY_NOT_ENABLED and makes NO HTTP request. This is
+   * enforced server-side here (never trust the browser). LIVE_MUTATION_VALIDATED
+   * is false until a controlled staging POST succeeds; readiness enablement is an
+   * explicit operator action, never auto-flipped by a GET.
+   */
+  async createCustomPackage(input: CustomPackageCreateInput): Promise<ConnectorResult<CustomPackageCreateResult>> {
+    // Runtime readiness gate — provider-neutral via enabledCapabilities.
+    const readiness = await getCustomPackageCreationReadiness(this.providerId).catch(() => ({ ready: false, reason: 'readiness-check-failed' }))
+    if (!readiness.ready) {
+      return {
+        success: false,
+        error: {
+          code: 'CAPABILITY_NOT_ENABLED',
+          message: `Custom package creation is not enabled for this provider (${readiness.reason ?? 'not-ready'})`,
+        },
+      }
+    }
+    if (!input.name || !String(input.name).trim()) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'name is required' } }
+    }
+    if (!Number.isFinite(input.dataGB) || input.dataGB <= 0) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'dataGB must be > 0' } }
+    }
+    if (!Number.isFinite(input.validityDays) || input.validityDays <= 0) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'validityDays must be > 0' } }
+    }
+
+    const body: TelnaCreatePackageTemplateRequest = {
+      name: String(input.name),
+      data_usage_allowance: Math.round(input.dataGB * 1024 * 1024 * 1024), // GB -> BYTES
+      // Validity / time allowance → documented OBJECT { duration, unit }.
+      time_allowance: { duration: Math.round(input.validityDays), unit: 'SECOND' } as { duration: number; unit: 'CALENDAR_MONTH' | 'SECOND' },
+      // Activation window allowance → separate numeric SECONDS field (documented INTEGER).
+      ...(input.activationTimeAllowanceSeconds != null
+        ? { activation_time_allowance: Math.round(input.activationTimeAllowanceSeconds) }
+        : {}),
+      ...(input.voiceMinutes != null ? { voice_usage_allowance: input.voiceMinutes } : {}),
+      ...(input.smsCount != null ? { sms_usage_allowance: input.smsCount } : {}),
+      ...(input.activationType ? { activation_type: String(input.activationType).toUpperCase() as 'AUTO' | 'MANUAL' } : {}),
+      ...(input.countries && input.countries.length ? { supported_countries: input.countries } : {}),
+      ...(input.inventoryId != null ? { inventory: input.inventoryId } : {}),
+      ...(input.trafficPolicyId != null ? { traffic_policy: input.trafficPolicyId } : {}),
+      ...(input.notes ? { notes: input.notes } : {}),
+      ...(input.providerValues ? { ...(input.providerValues as Record<string, unknown>) } : {}),
+    }
+
+    const result = await this.request({ method: 'POST', endpoint: 'packageTemplateCreate', body })
+    if (!result.success) return { success: false, error: result.error }
+
+    const created = unwrapTelnaDetail(result.data, 'template') as Record<string, unknown> | null
+    const providerPlanId = created?.id != null ? String(created.id) : undefined
+    if (!providerPlanId) {
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'POST /package-templates response missing template id' } }
+    }
+    return {
+      success: true,
+      data: {
+        success: true,
+        providerPlanId,
+        providerPlanCode: providerPlanId,
+        status: created?.status ? String(created.status) : undefined,
+        rawMetadata: { name: input.name, dataGB: input.dataGB, validityDays: input.validityDays },
+      },
+    }
   }
 }

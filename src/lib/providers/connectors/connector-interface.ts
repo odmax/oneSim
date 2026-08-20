@@ -242,6 +242,10 @@ export interface ConnectorCapabilities {
   balance: boolean
   inventory: boolean
   webhooks: boolean
+  /** Provider-side custom offering/template creation (createCustomPackage).
+   *  Optional: absent/undefined means NOT supported (backward-compatible for
+   *  connectors that do not implement createCustomPackage). */
+  customPackageCreation?: boolean
 }
 
 export const DEFAULT_CONNECTOR_CAPABILITIES: ConnectorCapabilities = {
@@ -256,6 +260,7 @@ export const DEFAULT_CONNECTOR_CAPABILITIES: ConnectorCapabilities = {
   balance: false,
   inventory: false,
   webhooks: false,
+  customPackageCreation: false,
 }
 
 export type ConnectorAuthMode =
@@ -440,6 +445,57 @@ export interface TokenState {
   tokenExpiry: unknown
 }
 
+/** Provider-neutral custom package/offering create contract. */
+export interface CustomPackageField {
+  key: string
+  label: string
+  type: 'string' | 'number' | 'boolean' | 'select'
+  required: boolean
+  options?: Array<{ value: string; label: string }>
+}
+
+export interface CustomPackageDefinition {
+  /** Provider-owned inventory choices (id + label), if the provider requires one. */
+  inventories?: Array<{ id: string | number; name: string }>
+  /** Provider-owned traffic-policy choices (id + label), if required. */
+  trafficPolicies?: Array<{ id: string | number; name: string }>
+  /** Dynamic provider-specific required/optional fields (beyond the common ones). */
+  providerFields: CustomPackageField[]
+}
+
+export interface CustomPackageDefinitionResult {
+  success: boolean
+  definition?: CustomPackageDefinition
+  error?: { code: string; message: string }
+}
+
+/** Canonical custom offering create input (common OneSIM fields + provider-specific). */
+export interface CustomPackageCreateInput {
+  name: string
+  countries?: string[]
+  dataGB: number
+  validityDays: number
+  /** Optional provider activation-window allowance, expressed in SECONDS
+   *  (maps 1:1 to Telna `activation_time_allowance`, an INTEGER with unit SECONDS). */
+  activationTimeAllowanceSeconds?: number
+  voiceMinutes?: number
+  smsCount?: number
+  activationType?: 'AUTO' | 'MANUAL' | string
+  inventoryId?: string | number
+  trafficPolicyId?: string | number
+  notes?: string
+  /** Provider-specific arbitrary fields. */
+  providerValues?: Record<string, unknown>
+}
+
+export interface CustomPackageCreateResult {
+  success: boolean
+  providerPlanId?: string
+  providerPlanCode?: string
+  status?: string
+  rawMetadata?: Record<string, unknown>
+}
+
 export interface IProviderConnector {
   readonly providerId: string
   readonly name: string
@@ -505,4 +561,19 @@ export interface IProviderConnector {
   validatePurchase?(params: { planId: string; quantity: number; subscriber: { email: string } }): Promise<{ valid: boolean; reason?: string }>
   getBalance?(): Promise<ConnectorResult<{ balance: number | null; currency: string | null; accountId?: string | null; accountName?: string | null }>>
   getRoamingProfiles?(): Promise<ConnectorResult<Array<{ id: string; code: string; name: string; description?: string; isDefault?: boolean }>>>
+
+  /**
+   * Provider-neutral custom offering/template creation contract.
+   *
+   * A connector that truthfully supports creating a NEW provider-side package
+   * offering/template (e.g. Telna POST /v2.1/pcr/package-templates) declares
+   * capabilities.CUSTOM_PACKAGE_CREATION and implements BOTH methods below.
+   *
+   * getCustomPackageDefinition() returns the provider's dynamic required/optional
+   * fields. createCustomPackage(input) performs the provider mutation and returns
+   * the provider-created offering id (= providerPlanId). Provider translation is
+   * connector-local; NO local OneSIM id is sent upstream.
+   */
+  getCustomPackageDefinition?(): Promise<CustomPackageDefinitionResult>
+  createCustomPackage?(input: CustomPackageCreateInput): Promise<ConnectorResult<CustomPackageCreateResult>>
 }

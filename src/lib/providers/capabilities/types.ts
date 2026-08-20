@@ -24,6 +24,13 @@ export const ProviderCapability = {
   DIRECT_IMSI_CREATE: 'DIRECT_IMSI_CREATE',
   EVENT_LOGS: 'EVENT_LOGS',
   RATE_LIST: 'RATE_LIST',
+  /**
+   * Provider-side custom offering/template creation (e.g. Telna POST
+   * /v2.1/pcr/package-templates). Provider-neutral capability: a connector that
+   * truthfully implements createCustomPackage() declares this. Never enabled
+   * merely because a documented endpoint exists.
+   */
+  CUSTOM_PACKAGE_CREATION: 'CUSTOM_PACKAGE_CREATION',
 } as const
 
 export type ProviderCapability = (typeof ProviderCapability)[keyof typeof ProviderCapability]
@@ -54,6 +61,7 @@ export const CAPABILITY_LABELS: Record<ProviderCapability, string> = {
   DIRECT_IMSI_CREATE: 'Direct IMSI Create',
   EVENT_LOGS: 'Event Logs',
   RATE_LIST: 'Rate List',
+  CUSTOM_PACKAGE_CREATION: 'Custom Package Creation',
 }
 
 export const CAPABILITY_COLORS: Record<ProviderCapability, string> = {
@@ -82,4 +90,5 @@ export const CAPABILITY_COLORS: Record<ProviderCapability, string> = {
   DIRECT_IMSI_CREATE: 'bg-gray-100 text-gray-700',
   EVENT_LOGS: 'bg-violet-100 text-violet-700',
   RATE_LIST: 'bg-amber-100 text-amber-700',
+  CUSTOM_PACKAGE_CREATION: 'bg-indigo-100 text-indigo-700',
 }

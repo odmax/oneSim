@@ -24,6 +24,9 @@ export const TELNA_ENDPOINTS = {
   wallets: '/v2.1/pcr/wallets',
   trafficPolicies: '/v2.1/pcr/traffic-policies',
   trafficPolicy: '/v2.1/pcr/traffic-policies/{traffic_policy_id}',
+  routePolicies: '/v2.1/pcr/route-policies',
+  // POST — custom package/template CREATION (new offering, NOT a package instance).
+  packageTemplateCreate: '/v2.1/pcr/package-templates',
   // USAGE (legacy read helpers; usage is primarily served via /v2.1/pcr/packages)
   simUsage: '/v2.1/usage/{iccid}',
   simSessions: '/v2.1/usage/sessions/{iccid}',
@@ -90,6 +93,8 @@ const TELNA_ENDPOINT_AUTH: Record<TelnaEndpoint, TelnaAuthFamily> = {
   wallets: 'PCR',
   trafficPolicies: 'PCR',
   trafficPolicy: 'PCR',
+  routePolicies: 'PCR',
+  packageTemplateCreate: 'PCR',
   // /v2.1/usage/*
   simUsage: 'USAGE',
   simSessions: 'USAGE',
@@ -635,6 +640,29 @@ export interface TelnaCreatePackageRequest {
   sim: string               // existing Telna ICCID
   package_template: number  // Telna package template integer ID
   time_allowance?: number   // optional seconds
+}
+
+/**
+ * POST /v2.1/pcr/package-templates — create a NEW package OFFERING/TEMPLATE
+ * (distinct from POST /packages which assigns a package instance to a SIM).
+ * Documented fields per the V2.1 collection. All identifiers are provider-owned.
+ */
+export interface TelnaCreatePackageTemplateRequest {
+  name: string
+  traffic_policy?: string | number
+  supported_countries?: string[]
+  voice_usage_allowance?: number       // minutes
+  data_usage_allowance?: number        // BYTES
+  sms_usage_allowance?: number         // messages
+  activation_time_allowance?: number   // seconds
+  activation_type?: 'AUTO' | 'MANUAL' | string
+  earliest_activation_date?: string
+  earliest_available_date?: string
+  latest_available_date?: string
+  notes?: string
+  /** Documented validity/time allowance OBJECT { duration, unit } (unit: CALENDAR_MONTH | SECOND). */
+  time_allowance?: { duration: number; unit: 'CALENDAR_MONTH' | 'SECOND' }
+  inventory?: string | number
 }
 
 /** Documented created / listed package instance. */

@@ -14,6 +14,7 @@ import { SetupWizard } from '@/components/admin/providers/SetupWizard'
 import { ProviderLifecycleActions } from '@/components/admin/providers/ProviderLifecycleActions'
 import ProviderCertificationWizard from '@/components/admin/providers/ProviderCertificationWizard'
 import { toggleCapabilityExposure } from '@/lib/actions/capability-exposure-actions'
+import { toggleProviderCapabilityEnabled } from '@/lib/actions/provider-capability-actions'
 import { ProviderHealthCards, ProviderCapabilityMatrix } from '@/components/admin/providers/ProviderHealthCards'
 import { detectUrlMismatch } from '@/lib/providers/url-resolver'
 import { SaveAsTemplateButton } from '@/components/admin/providers/SaveAsTemplateButton'
@@ -322,17 +323,32 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
                     </div>
                     <div className="flex items-center gap-1">
                       <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${state.implementationState === 'SUPPORTED' ? 'bg-green-100 text-green-800' : state.implementationState === 'NOT_SUPPORTED' ? 'bg-gray-100 text-gray-500' : state.implementationState === 'UNKNOWN' ? 'bg-amber-100 text-amber-800' : 'bg-amber-100 text-amber-800'}`}>
-                        {state.implementationState}
+                        {state.implementationState === 'SUPPORTED' ? 'Supported' : state.implementationState === 'NOT_SUPPORTED' ? 'Not supported' : state.implementationState === 'UNKNOWN' ? 'Unknown' : 'Not implemented'}
                       </span>
                       <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${state.enabled ? 'bg-cyan-100 text-cyan-800' : 'bg-gray-100 text-gray-500'}`}>
-                        {state.enabled ? 'Enabled' : 'Off'}
+                        {state.enabled ? 'Enabled' : 'Disabled for this account'}
                       </span>
                       {state.portalExposed && <span className="text-[10px] text-gray-400">Portal</span>}
                       {state.apiExposed && <span className="text-[10px] text-gray-400">API</span>}
+                      {state.capability === 'CUSTOM_PACKAGE_CREATION' && state.implementationState === 'SUPPORTED' && (
+                        <form action={toggleProviderCapabilityEnabled} title={state.enabled ? 'Disabling blocks provider-side creation immediately' : 'Enabling permits future authorized provider-side custom-package creation (it does not call the provider now)'}>
+                          <input type="hidden" name="providerId" value={provider.id} />
+                          <input type="hidden" name="capability" value="CUSTOM_PACKAGE_CREATION" />
+                          <input type="hidden" name="enabled" value={String(!state.enabled)} />
+                          <button type="submit" className={`ml-1 rounded px-2 py-0.5 text-[10px] font-medium hover:opacity-80 ${state.enabled ? 'bg-red-100 text-red-700' : 'bg-cyan-100 text-cyan-700'}`}>
+                            {state.enabled ? 'Disable' : 'Enable'}
+                          </button>
+                        </form>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
+              <p className="mt-3 text-[10px] text-gray-400">
+                Enabling a provider capability does not call the provider. It only permits
+                future authorized provider-side mutations (e.g. custom-package creation) to pass
+                their readiness gate. Changes are audited with the actor, previous and new state.
+              </p>
             </>
           ) : (
             <p className="text-xs text-gray-400">Capability state unavailable.</p>

@@ -23,6 +23,7 @@ export interface ProviderCapabilityProfile {
     supportsUsage: boolean
     supportsUsageSync: boolean
     supportsTopUp: boolean
+    supportedCustomPackageCreation: boolean
     enabledCapabilities: string[]
   }
   exposure: {
@@ -54,6 +55,7 @@ const CAP_TO_DB: Record<keyof ConnectorCapabilities, { db: keyof ProviderCapabil
   balance: { db: 'supportsESIM' },
   inventory: { db: 'supportsESIM' },
   webhooks: { db: 'supportsESIM' },
+  customPackageCreation: { db: 'supportedCustomPackageCreation' },
 }
 
 export function connectorCapabilityStatus(declared: boolean, methodPresent: boolean, methodName: keyof ConnectorCapabilities): CapabilityStatus {
@@ -96,6 +98,9 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
     supportsUsage: Boolean(provider?.supportsUsage),
     supportsUsageSync: Boolean(provider?.supportsUsageSync),
     supportsTopUp: Boolean(provider?.supportsTopUp),
+    // customPackageCreation has no DB column — reflect the connector's runtime
+    // declaration only (implementation + correct semantics must both exist).
+    supportedCustomPackageCreation: caps.customPackageCreation === true,
     enabledCapabilities: (provider?.enabledCapabilities as string[]) || [],
   }
 
@@ -134,15 +139,19 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
     balance: { portal: statusPortal, api: statusApi },
     inventory: { portal: statusPortal, api: statusApi },
     webhooks: { portal: statusPortal, api: statusApi },
+    customPackageCreation: { portal: statusPortal, api: statusApi },
   }
 
   for (const [capKey, mapping] of Object.entries(CAP_TO_DB) as Array<[keyof ConnectorCapabilities, { db: keyof ProviderCapabilityProfile['configured'] }]>) {
-    const connectorSupported = caps[capKey]
+    const raw = caps[capKey]
+    // Optional connector capability (e.g. customPackageCreation) defaults to false
+    // when the connector does not declare it.
+    const connectorSupported: boolean | 'UNKNOWN' = raw === undefined ? false : raw
     const dbConfigured = Boolean(configured[mapping.db])
     const connectorStatus: CapabilityStatus = connector
       ? INSTALLATION_CAPS.has(capKey)
         ? classifyInstallationCapability(connectorSupported, true, capKey)
-        : connectorCapabilityStatus(connectorSupported as boolean, true, capKey)
+        : connectorCapabilityStatus(connectorSupported === 'UNKNOWN' ? false : connectorSupported, true, capKey)
       : 'NOT_IMPLEMENTED'
     const exp = exposureByCap[capKey]
     // A tri-state UNKNOWN is never a hard mismatch — it is not a claim of support.

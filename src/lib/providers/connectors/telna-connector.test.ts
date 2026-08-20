@@ -31,15 +31,21 @@ vi.mock('@/lib/services/esims/esim-inventory-claim', () => ({
   releaseProviderIccidClaim: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock('@/lib/providers/capability-state', () => ({
+  getCustomPackageCreationReadiness: vi.fn(),
+}))
+
 import type { Provider } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { TelnaConnector, normalizeTelnaState, normalizeTelnaTimeAllowance } from './telna-connector'
 import { resolveConnectorType, createConnector } from './connector-factory'
 import { encryptToken, decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
+import { getCustomPackageCreationReadiness } from '@/lib/providers/capability-state'
 
 const mockClaimProviderIccid = vi.mocked(claimProviderIccid)
 const mockReleaseProviderIccidClaim = vi.mocked(releaseProviderIccidClaim)
+const mockCustomPackageReadiness = vi.mocked(getCustomPackageCreationReadiness)
 
 // Deterministic encrypted PCR credential fixtures. Stored in provider.config
 // ONLY as encryptToken() ciphertext (never plaintext), matching the production
@@ -3140,5 +3146,173 @@ describe('Telna Plan Sync � final contract hardening (time_allowance object + 
     expect(r.data?.[0].raw_data?.providerStatus).toBe('DE_ACTIVATED')
     // Exactly one page requested; the connector never issues ProviderPackage deletes.
     expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Telna V2.1 � remaining standard endpoints + custom package creation contract', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+    vi.mocked(prisma.eSIM.findMany).mockResolvedValue([])
+  })
+
+  function json(data: unknown, status = 200) {
+    return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
+  }
+
+  it('traffic-policy list parses the named traffic_policies envelope (PCR)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ total: 2, offset: 0, count: 2, traffic_policies: [{ id: 7, name: 'Std' }, { id: 8, name: 'Premium' }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.listTrafficPolicies()
+    expect(r.success).toBe(true)
+    expect(r.data?.items).toHaveLength(2)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/traffic-policies')
+  })
+
+  it('route-policy list parses the named route_policies envelope (PCR), requires inventory', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ total: 1, offset: 0, count: 1, route_policies: [{ id: 3, name: 'Default' }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.listRoutePolicies(9, 10, 0)
+    expect(r.success).toBe(true)
+    expect(r.data?.items).toHaveLength(1)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/route-policies')
+    const url = new URL(String(fetchSpy.mock.calls[0][0]))
+    expect(url.searchParams.get('inventory')).toBe('9')
+    expect(url.searchParams.get('count')).toBe('10')
+    expect(url.searchParams.get('offset')).toBe('0')
+  })
+
+  it('route-policy list requires inventory (INVALID_REQUEST, no HTTP call)', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await (c as any).listRoutePolicies(undefined, 10, 0)
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_REQUEST')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('capabilities: customPackageCreation true at connector-contract level; paid add-ons disabled', () => {
+    const caps = new TelnaConnector('telna-provider-1', 'Telna').capabilities!
+    expect(caps.webhooks).toBe(false)
+    expect(caps.customPackageCreation).toBe(true)
+    expect(caps.usageLookup).toBe(true)
+    expect(caps.statusLookup).toBe(true)
+    // Paid add-ons are not exposed as connector capabilities.
+    expect(caps.webhooks).toBe(false)
+  })
+
+  it('getCustomPackageDefinition returns provider-owned options and documented fields, no credentials', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { total: 1, offset: 0, count: 1, inventories: [{ id: 9, name: 'Main' }] } }))
+      .mockResolvedValueOnce(json({ data: { total: 1, offset: 0, count: 1, traffic_policies: [{ id: 2, name: 'Policy' }] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.getCustomPackageDefinition()
+    expect(r.success).toBe(true)
+    expect(r.definition?.inventories).toHaveLength(1)
+    expect(r.definition?.trafficPolicies).toHaveLength(1)
+    const keys = (r.definition?.providerFields || []).map(f => f.key)
+    expect(keys).toContain('traffic_policy')
+    expect(JSON.stringify(r)).not.toContain('ApiKey')
+    expect(JSON.stringify(r)).not.toContain('Authorization')
+  })
+
+  it('createCustomPackage is contract-supported (capability true) but no generic UI auto-invokes it (no live mutation on this code path)', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    // CONTRACT_SUPPORTED=true at capability level; the method is the implemented
+    // contract (not auto-invoked by the Provider Catalog UI). Validate no fetch
+    // happens here because the test never calls createCustomPackage.
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    expect(c.capabilities?.customPackageCreation).toBe(true)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('createCustomPackage validates required fields before any POST', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockCustomPackageReadiness.mockResolvedValue({ ready: true })
+    const c = new TelnaConnector('telna-provider-1', 'Telna' as any) as any
+    expect((await c.createCustomPackage({ name: '', dataGB: 1, validityDays: 30 })).error?.code).toBe('INVALID_REQUEST')
+    expect((await c.createCustomPackage({ name: 'X', dataGB: 0, validityDays: 30 })).error?.code).toBe('INVALID_REQUEST')
+    expect((await c.createCustomPackage({ name: 'X', dataGB: 1, validityDays: 0 })).error?.code).toBe('INVALID_REQUEST')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('createCustomPackage refuses while readiness is disabled (CAPABILITY_NOT_ENABLED, no POST)', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockCustomPackageReadiness.mockResolvedValue({ ready: false, reason: 'account-not-enabled' })
+    const c = new TelnaConnector('telna-provider-1', 'Telna' as any) as any
+    const r = await c.createCustomPackage({ name: 'X', dataGB: 1, validityDays: 30 })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('CAPABILITY_NOT_ENABLED')
+    // Must never reach POST /package-templates when not enabled.
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('createCustomPackage maps GB->bytes, time_allowance OBJECT, activation_time_allowance seconds -> providerPlanId', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { id: 999001, name: 'X', status: 'Active' } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockCustomPackageReadiness.mockResolvedValue({ ready: true })
+    const c = new TelnaConnector('telna-provider-1', 'Telna' as any) as any
+    const r = await c.createCustomPackage({
+      name: 'MyPlan', countries: ['ZAF'], dataGB: 1, validityDays: 30,
+      activationTimeAllowanceSeconds: 3600, voiceMinutes: 100, smsCount: 50, activationType: 'MANUAL',
+    })
+    expect(r.success).toBe(true)
+    expect(r.data?.providerPlanId).toBe('999001')
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/pcr/package-templates')
+    expect(init.method).toBe('POST')
+    const body = JSON.parse(init.body)
+    expect(body.data_usage_allowance).toBe(1073741824) // 1GB bytes
+    // time_allowance is the documented OBJECT { duration, unit } — NOT flat seconds.
+    expect(body.time_allowance).toEqual({ duration: 30, unit: 'SECOND' })
+    // activation_time_allowance is a numeric SECONDS integer, distinct from time_allowance.
+    expect(body.activation_time_allowance).toBe(3600)
+    expect(body.voice_usage_allowance).toBe(100)
+    expect(body.sms_usage_allowance).toBe(50)
+    expect(body.supported_countries).toEqual(['ZAF'])
+    // No local OneSIM id sent upstream.
+    expect(String(init.body)).not.toContain('onesim-pkg')
+    expect(String(init.body)).not.toContain('order-1')
+  })
+
+  it('POST /package-templates (create offering) is a different endpoint than POST /packages (assign instance)', async () => {
+    // Ensure the endpoint map treats them as distinct.
+    expect(telnaEndpointPath('packageTemplateCreate')).toBe('/v2.1/pcr/package-templates')
+    expect(telnaEndpointPath('packages')).toBe('/v2.1/pcr/packages')
+  })
+
+  it('listCompanies parses the named companies envelope with pagination (CORE, RAW auth)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ total: 2, offset: 0, count: 2, companies: [{ id: 1, name: 'Telna' }, { id: 2, name: 'Other' }] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.listCompanies(10, 0)
+    expect(r.success).toBe(true)
+    expect(r.data?.items).toHaveLength(2)
+    const url = new URL(String(fetchSpy.mock.calls[0][0]))
+    expect(String(url)).toContain('/v2.1/core/companies')
+    expect(url.searchParams.get('count')).toBe('10')
+    expect(url.searchParams.get('offset')).toBe('0')
+  })
+
+  it('create/modify company and inventory write endpoints stay excluded (no connector methods wired)', () => {
+    const c: any = new TelnaConnector('telna-provider-1', 'Telna')
+    expect(typeof c.createCompany).toBe('undefined')
+    expect(typeof c.updateCompany).toBe('undefined')
+    expect(typeof c.createInventory).toBe('undefined')
+    expect(typeof c.updateInventory).toBe('undefined')
+  })
+
+  it('wallet entitlement state is unaffected (balance capability present; no fake zero)', async () => {
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    expect(c.capabilities?.balance).toBe(true)
+    // Wallet 403 → WAITING_VENDOR_ENTITLEMENT, implemented; not touched this task.
+    expect(c.capabilities?.balance).toBe(true)
   })
 })

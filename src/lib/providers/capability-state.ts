@@ -62,6 +62,7 @@ export const CAPABILITY_REGISTRY: Array<{
   { key: 'BALANCE', label: 'Balance', category: 'Billing', connectorKey: 'balance' },
   { key: 'INVENTORY', label: 'Inventory', category: 'Catalog', connectorKey: 'inventory' },
   { key: 'WEBHOOKS', label: 'Webhooks', category: 'Integration', connectorKey: 'webhooks' },
+  { key: 'CUSTOM_PACKAGE_CREATION', label: 'Custom Package Creation', category: 'Catalog', connectorKey: 'customPackageCreation' },
 ]
 
 const CATEGORY_ORDER: Record<string, number> = {
@@ -79,6 +80,24 @@ export function connectorValueToImplementation(value: boolean | 'UNKNOWN' | unde
   if (value === false) return 'NOT_SUPPORTED'
   if (value === 'UNKNOWN') return 'UNKNOWN'
   return 'NOT_IMPLEMENTED'
+}
+
+/**
+ * Resolve a provider's effective enabled-capability list with NULL/EMPTY
+ * distinction (see §4 guardrail):
+ *   - null / undefined  → "not configured" → use DEFAULT_PROVIDER_CAPABILITIES[code].
+ *   - a PRESENT array (including []) → "explicitly configured" → used EXACTLY.
+ * An explicit empty array therefore means "no capabilities enabled" and must
+ * never be re-expanded to the defaults — this is what lets an operator reliably
+ * disable a default capability.
+ * A non-array value (malformed JSON) degrades to the defaults conservatively.
+ */
+export function resolveEnabledCapabilities(raw: unknown, providerCode: string): string[] {
+  if (raw === null || raw === undefined) {
+    return (DEFAULT_PROVIDER_CAPABILITIES[providerCode] || []) as unknown as string[]
+  }
+  if (Array.isArray(raw)) return raw.map(String)
+  return (DEFAULT_PROVIDER_CAPABILITIES[providerCode] || []) as unknown as string[]
 }
 
 /**
@@ -102,10 +121,12 @@ export async function getProviderCapabilityState(providerId: string): Promise<Pr
     : { ...DEFAULT_CONNECTOR_CAPABILITIES }
 
   const providerCode = provider.code || ''
-  const enabledCaps = (provider.enabledCapabilities as string[]) || []
+  // null/undefined → "unconfigured, use documented defaults".
+  // a present array (including []) → "explicitly configured", used EXACTLY so an
+  // explicit disable is never silently re-enabled by the defaults fallback.
+  const effectiveCaps = resolveEnabledCapabilities(provider.enabledCapabilities, providerCode)
   const defaultCaps: string[] = (DEFAULT_PROVIDER_CAPABILITIES[providerCode] || []) as unknown as string[]
-  // When enabledCapabilities is empty, fall back to defaults (existing contract).
-  const allowed = (cap: string): boolean => enabledCaps.length > 0 ? enabledCaps.includes(cap) : defaultCaps.includes(cap)
+  const allowed = (cap: string): boolean => effectiveCaps.includes(cap)
 
   const states: ProviderCapabilityState[] = []
   const byKey: Record<string, ProviderCapabilityState> = {}
@@ -142,4 +163,53 @@ export async function getProviderCapabilityState(providerId: string): Promise<Pr
   states.sort((a, b) => (CATEGORY_ORDER[a.category] ?? 9) - (CATEGORY_ORDER[b.category] ?? 9) || a.label.localeCompare(b.label))
 
   return { providerId, connectorClass, states, byKey }
+}
+
+export interface CustomPackageCreationReadiness {
+  ready: boolean
+  reason?: string
+}
+
+const OPERATIONAL_PROVIDER_STATUSES = ['ACTIVE', 'DEGRADED', 'TESTING']
+
+/**
+ * Provider-neutral runtime readiness for provider-side custom package/template
+ * creation (e.g. Telna POST /v2.1/pcr/package-templates).
+ *
+ * A provider is READY only when ALL hold:
+ *   1. connector genuinely supports customPackageCreation (implementation truth,
+ *      never true merely because an endpoint exists), AND
+ *   2. provider is operational (ACTIVE/DEGRADED/TESTING), AND
+ *   3. the provider has been explicitly enabled for CUSTOM_PACKAGE_CREATION via
+ *      `provider.enabledCapabilities` (falling back to the documented defaults,
+ *      which exclude it — so the default state is disabled).
+ *
+ * Default is DISABLED (readiness=false) unless explicitly enabled. Provider-neutral:
+ * never branches on provider.code. Callers must re-check this server-side before
+ * invoking the connector's mutating method; never trust the browser.
+ */
+export async function getCustomPackageCreationReadiness(providerId: string): Promise<CustomPackageCreationReadiness> {
+  const provider = await prisma.provider.findUnique({ where: { id: providerId } })
+  if (!provider) return { ready: false, reason: 'provider-not-found' }
+
+  const providerStatus = String(provider.status || '').toUpperCase()
+  if (!OPERATIONAL_PROVIDER_STATUSES.includes(providerStatus)) {
+    return { ready: false, reason: `provider-not-operational:${providerStatus || 'UNKNOWN'}` }
+  }
+
+  const connector = await buildConnectorFromProvider(provider.id).catch(() => null)
+  const caps: ConnectorCapabilities = connector?.capabilities
+    ? { ...DEFAULT_CONNECTOR_CAPABILITIES, ...connector.capabilities }
+    : { ...DEFAULT_CONNECTOR_CAPABILITIES }
+  if (caps.customPackageCreation !== true) {
+    return { ready: false, reason: 'connector-does-not-support' }
+  }
+
+  const effectiveCaps = resolveEnabledCapabilities(provider.enabledCapabilities, provider.code || '')
+  const allowed = effectiveCaps.includes('CUSTOM_PACKAGE_CREATION')
+  if (!allowed) {
+    return { ready: false, reason: 'account-not-enabled' }
+  }
+
+  return { ready: true }
 }
