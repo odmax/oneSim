@@ -47,10 +47,6 @@ vi.mock('./fulfillment', () => ({
   resumeProviderFinalization: vi.fn(),
 }))
 
-vi.mock('@/lib/services/custom-package/custom-package', () => ({
-  resolveCustomPackageBackings: vi.fn(),
-}))
-
 import { prisma } from '@/lib/prisma'
 import { isProviderOperational, getAdapterForType } from '@/lib/providers/adapter-manager'
 import { getProviderBalance } from '@/lib/services/providers/provider-balance'
@@ -58,7 +54,6 @@ import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { reserveWalletFunds, captureReservedFunds, releaseReservedFunds } from './wallet-actions'
 import { failOrder } from './order-state-machine'
 import { completeProviderFinalization } from './fulfillment'
-import { resolveCustomPackageBackings } from '@/lib/services/custom-package/custom-package'
 import { PurchaseOrchestrator } from './purchase-orchestrator'
 
 const mockPrisma = vi.mocked(prisma)
@@ -69,7 +64,6 @@ const mockRelease = vi.mocked(releaseReservedFunds)
 const mockFailOrder = vi.mocked(failOrder)
 const mockBalance = vi.mocked(getProviderBalance)
 const mockAdapter = vi.mocked(getAdapterForType)
-const mockBackings = vi.mocked(resolveCustomPackageBackings)
 
 describe('PurchaseOrchestrator', () => {
   let orchestrator: PurchaseOrchestrator
@@ -593,7 +587,6 @@ describe('PurchaseOrchestrator', () => {
   function setupLegacyPackage(legacy: { providerId: string | null; providerPlanId: string | null }, findManyResult: any[]) {
     setupBusiness()
     setupCustomer()
-    mockBackings.mockResolvedValue([])
     mockResolve.mockResolvedValue({
       package: {
         id: 'pkg-1', displayName: 'Legacy Plan', dataGB: 1, validityDays: 7,

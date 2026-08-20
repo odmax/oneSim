@@ -32,8 +32,8 @@ vi.mock('./order-state-machine', () => ({
 vi.mock('./fulfillment', () => ({
   completeProviderFinalization: vi.fn(), persistProviderFulfillment: vi.fn(), resumeProviderFinalization: vi.fn(),
 }))
-vi.mock('@/lib/services/custom-package/custom-package', () => ({
-  resolveCustomPackageBackings: vi.fn(),
+vi.mock('./package-backing-resolver', () => ({
+  resolvePackageBacking: vi.fn(),
 }))
 
 // Mock the provider-attempt service so the custom-backing branch is tested in
@@ -51,14 +51,14 @@ import { prisma } from '@/lib/prisma'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { reserveWalletFunds } from './wallet-actions'
 import { failOrder } from './order-state-machine'
-import { resolveCustomPackageBackings } from '@/lib/services/custom-package/custom-package'
+import { resolvePackageBacking } from './package-backing-resolver'
 import { PurchaseOrchestrator } from './purchase-orchestrator'
 
 const mockPrisma = vi.mocked(prisma)
 const mockResolve = vi.mocked(resolvePackageIdentifier)
 const mockReserve = vi.mocked(reserveWalletFunds)
 const mockFailOrder = vi.mocked(failOrder)
-const mockBackings = vi.mocked(resolveCustomPackageBackings)
+const mockBackings = vi.mocked(resolvePackageBacking)
 
 const validRequest = {
   businessId: 'biz-1', userId: 'user-1', packageId: 'pkg-custom-1', quantity: 1,
@@ -93,10 +93,10 @@ beforeEach(() => {
 describe('PurchaseOrchestrator — custom package backings (provider-neutral)', () => {
   it('routes a custom package through the TOP backing provider with its providerPackageId', async () => {
     setupCustomPackage()
-    mockBackings.mockResolvedValue([
+    mockBackings.mockResolvedValue({ kind: 'CUSTOM', backings: [
       { providerPackageId: 'pp-a', providerId: 'prov-a', providerName: 'Provider A', priority: 1 },
       { providerPackageId: 'pp-b', providerId: 'prov-b', providerName: 'Provider B', priority: 2 },
-    ])
+    ] })
     mockPrisma.provider.findUnique.mockResolvedValue({ id: 'prov-a', code: 'P', name: 'Provider A', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'] } as any)
     mockExecuteProviderAttempt.mockResolvedValue({ success: true, status: 'SUCCEEDED', providerReference: 'ref-a' })
 
@@ -114,10 +114,10 @@ describe('PurchaseOrchestrator — custom package backings (provider-neutral)', 
 
   it('failover: first backing RETRYABLE → second backing provider attempted', async () => {
     setupCustomPackage()
-    mockBackings.mockResolvedValue([
+    mockBackings.mockResolvedValue({ kind: 'CUSTOM', backings: [
       { providerPackageId: 'pp-a', providerId: 'prov-a', providerName: 'Provider A', priority: 1 },
       { providerPackageId: 'pp-b', providerId: 'prov-b', providerName: 'Provider B', priority: 2 },
-    ])
+    ] })
     mockPrisma.provider.findUnique.mockResolvedValue({ id: 'prov-a', code: 'P', name: 'Provider A', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'] } as any)
     mockExecuteProviderAttempt
       .mockResolvedValueOnce({ success: false, status: 'RETRYABLE', errorCode: 'TIMEOUT' })
@@ -136,7 +136,7 @@ describe('PurchaseOrchestrator — custom package backings (provider-neutral)', 
 
   it('no purchase-ready backings → BACKING_NOT_CONFIGURED before any provider attempt', async () => {
     setupCustomPackage()
-    mockBackings.mockResolvedValue([])
+    mockBackings.mockResolvedValue({ kind: 'NONE' })
     mockPrisma.provider.findUnique.mockResolvedValue({ id: 'prov-a', code: 'P', name: 'Provider A', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'] } as any)
 
     const o = new PurchaseOrchestrator()
@@ -171,12 +171,14 @@ describe('PurchaseOrchestrator — custom package backings (provider-neutral)', 
     mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: 'pp-1', providerId: 'prov-a', providerPlanId: 'pl-1', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', costStatus: 'VALID', pricingStatus: 'READY', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2' } as any)
     mockPrisma.provider.findUnique.mockResolvedValue({ id: 'prov-a', code: 'P', name: 'Provider A', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'] } as any)
     mockPrisma.provider.findMany.mockResolvedValue([{ id: 'prov-a', code: 'P', name: 'Provider A', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'], errorCount: 0, priority: 0, lastSuccessfulConnection: new Date(), activationSuccessRate: 0.95 }] as any)
+    mockBackings.mockResolvedValue({ kind: 'BOUND', backing: { providerPackageId: 'pp-1', providerId: 'prov-a', providerPlanId: 'pl-1' } })
     mockExecuteProviderAttempt.mockResolvedValue({ success: true, status: 'SUCCEEDED', providerReference: 'ref' })
 
     const o = new PurchaseOrchestrator()
     const result = await o.executePurchase({ ...validRequest, packageId: 'pkg-legacy' })
 
-    expect(mockBackings).not.toHaveBeenCalled()
+    // Bound backing (not CUSTOM) drives the attempt with its own ProviderPackage id.
+    expect(mockBackings).toHaveBeenCalled()
     expect(mockExecuteProviderAttempt).toHaveBeenCalledWith(expect.objectContaining({ providerPackageId: 'pp-1' }))
     expect(result.success).toBe(true)
   })

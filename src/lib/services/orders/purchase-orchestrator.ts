@@ -12,7 +12,7 @@ import { resolveEffectiveProviderRequirements } from '@/lib/providers/provider-r
 import { consumeQuoteAndCreateOrder } from '@/lib/pricing/purchase-quote-service'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
-import { resolveCustomPackageBackings } from '@/lib/services/custom-package/custom-package'
+import { resolvePackageBacking } from './package-backing-resolver'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 
 function trace(correlationId: string | undefined, stage: string, status: string, extra?: Record<string, any>) {
@@ -108,47 +108,22 @@ export class PurchaseOrchestrator {
     //   3. legacy denormalized providerId+providerPlanId → a UNIQUE matching
     //      ProviderPackage (compatibility only)
     //   4. otherwise → BACKING_NOT_CONFIGURED (fail safe)
+    const backing = await resolvePackageBacking(pkg)
     let customBackings: Array<{ providerPackageId: string; providerId: string; providerName: string; priority: number }> | null = null
     let boundBacking: { providerPackageId: string; providerId: string; providerPlanId: string } | null = null
 
-    if (pkg.providerPackageId) {
-      const bb = await prisma.providerPackage.findUnique({
-        where: { id: pkg.providerPackageId },
-        select: { id: true, providerId: true, providerPlanId: true, isAvailable: true },
-      })
-      if (!bb || bb.isAvailable === false) {
-        trace(correlationId, 'BACKING_RESOLUTION', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE', providerPackageId: pkg.providerPackageId })
-        return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', true)
-      }
-      boundBacking = { providerPackageId: bb.id, providerId: bb.providerId, providerPlanId: bb.providerPlanId }
-      trace(correlationId, 'BACKING_RESOLUTION', 'SUCCESS', { providerPackageId: bb.id, providerId: bb.providerId, providerPlanId: bb.providerPlanId })
+    if (backing.kind === 'BOUND') {
+      boundBacking = backing.backing
+      trace(correlationId, 'BACKING_RESOLUTION', 'SUCCESS', { providerPackageId: backing.backing.providerPackageId, providerId: backing.backing.providerId, providerPlanId: backing.backing.providerPlanId })
+    } else if (backing.kind === 'CUSTOM') {
+      customBackings = backing.backings
+      trace(correlationId, 'BACKING_RESOLUTION', 'CUSTOM', { backingCount: backing.backings.length })
+    } else if (backing.kind === 'UNAVAILABLE') {
+      trace(correlationId, 'BACKING_RESOLUTION', 'FAILED', { internalCode: 'PACKAGE_UNAVAILABLE' })
+      return this.fail('PACKAGE_UNAVAILABLE', 'This package is temporarily unavailable. Please select another package or try again later.', true)
     } else {
-      customBackings = await resolveCustomPackageBackings(pkg.id).catch(() => [])
-      if (customBackings.length === 0) {
-        // Legacy compatibility: a sellable package with no bound ProviderPackage
-        // and no bindings may carry denormalized providerId+providerPlanId. Resolve
-        // ONLY a unique matching ProviderPackage; anything else fails safe.
-        if (pkg.providerId && pkg.providerPlanId) {
-          const legacy = await prisma.providerPackage.findMany({
-            where: { providerId: pkg.providerId, providerPlanId: pkg.providerPlanId, isAvailable: true },
-            select: { id: true, providerId: true, providerPlanId: true },
-          })
-          if (legacy.length === 1) {
-            boundBacking = { providerPackageId: legacy[0].id, providerId: legacy[0].providerId, providerPlanId: legacy[0].providerPlanId }
-            // Not a multi-backing custom package — clear so the bound path drives
-            // readiness/dispatch (an empty [] is truthy and would wrongly select the
-            // custom multi-backing branch).
-            customBackings = null
-            trace(correlationId, 'BACKING_RESOLUTION', 'LEGACY_UNIQUE', { providerPackageId: legacy[0].id, providerId: legacy[0].providerId, providerPlanId: legacy[0].providerPlanId })
-          } else {
-            trace(correlationId, 'BACKING_RESOLUTION', 'FAILED', { internalCode: 'BACKING_NOT_CONFIGURED', matchCount: legacy.length })
-            return this.fail('BACKING_NOT_CONFIGURED', 'This package is not configured with a valid provider backing. Please contact support.', false)
-          }
-        } else {
-          trace(correlationId, 'BACKING_RESOLUTION', 'FAILED', { internalCode: 'BACKING_NOT_CONFIGURED' })
-          return this.fail('BACKING_NOT_CONFIGURED', 'This package is not configured with a valid provider backing. Please contact support.', false)
-        }
-      }
+      trace(correlationId, 'BACKING_RESOLUTION', 'FAILED', { internalCode: 'BACKING_NOT_CONFIGURED' })
+      return this.fail('BACKING_NOT_CONFIGURED', 'This package is not configured with a valid provider backing. Please contact support.', false)
     }
 
     // Step 4: Validate pricing availability using centralized readiness
