@@ -4,6 +4,12 @@ import { completeProviderOperation, failProviderOperation } from '../provider-fi
 import { normalizeConnectorInstallData, type ProviderInstallData } from '@/lib/esim/installation-data'
 
 export async function executeProviderOperation(payload: any): Promise<{ completed: boolean; error?: string }> {
+  // Enqueued purchase dispatch (async purchase flow) → provider-neutral executor.
+  if (payload?.operation === 'purchase') {
+    const { executePurchaseDispatch } = await import('./purchase-execution')
+    return executePurchaseDispatch(payload)
+  }
+
   const { orderId, businessId, providerId, providerRef, totalAmount } = payload
   if (!orderId) return { completed: false, error: 'Missing orderId' }
 

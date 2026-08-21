@@ -98,6 +98,7 @@ export async function executePurchase(params: {
     quantity,
     travelDate: travelDate || undefined,
     correlationId,
+    async: true,
   })
 
   if (!result.success) {

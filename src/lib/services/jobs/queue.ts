@@ -21,6 +21,13 @@ export async function enqueueJob(
 }
 
 export async function processDueJobs(limit = 10) {
+  // Recover jobs stranded in PROCESSING by a worker crash (process killed — no
+  // catch/finally ran). The lease threshold must exceed the longest possible
+  // handler execution (activation HTTP timeouts are ≤60s) so a live worker is
+  // never mistaken for a dead one. Requeued jobs re-execute safely: purchase
+  // dispatch is guarded by the order-level exactly-once claim in runDispatch.
+  await requeueStaleProcessingJobs()
+
   const jobs = await prisma.backgroundJob.findMany({
     where: {
       status: 'PENDING',
@@ -34,7 +41,10 @@ export async function processDueJobs(limit = 10) {
 
   for (const job of jobs) {
     try {
-      await markProcessing(job.id)
+      // Atomically claim the job (PENDING → PROCESSING). If another worker already
+      // claimed it, count===0 and we skip — preventing double execution.
+      const claimed = await markProcessing(job.id)
+      if (!claimed) continue
       const result = await executeJob(job)
       if (result.completed) {
         await markCompleted(job.id)
@@ -53,11 +63,24 @@ export async function processDueJobs(limit = 10) {
   return results
 }
 
-async function markProcessing(jobId: string) {
-  await prisma.backgroundJob.update({
-    where: { id: jobId },
-    data: { status: 'PROCESSING', attempts: { increment: 1 } },
+async function markProcessing(jobId: string): Promise<boolean> {
+  const result = await prisma.backgroundJob.updateMany({
+    where: { id: jobId, status: 'PENDING' },
+    data: { status: 'PROCESSING', attempts: { increment: 1 }, lockedAt: new Date() },
   })
+  return result.count === 1
+}
+
+/** A job may not legitimately run longer than this; beyond it the worker is dead. */
+const STALE_PROCESSING_MS = 15 * 60 * 1000
+
+async function requeueStaleProcessingJobs(): Promise<number> {
+  const cutoff = new Date(Date.now() - STALE_PROCESSING_MS)
+  const result = await prisma.backgroundJob.updateMany({
+    where: { status: 'PROCESSING', lockedAt: { lt: cutoff } },
+    data: { status: 'PENDING', lockedAt: null, lastError: 'Requeued: worker lease expired (stale PROCESSING)' },
+  })
+  return result.count
 }
 
 async function markCompleted(jobId: string) {

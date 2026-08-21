@@ -22,6 +22,12 @@ export interface CreateOrderParams {
   travelDate?: string
   /** Internal trace correlation ID */
   correlationId?: string
+  /**
+   * When true, enqueue provider dispatch and return immediately with status
+   * PROCESSING (async). The provider activation runs in the background job
+   * system; poll GET /api/v1/orders/{orderId} for completion.
+   */
+  async?: boolean
 }
 
 export interface CreateOrderResult {
@@ -49,7 +55,8 @@ export interface CreateOrderResult {
 const orchestrator = new PurchaseOrchestrator()
 
 export async function createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
-  const result = await orchestrator.executePurchase({
+  const execute = params.async ? orchestrator.executePurchaseAsync.bind(orchestrator) : orchestrator.executePurchase.bind(orchestrator)
+  const result = await execute({
     businessId: params.businessId,
     userId: params.userId,
     packageId: params.packageId,

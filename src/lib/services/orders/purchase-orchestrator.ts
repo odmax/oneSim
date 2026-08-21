@@ -13,6 +13,7 @@ import { consumeQuoteAndCreateOrder } from '@/lib/pricing/purchase-quote-service
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 import { resolvePackageBacking } from './package-backing-resolver'
+import { enqueueJob } from '@/lib/services/jobs/queue'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 
 function trace(correlationId: string | undefined, stage: string, status: string, extra?: Record<string, any>) {
@@ -46,6 +47,36 @@ export interface PurchaseRequest {
   idempotencyKey?: string
   /** Travel date (YYYY-MM-DD) required by plans that mandate it. */
   travelDate?: string
+  /** Internal: enqueue dispatch and return PROCESSING instead of executing inline. */
+  _async?: boolean
+}
+
+/**
+ * Serializable context that fully determines provider dispatch for a prepared
+ * (order-created + wallet-reserved) purchase. Carried into the background job so
+ * the worker can execute without re-resolving anything from the browser request.
+ */
+export interface PurchaseDispatchContext {
+  orderId: string
+  businessId: string
+  userId: string
+  providerId: string
+  providerName: string
+  planId: string
+  quantity: number
+  subscriber: { email: string; first_name?: string; last_name?: string }
+  totalAmount: number
+  displayName: string
+  packageId: string
+  currency: string
+  customerId?: string
+  rankedProviders: ProviderScore[]
+  travelDate?: string
+  providerPackageId?: string
+  /** Maps each candidate providerId to its backing ProviderPackage id. */
+  providerPackageByProviderId: Record<string, string>
+  unitPrice: number
+  correlationId?: string
 }
 
 export interface PurchaseResult {
@@ -364,10 +395,8 @@ export class PurchaseOrchestrator {
     // never the local retail package id (which must not go upstream).
     const planId = boundBacking ? boundBacking.providerPlanId : (pkg.providerPlanId || pkg.id)
 
-    // Step 13-14: Dispatch to provider with failover via shared service.
-    // Custom retail packages (one retail → many backing ProviderPackages) are
-    // resolved provider-neutrally into the SAME routing/failover flow — the
-    // connectors receive only their own ProviderPackage/providerPlanId.
+    // Build the fully-resolved dispatch context (single source of truth for the
+    // provider dispatch — serializable so it can run in a background job).
     const nameParts = (customer?.name || 'Business Order').trim().split(/\s+/)
     const subscriber = { email: customer?.email || '', first_name: nameParts[0] || '', last_name: nameParts.slice(1).join(' ') || undefined }
 
@@ -383,48 +412,119 @@ export class PurchaseOrchestrator {
       currentProviderId = customBackings[0].providerId
       currentProviderName = customBackings[0].providerName
     } else if (boundBacking) {
-      // Single bound backing → exactly one provider. No cross-provider failover:
-      // the backing (and its provider-owned plan id) is the only execution path.
+      // Single bound backing → exactly one provider. No cross-provider failover.
       rankedProviders = []
       currentProviderId = boundBacking.providerId
       currentProviderName = provider.name
     } else {
       // Unreachable: backing resolution guarantees a bound or custom backing.
-      // Defensive fallback — no provider ranking of the retail package id.
       rankedProviders = []
       currentProviderId = provider.id
       currentProviderName = provider.name
     }
 
-    const attemptedIds: string[] = []
-    attemptedIds.push(currentProviderId)
+    const providerPackageByProviderId: Record<string, string> = {}
+    if (boundBacking) providerPackageByProviderId[boundBacking.providerId] = boundBacking.providerPackageId
+    if (customBackings) for (const b of customBackings) providerPackageByProviderId[b.providerId] = b.providerPackageId
+
+    const ctx: PurchaseDispatchContext = {
+      orderId, businessId, userId, providerId: currentProviderId, providerName: currentProviderName,
+      planId, quantity, subscriber, totalAmount, displayName, packageId: pkg.id,
+      currency: pkg.currency || 'USD', customerId, rankedProviders,
+      travelDate: normalizedTravelDate,
+      providerPackageId: boundBacking ? boundBacking.providerPackageId : (pkg.providerPackageId || undefined),
+      providerPackageByProviderId, unitPrice, correlationId,
+    }
+
+    // Async mode: enqueue the dispatch and return PROCESSING immediately — the
+    // browser/API must not wait for the provider activation HTTP. The existing
+    // background job system executes the dispatch.
+    if (request._async) {
+      try {
+        await enqueueJob('PROVIDER_OPERATION' as any, { operation: 'purchase', ...ctx }, new Date(Date.now() + 500), 5)
+      } catch (e: any) {
+        // Enqueue failed AFTER reserve — never leave a paid/reserved order stranded.
+        await releaseReservedFunds(orderId, businessId, totalAmount)
+        await failOrder(orderId, `Purchase dispatch enqueue failed: ${e?.message || 'unknown'}`)
+        await this.writeAudit(businessId, userId, ctx.providerId, pkg.id, displayName, totalAmount, 'FAILED', 'dispatch enqueue failed')
+        return this.fail('DISPATCH_ENQUEUE_FAILED', 'Unable to start purchase processing. Please try again.', true)
+      }
+      trace(correlationId, 'PROVIDER_DISPATCH', 'ENQUEUED', { orderId })
+      return { success: true, orderId, status: 'PROCESSING', unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD' }
+    }
+
+    return await this.runDispatch(ctx)
+    } catch (e: any) {
+      console.error(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=UNCAUGHT_EXCEPTION name=${e.name} message=${e.message} stack=${e.stack?.substring(0, 300)}`)
+      trace(correlationId, 'ACTION_RESULT', 'FAILED', { publicCode: 'purchase_failed', exception: e.name })
+      return this.fail('INTERNAL_ERROR', e.message || 'Internal error', false)
+    }
+  }
+
+  /**
+   * Execute provider dispatch for a prepared purchase (order created + wallet
+   * reserved). Runs inline (sync) or in a background job. Provider-neutral.
+   */
+  async runDispatch(ctx: PurchaseDispatchContext): Promise<PurchaseResult> {
+    const { orderId, businessId, userId, providerId, providerName, planId, quantity, subscriber, totalAmount, displayName, packageId, currency, customerId, rankedProviders, travelDate, unitPrice, correlationId } = ctx
+
+    // ── Durable exactly-once dispatch guard ──────────────────────────────
+    // Atomically claim the order for dispatch: only ONE worker/process can
+    // transition PAYMENT_RESERVED → PENDING_PROVIDER. Any concurrent/duplicate
+    // executor sees count===0 and skips — the provider mutation can never fire
+    // twice for the same order. This is the guard immediately before mutation,
+    // independent of queue deduplication.
+    const claim = await prisma.eSIMPurchase.updateMany({
+      where: { id: orderId, status: 'PAYMENT_RESERVED' },
+      data: { status: 'PENDING_PROVIDER' },
+    })
+    if (claim.count === 0) {
+      const current = await prisma.eSIMPurchase.findUnique({ where: { id: orderId }, select: { status: true, esims: { select: { id: true } } } })
+      if (current && (current.status === 'FULFILLED' || (current.esims && current.esims.length > 0))) {
+        return { success: true, orderId, status: 'FULFILLED' }
+      }
+      // Resume path: a previous executor crashed between claiming the order
+      // (PAYMENT_RESERVED → PENDING_PROVIDER) and recording the first provider
+      // attempt. executeProviderAttempt writes the attempt row BEFORE any
+      // provider HTTP, so PENDING_PROVIDER with zero attempts provably means
+      // no mutation was dispatched — safe to resume. Any attempt row ⇒ the
+      // outcome is owned by that attempt (poll/reconciliation), never re-dispatch.
+      let resumed = false
+      if (current?.status === 'PENDING_PROVIDER') {
+        const attemptCount = await prisma.providerAttempt.count({ where: { orderId, source: 'PURCHASE' } })
+        resumed = attemptCount === 0
+      }
+      if (!resumed) {
+        // Already dispatching, reconciling, or failed — do NOT re-dispatch.
+        trace(correlationId, 'PROVIDER_DISPATCH', 'ALREADY_CLAIMED', { orderId, orderStatus: current?.status })
+        return { success: false, orderId, status: current?.status || 'PENDING_PROVIDER', errorCode: 'ALREADY_DISPATCHING', message: 'This order is already being dispatched', retryable: false }
+      }
+      trace(correlationId, 'PROVIDER_DISPATCH', 'RESUMED', { orderId })
+    }
+
+    let currentProviderId = providerId
+    let currentProviderName = providerName
+    const attemptedIds: string[] = [currentProviderId]
 
     for (let attemptNum = 1; attemptNum <= 3; attemptNum++) {
-      // The backing ProviderPackage bound to the CURRENT provider (ownership
-      // guard derives the provider plan id from it). Null for unbound packages.
-      const attemptProviderPackageId = customBackings
-        ? (customBackings.find(b => b.providerId === currentProviderId)?.providerPackageId ?? undefined)
-        : boundBacking
-          ? boundBacking.providerPackageId
-          : (pkg.providerPackageId || undefined)
+      const attemptProviderPackageId = ctx.providerPackageByProviderId[currentProviderId] ?? ctx.providerPackageId
 
       const result = await executeProviderAttempt({
         orderId, businessId, providerId: currentProviderId, providerName: currentProviderName,
-        planId, quantity, subscriber, totalAmount, displayName, packageId: pkg.id,
-        packageSnapshot, pkg, customerId, rankedProviders, policy: 'PREFERRED',
-        travelDate: normalizedTravelDate,
-        providerPackageId: attemptProviderPackageId,
+        planId, quantity, subscriber, totalAmount, displayName, packageId,
+        packageSnapshot: {}, pkg: { id: packageId, dataGB: 0, validityDays: 0, currency },
+        customerId, rankedProviders, policy: 'PREFERRED',
+        travelDate, providerPackageId: attemptProviderPackageId,
       })
 
       if (result.success && (result.status === 'SUCCEEDED' || result.status === 'ALREADY_COMPLETE')) {
-        trace(correlationId, 'PROVIDER_ATTEMPT', 'SUCCESS', { providerName: currentProviderName, attemptNum, connectorType: result.providerReference ? 'found' : 'none' })
-        // Load saved eSIMs
+        trace(correlationId, 'PROVIDER_ATTEMPT', 'SUCCESS', { providerName: currentProviderName, attemptNum })
         const savedEsims = await prisma.eSIM.findMany({ where: { purchaseId: orderId }, select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } })
-        return { success: true, orderId, status: 'FULFILLED', provider: currentProviderName, providerReference: result.providerReference, iccid: result.iccids?.[0], qrCode: result.qrCode, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD', esims: savedEsims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi, activationCode: e.activationCode, status: e.status, qrCodeUrl: e.qrCodeUrl })) }
+        return { success: true, orderId, status: 'FULFILLED', provider: currentProviderName, providerReference: result.providerReference, iccid: result.iccids?.[0], qrCode: result.qrCode, unitCost: unitPrice, totalCost: totalAmount, quantity, currency, esims: savedEsims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi, activationCode: e.activationCode, status: e.status, qrCodeUrl: e.qrCodeUrl })) }
       }
 
       if (result.success && result.status === 'PROCESSING') {
-        return { success: true, orderId, status: 'PROCESSING', provider: currentProviderName, providerReference: result.providerReference, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD' }
+        return { success: true, orderId, status: 'PROCESSING', provider: currentProviderName, providerReference: result.providerReference, unitCost: unitPrice, totalCost: totalAmount, quantity, currency }
       }
 
       // Ambiguous provider outcome: the mutating activation may have completed.
@@ -433,7 +533,7 @@ export class PurchaseOrchestrator {
       if (result.status === 'AMBIGUOUS') {
         await transitionOrder(orderId, 'PROVIDER_RECONCILIATION', { reason: result.errorMessage || 'Provider outcome ambiguous (timeout)' })
         await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION', message: `Provider activation outcome ambiguous for ${currentProviderName}: ${result.errorMessage || 'timeout'}`, metadata: { providerId: currentProviderId, ambiguous: true } })
-        await this.writeAudit(businessId, userId, currentProviderId, pkg.id, displayName, totalAmount, 'RECONCILIATION_REQUIRED', result.errorMessage)
+        await this.writeAudit(businessId, userId, currentProviderId, packageId, displayName, totalAmount, 'RECONCILIATION_REQUIRED', result.errorMessage)
         trace(correlationId, 'PROVIDER_ATTEMPT', 'AMBIGUOUS', { providerName: currentProviderName, attemptNum })
         return { success: false, orderId, status: 'PROVIDER_RECONCILIATION', errorCode: 'AMBIGUOUS_PROVIDER_OUTCOME', message: 'This purchase requires reconciliation — the provider may have completed it. We are verifying the outcome.', retryable: false }
       }
@@ -442,14 +542,17 @@ export class PurchaseOrchestrator {
       if (result.status !== 'RETRYABLE') {
         await releaseReservedFunds(orderId, businessId, totalAmount)
         await failOrder(orderId, result.errorMessage || 'Provider activation failed')
-        await this.writeAudit(businessId, userId, currentProviderId, pkg.id, displayName, totalAmount, 'FAILED', result.errorMessage)
+        await this.writeAudit(businessId, userId, currentProviderId, packageId, displayName, totalAmount, 'FAILED', result.errorMessage)
         return this.fail(result.errorCode || 'PROVIDER_FAILED', result.errorMessage || 'Provider activation failed', false)
       }
 
       // Try failover
       const next = await tryFailoverAfterAttempt({
-        ...(await this.buildActivationInput(orderId, businessId, currentProviderId, provider, planId, quantity, subscriber, totalAmount, displayName, pkg, packageSnapshot, customerId, rankedProviders)),
-        currentProviderId, attemptedIds, travelDate: normalizedTravelDate,
+        orderId, businessId, providerId: currentProviderId, providerName: currentProviderName,
+        planId, quantity, subscriber, totalAmount, displayName, packageId,
+        packageSnapshot: {}, pkg: { id: packageId, dataGB: 0, validityDays: 0, currency },
+        customerId, rankedProviders,
+        currentProviderId, attemptedIds, travelDate,
       })
 
       if (!next?.shouldContinue) break
@@ -461,17 +564,16 @@ export class PurchaseOrchestrator {
     // Exhausted
     await releaseReservedFunds(orderId, businessId, totalAmount)
     await failOrder(orderId, 'All provider attempts exhausted')
-    await this.writeAudit(businessId, userId, provider.id, pkg.id, displayName, totalAmount, 'FAILED', 'All attempts exhausted')
+    await this.writeAudit(businessId, userId, providerId, packageId, displayName, totalAmount, 'FAILED', 'All attempts exhausted')
     return this.fail('ALL_PROVIDERS_EXHAUSTED', 'All available providers failed', false)
-    } catch (e: any) {
-      console.error(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=UNCAUGHT_EXCEPTION name=${e.name} message=${e.message} stack=${e.stack?.substring(0, 300)}`)
-      trace(correlationId, 'ACTION_RESULT', 'FAILED', { publicCode: 'purchase_failed', exception: e.name })
-      return this.fail('INTERNAL_ERROR', e.message || 'Internal error', false)
-    }
   }
 
-  private async buildActivationInput(orderId: string, businessId: string, providerId: string, provider: any, planId: string, quantity: number, subscriber: any, totalAmount: number, displayName: string, pkg: any, packageSnapshot: any, customerId: any, rankedProviders: any) {
-    return { orderId, businessId, providerId, providerName: provider.name, planId, quantity, subscriber, totalAmount, displayName, packageId: pkg.id, packageSnapshot, pkg, customerId, rankedProviders }
+  /**
+   * Enqueue-only entry point: validates, resolves the backing, creates the order,
+   * reserves wallet funds, enqueues dispatch, and returns PROCESSING immediately.
+   */
+  async executePurchaseAsync(request: PurchaseRequest): Promise<PurchaseResult> {
+    return this.executePurchase({ ...request, _async: true })
   }
 
   private fail(code: string, message: string, retryable: boolean): PurchaseResult {

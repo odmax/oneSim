@@ -112,6 +112,7 @@ export async function POST(request: NextRequest) {
       idempotencyKey: idempotencyKey || undefined,
       customer: { name: customerName, email: customerEmail, phone: customerPhone, country, externalId: externalCustomerId },
       travelDate: travelDate || undefined,
+      async: true,
     })
 
     if (!result.success) {

@@ -4,7 +4,7 @@ vi.mock('@/lib/prisma', () => ({
   prisma: {
     business: { findUnique: vi.fn() },
     customer: { findFirst: vi.fn(), update: vi.fn(), create: vi.fn() },
-    eSIMPurchase: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+    eSIMPurchase: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     eSIM: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn() },
     provider: { findUnique: vi.fn(), findMany: vi.fn() },
     providerAttempt: { create: vi.fn(), count: vi.fn(), update: vi.fn(), findMany: vi.fn() },
@@ -47,6 +47,10 @@ vi.mock('./fulfillment', () => ({
   resumeProviderFinalization: vi.fn(),
 }))
 
+vi.mock('@/lib/services/jobs/queue', () => ({
+  enqueueJob: vi.fn(),
+}))
+
 import { prisma } from '@/lib/prisma'
 import { isProviderOperational, getAdapterForType } from '@/lib/providers/adapter-manager'
 import { getProviderBalance } from '@/lib/services/providers/provider-balance'
@@ -54,6 +58,7 @@ import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { reserveWalletFunds, captureReservedFunds, releaseReservedFunds } from './wallet-actions'
 import { failOrder, transitionOrder } from './order-state-machine'
 import { completeProviderFinalization } from './fulfillment'
+import { enqueueJob } from '@/lib/services/jobs/queue'
 import { PurchaseOrchestrator } from './purchase-orchestrator'
 
 const mockPrisma = vi.mocked(prisma)
@@ -65,6 +70,7 @@ const mockFailOrder = vi.mocked(failOrder)
 const mockTransition = vi.mocked(transitionOrder)
 const mockBalance = vi.mocked(getProviderBalance)
 const mockAdapter = vi.mocked(getAdapterForType)
+const mockEnqueue = vi.mocked(enqueueJob)
 
 describe('PurchaseOrchestrator', () => {
   let orchestrator: PurchaseOrchestrator
@@ -599,6 +605,42 @@ describe('PurchaseOrchestrator', () => {
     // Ambiguous outcome must NOT release reserved funds or fail the order definitively.
     expect(mockRelease).not.toHaveBeenCalled()
     expect(mockFailOrder).not.toHaveBeenCalled()
+  })
+
+  it('async purchase returns PROCESSING, enqueues dispatch, and never calls the provider adapter', async () => {
+    setupBoundBacking({ providerId: 'prov-choice', providerPlanId: 'choice-sku', providerName: 'Choice', providerCode: 'CHOICE' })
+    mockEnqueue.mockResolvedValue({ id: 'job-1' } as any)
+
+    const result = await orchestrator.executePurchaseAsync(validRequest)
+
+    expect(result.success).toBe(true)
+    expect(result.orderId).toBe('order-1')
+    expect(result.status).toBe('PROCESSING')
+    // Dispatch enqueued with the resolved purchase context.
+    expect(mockEnqueue).toHaveBeenCalled()
+    const [type, payload] = mockEnqueue.mock.calls[0]
+    expect(type).toBe('PROVIDER_OPERATION')
+    expect((payload as any).operation).toBe('purchase')
+    expect((payload as any).orderId).toBe('order-1')
+    expect((payload as any).planId).toBe('choice-sku')
+    // Provider HTTP must NOT be invoked inline — the browser/API returns immediately.
+    expect(mockAdapter).not.toHaveBeenCalled()
+  })
+
+  it('enqueue failure after reserve releases funds and fails the order (never stranded)', async () => {
+    setupBoundBacking({ providerId: 'prov-choice', providerPlanId: 'choice-sku', providerName: 'Choice', providerCode: 'CHOICE' })
+    mockEnqueue.mockRejectedValue(new Error('queue unavailable'))
+
+    const result = await orchestrator.executePurchaseAsync(validRequest)
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('DISPATCH_ENQUEUE_FAILED')
+    expect(result.retryable).toBe(true)
+    // Reserved funds must be released and the order finalized — never stranded.
+    expect(mockRelease).toHaveBeenCalledWith('order-1', 'biz-1', 5)
+    expect(mockFailOrder).toHaveBeenCalled()
+    // No provider HTTP may fire when dispatch could not be enqueued.
+    expect(mockAdapter).not.toHaveBeenCalled()
   })
 
   // ── Unbound / legacy backing resolution (no generic routing of retail id) ──

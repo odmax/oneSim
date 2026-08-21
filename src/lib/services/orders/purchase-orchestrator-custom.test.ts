@@ -4,7 +4,7 @@ vi.mock('@/lib/prisma', () => ({
   prisma: {
     business: { findUnique: vi.fn() },
     customer: { findFirst: vi.fn(), update: vi.fn(), create: vi.fn() },
-    eSIMPurchase: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+    eSIMPurchase: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     eSIM: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn() },
     provider: { findUnique: vi.fn(), findMany: vi.fn() },
     providerAttempt: { create: vi.fn(), count: vi.fn(), update: vi.fn(), findMany: vi.fn() },
