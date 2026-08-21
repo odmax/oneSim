@@ -1,5 +1,5 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, InstallationLookupDiagnostics, ConnectorInstallDataOutput } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, InstallationLookupDiagnostics, ConnectorInstallDataOutput, AmbiguousPurchaseReconcileInput, AmbiguousPurchaseReconcileResult } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
@@ -23,6 +23,34 @@ interface UrlTokenConfig extends RestCatalogConfig {
    * definitive response.
    */
   activationTimeoutMs?: number
+}
+
+/** One bundle template row from GET /account/v03_09/bundle_templates (SKU = bundle_code). */
+export interface ChoiceBundleTemplate {
+  /** SKU — Choice `bundle_code`. */
+  bundleCode: string
+  pool?: string
+  templateVersion?: string
+  bundleName?: string
+  allowance?: number
+  allowanceUnit?: string
+  validityDays?: number
+  rawData: Record<string, unknown>
+}
+
+/** One bundle row from GET /account/v03_09/imsi_list (account bundle list). */
+export interface ChoiceImsiBundle {
+  iccid?: string
+  imsiFrom?: string
+  imsiVersion?: string
+  packageStatus?: string
+  packageName?: string
+  bundleCode?: string
+  roamingProfileId?: string
+  roamingProfileName?: string
+  createdAt?: string
+  updatedAt?: string
+  rawData: Record<string, unknown>
 }
 
 async function fetchText(url: string, opts?: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }): Promise<{ text?: string; error?: { code: string; message: string; details?: Record<string, any> }; status?: number; contentType?: string }> {
@@ -1344,6 +1372,121 @@ export class UrlTokenConnector extends RestCatalogConnector {
   }
 
   // ── Additional Choice API endpoints ──
+
+  /**
+   * GET /account/v03_09/bundle_templates/{token} (READ-ONLY).
+   * Lists the account's bundle templates (SKU = bundle_code). No mutation.
+   */
+  async listBundleTemplates(): Promise<ConnectorResult<ChoiceBundleTemplate[]>> {
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    if (!token) return { success: false, error: { code: 'CHOICE_CREDENTIALS_MISSING', message: 'No Choice API token configured' } }
+    const path = `/account/v03_09/bundle_templates/${token}`
+    const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    if (error) return { success: false, error }
+    if (!text) return { success: false, error: { code: 'EMPTY', message: 'Empty bundle_templates response' } }
+    try {
+      const json = JSON.parse(text)
+      const items = this.extractList(json, 'bundle_template_list')
+      if (!Array.isArray(items)) return { success: false, error: { code: 'INVALID_RESPONSE', message: 'bundle_template_list not found in response' } }
+      const templates: ChoiceBundleTemplate[] = items.map((item: any) => ({
+        bundleCode: String(item.bundle_code ?? item.bundleCode ?? item.sku ?? item.bundle_template_id ?? item.id ?? ''),
+        pool: item.pool != null ? String(item.pool) : undefined,
+        templateVersion: item.template_version != null ? String(item.template_version) : undefined,
+        bundleName: item.bundle_name != null ? String(item.bundle_name) : undefined,
+        allowance: item.rate_group_allowance != null ? Number(item.rate_group_allowance) : (item.allowance != null ? Number(item.allowance) : undefined),
+        allowanceUnit: (item.rate_group_allow_qtyp || item.allowance_unit || item.unit) != null ? String(item.rate_group_allow_qtyp || item.allowance_unit || item.unit) : undefined,
+        validityDays: item.rate_group_allow_days != null ? Number(item.rate_group_allow_days) : (item.validity_days != null ? Number(item.validity_days) : undefined),
+        rawData: item,
+      }))
+      return { success: true, data: templates }
+    } catch {
+      return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse bundle_templates response' } }
+    }
+  }
+
+  /**
+   * GET /account/v03_09/imsi_list/{token}?imsi= (READ-ONLY).
+   * Lists bundles created for the Choice account. An empty/omitted `imsi` is
+   * supported and returns the account-wide list. No mutation.
+   */
+  async listImsiBundles(imsi?: string): Promise<ConnectorResult<ChoiceImsiBundle[]>> {
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    if (!token) return { success: false, error: { code: 'CHOICE_CREDENTIALS_MISSING', message: 'No Choice API token configured' } }
+    let path = `/account/v03_09/imsi_list/${token}`
+    if (imsi && imsi.trim()) path += `?imsi=${encodeURIComponent(imsi.trim())}`
+    const { text, error } = await fetchText(this.baseUrl(path), { headers: this.headers })
+    if (error) return { success: false, error }
+    if (!text) return { success: false, error: { code: 'EMPTY', message: 'Empty imsi_list response' } }
+    try {
+      const json = JSON.parse(text)
+      const items = this.extractList(json, 'imsi_list')
+      const bundles: ChoiceImsiBundle[] = items.map((item: any) => ({
+        iccid: item.iccid != null ? String(item.iccid) : undefined,
+        imsiFrom: item.imsi_from != null ? String(item.imsi_from) : undefined,
+        imsiVersion: item.imsi_version != null ? String(item.imsi_version) : undefined,
+        packageStatus: item.package_status != null ? String(item.package_status) : undefined,
+        packageName: item.package_name != null ? String(item.package_name) : undefined,
+        bundleCode: item.bundle_code != null ? String(item.bundle_code) : undefined,
+        roamingProfileId: item.roaming_profile_id != null ? String(item.roaming_profile_id) : undefined,
+        roamingProfileName: item.roaming_profile_name != null ? String(item.roaming_profile_name) : undefined,
+        createdAt: item.created_at != null ? String(item.created_at) : undefined,
+        updatedAt: item.updated_at != null ? String(item.updated_at) : undefined,
+        rawData: item,
+      }))
+      return { success: true, data: bundles }
+    } catch {
+      return { success: false, error: { code: 'INVALID_JSON', message: 'Failed to parse imsi_list response' } }
+    }
+  }
+
+  /**
+   * Provider-neutral read-only reconciliation of an ambiguous (timed-out)
+   * activation. Inspects ONLY the documented imsi_list read; never repeats the
+   * activation POST. Resolves only on a UNIQUE, defensible SKU match.
+   */
+  async reconcileAmbiguousPurchase(input: AmbiguousPurchaseReconcileInput): Promise<ConnectorResult<AmbiguousPurchaseReconcileResult>> {
+    const list = await this.listImsiBundles()
+    if (!list.success) return { success: false, error: list.error }
+
+    const bundles = list.data || []
+    // Primary defensible evidence: SKU / bundle_code equals the planId used at purchase.
+    const matches = bundles.filter(b => b.bundleCode != null && b.bundleCode !== '' && String(b.bundleCode) === String(input.planId))
+
+    if (matches.length === 0) {
+      // No bundle_code in the account list matches the SKU: either the activation
+      // never completed, or Choice does not expose a bundle_code on imsi_list.
+      const hasBundleCode = bundles.some(b => b.bundleCode != null && b.bundleCode !== '')
+      return {
+        success: true,
+        data: {
+          resolved: false,
+          reason: hasBundleCode ? 'no-match' : 'inconclusive',
+          evidence: { planId: input.planId, candidateCount: bundles.length, matchedCount: 0, bundleCodeAvailable: hasBundleCode },
+        },
+      }
+    }
+
+    if (matches.length > 1) {
+      return {
+        success: true,
+        data: { resolved: false, reason: 'multiple-matches', evidence: { planId: input.planId, matchedCount: matches.length } },
+      }
+    }
+
+    const m = matches[0]
+    return {
+      success: true,
+      data: {
+        resolved: true,
+        reason: 'unique-match',
+        iccid: m.iccid,
+        imsi: m.imsiFrom,
+        evidence: { planId: input.planId, bundleCode: m.bundleCode, packageName: m.packageName, packageStatus: m.packageStatus },
+      },
+    }
+  }
 
   /** GET /account/v03_09/imsis_from_iccid/{token}?iccid=... */
   async getImsisFromIccid(iccid: string): Promise<ConnectorResult<{ imsis: string[] }>> {

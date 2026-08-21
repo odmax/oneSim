@@ -2288,3 +2288,131 @@ describe('parseChoiceInstallData — whitelist parser (activation-response insta
     expect(data.activationCode).toBe('LPA:1$first$c')
   })
 })
+
+describe('UrlTokenConnector — read-only reconciliation endpoints', () => {
+  function choiceConnector() {
+    return makeConnector({ fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'test-user-1' } })
+  }
+
+  describe('listBundleTemplates', () => {
+    it('GETs /account/v03_09/bundle_templates/<token> with no Authorization header', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ bundle_template_list: [{ bundle_code: 'SKU-1', pool: 'pool-a', template_version: 'v3', bundle_name: 'Plan A', rate_group_allowance: 10, rate_group_allow_qtyp: 'GB', rate_group_allow_days: 30 }] }))
+      vi.stubGlobal('fetch', mockFetch)
+      const r = await c.listBundleTemplates()
+      expect(r.success).toBe(true)
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(String(url)).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/bundle_templates/test-token-abc123')
+      expect(options.method || 'GET').toBe('GET')
+      expect(options.headers.Authorization).toBeUndefined()
+      expect(r.data?.[0].bundleCode).toBe('SKU-1')
+      expect(r.data?.[0].pool).toBe('pool-a')
+      expect(r.data?.[0].templateVersion).toBe('v3')
+      expect(r.data?.[0].bundleName).toBe('Plan A')
+      expect(r.data?.[0].allowance).toBe(10)
+      expect(r.data?.[0].allowanceUnit).toBe('GB')
+      expect(r.data?.[0].validityDays).toBe(30)
+      vi.unstubAllGlobals()
+    })
+
+    it('parses bundle_code (SKU) and preserves raw_data', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ bundle_template_list: [{ bundle_code: 'SKU-9', template_version: '7', raw_extra: 'keep' }] }))
+      vi.stubGlobal('fetch', mockFetch)
+      const r = await c.listBundleTemplates()
+      expect(r.success).toBe(true)
+      expect(r.data?.[0].bundleCode).toBe('SKU-9')
+      expect((r.data?.[0].rawData as any).raw_extra).toBe('keep')
+      vi.unstubAllGlobals()
+    })
+  })
+
+  describe('listImsiBundles', () => {
+    it('GETs /account/v03_09/imsi_list/<token> without imsi (account-wide) and no Authorization header', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ imsi_list: [{ iccid: 'icc-1', imsi_from: '310410123456789', imsi_version: '7', package_status: 'ACTIVE', package_name: 'Plan A', bundle_code: 'SKU-1' }] }))
+      vi.stubGlobal('fetch', mockFetch)
+      const r = await c.listImsiBundles()
+      expect(r.success).toBe(true)
+      const [url, options] = mockFetch.mock.calls[0]
+      expect(String(url)).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/imsi_list/test-token-abc123')
+      expect(options.headers.Authorization).toBeUndefined()
+      expect(r.data?.[0].iccid).toBe('icc-1')
+      expect(r.data?.[0].imsiFrom).toBe('310410123456789')
+      expect(r.data?.[0].bundleCode).toBe('SKU-1')
+      vi.unstubAllGlobals()
+    })
+
+    it('supports a specific imsi query', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ imsi_list: [] }))
+      vi.stubGlobal('fetch', mockFetch)
+      await c.listImsiBundles('310410123456789')
+      const [url] = mockFetch.mock.calls[0]
+      expect(String(url)).toBe('https://lpaasapi.psasoft.com:443/account/v03_09/imsi_list/test-token-abc123?imsi=310410123456789')
+      vi.unstubAllGlobals()
+    })
+  })
+
+  describe('reconcileAmbiguousPurchase', () => {
+    it('resolves on a unique SKU/bundle_code match', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ imsi_list: [
+        { iccid: 'icc-1', bundle_code: 'SKU-1', package_name: 'Plan A', package_status: 'ACTIVE' },
+        { iccid: 'icc-2', bundle_code: 'SKU-2', package_name: 'Plan B', package_status: 'ACTIVE' },
+      ] }))
+      vi.stubGlobal('fetch', mockFetch)
+      const r = await c.reconcileAmbiguousPurchase({ orderId: 'o1', planId: 'SKU-1', quantity: 1, attemptedAt: new Date().toISOString() })
+      expect(r.success).toBe(true)
+      expect(r.data?.resolved).toBe(true)
+      expect(r.data?.iccid).toBe('icc-1')
+      expect(r.data?.reason).toBe('unique-match')
+      vi.unstubAllGlobals()
+    })
+
+    it('zero match stays pending (no-match)', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ imsi_list: [{ iccid: 'icc-2', bundle_code: 'SKU-2' }] }))
+      vi.stubGlobal('fetch', mockFetch)
+      const r = await c.reconcileAmbiguousPurchase({ orderId: 'o1', planId: 'SKU-1', quantity: 1, attemptedAt: '' })
+      expect(r.success).toBe(true)
+      expect(r.data?.resolved).toBe(false)
+      expect(r.data?.reason).toBe('no-match')
+      vi.unstubAllGlobals()
+    })
+
+    it('multiple matches stay pending (multiple-matches)', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ imsi_list: [
+        { iccid: 'icc-1', bundle_code: 'SKU-1' },
+        { iccid: 'icc-2', bundle_code: 'SKU-1' },
+      ] }))
+      vi.stubGlobal('fetch', mockFetch)
+      const r = await c.reconcileAmbiguousPurchase({ orderId: 'o1', planId: 'SKU-1', quantity: 1, attemptedAt: '' })
+      expect(r.data?.resolved).toBe(false)
+      expect(r.data?.reason).toBe('multiple-matches')
+      vi.unstubAllGlobals()
+    })
+
+    it('insufficient evidence (no bundle_code exposed) → inconclusive', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ imsi_list: [{ iccid: 'icc-1', package_name: 'Plan A' }] }))
+      vi.stubGlobal('fetch', mockFetch)
+      const r = await c.reconcileAmbiguousPurchase({ orderId: 'o1', planId: 'SKU-1', quantity: 1, attemptedAt: '' })
+      expect(r.success).toBe(true)
+      expect(r.data?.resolved).toBe(false)
+      expect(r.data?.reason).toBe('inconclusive')
+      vi.unstubAllGlobals()
+    })
+
+    it('performs only GET requests (never a mutating provider POST)', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ imsi_list: [{ iccid: 'icc-1', bundle_code: 'SKU-1' }] }))
+      vi.stubGlobal('fetch', mockFetch)
+      await c.reconcileAmbiguousPurchase({ orderId: 'o1', planId: 'SKU-1', quantity: 1, attemptedAt: '' })
+      const methods = mockFetch.mock.calls.map(call => (call[1] as any)?.method || 'GET')
+      expect(methods.every(m => m === 'GET')).toBe(true)
+      vi.unstubAllGlobals()
+    })
+  })
+})

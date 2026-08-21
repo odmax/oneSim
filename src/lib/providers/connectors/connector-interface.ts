@@ -576,4 +576,32 @@ export interface IProviderConnector {
    */
   getCustomPackageDefinition?(): Promise<CustomPackageDefinitionResult>
   createCustomPackage?(input: CustomPackageCreateInput): Promise<ConnectorResult<CustomPackageCreateResult>>
+  /**
+   * Provider-neutral read-only reconciliation for an ambiguous purchase. A
+   * connector that can defensibly correlate a timed-out mutation via documented
+   * READ endpoints implements this; it MUST NOT issue a mutating provider call.
+   * Returns resolved=true only on a unique, defensible match; otherwise
+   * resolved=false with an explicit reason (no-match / multiple-matches /
+   * inconclusive).
+   */
+  reconcileAmbiguousPurchase?(input: AmbiguousPurchaseReconcileInput): Promise<ConnectorResult<AmbiguousPurchaseReconcileResult>>
+}
+
+/** Input for a provider-neutral ambiguous-purchase reconciliation. */
+export interface AmbiguousPurchaseReconcileInput {
+  orderId: string
+  /** Provider-owned SKU / bundle_code used at purchase time. */
+  planId: string
+  quantity: number
+  /** ISO timestamp of the ambiguous attempt — correlation HINT only, never the sole basis. */
+  attemptedAt: string
+}
+
+/** Result of a read-only reconciliation attempt (never a provider mutation). */
+export interface AmbiguousPurchaseReconcileResult {
+  resolved: boolean
+  iccid?: string
+  imsi?: string
+  reason?: 'unique-match' | 'no-match' | 'multiple-matches' | 'inconclusive'
+  evidence?: Record<string, unknown>
 }
