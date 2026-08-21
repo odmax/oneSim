@@ -20,7 +20,10 @@ export async function enqueueJob(
   return job
 }
 
-export async function processDueJobs(limit = 10) {
+export async function processDueJobs(
+  limitOrOpts: number | { limit?: number; types?: JobType[] } = 10,
+) {
+  const opts = typeof limitOrOpts === 'number' ? { limit: limitOrOpts } : limitOrOpts
   // Recover jobs stranded in PROCESSING by a worker crash (process killed — no
   // catch/finally ran). The lease threshold must exceed the longest possible
   // handler execution (activation HTTP timeouts are ≤60s) so a live worker is
@@ -32,9 +35,10 @@ export async function processDueJobs(limit = 10) {
     where: {
       status: 'PENDING',
       runAt: { lte: new Date() },
+      ...(opts.types && opts.types.length > 0 ? { type: { in: opts.types } } : {}),
     },
     orderBy: { runAt: 'asc' },
-    take: limit,
+    take: opts.limit ?? 10,
   })
 
   const results: Array<{ id: string; type: string; status: JobStatus; error?: string }> = []

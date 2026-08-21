@@ -11,6 +11,14 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
+vi.mock('./handlers/provider-operation', () => ({
+  executeProviderOperation: vi.fn().mockImplementation(async (payload: any) =>
+    payload?.operation === '__unhandled__'
+      ? { completed: false, error: 'Unknown provider operation' }
+      : { completed: true },
+  ),
+}))
+
 import { prisma } from '@/lib/prisma'
 import { processDueJobs } from './queue'
 
@@ -56,6 +64,30 @@ describe('background job queue transaction safety', () => {
     // Exactly one execution and one completion — no double-run.
     expect(results).toEqual([{ id: 'job-1', type: 'EMAIL_DELIVERY', status: 'COMPLETED' }])
     expect(mockPrisma.backgroundJob.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('claims a due purchase job immediately (runAt now — no cron cadence dependency)', async () => {
+    const job = { ...dueJob(), type: 'PROVIDER_OPERATION', payload: { operation: 'purchase', orderId: 'order-1' }, runAt: new Date() }
+    mockPrisma.backgroundJob.findMany.mockResolvedValue([job])
+    mockPrisma.backgroundJob.updateMany
+      .mockResolvedValueOnce({ count: 0 }) // stale sweep finds nothing
+      .mockResolvedValueOnce({ count: 1 }) // claim wins
+
+    const results = await processDueJobs({ types: ['PROVIDER_OPERATION'], limit: 5 })
+
+    // The due filter is runAt <= now, so an enqueued-now purchase is claimable
+    // on the very next poll — no 30s/60s cron interval involved.
+    expect(mockPrisma.backgroundJob.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'PENDING',
+          type: { in: ['PROVIDER_OPERATION'] },
+          runAt: { lte: expect.any(Date) },
+        }),
+        take: 5,
+      }),
+    )
+    expect(results).toEqual([{ id: 'job-1', type: 'PROVIDER_OPERATION', status: 'COMPLETED' }])
   })
 
   it('a failed handler schedules a retry with backoff instead of losing the job', async () => {

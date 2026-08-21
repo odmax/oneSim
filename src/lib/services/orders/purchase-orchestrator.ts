@@ -253,8 +253,11 @@ export class PurchaseOrchestrator {
     }
 
     // Step 7: Validate provider balance (if BALANCE capability)
+    // Cache-only: the hot path must never block on live provider HTTP. A stale
+    // or missing snapshot skips the check — purchase safety is still enforced
+    // by the reserved wallet and the provider's own rejection at dispatch.
     if (caps.includes('BALANCE')) {
-      const balanceResult = await getProviderBalance(provider.id, { forceRefresh: false })
+      const balanceResult = await getProviderBalance(provider.id, { forceRefresh: false, cacheOnly: true })
       if (balanceResult.success && balanceResult.supported && balanceResult.balance != null) {
         if (balanceResult.balance < totalAmount) {
           trace(correlationId, 'PROVIDER_VALIDATION', 'FAILED', { internalCode: 'PROVIDER_LOW_BALANCE' })
@@ -441,7 +444,9 @@ export class PurchaseOrchestrator {
     // background job system executes the dispatch.
     if (request._async) {
       try {
-        await enqueueJob('PROVIDER_OPERATION' as any, { operation: 'purchase', ...ctx }, new Date(Date.now() + 500), 5)
+        // runAt = now: the in-process worker loop claims within ~1s. The small
+        // historical +500ms offset bought nothing — claims are atomic anyway.
+        await enqueueJob('PROVIDER_OPERATION' as any, { operation: 'purchase', ...ctx }, new Date(), 5)
       } catch (e: any) {
         // Enqueue failed AFTER reserve — never leave a paid/reserved order stranded.
         await releaseReservedFunds(orderId, businessId, totalAmount)

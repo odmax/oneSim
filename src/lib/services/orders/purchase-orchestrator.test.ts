@@ -618,11 +618,14 @@ describe('PurchaseOrchestrator', () => {
     expect(result.status).toBe('PROCESSING')
     // Dispatch enqueued with the resolved purchase context.
     expect(mockEnqueue).toHaveBeenCalled()
-    const [type, payload] = mockEnqueue.mock.calls[0]
+    const [type, payload, runAt] = mockEnqueue.mock.calls[0]
     expect(type).toBe('PROVIDER_OPERATION')
     expect((payload as any).operation).toBe('purchase')
     expect((payload as any).orderId).toBe('order-1')
     expect((payload as any).planId).toBe('choice-sku')
+    // runAt = now: the worker loop can claim immediately (no artificial delay,
+    // no dependency on the external cron interval).
+    expect((runAt as Date).getTime()).toBeLessThanOrEqual(Date.now())
     // Provider HTTP must NOT be invoked inline — the browser/API returns immediately.
     expect(mockAdapter).not.toHaveBeenCalled()
   })

@@ -12,7 +12,7 @@ export interface ProviderBalanceResult {
   accountId?: string | null
   accountName?: string | null
   fetchedAt: Date
-  source: 'LIVE' | 'CACHE' | 'UNSUPPORTED'
+  source: 'LIVE' | 'CACHE' | 'CACHE_MISS' | 'UNSUPPORTED'
   error?: string
 }
 
@@ -117,7 +117,7 @@ async function persistBalanceSnapshot(providerId: string, balance: number | null
 
 export async function getProviderBalance(
   providerId: string,
-  options?: { forceRefresh?: boolean; maxAgeSeconds?: number },
+  options?: { forceRefresh?: boolean; maxAgeSeconds?: number; cacheOnly?: boolean },
 ): Promise<ProviderBalanceResult> {
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) {
@@ -140,6 +140,10 @@ export async function getProviderBalance(
         balance: cached.balance, currency: cached.currency, accountId: null, accountName: null,
         fetchedAt: cached.fetchedAt, source: 'CACHE',
       }
+    }
+    // Cache-only mode (purchase hot path): never block on live provider HTTP.
+    if (options?.cacheOnly) {
+      return { success: true, supported: true, providerId: provider.id, providerCode: provider.code, balance: null, currency: null, fetchedAt: new Date(), source: 'CACHE_MISS' }
     }
   }
 

@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { UsageSummary } from '@/components/admin/esims/UsageBar'
 import { refreshEsimStatusAction, refreshEsimUsageAction } from '@/lib/actions/esim-lifecycle'
+import { OrderStatusPoller } from './OrderStatusPoller'
 
 const STATUS_COLORS: Record<string, string> = {
   CREATED: 'bg-gray-100 text-gray-700', PAYMENT_RESERVED: 'bg-blue-100 text-blue-700',
@@ -41,6 +42,8 @@ export default async function BusinessOrderDetailPage({ params }: { params: { id
   return (
     <div className="p-6 space-y-6 max-w-4xl">
       <Link href="/business/orders" className="text-sm text-gray-500 hover:text-gray-700">← Back to Orders</Link>
+
+      <OrderStatusPoller orderId={order.id} initialStatus={order.status} />
 
       <div className="flex items-start justify-between">
         <div>
