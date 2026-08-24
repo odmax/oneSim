@@ -44,6 +44,7 @@ export interface ProviderCapabilityProfile {
 }
 
 const CAP_TO_DB: Record<keyof ConnectorCapabilities, { db: keyof ProviderCapabilityProfile['configured'] }> = {
+  purchase: { db: 'supportsESIM' },
   installationLookup: { db: 'supportsQRCode' },
   installationDataAtPurchase: { db: 'supportsESIM' },
   installationLookupHistorical: { db: 'supportsQRCode' },
@@ -128,6 +129,7 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
   const INSTALLATION_CAPS: ReadonlySet<keyof ConnectorCapabilities> = new Set(['installationLookup', 'installationDataAtPurchase', 'installationLookupHistorical'])
 
   const exposureByCap: Record<keyof ConnectorCapabilities, { portal: boolean; api: boolean }> = {
+    purchase: { portal: installPortal, api: installApi },
     installationLookup: { portal: installPortal, api: installApi },
     installationDataAtPurchase: { portal: installPortal, api: installApi },
     installationLookupHistorical: { portal: installPortal, api: installApi },
@@ -143,7 +145,11 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
   }
 
   for (const [capKey, mapping] of Object.entries(CAP_TO_DB) as Array<[keyof ConnectorCapabilities, { db: keyof ProviderCapabilityProfile['configured'] }]>) {
-    const raw = caps[capKey]
+    // PURCHASE mirrors the registry resolution: explicit `purchase` declaration
+    // first, legacy fallback to installationDataAtPurchase.
+    const raw = capKey === 'purchase'
+      ? (caps.purchase ?? caps.installationDataAtPurchase)
+      : caps[capKey]
     // Optional connector capability (e.g. customPackageCreation) defaults to false
     // when the connector does not declare it.
     const connectorSupported: boolean | 'UNKNOWN' = raw === undefined ? false : raw

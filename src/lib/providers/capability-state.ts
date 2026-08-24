@@ -38,11 +38,10 @@ export interface ProviderCapabilityStateResult {
  * label, and category. The connector remains the implementation truth; this
  * registry only describes how to surface each capability in management UI.
  *
- * `PURCHASE` maps to the connector's `installationDataAtPurchase` capability:
- * a connector that returns install data at purchase has an implemented
- * `activateESIM` path. (A connector that implements purchase without install
- * data is not expressible in ConnectorCapabilities today; in that case the
- * provider's DEFAULT/enabled PURCHASE flag is used for `enabled`.)
+ * `PURCHASE` resolves via the connector's explicit `purchase` declaration with
+ * legacy fallback to `installationDataAtPurchase` (see
+ * resolveRegistryImplementation) — support and install-data delivery are
+ * separate concerns and must never be conflated.
  */
 export const CAPABILITY_REGISTRY: Array<{
   key: string
@@ -80,6 +79,28 @@ export function connectorValueToImplementation(value: boolean | 'UNKNOWN' | unde
   if (value === false) return 'NOT_SUPPORTED'
   if (value === 'UNKNOWN') return 'UNKNOWN'
   return 'NOT_IMPLEMENTED'
+}
+
+/**
+ * Resolve a connector capability's implementation state for a registry entry.
+ *
+ * PURCHASE is special: its implementation truth is the connector's explicit
+ * `purchase` declaration when present, falling back to the legacy
+ * `installationDataAtPurchase` key for connectors that predate the split.
+ * This keeps "wired purchase path" separate from "returns install data in the
+ * purchase response" — some providers complete purchases whose install data
+ * only arrives later via installation/status lookup. Provider-neutral: no
+ * provider-code branching; every connector expresses this through the same
+ * generic capability keys.
+ */
+export function resolveRegistryImplementation(
+  entry: { key: string; connectorKey: keyof ConnectorCapabilities },
+  caps: ConnectorCapabilities,
+): CapabilityImplementation {
+  if (entry.key === 'PURCHASE') {
+    return connectorValueToImplementation(caps.purchase ?? caps.installationDataAtPurchase)
+  }
+  return connectorValueToImplementation(caps[entry.connectorKey])
 }
 
 /**
@@ -132,7 +153,7 @@ export async function getProviderCapabilityState(providerId: string): Promise<Pr
   const byKey: Record<string, ProviderCapabilityState> = {}
 
   for (const entry of CAPABILITY_REGISTRY) {
-    const impl = connectorValueToImplementation(caps[entry.connectorKey])
+    const impl = resolveRegistryImplementation(entry, caps)
     // Exposure lookup falls back gracefully for non-enum keys; unknown keys
     // resolve to the DEFAULT_EXPOSED_CAPABILITIES set membership (false).
     const exposureKey = entry.key as ProviderCapability

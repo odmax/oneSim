@@ -231,6 +231,17 @@ export interface ConnectorInstallDataOutput {
  *    claimed NOT_SUPPORTED.
  */
 export interface ConnectorCapabilities {
+  /**
+   * Wired purchase path (activateESIM) implementation truth. Optional tri-state:
+   *  - true        = connector implements a proven purchase mutation
+   *  - false       = explicit evidence purchase is NOT wired
+   *  - 'UNKNOWN'   = no verified evidence either way
+   *  - absent      = legacy connectors: falls back to installationDataAtPurchase
+   * Separated from installationDataAtPurchase because some providers complete
+   * purchases without returning install data in the purchase response (install
+   * data arrives later via status/installation lookup).
+   */
+  purchase?: boolean | 'UNKNOWN'
   installationLookup: boolean | 'UNKNOWN'
   installationDataAtPurchase: boolean | 'UNKNOWN'
   installationLookupHistorical: boolean | 'UNKNOWN'

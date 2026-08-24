@@ -159,8 +159,16 @@ export class TelnaConnector implements IProviderConnector {
 
   /** Telna (legacy) connector-declared internal capabilities. */
   capabilities: ConnectorCapabilities = {
-    installationLookup: true, // documented GET /euicc-profiles/{iccid} — activation_code
+    // Wired purchase path: activateESIM is fully implemented (inventory claim +
+    // POST /v2.1/pcr/packages) and the endpoint is SOURCE_PROVEN with exposure
+    // USED in the Telna endpoint registry — see activateESIM's own provenance,
+    // host-surface and PCR-auth gates.
+    purchase: true,
+    // Install data (LPA/QR) is NOT returned in the purchase response — the
+    // created package stays PENDING_ACTIVATION and install evidence arrives via
+    // GET /euicc-profiles/{iccid}. No verified evidence either way → UNKNOWN.
     installationDataAtPurchase: 'UNKNOWN',
+    installationLookup: true, // documented GET /euicc-profiles/{iccid} — activation_code
     installationLookupHistorical: true,
     statusLookup: true, // SIM registry + eUICC profile evidence
     usageLookup: true, // package data_usage_remaining (BYTES)

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { connectorValueToImplementation } from './capability-state'
+import { connectorValueToImplementation, resolveRegistryImplementation } from './capability-state'
 
 const { mockProviderFindUnique, mockBuildConnector, mockExposePortal, mockExposeApi } = vi.hoisted(() => ({
   mockProviderFindUnique: vi.fn(),
@@ -235,6 +235,98 @@ describe('connectorValueToImplementation', () => {
     expect(connectorValueToImplementation(false)).toBe('NOT_SUPPORTED')
     expect(connectorValueToImplementation('UNKNOWN')).toBe('UNKNOWN')
     expect(connectorValueToImplementation(undefined)).toBe('NOT_IMPLEMENTED')
+  })
+})
+
+describe('PURCHASE support vs account enablement (target model)', () => {
+  const PURCHASE_ENTRY = { key: 'PURCHASE', connectorKey: 'installationDataAtPurchase' as const }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockExposePortal.mockResolvedValue(true)
+    mockExposeApi.mockResolvedValue(true)
+  })
+
+  function telnaPurchaseConnector(overrides: Record<string, any> = {}) {
+    return {
+      constructor: { name: 'TelnaConnector' },
+      capabilities: {
+        // Mirrors the real Telna legacy declaration (see telna-connector.ts):
+        // wired purchase path + install-data-at-purchase unknown.
+        purchase: true,
+        installationLookup: true,
+        installationDataAtPurchase: 'UNKNOWN' as const,
+        installationLookupHistorical: true,
+        statusLookup: true,
+        usageLookup: true,
+        topUp: false,
+        suspend: false,
+        resume: false,
+        balance: true,
+        inventory: true,
+        webhooks: false,
+        ...overrides,
+      },
+    }
+  }
+
+  it('resolveRegistryImplementation: explicit purchase declaration wins over legacy key', () => {
+    expect(resolveRegistryImplementation(PURCHASE_ENTRY, { purchase: true, installationDataAtPurchase: false } as any)).toBe('SUPPORTED')
+    expect(resolveRegistryImplementation(PURCHASE_ENTRY, { purchase: false, installationDataAtPurchase: true } as any)).toBe('NOT_SUPPORTED')
+    expect(resolveRegistryImplementation(PURCHASE_ENTRY, { purchase: 'UNKNOWN', installationDataAtPurchase: true } as any)).toBe('UNKNOWN')
+    // Legacy fallback when the connector does not declare `purchase`.
+    expect(resolveRegistryImplementation(PURCHASE_ENTRY, { installationDataAtPurchase: true } as any)).toBe('SUPPORTED')
+    expect(resolveRegistryImplementation(PURCHASE_ENTRY, { } as any)).toBe('NOT_IMPLEMENTED')
+    // Non-PURCHASE entries resolve from their own connector key.
+    expect(resolveRegistryImplementation({ key: 'TOP_UP', connectorKey: 'topUp' }, { topUp: true } as any)).toBe('SUPPORTED')
+  })
+
+  it('supported + enabled (TELNA defaults include PURCHASE) → Supported + Enabled', async () => {
+    mockProviderFindUnique.mockResolvedValue({ id: 'telna-1', code: 'TELNA', enabledCapabilities: null })
+    mockBuildConnector.mockResolvedValue(telnaPurchaseConnector())
+    const r = await getProviderCapabilityState('telna-1')
+    expect(r!.byKey.PURCHASE.implementationState).toBe('SUPPORTED')
+    expect(r!.byKey.PURCHASE.enabled).toBe(true)
+  })
+
+  it('supported but disabled for this account → implementation stays SUPPORTED, enabled NO (never collapsed to Unknown)', async () => {
+    mockProviderFindUnique.mockResolvedValue({ id: 'telna-1', code: 'TELNA', enabledCapabilities: [] })
+    mockBuildConnector.mockResolvedValue(telnaPurchaseConnector())
+    const r = await getProviderCapabilityState('telna-1')
+    expect(r!.byKey.PURCHASE.implementationState).toBe('SUPPORTED')
+    expect(r!.byKey.PURCHASE.enabled).toBe(false)
+  })
+
+  it('unknown support stays UNKNOWN and is never enabled — regardless of the account flag', async () => {
+    mockProviderFindUnique.mockResolvedValue({ id: 'telna-1', code: 'TELNA', enabledCapabilities: ['PURCHASE'] })
+    mockBuildConnector.mockResolvedValue(telnaPurchaseConnector({ purchase: 'UNKNOWN' }))
+    const r = await getProviderCapabilityState('telna-1')
+    expect(r!.byKey.PURCHASE.implementationState).toBe('UNKNOWN')
+    expect(r!.byKey.PURCHASE.enabled).toBe(false)
+  })
+
+  it('not supported → NOT_SUPPORTED even when the provider enables PURCHASE', async () => {
+    mockProviderFindUnique.mockResolvedValue({ id: 'x-1', code: 'TELNA_FLEX', enabledCapabilities: ['PURCHASE'] })
+    mockBuildConnector.mockResolvedValue(telnaPurchaseConnector({ purchase: false }))
+    const r = await getProviderCapabilityState('x-1')
+    expect(r!.byKey.PURCHASE.implementationState).toBe('NOT_SUPPORTED')
+    expect(r!.byKey.PURCHASE.enabled).toBe(false)
+  })
+
+  it('Telna regression: wired purchase is SUPPORTED while install-data-at-purchase remains UNKNOWN (no conflation)', async () => {
+    mockProviderFindUnique.mockResolvedValue({ id: 'telna-1', code: 'TELNA', enabledCapabilities: null })
+    mockBuildConnector.mockResolvedValue(telnaPurchaseConnector())
+    const r = await getProviderCapabilityState('telna-1')
+    expect(r!.byKey.PURCHASE.implementationState).toBe('SUPPORTED')
+    expect(r!.byKey.INSTALLATION_DATA_AT_PURCHASE.implementationState).toBe('UNKNOWN')
+  })
+
+  it('provider-neutral legacy fallback: existing connectors without `purchase` keep working', async () => {
+    mockProviderFindUnique.mockResolvedValue({ id: 'usm-1', code: 'USMATRIX', enabledCapabilities: null })
+    mockBuildConnector.mockResolvedValue(usmConnector()) // declares only installationDataAtPurchase: true
+    const r = await getProviderCapabilityState('usm-1')
+    expect(r!.byKey.PURCHASE.implementationState).toBe('SUPPORTED')
+    expect(r!.byKey.PURCHASE.enabled).toBe(true)
   })
 })
 
