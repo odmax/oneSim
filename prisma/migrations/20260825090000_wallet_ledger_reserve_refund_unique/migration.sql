@@ -7,17 +7,17 @@
 -- cumulative delta rows per reference.
 
 CREATE UNIQUE INDEX IF NOT EXISTS "wallet_reserve_one_per_order"
-  ON "wallet_transactions"("order_id")
-  WHERE "type" = 'WALLET_RESERVE' AND "order_id" IS NOT NULL;
+  ON "wallet_transactions"("orderId")
+  WHERE "type" = 'WALLET_RESERVE' AND "orderId" IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS "wallet_reserve_one_per_topup"
-  ON "wallet_transactions"("top_up_id")
-  WHERE "type" = 'WALLET_RESERVE' AND "top_up_id" IS NOT NULL;
+  ON "wallet_transactions"("topUpId")
+  WHERE "type" = 'WALLET_RESERVE' AND "topUpId" IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS "wallet_refund_one_per_order"
-  ON "wallet_transactions"("order_id")
-  WHERE "type" = 'WALLET_REFUND' AND "order_id" IS NOT NULL;
+  ON "wallet_transactions"("orderId")
+  WHERE "type" = 'WALLET_REFUND' AND "orderId" IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS "wallet_refund_one_per_topup"
-  ON "wallet_transactions"("top_up_id")
-  WHERE "type" = 'WALLET_REFUND' AND "top_up_id" IS NOT NULL;
+  ON "wallet_transactions"("topUpId")
+  WHERE "type" = 'WALLET_REFUND' AND "topUpId" IS NOT NULL;
