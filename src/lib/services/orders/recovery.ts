@@ -39,8 +39,9 @@ interface ClassificationInput {
     totalAmount: any
   }
   esims: Array<{ id: string; iccid: string }>
-  walletReserved: boolean
-  walletCaptured: boolean
+    walletReserved: boolean
+    walletCaptured: boolean
+    walletReleased?: boolean
   providerAttempts: Array<{
     id: string
     status: string
@@ -60,7 +61,7 @@ const STALE_STATUSES = ['CANCELLED', 'EXPIRED']
  * Returns one of six outcomes based on stored evidence.
  */
 export function classifyOrderRecovery(input: ClassificationInput): RecoveryClassification {
-  const { order, esims, walletReserved, walletCaptured, providerAttempts, providerPollingSupported } = input
+  const { order, esims, walletReserved, walletCaptured, walletReleased, providerAttempts, providerPollingSupported } = input
   const status = order.status
 
   // Already complete
@@ -117,17 +118,28 @@ export function classifyOrderRecovery(input: ClassificationInput): RecoveryClass
     return { action: 'NOT_RETRYABLE', reason: `Provider rejected with non-retryable error: ${lastAttempt.errorCode}` }
   }
 
-  // Definite failure, retryable → redispatch
+  // Definite failure, retryable → redispatch — but only if funds are still held.
+  // If the wallet already released/refunded, a fresh provider success could not
+  // be captured; route to reconciliation instead of risking a free purchase.
   if (isDefiniteFailure && !wasNonRetryable && !hasFulfillEvidence) {
+    if (walletReleased) {
+      return { action: 'RECONCILIATION_REQUIRED', reason: 'Definite failure but funds were already released/refunded — manual reconciliation required' }
+    }
     return { action: 'REDISPATCH_PROVIDER', reason: 'Definite pre-acceptance failure — safe to retry' }
   }
 
   // No attempts but order is stuck in a pre-fulfillment state
   if (providerAttempts.length === 0 && !hasFulfillEvidence) {
     // If the order was just created and still has wallet reserved, it's fresh
-    if (['CREATED', 'PAYMENT_RESERVED', 'PENDING_PROVIDER'].includes(status) && walletReserved && !walletCaptured) {
+    if (['CREATED', 'PAYMENT_RESERVED', 'PENDING_PROVIDER'].includes(status) && walletReserved && !walletCaptured && !walletReleased) {
       return { action: 'REDISPATCH_PROVIDER', reason: 'Order created but no provider attempt recorded — retrying' }
     }
+  }
+
+  // Already in PROVIDER_RECONCILIATION — feed back through the reconciliation
+  // engine (poll provider + connector-specific read-only search).
+  if (status === 'PROVIDER_RECONCILIATION') {
+    return { action: 'RECONCILIATION_REQUIRED', reason: 'Order in PROVIDER_RECONCILIATION — re-checking provider status' }
   }
 
   // Default: not retryable
@@ -187,10 +199,15 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
   }
 
   // Load wallet transaction state
-  const [reserveTx, captureTx] = await Promise.all([
+  const [reserveTx, captureTx, releaseTx, refundTx] = await Promise.all([
     prisma.walletTransaction.findFirst({ where: { orderId, type: 'WALLET_RESERVE' } }),
     prisma.walletTransaction.findFirst({ where: { orderId, type: 'WALLET_CAPTURE' } }),
+    prisma.walletTransaction.findFirst({ where: { orderId, type: 'WALLET_RELEASE' } }),
+    prisma.walletTransaction.findFirst({ where: { orderId, type: 'WALLET_REFUND' } }),
   ])
+  // Funds that already went back to the wallet — a later provider success must
+  // never capture them again (free purchase), so redispatch is off the table.
+  const walletReleased = Boolean(releaseTx || refundTx)
 
   // Load provider attempts
   const providerAttempts = await prisma.providerAttempt.findMany({
@@ -214,6 +231,7 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
     esims: order.esims.map(e => ({ id: e.id, iccid: e.iccid })),
     walletReserved: !!reserveTx,
     walletCaptured: !!captureTx,
+    walletReleased,
     providerAttempts,
     providerPollingSupported,
   })
@@ -345,23 +363,51 @@ async function redispatchProvider(order: any): Promise<{ success: boolean; statu
     const quantity = order.quantity || 1
     const subscriber = { email: '', first_name: 'Retry' }
 
-    const planId = order.package?.providerPlanId || order.packageId || ''
+    // Derive the EXTERNAL plan id for the target provider from its own
+    // ProviderPackage mapping — never send the local retail packageId upstream.
+    const binding = await prisma.eSIMPackageProviderBinding.findFirst({
+      where: { esimPackageId: order.packageId, isActive: true, providerPackage: { providerId: order.providerId } },
+      select: { providerPackage: { select: { providerPlanId: true } } },
+      orderBy: { priority: 'asc' },
+    })
+    const planId = binding?.providerPackage.providerPlanId || order.package?.providerPlanId || order.packageId || ''
+
+    // Record the attempt BEFORE any provider HTTP so a crash after the mutation
+    // still leaves evidence (mirrors executeProviderAttempt ordering).
+    const existingCount = await prisma.providerAttempt.count({ where: { orderId: order.id, source: 'PURCHASE' } })
+    const attempt = await prisma.providerAttempt.create({
+      data: {
+        orderId: order.id, providerId: order.providerId, attemptNumber: existingCount + 1,
+        source: 'PURCHASE', status: 'STARTED', startedAt: new Date(),
+        metadata: { redispatched: true, retailPackageId: order.packageId } as any,
+      },
+    })
+    await prisma.eSIMPurchase.update({ where: { id: order.id }, data: { providerId: order.providerId } }).catch(() => {})
+
     const result = await adapter.activateESIM({ planId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: order.businessId, orderId: order.id } as any)
+    const latencyMs = Date.now() - attempt.startedAt.getTime()
 
     if (!result.success) {
       const classification = classifyRetry(result.error)
       const isRetryable = classification === 'RETRYABLE'
+      await prisma.providerAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: 'FAILED', completedAt: new Date(), latencyMs,
+          retryClassification: isRetryable ? 'RETRYABLE' : 'NON_RETRYABLE',
+          errorCode: result.error?.code, errorMessage: result.error?.message,
+        },
+      })
       if (!isRetryable) return { success: false, status: order.status, error: result.error?.message || 'Redispatch failed' }
       // Retryable — return error for caller to retry later
       return { success: false, status: order.status, reconciliation: true, error: result.error?.message || 'Retryable failure — uncertain outcome' }
     }
 
-    // Record attempt
-    const existingCount = await prisma.providerAttempt.count({ where: { orderId: order.id, source: 'PURCHASE' } })
-    await prisma.providerAttempt.create({
+    // Record success
+    await prisma.providerAttempt.update({
+      where: { id: attempt.id },
       data: {
-        orderId: order.id, providerId: order.providerId, attemptNumber: existingCount + 1,
-        source: 'PURCHASE', status: 'SUCCEEDED', startedAt: new Date(), completedAt: new Date(),
+        status: 'SUCCEEDED', completedAt: new Date(), latencyMs,
         providerReference: result.data?.activationId || undefined,
       },
     })

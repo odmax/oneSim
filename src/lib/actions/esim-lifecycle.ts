@@ -7,9 +7,28 @@ import { redirect } from 'next/navigation'
 import { refreshEsimStatus, refreshEsimUsage, topUpEsimWithWallet, suspendEsim, resumeEsim } from '@/lib/services/esims/esim-service'
 import { prisma } from '@/lib/prisma'
 
+async function requireEsimAccess(esimId: string): Promise<{ ok: true; isAdmin: boolean } | { ok: false; error: string }> {
+  const session = await getServerSession(authOptions)
+  if (!session || !session.user?.id) return { ok: false, error: 'Unauthorized' }
+  if (session.user.role === 'INTERNAL_ADMIN') return { ok: true, isAdmin: true }
+
+  const businessId = session.user.businessId
+  if (!businessId) return { ok: false, error: 'Unauthorized' }
+  const esim = await prisma.eSIM.findUnique({
+    where: { id: esimId },
+    select: { purchase: { select: { businessId: true } } },
+  })
+  if (!esim) return { ok: false, error: 'eSIM not found' }
+  if (esim.purchase?.businessId !== businessId) return { ok: false, error: 'Forbidden' }
+  return { ok: true, isAdmin: false }
+}
+
 export async function refreshEsimStatusAction(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session) redirect('/login')
+
+  const access = await requireEsimAccess(esimId)
+  if (!access.ok) return { success: false, error: access.error }
 
   const result = await refreshEsimStatus(esimId)
 
@@ -23,6 +42,9 @@ export async function refreshEsimStatusAction(esimId: string) {
 export async function refreshEsimUsageAction(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session) redirect('/login')
+
+  const access = await requireEsimAccess(esimId)
+  if (!access.ok) return { success: false, error: access.error }
 
   const result = await refreshEsimUsage(esimId)
 
@@ -92,6 +114,11 @@ export async function resumeEsimAction(esimId: string) {
 }
 
 export async function getEsimForAdmin(esimId: string) {
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') {
+    return { error: 'Unauthorized' }
+  }
+
   return await prisma.eSIM.findUnique({
     where: { id: esimId },
     include: {

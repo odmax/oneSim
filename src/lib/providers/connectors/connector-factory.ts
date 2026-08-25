@@ -44,8 +44,15 @@ export function createConnector(providerId: string, name: string | undefined, co
   const env = config.environment || undefined
 
   switch (connectorType) {
-    case 'MOCK':
+    case 'MOCK': {
+      // Production guard: the mock connector fabricates successful activations
+      // with dummy ICCIDs and zero network. It must never fulfill real paid
+      // orders unless explicitly allowed.
+      if (process.env.NODE_ENV === 'production' && process.env.ALLOW_MOCK_PROVIDERS !== 'true') {
+        throw new Error('MOCK connector is not allowed in production (set ALLOW_MOCK_PROVIDERS=true to override)')
+      }
       return new MockConnector(providerId, name)
+    }
     case 'AIRHUB':
       return new AirHubConnector(providerId)
     case 'TELNA_SEAMLESS':

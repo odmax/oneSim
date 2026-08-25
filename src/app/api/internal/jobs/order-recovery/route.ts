@@ -25,11 +25,14 @@ export async function POST(req: NextRequest) {
   if (!enabled) return NextResponse.json({ error: 'Order recovery is disabled' }, { status: 403 })
 
   const secret = process.env.ORDER_RECOVERY_JOB_SECRET
-  if (secret) {
-    const auth = req.headers.get('authorization')
-    if (!auth || auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+  if (!secret) {
+    // Fail closed: an enabled recovery endpoint with no configured secret must
+    // never be callable by unauthenticated traffic.
+    return NextResponse.json({ error: 'ORDER_RECOVERY_JOB_SECRET is not configured — recovery endpoint locked' }, { status: 500 })
+  }
+  const auth = req.headers.get('authorization')
+  if (!auth || auth !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   if (!(await acquireRecoveryLock())) {

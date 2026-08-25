@@ -127,6 +127,11 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
     }
   }
 
+  // Stamp the provider we are about to mutate onto the order. Async-dispatched
+  // orders are created without a provider; webhooks and stuck-order recovery
+  // key off this column to match/poll/redispatch the correct provider.
+  try { await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { providerId } }) } catch { /* non-fatal observability stamp */ }
+
   // Dispatch
   try {
     console.log(`[TRAVEL_DATE_TRACE] stage=DISPATCH travelDate=${travelDate || 'undefined'} provider=${providerName} orderId=${orderId}`)
@@ -197,8 +202,20 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
     }
 
     if (iccids.some(e => !e)) {
-      await prisma.providerAttempt.update({ where: { id: attempt.id }, data: { status: 'FAILED', completedAt: new Date(), latencyMs, retryClassification: 'RETRYABLE', errorCode: 'INCOMPLETE_RESPONSE', errorMessage: 'No ICCID in response' } })
-      return { success: false, status: 'RETRYABLE', errorCode: 'INCOMPLETE_RESPONSE' }
+      // POST-DISPATCH: the HTTP call succeeded but the response lacks usable
+      // ICCID data.  The provider may have already committed the activation —
+      // this is AMBIGUOUS, never RETRYABLE.  Reconciliation decides.
+      await prisma.providerAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: 'AMBIGUOUS', completedAt: new Date(), latencyMs,
+          retryClassification: 'NON_RETRYABLE',
+          errorCode: 'INCOMPLETE_RESPONSE',
+          errorMessage: 'Response missing ICCID data — activation may have succeeded',
+          metadata: { ambiguous: true, reconciliationRequired: true, causeCode: 'INCOMPLETE_RESPONSE' },
+        },
+      })
+      return { success: false, status: 'AMBIGUOUS', errorCode: 'INCOMPLETE_RESPONSE', errorMessage: 'Provider response is incomplete — reconciliation required' }
     }
 
     await completeProviderOperation({

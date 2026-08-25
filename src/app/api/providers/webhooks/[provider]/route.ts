@@ -151,7 +151,12 @@ export async function POST(req: NextRequest, { params }: { params: { provider: s
     status: normalized.providerStatus === 'active' || normalized.providerStatus === 'completed'
       ? 'COMPLETED' : normalized.providerStatus === 'failed' || normalized.providerStatus === 'error'
         ? 'FAILED' : 'PENDING' as any,
-    providerReference: payload.orderReference || payload.reference || eventId || undefined,
+    // Map BOTH reference fields: providerReference carries the provider-side
+    // reservation/fulfillment id; orderReference carries OUR internal orderId
+    // when the provider echoes it back. The service matches on either —
+    // collapsing them into one field made order-id matches impossible.
+    providerReference: payload.reservationId || payload.fulfillmentId || payload.reference || eventId || undefined,
+    orderReference: typeof payload.orderReference === 'string' ? payload.orderReference : undefined,
     iccids: [normalized.iccid].filter(Boolean) as string[],
     raw: payload,
   }).catch(() => {})

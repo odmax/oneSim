@@ -15,6 +15,18 @@ export async function suspendESIM(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session) redirect('/login')
 
+  // Ownership gate: only INTERNAL_ADMIN or the owning business may suspend a
+  // live eSIM (this triggers a real provider deactivation).
+  if (session.user.role !== 'INTERNAL_ADMIN') {
+    const esimOwned = await prisma.eSIM.findUnique({
+      where: { id: esimId },
+      select: { purchase: { select: { businessId: true } } },
+    })
+    if (!esimOwned || esimOwned.purchase?.businessId !== session.user.businessId) {
+      return { success: false, error: 'Forbidden' }
+    }
+  }
+
   await prisma.eSIM.update({
     where: { id: esimId },
     data: { status: 'SUSPENDED' },

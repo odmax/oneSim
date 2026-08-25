@@ -40,6 +40,14 @@ export async function testApiOrder(formData: FormData): Promise<{
     return { success: false, error: 'Business account is not approved.' }
   }
 
+  // Production gate: this function bypasses the canonical purchase engine
+  // (wallet reserve/capture state machine, ProviderPackage plan-id derivation,
+  // idempotency, attempt recording, ambiguous classification, reconciliation).
+  // It must never execute in production.
+  if (process.env.NODE_ENV === 'production') {
+    return { success: false, error: 'Test console orders are disabled in production. Use the canonical purchase engine.' }
+  }
+
   try {
     const customerName = formData.get('customerName') as string
     const customerEmail = formData.get('customerEmail') as string

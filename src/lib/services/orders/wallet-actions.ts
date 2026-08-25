@@ -44,9 +44,17 @@ async function reserveCore(client: any, ref: BillingRef, businessId: string, amo
     return { success: false, error: `Insufficient wallet balance. Required: ${amount}, Available: ${balance}` }
   }
 
-  await client.walletTransaction.create({
-    data: { businessId, ...billingKey(ref), amount: -amount, type: 'WALLET_RESERVE', description: `Reserved ${amount} for ${billingTarget(ref)}` },
-  })
+  try {
+    await client.walletTransaction.create({
+      data: { businessId, ...billingKey(ref), amount: -amount, type: 'WALLET_RESERVE', description: `Reserved ${amount} for ${billingTarget(ref)}` },
+    })
+  } catch (e: any) {
+    // DB-level backstop (partial unique index on RESERVE per reference): a
+    // concurrent reserve won the race. The whole transaction rolls back — the
+    // balance decrement above is undone with it — so treat as idempotent success.
+    if (e?.code === 'P2002') return { success: true }
+    throw e
+  }
   return { success: true }
 }
 
@@ -60,6 +68,27 @@ async function captureUpToCore(client: any, ref: BillingRef, businessId: string,
     where: { ...billingKey(ref), type: 'WALLET_RESERVE' },
   })
   if (!reserve) return { success: false, error: 'No reservation found. Reserve wallet funds first.' }
+
+  // Ledger-level guard: once funds have been released or refunded for this
+  // reference, capturing again would create a free purchase (money already went
+  // back to the wallet). Block and require manual reconciliation instead.
+  const [priorRelease, priorRefund] = await Promise.all([
+    client.walletTransaction.findFirst({ where: { ...billingKey(ref), type: 'WALLET_RELEASE' } }),
+    client.walletTransaction.findFirst({ where: { ...billingKey(ref), type: 'WALLET_REFUND' } }),
+  ])
+  if (priorRelease || priorRefund) {
+    const captures = await client.walletTransaction.findMany({
+      where: { ...billingKey(ref), type: 'WALLET_CAPTURE' },
+      select: { amount: true },
+    })
+    const alreadyCaptured = captures.reduce((s: number, c: any) => s + Math.abs(Number(c.amount || 0)), 0)
+    if (alreadyCaptured >= amount) return { success: true, alreadyCaptured: true }
+    return {
+      success: false,
+      error: `Funds were already released/refunded for ${billingTarget(ref)} — manual reconciliation required before capture`,
+      alreadyCaptured: true,
+    }
+  }
 
   const captures = await client.walletTransaction.findMany({
     where: { ...billingKey(ref), type: 'WALLET_CAPTURE' },
@@ -174,6 +203,14 @@ export async function captureReservedFunds(orderId: string, businessId: string, 
       where: { orderId, type: 'WALLET_CAPTURE' },
     })
     if (captured) return { success: true, alreadyCaptured: true }
+
+    const [priorRelease, priorRefund] = await Promise.all([
+      prisma.walletTransaction.findFirst({ where: { orderId, type: 'WALLET_RELEASE' } }),
+      prisma.walletTransaction.findFirst({ where: { orderId, type: 'WALLET_REFUND' } }),
+    ])
+    if (priorRelease || priorRefund) {
+      return { success: false, error: 'Funds were already released/refunded for this order — manual reconciliation required before capture' }
+    }
 
     await prisma.walletTransaction.create({
       data: { businessId, orderId, amount, type: 'WALLET_CAPTURE', description: `Captured ${amount} for order ${orderId}` },

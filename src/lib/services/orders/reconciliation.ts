@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
+import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 import { createTimelineEvent, transitionOrder } from './order-state-machine'
 import { completeProviderFinalization } from './fulfillment'
 import { releaseReservedFundsUpTo } from './wallet-actions'
@@ -213,6 +214,27 @@ async function tryReconcileWithProvider(order: any): Promise<ReconciliationResul
         } catch { continue }
       }
     }
+
+    // Strategy 3: Connector-specific read-only reconciliation (e.g. Choice
+    // bundle_code search).  The connector's reconcileAmbiguousPurchase is
+    // provider-owned and NEVER repeats the activation POST.
+    try {
+      const connector = await buildConnectorFromProvider(order.providerId).catch(() => null)
+      if (connector && typeof (connector as any).reconcileAmbiguousPurchase === 'function') {
+        const recResult = await (connector as any).reconcileAmbiguousPurchase({
+          orderId: order.id,
+          planId: order.package?.providerPlanId || '',
+          quantity: order.quantity || 1,
+          attemptedAt: order.createdAt?.toISOString() || '',
+        })
+        if (recResult?.success && recResult.data?.resolved && recResult.data?.iccid) {
+          return { outcome: 'FOUND_SUCCESS', message: `Connector reconciliation resolved — ICCID: ${recResult.data.iccid}`, providerReference: recResult.data.iccid }
+        }
+        if (recResult?.success && recResult.data?.reason === 'confirmed-failed') {
+          return { outcome: 'FOUND_FAILURE', message: 'Connector confirmed provider failure via reconciliation' }
+        }
+      }
+    } catch { /* connector reconciliation is best-effort */ }
 
     return { outcome: 'STILL_PENDING', message: 'Provider query returned no terminal status' }
   } catch (e: any) {
