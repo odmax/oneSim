@@ -763,7 +763,7 @@ console.log(data);`} />
               </div>
               <div>
                 <p className="mb-1 text-xs font-medium text-red-600">429 — Rate Limit Exceeded</p>
-                <CodeBlock code={JSON.stringify({ success: false, error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Rate limit exceeded. Please reduce request volume and retry after 60 seconds.' } }, null, 2)} />
+                <CodeBlock code={JSON.stringify({ success: false, error: { code: 'RATE_LIMITED', message: 'Rate limit exceeded. Please reduce request volume and retry after 60 seconds.' } }, null, 2)} />
               </div>
               <div>
                 <p className="mb-1 text-xs font-medium text-red-600">502 — Provider Error</p>
@@ -995,9 +995,15 @@ console.log(data);`} />
                 </tr>
               </thead>
               <tbody className="divide-y">
-                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-yellow-100 px-2 text-xs font-semibold text-yellow-800">PENDING_ACTIVATION</span></td><td className="px-4 py-2 text-gray-600">Order created, activation in progress</td></tr>
-                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-green-100 px-2 text-xs font-semibold text-green-800">ACTIVE</span></td><td className="px-4 py-2 text-gray-600">eSIM activated and ready to use</td></tr>
+                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-blue-100 px-2 text-xs font-semibold text-blue-800">CREATED</span></td><td className="px-4 py-2 text-gray-600">Order placed, payment reservation pending</td></tr>
+                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-indigo-100 px-2 text-xs font-semibold text-indigo-800">PAYMENT_RESERVED</span></td><td className="px-4 py-2 text-gray-600">Funds reserved from wallet, awaiting provider dispatch</td></tr>
+                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-cyan-100 px-2 text-xs font-semibold text-cyan-800">PENDING_PROVIDER</span></td><td className="px-4 py-2 text-gray-600">Submitted to carrier network, awaiting provisioning</td></tr>
+                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-purple-100 px-2 text-xs font-semibold text-purple-800">FULFILLING</span></td><td className="px-4 py-2 text-gray-600">eSIM being activated on the carrier network</td></tr>
+                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-yellow-100 px-2 text-xs font-semibold text-yellow-800">PARTIALLY_FULFILLED</span></td><td className="px-4 py-2 text-gray-600">Some eSIMs in a multi-quantity order are ready</td></tr>
+                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-green-100 px-2 text-xs font-semibold text-green-800">FULFILLED</span></td><td className="px-4 py-2 text-gray-600">All eSIMs activated and ready to install</td></tr>
                 <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-red-100 px-2 text-xs font-semibold text-red-800">FAILED</span></td><td className="px-4 py-2 text-gray-600">Activation failed, no wallet charge</td></tr>
+                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-gray-100 px-2 text-xs font-semibold text-gray-800">CANCELLED</span></td><td className="px-4 py-2 text-gray-600">Order cancelled before fulfillment</td></tr>
+                <tr><td className="px-4 py-2"><span className="inline-flex rounded-full bg-orange-100 px-2 text-xs font-semibold text-orange-800">REFUNDED</span></td><td className="px-4 py-2 text-gray-600">Wallet funds returned after cancellation or failure</td></tr>
               </tbody>
             </table>
           </div>

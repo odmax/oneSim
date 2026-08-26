@@ -18,7 +18,7 @@ export function GET() {
     security: [{ bearerAuth: [] }],
     components: {
       securitySchemes: {
-        bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'API Key', description: 'API key generated from the Developer Portal. Prefix: `os_live_` or `os_test_`.' },
+        bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'API Key', description: 'API key generated from the Developer Portal. Prefix: `onesim_`.' },
       },
       schemas: {
         ApiError: {
@@ -26,7 +26,7 @@ export function GET() {
             error: {
               type: 'object', required: ['code', 'message', 'requestId'],
               properties: {
-                code: { type: 'string', enum: ['INVALID_REQUEST','UNAUTHORIZED','FORBIDDEN','NOT_FOUND','CONFLICT','RATE_LIMITED','INSUFFICIENT_BALANCE','QUOTE_REQUIRED','IDEMPOTENCY_CONFLICT','INTERNAL_ERROR','SERVICE_UNAVAILABLE'] },
+                code: { type: 'string', enum: ['INVALID_REQUEST','UNAUTHORIZED','FORBIDDEN','NOT_FOUND','CONFLICT','RATE_LIMITED','INSUFFICIENT_BALANCE','QUOTE_REQUIRED','QUOTE_EXPIRED','IDEMPOTENCY_CONFLICT','ORDER_NOT_RETRYABLE','INTERNAL_ERROR','SERVICE_UNAVAILABLE'] },
                 message: { type: 'string' },
                 details: { type: 'object' },
                 requestId: { type: 'string', example: 'req_m0abc123_abcd' },
@@ -82,13 +82,21 @@ export function GET() {
         },
       },
       '/esims/order': {
+        get: {
+          summary: 'List recent orders (alias)', tags: ['Orders'],
+          description: 'Alias for GET /orders. Returns recent orders for the authenticated business.',
+          responses: { '200': { description: 'List of orders' } },
+        },
         post: {
           summary: 'Create an eSIM order', tags: ['Orders'],
           description: 'Place a new order. Use `Idempotency-Key` header for safe retries. Returns the order with status and eSIM details when fulfilled.',
-          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['packageId', 'customerName', 'customerEmail'], properties: { packageId: { type: 'string' }, quantity: { type: 'integer', default: 1 }, customerName: { type: 'string' }, customerEmail: { type: 'string' }, customerPhone: { type: 'string' }, country: { type: 'string' }, externalCustomerId: { type: 'string' }, callbackUrl: { type: 'string' }, travelDate: { type: 'string', format: 'date' } } } } } },
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['packageId', 'customerName', 'customerEmail'], properties: { packageId: { type: 'string', description: 'Package ID (or use sku/packageCode)' }, sku: { type: 'string', description: 'Package SKU (alternative to packageId)' }, packageCode: { type: 'string', description: 'Package code (alternative to packageId)' }, quantity: { type: 'integer', default: 1, minimum: 1, maximum: 100 }, customerName: { type: 'string' }, customerEmail: { type: 'string', format: 'email' }, customerPhone: { type: 'string' }, country: { type: 'string' }, externalCustomerId: { type: 'string' }, callbackUrl: { type: 'string', format: 'uri' }, travelDate: { type: 'string', format: 'date' } } } } } },
           responses: {
-            '200': { description: 'Order created (may be processing)', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, orderId: { type: 'string' }, status: { type: 'string' }, esims: { type: 'array', items: { type: 'object' } }, provider: { type: 'string' }, message: { type: 'string' } } } } } },
+            '200': { description: 'Order created (may be processing)', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, orderId: { type: 'string' }, status: { type: 'string' }, esims: { type: 'array', items: { type: 'object' } }, provider: { type: 'string' }, message: { type: 'string' }, deducted: { type: 'number', description: 'Wallet amount deducted' } } } } } },
             '400': { description: 'Invalid request', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
+            '401': { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
+            '409': { description: 'Idempotency conflict', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
+            '429': { description: 'Rate limited', headers: { 'Retry-After': { schema: { type: 'string', example: '60' } }, 'X-RateLimit-Limit': { schema: { type: 'integer' } }, 'X-RateLimit-Remaining': { schema: { type: 'integer' } }, 'X-RateLimit-Reset': { schema: { type: 'integer' } } }, content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
           },
         },
       },
