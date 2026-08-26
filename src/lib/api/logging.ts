@@ -74,7 +74,7 @@ export function createRateLimitResponse(): NextResponse {
     {
       success: false,
       error: {
-        code: 'RATE_LIMIT_EXCEEDED',
+        code: 'RATE_LIMITED',
         message: 'API rate limit exceeded. Please reduce request volume and retry.',
       },
     },

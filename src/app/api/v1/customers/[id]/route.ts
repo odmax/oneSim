@@ -56,7 +56,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     if (body.country) update.country = body.country
     if (body.status) update.status = body.status
 
-    const customer = await prisma.customer.update({ where: { id: params.id }, data: update })
+    const customer = await prisma.customer.update({ where: { id: params.id, businessId }, data: update })
     return respond(request, { success: true, customer: { id: customer.id, name: customer.name, email: customer.email, phone: customer.phone, country: customer.country, status: customer.status } }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }
