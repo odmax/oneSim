@@ -7,6 +7,7 @@ import { getAdapterForType } from '@/lib/providers/adapter-manager'
 import { isProviderOperational } from '@/lib/providers/adapter-manager'
 import { transitionOrder } from './order-state-machine'
 import { reconcileProviderOrder } from './reconciliation'
+import { resolvePackageBacking } from './package-backing-resolver'
 import type { classifyRetry as ClassifyRetryFn } from '@/lib/services/routing/provider-failover-engine'
 
 // ─────────────────────────────────────────────
@@ -363,14 +364,37 @@ async function redispatchProvider(order: any): Promise<{ success: boolean; statu
     const quantity = order.quantity || 1
     const subscriber = { email: '', first_name: 'Retry' }
 
-    // Derive the EXTERNAL plan id for the target provider from its own
-    // ProviderPackage mapping — never send the local retail packageId upstream.
-    const binding = await prisma.eSIMPackageProviderBinding.findFirst({
-      where: { esimPackageId: order.packageId, isActive: true, providerPackage: { providerId: order.providerId } },
-      select: { providerPackage: { select: { providerPlanId: true } } },
-      orderBy: { priority: 'asc' },
-    })
-    const planId = binding?.providerPackage.providerPlanId || order.package?.providerPlanId || order.packageId || ''
+    // Derive the EXTERNAL plan id for the target provider using the canonical
+    // package-backing-resolver — never send the local retail packageId upstream.
+    const retailPkg = order.packageId ? await prisma.eSIMPackage.findUnique({
+      where: { id: order.packageId },
+      select: { id: true, providerPackageId: true, providerId: true, providerPlanId: true },
+    }) : null
+
+    const backing = retailPkg ? await resolvePackageBacking(retailPkg) : { kind: 'NONE' as const }
+
+    let planId = ''
+    if (backing.kind === 'BOUND') {
+      if (backing.backing.providerId !== order.providerId) {
+        return { success: false, status: order.status, reconciliation: true, error: 'No authoritative provider package backing for recovery redispatch.' }
+      }
+      planId = backing.backing.providerPlanId
+    } else if (backing.kind === 'CUSTOM') {
+      const match = backing.backings.find(b => b.providerId === order.providerId)
+      if (match) {
+        const pp = await prisma.providerPackage.findUnique({
+          where: { id: match.providerPackageId },
+          select: { providerPlanId: true },
+        })
+        planId = pp?.providerPlanId || ''
+      }
+      if (!planId) {
+        return { success: false, status: order.status, reconciliation: true, error: 'No authoritative provider package backing for recovery redispatch.' }
+      }
+    } else {
+      // UNAVAILABLE / NONE — no authoritative provider package backing.
+      return { success: false, status: order.status, reconciliation: true, error: 'No authoritative provider package binding for recovery redispatch.' }
+    }
 
     // Record the attempt BEFORE any provider HTTP so a crash after the mutation
     // still leaves evidence (mirrors executeProviderAttempt ordering).

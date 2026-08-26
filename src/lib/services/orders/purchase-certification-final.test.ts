@@ -41,6 +41,7 @@ vi.mock('@/lib/prisma', () => ({
     },
     provider: { findUnique: vi.fn() },
     providerPackage: { findFirst: vi.fn(), findUnique: vi.fn() },
+    eSIMPackage: { findUnique: vi.fn(), findFirst: vi.fn(), update: vi.fn().mockResolvedValue({}), updateMany: vi.fn(), count: vi.fn(), create: vi.fn() },
     eSIMPackageProviderBinding: { findFirst: vi.fn() },
     orderTimelineEvent: { create: vi.fn().mockResolvedValue({}) },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
@@ -55,6 +56,7 @@ vi.mock('@/lib/prisma', () => ({
 
 vi.mock('@/lib/providers/adapter-manager', () => ({
   getAdapterForType: vi.fn(),
+  isProviderOperational: vi.fn(() => true),
 }))
 
 vi.mock('@/lib/services/routing/provider-failover-engine', () => ({
@@ -84,6 +86,11 @@ vi.mock('@/lib/services/orders/order-state-machine', () => ({
 
 vi.mock('@/lib/services/orders/wallet-actions', () => ({
   releaseReservedFundsUpTo: vi.fn().mockResolvedValue({}),
+  releaseReservedFunds: vi.fn().mockResolvedValue({}),
+}))
+
+vi.mock('@/lib/services/orders/package-backing-resolver', () => ({
+  resolvePackageBacking: vi.fn(),
 }))
 
 // ─── Imports (after all vi.mock) ───────────────────────────────────────────
@@ -91,11 +98,13 @@ import { prisma } from '@/lib/prisma'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 import { completeProviderFinalization } from '@/lib/services/orders/fulfillment'
+import { resolvePackageBacking } from '@/lib/services/orders/package-backing-resolver'
 
 const mockPrisma = vi.mocked(prisma)
 const mockAdapter = vi.mocked(getAdapterForType)
 const mockBuildConnector = vi.mocked(buildConnectorFromProvider)
 const mockComplete = vi.mocked(completeProviderFinalization)
+const mockResolveBacking = vi.mocked(resolvePackageBacking)
 
 beforeEach(() => {
   mockGetServerSession.mockReset()
@@ -252,3 +261,187 @@ describe('CERT-3b: reconciliation engine uses connector-specific Strategy 3', ()
 })
 
 import { classifyOrderRecovery } from './recovery'
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FIX 4: Recovery provider-neutral redispatch — no Custom Package Builder dep
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function setupRedispatchMocks(overrides: {
+  backing?: any
+  retailPkg?: any
+  adapterResult?: any
+} = {}) {
+  const { backing = { kind: 'BOUND', backing: { providerPackageId: 'pp-1', providerId: 'prov-1', providerPlanId: 'EXT-123' } }, retailPkg = { id: 'pkg-1', providerPackageId: 'pp-1', providerId: 'prov-1', providerPlanId: 'local-plan' }, adapterResult = { success: true, data: { status: 'ACTIVE', activationId: 'act-1', iccids: ['iccid-1'] } } } = overrides
+
+  mockResolveBacking.mockReset()
+  mockResolveBacking.mockResolvedValue(backing)
+  mockComplete.mockReset()
+  mockComplete.mockResolvedValue({ success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true } as any)
+  mockAdapter.mockReset()
+  mockAdapter.mockResolvedValue({
+    activateESIM: vi.fn().mockResolvedValue(adapterResult),
+    validatePurchase: vi.fn().mockResolvedValue({ valid: true }),
+    getActivationStatus: vi.fn(),
+  } as any)
+
+  // order lookup
+  mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({
+    id: 'o1', status: 'PAYMENT_RESERVED', providerId: 'prov-1', businessId: 'biz-1',
+    totalAmount: 10, retryCount: 0, maxRetries: 5, packageId: 'pkg-1', userId: 'u1',
+    quantity: 1, providerFulfillId: null, providerReservationId: null,
+    esims: [], provider: { id: 'prov-1', type: 'URL_TOKEN', code: 'CHOICE' },
+    business: { id: 'biz-1', walletBalance: 100, status: 'APPROVED' },
+  } as any)
+
+  // wallet txs — none (reserved but not captured/released)
+  mockPrisma.walletTransaction.findFirst.mockResolvedValue(null)
+
+  // provider attempts — one FAILED retryable = triggers REDISPATCH_PROVIDER
+  mockPrisma.providerAttempt.findMany.mockResolvedValue([
+    { id: 'a1', status: 'FAILED', source: 'PURCHASE', retryClassification: 'RETRYABLE', errorCode: 'PROVIDER_TIMEOUT', providerReference: null },
+  ] as any)
+  mockPrisma.providerAttempt.count.mockResolvedValue(1)
+  mockPrisma.providerAttempt.create.mockResolvedValue({ id: 'a2', attemptNumber: 2, startedAt: new Date() } as any)
+  mockPrisma.providerAttempt.update.mockResolvedValue({})
+
+  // provider lookup
+  mockPrisma.provider.findUnique.mockResolvedValue({
+    id: 'prov-1', type: 'URL_TOKEN', apiBaseUrl: '', apiToken: '', environment: 'staging', authUrl: '', name: 'Choice', status: 'ACTIVE',
+  } as any)
+
+  // adapter
+  const freshAdapter = {
+    activateESIM: vi.fn().mockResolvedValue(adapterResult),
+    validatePurchase: vi.fn().mockResolvedValue({ valid: true }),
+    getActivationStatus: vi.fn(),
+  }
+  mockAdapter.mockResolvedValue(freshAdapter as any)
+
+  // retail package lookup
+  mockPrisma.eSIMPackage.findUnique.mockResolvedValue(retailPkg)
+
+  // backing resolver
+  mockResolveBacking.mockReset()
+  mockResolveBacking.mockResolvedValue(backing)
+
+  // fulfillment
+  mockComplete.mockResolvedValue({ success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true } as any)
+}
+
+describe('CERT-4a: recovery redispatch uses resolvePackageBinding (no eSIMPackageProviderBinding)', () => {
+  it('BOUND backing resolves correct external providerPlanId and calls adapter', async () => {
+    setupRedispatchMocks({
+      backing: { kind: 'BOUND', backing: { providerPackageId: 'pp-1', providerId: 'prov-1', providerPlanId: 'EXT-123' } },
+      adapterResult: { success: true, data: { status: 'PENDING_ACTIVATION', iccids: [], imsis: [] } },
+    })
+
+    const { recoverOrder } = await import('./recovery')
+    const result = await recoverOrder('o1')
+
+    expect(mockResolveBacking).toHaveBeenCalledTimes(1)
+    const calledPkg = mockResolveBacking.mock.calls[0][0]
+    expect(calledPkg.id).toBe('pkg-1')
+    expect(calledPkg.providerPackageId).toBe('pp-1')
+
+    const adapter = await mockAdapter.mock.results[0].value
+    const callArgs = adapter.activateESIM.mock.calls[0][0]
+    expect(callArgs.planId).toBe('EXT-123')
+    expect(callArgs.planId).not.toBe('pkg-1')
+    expect(callArgs.planId).not.toBe('local-plan')
+
+    expect(result.success || result.action === 'REDISPATCH_PROVIDER').toBe(true)
+  })
+
+  it('provider mismatch blocks redispatch and returns reconciliation', async () => {
+    setupRedispatchMocks({
+      backing: { kind: 'BOUND', backing: { providerPackageId: 'pp-wrong', providerId: 'prov-other', providerPlanId: 'EXT-456' } },
+    })
+
+    const { recoverOrder } = await import('./recovery')
+    const result = await recoverOrder('o1')
+
+    expect(result.success).toBe(false)
+    expect(result.action).toBe('RECONCILIATION_REQUIRED')
+    expect(result.message).toMatch(/No authoritative provider package backing/)
+  })
+
+  it('NONE backing blocks redispatch — no fallback to order.packageId', async () => {
+    setupRedispatchMocks({
+      backing: { kind: 'NONE' },
+      retailPkg: { id: 'pkg-1', providerPackageId: null, providerId: null, providerPlanId: null },
+    })
+
+    const { recoverOrder } = await import('./recovery')
+    const result = await recoverOrder('o1')
+
+    expect(result.success).toBe(false)
+    expect(result.action).toBe('RECONCILIATION_REQUIRED')
+    expect(result.message).toMatch(/No authoritative provider package binding/)
+  })
+
+  it('UNAVAILABLE backing blocks redispatch', async () => {
+    setupRedispatchMocks({
+      backing: { kind: 'UNAVAILABLE' },
+      retailPkg: { id: 'pkg-1', providerPackageId: 'pp-1', providerId: 'prov-1', providerPlanId: 'local-plan' },
+    })
+
+    const { recoverOrder } = await import('./recovery')
+    const result = await recoverOrder('o1')
+
+    expect(result.success).toBe(false)
+    expect(result.action).toBe('RECONCILIATION_REQUIRED')
+    expect(result.message).toMatch(/No authoritative provider package binding/)
+  })
+
+  it('CUSTOM backing with matching provider loads ProviderPackage.providerPlanId', async () => {
+    setupRedispatchMocks({
+      backing: { kind: 'CUSTOM', backings: [{ providerPackageId: 'pp-c1', providerId: 'prov-1', providerName: 'Choice', priority: 1 }] },
+      retailPkg: { id: 'pkg-1', providerPackageId: null, providerId: null, providerPlanId: null },
+      adapterResult: { success: true, data: { status: 'PENDING_ACTIVATION', iccids: [], imsis: [] } },
+    })
+
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ providerPlanId: 'CUSTOM-PLAN-99' } as any)
+
+    const { recoverOrder } = await import('./recovery')
+    const result = await recoverOrder('o1')
+
+    expect(mockResolveBacking).toHaveBeenCalledTimes(1)
+    const adapter = await mockAdapter.mock.results[0].value
+    expect(adapter.activateESIM).toHaveBeenCalledTimes(1)
+    expect(adapter.activateESIM.mock.calls[0][0].planId).toBe('CUSTOM-PLAN-99')
+    expect(adapter.activateESIM.mock.calls[0][0].planId).not.toBe('pkg-1')
+    expect(result.success || result.action === 'REDISPATCH_PROVIDER').toBe(true)
+  })
+
+  it('CUSTOM backing with no matching provider blocks redispatch', async () => {
+    setupRedispatchMocks({
+      backing: { kind: 'CUSTOM', backings: [{ providerPackageId: 'pp-c1', providerId: 'prov-other', providerName: 'Other', priority: 1 }] },
+      retailPkg: { id: 'pkg-1', providerPackageId: null, providerId: null, providerPlanId: null },
+    })
+
+    const { recoverOrder } = await import('./recovery')
+    const result = await recoverOrder('o1')
+
+    expect(result.success).toBe(false)
+    expect(result.action).toBe('RECONCILIATION_REQUIRED')
+    expect(result.message).toMatch(/No authoritative provider package backing/)
+  })
+
+  it('order.packageId is NEVER sent upstream as provider planId', async () => {
+    setupRedispatchMocks({
+      backing: { kind: 'BOUND', backing: { providerPackageId: 'pp-1', providerId: 'prov-1', providerPlanId: 'EXT-123' } },
+      adapterResult: { success: true, data: { status: 'PENDING_ACTIVATION', iccids: [], imsis: [] } },
+    })
+
+    const { recoverOrder } = await import('./recovery')
+    const result = await recoverOrder('o1')
+
+    const adapter = await mockAdapter.mock.results[0].value
+    const callArgs = adapter.activateESIM.mock.calls[0][0]
+
+    expect(callArgs.planId).toBe('EXT-123')
+    expect(callArgs.planId).not.toBe('pkg-1')
+    expect(JSON.stringify(callArgs)).not.toContain('"pkg-1"')
+    expect(result.success || result.action === 'REDISPATCH_PROVIDER').toBe(true)
+  })
+})
