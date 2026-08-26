@@ -28,6 +28,7 @@ describe('API-CONTRACT-1: Route filesystem completeness', () => {
     { method: 'GET', apiPath: '/esims/[esimId]', fsPath: 'src/app/api/v1/esims/[esimId]/route.ts' },
     { method: 'GET', apiPath: '/esims/[esimId]/usage', fsPath: 'src/app/api/v1/esims/[esimId]/usage/route.ts' },
     { method: 'POST', apiPath: '/esims/[esimId]/refresh-status', fsPath: 'src/app/api/v1/esims/[esimId]/refresh-status/route.ts' },
+    { method: 'POST', apiPath: '/esims/[esimId]/refresh-qr', fsPath: 'src/app/api/v1/esims/[esimId]/refresh-qr/route.ts' },
     { method: 'POST', apiPath: '/esims/[esimId]/top-up', fsPath: 'src/app/api/v1/esims/[esimId]/top-up/route.ts' },
     { method: 'POST', apiPath: '/esims/[esimId]/share', fsPath: 'src/app/api/v1/esims/[esimId]/share/route.ts' },
     { method: 'GET', apiPath: '/usage', fsPath: 'src/app/api/v1/usage/route.ts' },
@@ -98,13 +99,13 @@ describe('API-CONTRACT-1: Route filesystem completeness', () => {
     expect(undocumented, `Undocumented route files: ${undocumented.join(', ')}`).toHaveLength(0)
   })
 
-  it('PUBLIC_ENDPOINT_COUNT = 20', () => {
+  it('PUBLIC_ENDPOINT_COUNT = 21', () => {
     const uniquePaths = new Set(ROUTE_MAP.map(r => r.apiPath))
-    expect(uniquePaths.size).toBe(20)
+    expect(uniquePaths.size).toBe(21)
   })
 
-  it('PUBLIC_METHOD_COUNT = 26', () => {
-    expect(ROUTE_MAP.length).toBe(26)
+  it('PUBLIC_METHOD_COUNT = 27', () => {
+    expect(ROUTE_MAP.length).toBe(27)
   })
 })
 
@@ -411,10 +412,11 @@ describe('API-CONTRACT-8: OpenAPI spec accuracy', () => {
     expect(content).toContain('3.1.0')
   })
 
-  it('spec documents all 20 API paths', () => {
+  it('spec documents all 21 API paths', () => {
     const paths = [
       '/packages', '/esims/order', '/orders', '/orders/{orderId}',
       '/esims/{esimId}', '/esims/{esimId}/usage', '/esims/{esimId}/refresh-status',
+      '/esims/{esimId}/refresh-qr',
       '/esims/{esimId}/top-up', '/esims/{esimId}/share',
       '/usage', '/wallet', '/wallet/transactions',
       '/customers', '/customers/{id}',

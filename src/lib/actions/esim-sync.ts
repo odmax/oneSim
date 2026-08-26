@@ -62,3 +62,26 @@ export async function getQrCode(esimId: string) {
   revalidatePath(`/admin/esims/${esimId}`)
   return result
 }
+
+export async function refreshEsimQrCodeAction(esimId: string) {
+  const { getServerSession } = await import('next-auth')
+  const { authOptions } = await import('@/lib/auth/config')
+  const session = await getServerSession(authOptions)
+  if (!session || session.user.role !== 'BUSINESS_USER') {
+    return { success: false, error: 'Unauthorized' }
+  }
+
+  const businessId = session.user.businessId
+  if (!businessId) {
+    return { success: false, error: 'No business associated with this account' }
+  }
+
+  const { refreshEsimQrCode } = await import('@/lib/services/esims/refresh-qr')
+  const result = await refreshEsimQrCode({ esimId, businessId, requestedBy: session.user.id })
+
+  if (result.success) {
+    revalidatePath(`/business/esims/${esimId}`)
+  }
+
+  return result
+}

@@ -136,6 +136,37 @@ export function GET() {
       '/esims/{esimId}/refresh-status': {
         post: { summary: 'Refresh eSIM status from provider', tags: ['eSIMs'], parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Status refreshed' } } },
       },
+      '/esims/{esimId}/refresh-qr': {
+        post: {
+          summary: 'Refresh eSIM QR code / installation data', tags: ['eSIMs'],
+          description: 'Retrieves the latest QR code and installation data from the provider. This operation is read-only — it does not purchase another eSIM, change the ICCID, or mutate the wallet. Provider support may vary. Refreshing is safe to retry.',
+          parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' }, description: 'eSIM ID' }],
+          responses: {
+            '200': {
+              description: 'QR code refreshed',
+              content: { 'application/json': { schema: { type: 'object', properties: {
+                success: { type: 'boolean' },
+                esim: { type: 'object', properties: {
+                  id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string' },
+                  activationCode: { type: 'string', nullable: true }, qrCodeUrl: { type: 'string', nullable: true },
+                  qrCode: { type: 'string', nullable: true }, smdpAddress: { type: 'string', nullable: true },
+                  matchingId: { type: 'string', nullable: true },
+                  installation: { type: 'object', properties: {
+                    kind: { type: 'string', enum: ['QR_IMAGE_URL', 'QR_PAYLOAD', 'ACTIVATION_CODE', 'MANUAL', 'NONE'] },
+                    qrImageUrl: { type: 'string', nullable: true }, qrPayload: { type: 'string', nullable: true },
+                    activationCode: { type: 'string', nullable: true }, smdpAddress: { type: 'string', nullable: true },
+                    matchingId: { type: 'string', nullable: true },
+                  }},
+                  qrRefreshedAt: { type: 'string', format: 'date-time' },
+                }},
+              } } } },
+            },
+            '404': { description: 'eSIM not found or QR not available', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
+            '422': { description: 'QR not supported or provider unresolved', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
+            '502': { description: 'Provider request failed', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
+          },
+        },
+      },
       '/esims/{esimId}/top-up': {
         post: { summary: 'Top-up an existing eSIM', tags: ['eSIMs'], parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], requestBody: { content: { 'application/json': { schema: { type: 'object', required: ['packageId'], properties: { packageId: { type: 'string' }, quantity: { type: 'integer' } } } } } }, responses: { '200': { description: 'Top-up completed' } } },
       },

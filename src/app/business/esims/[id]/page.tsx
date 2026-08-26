@@ -9,8 +9,10 @@ import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { QrImage } from '@/components/business/QrImage'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 import { syncEsimStatusAction } from '@/lib/actions/esim'
+import { refreshEsimQrCodeAction } from '@/lib/actions/esim-sync'
 import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
 import { hasUsableInstallData, buildInstallationPresentation } from '@/lib/esim/installation-data'
+import { RefreshQrButton } from '@/components/business/RefreshQrButton'
 
 function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -187,6 +189,7 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
               <button type="submit" className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">Refresh Status</button>
             </form>
           )}
+          <RefreshQrButton esimId={esim.id} hasInstallData={hasInstallData} />
           {caps.canTopUp && (esim.status === 'ACTIVE' || esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING') && (
             <Link href={`/business/esims/${esim.id}/top-up`} className="rounded-lg border border-emerald-300 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50">Top Up</Link>
           )}

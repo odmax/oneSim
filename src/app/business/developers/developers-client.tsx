@@ -584,6 +584,11 @@ console.log(data);`} />
   -H "Authorization: Bearer YOUR_API_KEY"`} />
                     </div>
                     <div>
+                      <p className="text-xs font-medium text-gray-700">Refresh QR code:</p>
+                      <CodeBlock code={`curl -X POST "${baseUrl}/api/v1/esims/{esimId}/refresh-qr" \
+  -H "Authorization: Bearer YOUR_API_KEY"`} />
+                    </div>
+                    <div>
                       <p className="text-xs font-medium text-gray-700">Share eSIM:</p>
                       <CodeBlock code={`curl -X POST "${baseUrl}/api/v1/esims/{esimId}/share" \
   -H "Authorization: Bearer YOUR_API_KEY" \
@@ -936,6 +941,34 @@ console.log(data);`} />
               activated: true,
             }, null, 2)} />
             <p className="mt-2 text-xs text-gray-500">When `activated` is true, this is the first time activation was detected. The eSIM status transitions from PENDING_ACTIVATION (Ready to install) → ACTIVE (Activated on device).</p>
+          </EndpointCard>
+
+          <EndpointCard method="POST" path="/api/v1/esims/{esimId}/refresh-qr" description="Refresh QR code and installation data from the provider. This is a read-only operation — it does not purchase an eSIM, change the ICCID, or affect the wallet.">
+            <h5 className="mb-2 text-xs font-semibold text-gray-700 uppercase tracking-wider">Path Parameters</h5>
+            <ParamTable params={[
+              { name: 'esimId', type: 'string', required: true, description: 'eSIM ID to refresh QR data for' },
+            ]} />
+            <h5 className="mb-2 mt-4 text-xs font-semibold text-gray-700 uppercase tracking-wider">Response</h5>
+            <CodeBlock code={JSON.stringify({
+              success: true,
+              esim: {
+                id: 'cmow...ghi789',
+                iccid: '89012345678901234567',
+                status: 'ACTIVE',
+                activationCode: 'LPA:1$smdp.example.com$MATCHING-ID',
+                qrCodeUrl: 'https://cdn.example.com/qr.png',
+                installation: { kind: 'QR_IMAGE_URL', qrImageUrl: 'https://cdn.example.com/qr.png', qrPayload: null, activationCode: 'LPA:1$smdp.example.com$MATCHING-ID', smdpAddress: 'smdp.example.com', matchingId: 'MATCHING-ID' },
+                qrRefreshedAt: '2026-08-26T12:00:00Z',
+              },
+            }, null, 2)} />
+            <p className="mt-2 text-xs text-gray-500">This operation retrieves the latest available installation data from the provider. It is safe to retry. Provider support may vary — some providers return HTTP QR images, others return LPA payloads for local QR generation.</p>
+            <h5 className="mb-2 mt-4 text-xs font-semibold text-gray-700 uppercase tracking-wider">Possible Errors</h5>
+            <ul className="text-xs text-gray-500 space-y-1 list-disc list-inside">
+              <li><code className="bg-gray-100 px-1">QR_PROVIDER_UNRESOLVED</code> — Provider could not be determined for this eSIM</li>
+              <li><code className="bg-gray-100 px-1">QR_REFRESH_NOT_SUPPORTED</code> — Provider does not support QR refresh</li>
+              <li><code className="bg-gray-100 px-1">QR_NOT_AVAILABLE</code> — QR code is not available yet (eSIM may still be provisioning)</li>
+              <li><code className="bg-gray-100 px-1">PROVIDER_REQUEST_FAILED</code> — Provider returned an error while fetching QR data</li>
+            </ul>
           </EndpointCard>
 
           {/* Share */}
