@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
+import { serializePublicWebhook } from '@/lib/api/public-dto'
 import crypto from 'crypto'
 
 const EVENT_TYPES = ['order.completed', 'order.failed', 'esim.provisioned', 'esim.activated', 'esim.expired', 'esim.suspended', 'usage.updated', 'topup.completed', 'topup.failed', 'wallet.low_balance']
@@ -32,7 +33,7 @@ export async function GET(request: NextRequest) {
       orderBy: { createdAt: 'desc' },
     })
 
-    return respond(request, { success: true, webhooks: endpoints.map(e => ({ id: e.id, name: e.name, url: e.url, status: e.status, events: e.events, lastSuccessAt: e.lastSuccessAt, lastFailureAt: e.lastFailureAt, failureCount: e.failureCount, createdAt: e.createdAt })) }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
+    return respond(request, { success: true, webhooks: endpoints.map(serializePublicWebhook) }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }
 
@@ -61,6 +62,6 @@ export async function POST(request: NextRequest) {
       data: { businessId, name: body.name, url: body.url, secret, events, status: 'ACTIVE' },
     })
 
-    return respond(request, { success: true, webhook: { id: endpoint.id, name: endpoint.name, url: endpoint.url, secret: endpoint.secret, events: endpoint.events, status: endpoint.status, createdAt: endpoint.createdAt } }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
+    return respond(request, { success: true, webhook: { ...serializePublicWebhook(endpoint), secret: endpoint.secret } }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }

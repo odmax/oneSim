@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
+import { serializePublicWalletTransaction } from '@/lib/api/public-dto'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -66,19 +67,8 @@ export async function GET(request: NextRequest) {
         currency: 'USD',
         totalUsed: used,
         pendingCreditRequests: pendingCount,
-        lastCredit: lastCredit ? {
-          id: lastCredit.id,
-          amount: parseFloat(lastCredit.amount.toString()),
-          description: lastCredit.description || null,
-          createdAt: lastCredit.createdAt.toISOString(),
-        } : null,
-        lastTransaction: recentTx ? {
-          id: recentTx.id,
-          type: recentTx.type,
-          amount: parseFloat(recentTx.amount.toString()),
-          description: recentTx.description || null,
-          createdAt: recentTx.createdAt.toISOString(),
-        } : null,
+        lastCredit: lastCredit ? serializePublicWalletTransaction(lastCredit) : null,
+        lastTransaction: recentTx ? serializePublicWalletTransaction(recentTx) : null,
       },
     }, 200, startTime, businessId, { apiKeyId, rateLimit })
   } catch (error: any) {

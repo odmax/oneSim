@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
 import { stripEsimProviderFields } from '@/lib/analytics/safe-fields'
+import { serializePublicUsageRecord } from '@/lib/api/public-dto'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -58,12 +59,7 @@ export async function GET(request: NextRequest, { params }: { params: { esimId: 
         dataTotalMB: safe.dataTotalMB,
         lastUsageSyncAt: safe.lastUsageSyncAt?.toISOString() || null,
       },
-      usageRecords: esim.usageRecords.map((r) => ({
-        dataUsedMB: r.dataUsedMB,
-        dataTotalMB: r.dataTotalMB,
-        dataRemainingMB: r.dataRemainingMB,
-        timestamp: r.timestamp.toISOString(),
-      })),
+      usageRecords: esim.usageRecords.map(serializePublicUsageRecord),
     }
 
     return respond(request, responseBody, 200, startTime, businessId, { apiKeyId, rateLimit })

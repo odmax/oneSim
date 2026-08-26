@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
+import { serializePublicWebhook } from '@/lib/api/public-dto'
 import { deliverWebhook } from '@/lib/services/business-webhooks/dispatcher'
 
 function makeError(code: string, message: string) { return { success: false, error: { code, message } } }
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     const webhook = await prisma.businessWebhookEndpoint.findFirst({ where: { id: params.id, businessId } })
     if (!webhook) return respond(request, makeError('NOT_FOUND', 'Webhook not found'), 404, startTime, businessId, { errorMessage: 'Not found', rateLimit })
 
-    return respond(request, { success: true, webhook: { id: webhook.id, name: webhook.name, url: webhook.url, status: webhook.status, events: webhook.events, lastSuccessAt: webhook.lastSuccessAt, lastFailureAt: webhook.lastFailureAt, failureCount: webhook.failureCount, createdAt: webhook.createdAt } }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
+    return respond(request, { success: true, webhook: serializePublicWebhook(webhook) }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }
 
@@ -55,7 +56,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     if (body.events) update.events = body.events
 
     const updated = await prisma.businessWebhookEndpoint.update({ where: { id: params.id }, data: update })
-    return respond(request, { success: true, webhook: { id: updated.id, name: updated.name, url: updated.url, status: updated.status, events: updated.events, createdAt: updated.createdAt } }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
+    return respond(request, { success: true, webhook: serializePublicWebhook(updated) }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }
 

@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { authenticateAndCheck, respond } from '@/lib/api/v1-response'
 import { apiError } from '@/lib/api/error-contract'
 import { stripPackageProviderFields, stripEsimProviderFields } from '@/lib/analytics/safe-fields'
+import { serializePublicUsageRecord } from '@/lib/api/public-dto'
 import { getActivationInstructions } from '@/lib/esim/activation-instructions'
 import { buildInstallationPresentation } from '@/lib/esim/installation-data'
 import { getPackageDisplayName, getPackageDataGB, PurchaseSnapshot } from '@/lib/packages/snapshot-utils'
@@ -91,7 +92,7 @@ export async function GET(
       dataRemainingMB: esim.dataRemainingMB,
       dataTotalMB: esim.dataTotalMB,
       package: packageInfo,
-      usageRecords: esim.usageRecords,
+      usageRecords: esim.usageRecords.map(serializePublicUsageRecord),
       activationInstructions: instructions,
       sharedAt: esim.sharedAt,
       sharedToEmail: esim.sharedToEmail,

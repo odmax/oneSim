@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
+import { serializePublicCustomer } from '@/lib/api/public-dto'
 
 function makeError(c: string, m: string) { return { success: false, error: { code: c, message: m } } }
 
@@ -39,7 +40,7 @@ export async function GET(request: NextRequest) {
 
     return respond(request, {
       success: true,
-      customers: customers.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone, country: c.country, status: c.status, createdAt: c.createdAt })),
+      customers: customers.map(serializePublicCustomer),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
@@ -65,6 +66,6 @@ export async function POST(request: NextRequest) {
       data: { businessId, name: body.name, email: body.email, phone: body.phone || null, country: body.country || 'Unknown', status: 'ACTIVE' },
     })
 
-    return respond(request, { success: true, customer: { id: customer.id, name: customer.name, email: customer.email, phone: customer.phone, country: customer.country, status: customer.status, createdAt: customer.createdAt } }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
+    return respond(request, { success: true, customer: serializePublicCustomer(customer) }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }

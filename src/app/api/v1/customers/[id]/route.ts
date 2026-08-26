@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
+import { serializePublicCustomerDetail, serializePublicCustomer } from '@/lib/api/public-dto'
 
 function makeError(c: string, m: string) { return { success: false, error: { code: c, message: m } } }
 
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
     return respond(request, {
       success: true,
-      customer: { id: customer.id, name: customer.name, email: customer.email, phone: customer.phone, country: customer.country, status: customer.status, esimCount: customer._count.esims, topUpCount: customer._count.esimTopUps, createdAt: customer.createdAt },
+      customer: serializePublicCustomerDetail(customer),
     }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }
@@ -57,6 +58,6 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     if (body.status) update.status = body.status
 
     const customer = await prisma.customer.update({ where: { id: params.id, businessId }, data: update })
-    return respond(request, { success: true, customer: { id: customer.id, name: customer.name, email: customer.email, phone: customer.phone, country: customer.country, status: customer.status } }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
+    return respond(request, { success: true, customer: serializePublicCustomer(customer) }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }

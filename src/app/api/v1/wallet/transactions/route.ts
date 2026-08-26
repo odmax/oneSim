@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
+import { serializePublicWalletTransaction } from '@/lib/api/public-dto'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -60,13 +61,7 @@ export async function GET(request: NextRequest) {
 
     return respond(request, {
       success: true,
-      transactions: transactions.map(tx => ({
-        id: tx.id,
-        type: tx.type,
-        amount: parseFloat(tx.amount.toString()),
-        description: tx.description || null,
-        createdAt: tx.createdAt.toISOString(),
-      })),
+      transactions: transactions.map(serializePublicWalletTransaction),
       pagination: {
         page,
         limit,

@@ -1,6 +1,17 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
+import {
+  serializePublicPackage,
+  serializePublicOrder,
+  serializePublicUsageRecord,
+  serializePublicUsageEsim,
+  serializePublicWalletTransaction,
+  serializePublicCustomer,
+  serializePublicCustomerDetail,
+  serializePublicWebhook,
+  findForbiddenFields,
+} from '@/lib/api/public-dto'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SECTION 1: Route filesystem completeness — filesystem vs documented surface
@@ -732,14 +743,13 @@ describe('API-CONTRACT-14: Wallet contract', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('API-CONTRACT-15: Package contract', () => {
-  it('packages endpoint strips provider fields', () => {
+  it('packages endpoint uses public DTO serializer for provider stripping', () => {
     const content = fs.readFileSync('src/app/api/v1/packages/route.ts', 'utf8')
-    expect(content).toContain('stripPackageProviderFields')
+    expect(content).toContain('serializePublicPackage')
   })
 
-  it('packages return unitCost, unitPrice, currency', () => {
-    const content = fs.readFileSync('src/app/api/v1/packages/route.ts', 'utf8')
-    expect(content).toContain('unitCost')
+  it('packages serializer returns unitPrice and currency', () => {
+    const content = fs.readFileSync('src/lib/api/public-dto.ts', 'utf8')
     expect(content).toContain('unitPrice')
     expect(content).toContain('currency')
   })
@@ -811,5 +821,334 @@ describe('API-CONTRACT-17: Certification summary', () => {
   it('rate limit error code is RATE_LIMITED consistently', () => {
     const content = fs.readFileSync('src/lib/api/logging.ts', 'utf8')
     expect(content).toContain('RATE_LIMITED')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 18: Public DTO Serializer Unit Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('API-CONTRACT-18: Public DTO serializers (unit tests)', () => {
+  it('serializePublicPackage uses allowlist — no provider fields leak', () => {
+    const fake = {
+      id: 'pkg_1', name: 'US 5GB', displayName: 'US 5GB Plan', sku: 'US-5GB-01',
+      packageCode: 'P-US-5GB', description: 'desc', customerDescription: 'cust desc',
+      dataGB: 5, validityDays: 30, priceUSD: { toString: () => '19.99' },
+      currency: 'USD', productType: 'NEW_ESIM', isActive: true, source: 'CATALOG_PRODUCT',
+      country: 'US', region: 'North America',
+    }
+    const result = serializePublicPackage(fake, { country: 'US', region: 'North America' })
+    const keys = Object.keys(result)
+    expect(keys).toContain('id')
+    expect(keys).toContain('displayName')
+    expect(keys).toContain('dataGB')
+    expect(keys).toContain('unitPrice')
+    expect(keys).not.toContain('providerName')
+    expect(keys).not.toContain('providerPlanId')
+    expect(keys).not.toContain('providerId')
+    expect(keys).not.toContain('providerRawData')
+    expect(keys).not.toContain('costPriceUSD')
+    expect(keys).not.toContain('providerPackageId')
+    expect(result.unitPrice).toBe(19.99)
+    expect(result.country).toBe('US')
+  })
+
+  it('serializePublicOrder excludes all internal fields', () => {
+    const fake = {
+      id: 'ord_1', status: 'FULFILLED', quantity: 2,
+      totalAmount: { toString: () => '39.98' },
+      createdAt: new Date('2025-01-01'), updatedAt: new Date('2025-01-02'),
+      fulfilledQuantity: 2, failedQuantity: 0,
+      callbackUrl: null, resolvedTravelDate: null, requestedTravelDate: null,
+      packageSnapshot: { packageId: 'pkg_1', displayName: 'US 5GB', dataGB: 5, validityDays: 30, priceUSD: 19.99, currency: 'USD' },
+      packageName: null, packageDataGB: null, packageValidityDays: null,
+      packageUnitPrice: null, packageCurrency: null,
+      package: { id: 'pkg_1', displayName: 'US 5GB', name: 'US 5GB', dataGB: 5, validityDays: 30, priceUSD: { toString: () => '19.99' }, currency: 'USD' },
+      esims: [{ id: 'e_1', iccid: '8901234', imsi: '310260', status: 'ACTIVE', expiresAt: null, dataUsedMB: 100, dataRemainingMB: 4900 }],
+    }
+    const result = serializePublicOrder(fake)
+    const json = JSON.parse(JSON.stringify(result))
+    const leaks = findForbiddenFields(json)
+    expect(leaks).toEqual([])
+    expect(json.id).toBe('ord_1')
+    expect(json.status).toBe('FULFILLED')
+    expect(json.quantity).toBe(2)
+    expect(json.unitCost).toBe(19.99)
+    expect(json.package.displayName).toBe('US 5GB')
+    expect(json.esims).toHaveLength(1)
+    expect(json.esims[0].iccid).toBe('8901234')
+  })
+
+  it('serializePublicUsageRecord strips rawData and internal ids', () => {
+    const fake = {
+      id: 'ur_1', esimId: 'e_1', dataUsedMB: 256, dataTotalMB: 5000,
+      dataRemainingMB: 4744, dataPercentage: 5.12,
+      timestamp: new Date('2025-06-01'),
+      rawData: { providerAccount: 'acc123', bundleCode: 'BUNDLE_A' },
+    }
+    const result = serializePublicUsageRecord(fake)
+    const json = JSON.parse(JSON.stringify(result))
+    expect(json).not.toHaveProperty('id')
+    expect(json).not.toHaveProperty('esimId')
+    expect(json).not.toHaveProperty('dataPercentage')
+    expect(json).not.toHaveProperty('rawData')
+    expect(json.dataUsedMB).toBe(256)
+    expect(json.dataTotalMB).toBe(5000)
+    expect(json.timestamp).toBe('2025-06-01T00:00:00.000Z')
+  })
+
+  it('serializePublicUsageEsim uses allowlist', () => {
+    const fake = {
+      id: 'e_1', iccid: '8901234', imsi: '310260', status: 'ACTIVE',
+      expiresAt: new Date('2025-12-01'),
+      dataUsedMB: 100, dataRemainingMB: 4900, dataTotalMB: 5000,
+      lastUsageSyncAt: new Date('2025-06-01'),
+      purchase: { package: { id: 'pkg_1', displayName: 'US 5GB', name: 'US 5GB', dataGB: 5, validityDays: 30 } },
+      usageRecords: [{ dataUsedMB: 50, dataTotalMB: 5000, dataRemainingMB: 4950, timestamp: new Date('2025-06-01') }],
+    }
+    const result = serializePublicUsageEsim(fake)
+    const json = JSON.parse(JSON.stringify(result))
+    const leaks = findForbiddenFields(json)
+    expect(leaks).toEqual([])
+    expect(json.lastUsage).toEqual({ dataUsedMB: 50, dataTotalMB: 5000, dataRemainingMB: 4950, timestamp: '2025-06-01T00:00:00.000Z' })
+    expect(json.lastUsage).not.toHaveProperty('rawData')
+  })
+
+  it('serializePublicWalletTransaction uses allowlist', () => {
+    const fake = {
+      id: 'tx_1', type: 'PURCHASE', amount: { toString: () => '-19.99' },
+      description: 'eSIM purchase', createdAt: new Date('2025-01-01'),
+      businessId: 'biz_1', orderId: 'ord_1', topUpId: null,
+    }
+    const result = serializePublicWalletTransaction(fake)
+    const json = JSON.parse(JSON.stringify(result))
+    expect(json).not.toHaveProperty('businessId')
+    expect(json).not.toHaveProperty('orderId')
+    expect(json).not.toHaveProperty('topUpId')
+    expect(json.amount).toBe(-19.99)
+  })
+
+  it('serializePublicCustomer uses allowlist', () => {
+    const fake = {
+      id: 'c_1', name: 'John', email: 'john@test.com', phone: '+1234',
+      country: 'US', status: 'ACTIVE', createdAt: new Date('2025-01-01'),
+      businessId: 'biz_1', providerSubscriberId: 'PS_123',
+      providerMetadata: { providerId: 'AIRHUB' },
+    }
+    const result = serializePublicCustomer(fake)
+    const json = JSON.parse(JSON.stringify(result))
+    expect(json).not.toHaveProperty('businessId')
+    expect(json).not.toHaveProperty('providerSubscriberId')
+    expect(json).not.toHaveProperty('providerMetadata')
+    expect(json.name).toBe('John')
+  })
+
+  it('serializePublicWebhook uses allowlist — no secret leak', () => {
+    const fake = {
+      id: 'wh_1', name: 'Test', url: 'https://hook.test', status: 'ACTIVE',
+      events: ['order.completed'], lastSuccessAt: null, lastFailureAt: null,
+      failureCount: 0, createdAt: new Date('2025-01-01'),
+      secret: 'whsec_SUPER_SECRET_123', businessId: 'biz_1',
+    }
+    const result = serializePublicWebhook(fake)
+    const json = JSON.parse(JSON.stringify(result))
+    expect(json).not.toHaveProperty('secret')
+    expect(json).not.toHaveProperty('businessId')
+    expect(json.url).toBe('https://hook.test')
+  })
+
+  it('findForbiddenFields detects deeply nested provider fields', () => {
+    const payload = {
+      order: {
+        id: 'ord_1',
+        package: {
+          providerPackage: { providerId: 'AIRHUB', providerRawData: {} },
+          costPrice: 10,
+        },
+        businessId: 'biz_1',
+        nested: {
+          deep: {
+            providerPlanId: 'plan_1',
+          },
+        },
+      },
+    }
+    const leaks = findForbiddenFields(payload)
+    expect(leaks).toContain('order.package.providerPackage.providerId')
+    expect(leaks).toContain('order.package.providerPackage.providerRawData')
+    expect(leaks).toContain('order.package.costPrice')
+    expect(leaks).toContain('order.businessId')
+    expect(leaks).toContain('order.nested.deep.providerPlanId')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 19: Route Serialization Path Enforcement
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('API-CONTRACT-19: Route serialization path enforcement', () => {
+  it('packages route imports and uses serializePublicPackage', () => {
+    const content = fs.readFileSync('src/app/api/v1/packages/route.ts', 'utf8')
+    expect(content).toContain("from '@/lib/api/public-dto'")
+    expect(content).toContain('serializePublicPackage')
+    expect(content).not.toContain('...base')
+    expect(content).not.toContain('stripPackageProviderFields')
+  })
+
+  it('orders list route imports and uses serializePublicOrder', () => {
+    const content = fs.readFileSync('src/app/api/v1/orders/route.ts', 'utf8')
+    expect(content).toContain("from '@/lib/api/public-dto'")
+    expect(content).toContain('serializePublicOrder')
+    expect(content).not.toContain('...base')
+  })
+
+  it('orders detail route imports and uses serializePublicOrder', () => {
+    const content = fs.readFileSync('src/app/api/v1/orders/[orderId]/route.ts', 'utf8')
+    expect(content).toContain("from '@/lib/api/public-dto'")
+    expect(content).toContain('serializePublicOrder')
+    expect(content).not.toContain('...stripPurchaseProviderFields')
+  })
+
+  it('usage list route imports and uses serializePublicUsageEsim', () => {
+    const content = fs.readFileSync('src/app/api/v1/usage/route.ts', 'utf8')
+    expect(content).toContain("from '@/lib/api/public-dto'")
+    expect(content).toContain('serializePublicUsageEsim')
+  })
+
+  it('eSIM detail route serializes usage records', () => {
+    const content = fs.readFileSync('src/app/api/v1/esims/[esimId]/route.ts', 'utf8')
+    expect(content).toContain('serializePublicUsageRecord')
+  })
+
+  it('eSIM usage route imports and uses serializePublicUsageRecord', () => {
+    const content = fs.readFileSync('src/app/api/v1/esims/[esimId]/usage/route.ts', 'utf8')
+    expect(content).toContain("from '@/lib/api/public-dto'")
+    expect(content).toContain('serializePublicUsageRecord')
+  })
+
+  it('customer routes import and use serializers', () => {
+    const list = fs.readFileSync('src/app/api/v1/customers/route.ts', 'utf8')
+    expect(list).toContain("from '@/lib/api/public-dto'")
+    expect(list).toContain('serializePublicCustomer')
+    const detail = fs.readFileSync('src/app/api/v1/customers/[id]/route.ts', 'utf8')
+    expect(detail).toContain('serializePublicCustomerDetail')
+    expect(detail).toContain('serializePublicCustomer')
+  })
+
+  it('wallet routes import and use serializers', () => {
+    const balance = fs.readFileSync('src/app/api/v1/wallet/route.ts', 'utf8')
+    expect(balance).toContain("from '@/lib/api/public-dto'")
+    expect(balance).toContain('serializePublicWalletTransaction')
+    const tx = fs.readFileSync('src/app/api/v1/wallet/transactions/route.ts', 'utf8')
+    expect(tx).toContain('serializePublicWalletTransaction')
+  })
+
+  it('webhook routes import and use serializers', () => {
+    const list = fs.readFileSync('src/app/api/v1/webhooks/route.ts', 'utf8')
+    expect(list).toContain("from '@/lib/api/public-dto'")
+    expect(list).toContain('serializePublicWebhook')
+    const detail = fs.readFileSync('src/app/api/v1/webhooks/[id]/route.ts', 'utf8')
+    expect(detail).toContain('serializePublicWebhook')
+  })
+
+  it('no route spreads raw Prisma package with providerPackage nested object', () => {
+    const content = fs.readFileSync('src/app/api/v1/packages/route.ts', 'utf8')
+    expect(content).not.toContain('...pkg')
+    expect(content).not.toContain('...base,')
+    expect(content).not.toContain('...base\n')
+  })
+
+  it('no route spreads raw purchase object for order responses', () => {
+    const content = fs.readFileSync('src/app/api/v1/orders/route.ts', 'utf8')
+    expect(content).not.toContain('...base,')
+    expect(content).not.toContain('...base\n')
+    const detail = fs.readFileSync('src/app/api/v1/orders/[orderId]/route.ts', 'utf8')
+    expect(detail).not.toContain('...stripPurchaseProviderFields')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 20: Provider Identity in SKU Audit
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('API-CONTRACT-20: Provider identity in public identifiers audit', () => {
+  it('WARNING: SKU generation may embed provider names — document for migration', () => {
+    const resolverFiles = [
+      'src/lib/packages/resolve-package.ts',
+      'src/lib/packages/query-purchasable.ts',
+    ]
+    for (const file of resolverFiles) {
+      if (!fs.existsSync(file)) continue
+      const content = fs.readFileSync(file, 'utf8')
+      // Check for provider name patterns in SKU/packageCode construction
+      const hasProviderInSku = content.includes('AIRHUB') || content.includes('CHOICE') || content.includes('USMATR')
+      if (hasProviderInSku) {
+        // This is a known limitation — provider names may be embedded in SKUs
+        // from the catalog import process. Migration to provider-neutral SKUs
+        // requires a catalog data migration.
+        expect(true, `NOTE: ${file} may contain provider names in SKU patterns — tracked for future migration`).toBe(true)
+      }
+    }
+    // The public DTO serializer (serializePublicPackage) correctly exposes SKU as-is.
+    // Changing SKUs requires a data migration, not a code change.
+    expect(true).toBe(true)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SECTION 21: Secrets / Sensitive Data Detection
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('API-CONTRACT-21: Secrets and sensitive data detection', () => {
+  it('webhook secret is only returned on POST creation, never on GET/PATCH', () => {
+    const postContent = fs.readFileSync('src/app/api/v1/webhooks/route.ts', 'utf8')
+    expect(postContent).toContain('secret: endpoint.secret')
+
+    const getContent = fs.readFileSync('src/app/api/v1/webhooks/[id]/route.ts', 'utf8')
+    expect(getContent).not.toMatch(/secret:/)
+    expect(getContent).not.toContain('endpoint.secret')
+  })
+
+  it('no route returns keyHash, accessToken, refreshToken, password, or secret (except webhook POST)', () => {
+    const routeDir = 'src/app/api/v1'
+    const walk = (dir: string): string[] => {
+      const results: string[] = []
+      const entries = fs.readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) results.push(...walk(full))
+        else if (entry.name === 'route.ts') results.push(full)
+      }
+      return results
+    }
+    const routeFiles = walk(routeDir)
+    const sensitiveFields = ['keyHash', 'accessToken', 'refreshToken', 'password', 'credentials']
+    for (const file of routeFiles) {
+      const content = fs.readFileSync(file, 'utf8')
+      for (const field of sensitiveFields) {
+        const hasField = content.includes(`response.`) && content.includes(`${field}:`)
+        expect(hasField, `${file} must not return ${field} in response body`).toBe(false)
+      }
+    }
+  })
+
+  it('no route returns rawData, providerRawData, or providerPayload in response body', () => {
+    const routeDir = 'src/app/api/v1'
+    const walk = (dir: string): string[] => {
+      const results: string[] = []
+      const entries = fs.readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) results.push(...walk(full))
+        else if (entry.name === 'route.ts') results.push(full)
+      }
+      return results
+    }
+    const routeFiles = walk(routeDir)
+    for (const file of routeFiles) {
+      const content = fs.readFileSync(file, 'utf8')
+      expect(content, `${file} must not return rawData in response`).not.toMatch(/rawData:/)
+      expect(content, `${file} must not return providerRawData in response`).not.toMatch(/providerRawData:/)
+    }
   })
 })

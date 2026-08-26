@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
+import { serializePublicUsageEsim } from '@/lib/api/public-dto'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -62,24 +63,7 @@ export async function GET(request: NextRequest) {
       prisma.eSIM.count({ where: esimWhere }),
     ])
 
-    const esimList = esims.map((e) => ({
-      id: e.id,
-      iccid: e.iccid,
-      imsi: e.imsi,
-      status: e.status,
-      expiresAt: e.expiresAt?.toISOString() || null,
-      dataUsedMB: e.dataUsedMB,
-      dataRemainingMB: e.dataRemainingMB,
-      dataTotalMB: e.dataTotalMB,
-      package: {
-        id: e.purchase.package.id,
-        displayName: e.purchase.package.displayName || e.purchase.package.name,
-        dataGB: e.purchase.package.dataGB,
-        validityDays: e.purchase.package.validityDays,
-      },
-      lastUsage: e.usageRecords[0] || null,
-      lastUsageSyncAt: e.lastUsageSyncAt?.toISOString() || null,
-    }))
+    const esimList = esims.map(serializePublicUsageEsim)
 
     const totalDataUsed = esims.reduce((sum, e) => sum + (e.dataUsedMB || 0), 0)
     const activeCount = esims.filter((e) => e.status === 'ACTIVE').length

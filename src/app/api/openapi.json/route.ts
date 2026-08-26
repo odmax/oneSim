@@ -36,22 +36,37 @@ export function GET() {
         },
         RequestId: { type: 'object', properties: { requestId: { type: 'string' } } },
         Package: {
-          type: 'object', properties: {
-            id: { type: 'string' }, displayName: { type: 'string' }, name: { type: 'string' },
+          type: 'object', required: ['id', 'name', 'dataGB', 'validityDays', 'unitPrice', 'currency', 'isActive', 'source'],
+          properties: {
+            id: { type: 'string' }, sku: { type: 'string', nullable: true }, packageCode: { type: 'string', nullable: true },
+            displayName: { type: 'string', nullable: true }, name: { type: 'string' },
+            customerDescription: { type: 'string', nullable: true }, description: { type: 'string', nullable: true },
             dataGB: { type: 'integer' }, validityDays: { type: 'integer' },
-            priceUSD: { type: 'number' }, currency: { type: 'string' },
-            description: { type: 'string' }, requiresTravelDate: { type: 'boolean' },
-            source: { type: 'string' },
+            unitPrice: { type: 'number' }, currency: { type: 'string' },
+            country: { type: 'string', nullable: true }, region: { type: 'string', nullable: true },
+            productType: { type: 'string', enum: ['NEW_ESIM', 'TOP_UP'] },
+            isActive: { type: 'boolean' }, requiresTravelDate: { type: 'boolean' },
+            source: { type: 'string', enum: ['CATALOG_PRODUCT', 'MANUAL'] },
           },
         },
         Order: {
-          type: 'object', properties: {
+          type: 'object', required: ['id', 'status', 'quantity', 'unitCost', 'totalCost', 'currency', 'createdAt'],
+          properties: {
             id: { type: 'string' }, status: { type: 'string', enum: ['CREATED','PAYMENT_RESERVED','PENDING_PROVIDER','PROVIDER_ACCEPTED','RESERVED','FULFILLING','PARTIALLY_FULFILLED','FULFILLED','PROVIDER_RECONCILIATION','FAILED','CANCELLED','REFUNDED'] },
-            quantity: { type: 'integer' }, totalAmount: { type: 'number' }, currency: { type: 'string' },
-            packageId: { type: 'string' }, providerName: { type: 'string' },
-            fulfilledQuantity: { type: 'integer' }, remainingQuantity: { type: 'integer' },
-            esims: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string' }, qrCodeUrl: { type: 'string' }, activationCode: { type: 'string' } } } },
+            quantity: { type: 'integer' }, unitCost: { type: 'number' }, totalCost: { type: 'number' }, currency: { type: 'string' },
+            fulfilledQuantity: { type: 'integer' }, failedQuantity: { type: 'integer' },
+            callbackUrl: { type: 'string', nullable: true }, travelDate: { type: 'string', nullable: true },
+            package: { type: 'object', properties: {
+              id: { type: 'string' }, displayName: { type: 'string' }, dataGB: { type: 'integer' },
+              validityDays: { type: 'integer' }, priceUSD: { type: 'number' }, currency: { type: 'string' },
+            }},
+            esims: { type: 'array', items: { type: 'object', properties: {
+              id: { type: 'string' }, iccid: { type: 'string' }, imsi: { type: 'string' },
+              status: { type: 'string' }, expiresAt: { type: 'string' },
+              dataUsedMB: { type: 'integer' }, dataRemainingMB: { type: 'integer' },
+            }}},
             createdAt: { type: 'string', format: 'date-time' },
+            updatedAt: { type: 'string', format: 'date-time' },
           },
         },
         ESIM: {
@@ -92,7 +107,13 @@ export function GET() {
           description: 'Place a new order. Use `Idempotency-Key` header for safe retries. Returns the order with status and eSIM details when fulfilled.',
           requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['packageId', 'customerName', 'customerEmail'], properties: { packageId: { type: 'string', description: 'Package ID (or use sku/packageCode)' }, sku: { type: 'string', description: 'Package SKU (alternative to packageId)' }, packageCode: { type: 'string', description: 'Package code (alternative to packageId)' }, quantity: { type: 'integer', default: 1, minimum: 1, maximum: 100 }, customerName: { type: 'string' }, customerEmail: { type: 'string', format: 'email' }, customerPhone: { type: 'string' }, country: { type: 'string' }, externalCustomerId: { type: 'string' }, callbackUrl: { type: 'string', format: 'uri' }, travelDate: { type: 'string', format: 'date' } } } } } },
           responses: {
-            '200': { description: 'Order created (may be processing)', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, orderId: { type: 'string' }, status: { type: 'string' }, esims: { type: 'array', items: { type: 'object' } }, provider: { type: 'string' }, message: { type: 'string' }, deducted: { type: 'number', description: 'Wallet amount deducted' } } } } } },
+            '200': { description: 'Order created (may be processing)', content: { 'application/json': { schema: { type: 'object', properties: {
+              success: { type: 'boolean' },
+              order: { type: 'object', properties: { id: { type: 'string' }, status: { type: 'string' }, quantity: { type: 'integer' }, unitCost: { type: 'number' }, totalCost: { type: 'number' }, currency: { type: 'string' }, createdAt: { type: 'string' } } },
+              package: { $ref: '#/components/schemas/Package' },
+              esims: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string' }, activationCode: { type: 'string' }, qrCodeUrl: { type: 'string' }, expiresAt: { type: 'string' } } } },
+              wallet: { type: 'object', properties: { deducted: { type: 'number' }, currency: { type: 'string' } } },
+            } } } } },
             '400': { description: 'Invalid request', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
             '401': { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
             '409': { description: 'Idempotency conflict', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },
