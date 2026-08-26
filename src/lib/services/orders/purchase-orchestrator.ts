@@ -15,6 +15,7 @@ import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 import { resolvePackageBacking } from './package-backing-resolver'
 import { enqueueJob } from '@/lib/services/jobs/queue'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
+import { enforcePurchasePriceGuard } from '@/lib/pricing/purchase-price-guard'
 
 function trace(correlationId: string | undefined, stage: string, status: string, extra?: Record<string, any>) {
   if (!correlationId) return
@@ -216,6 +217,22 @@ export class PurchaseOrchestrator {
       resolved: normalizedTravelDate || null,
       present: !!normalizedTravelDate,
     })
+
+    // Step 4c: Price parity guard for BOUND packages.
+    // Verifies retail priceUSD matches provider sellingPrice and active
+    // snapshot before any wallet mutations or order creation.
+    if (backingPkgId) {
+      const priceGuard = await enforcePurchasePriceGuard({
+        providerPackageId: backingPkgId,
+        retailPriceUSD: parseFloat(pkg.priceUSD.toString()),
+        retailLocalPrice: pkg.localPrice ? parseFloat(pkg.localPrice.toString()) : null,
+      })
+      if (!priceGuard.passed) {
+        trace(correlationId, 'PRICE_GUARD', 'FAILED', { internalCode: 'PRICE_STALE', reason: priceGuard.reason })
+        return this.fail('PRICE_STALE', 'Package pricing has been updated since this quote was generated. Please request a new quote.', false)
+      }
+      trace(correlationId, 'PRICE_GUARD', 'SUCCESS')
+    }
 
     // Step 5: Validate business wallet
     let unitPrice = parseFloat(pkg.priceUSD.toString())

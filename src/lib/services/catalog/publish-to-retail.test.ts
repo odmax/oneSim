@@ -189,6 +189,83 @@ describe('publishProviderPackageToRetailCatalog — canonical flow', () => {
     expect(result.publishStatusSet).toBe(false)
   })
 
+  it('P4B-1 stale-read fix: retail write uses post-finalization sellingPrice (not stale initial load)', async () => {
+    // Scenario: initial load has sellingPrice=5. Finalization may or may not
+    // change it, but the DB reload after finalization returns sellingPrice=17
+    // (the true post-recalculation value). The retail write MUST use 17.
+    const stalePp = makeProviderPackage({
+      costPrice: { toString: () => '4.00' },
+      sellingPrice: { toString: () => '5.00' },
+    })
+    const reloadedPp = makeProviderPackage({
+      costPrice: { toString: () => '4.00' },
+      sellingPrice: { toString: () => '17.00' },
+      sellingCurrency: 'USD',
+      costStatus: 'VALID',
+      pricingStatus: 'READY',
+      activePriceSnapshotId: 'snap-1',
+    })
+
+    // 5 providerPackage.findUnique calls total:
+    // 1) publish Step 1 (initialPp) → stalePp
+    // 2) finalizer Step 1 (load) → stalePp
+    // 3) recalcPackagePrice (load) → stalePp
+    // 4) finalizer Step 3 (verified) → reloadedPp (post-recalc state)
+    // 5) publish Step 2b (reload) → reloadedPp (post-recalc state)
+    mockFindUniqueProviderPackage
+      .mockResolvedValueOnce(stalePp)
+      .mockResolvedValueOnce(stalePp)
+      .mockResolvedValueOnce(stalePp)
+      .mockResolvedValueOnce(reloadedPp)
+      .mockResolvedValueOnce(reloadedPp)
+
+    mockFindFirst.mockResolvedValue(null) // no existing retail
+    mockCreate.mockResolvedValue({ id: 'retail-new' })
+    mockTransaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: { update: mockUpdate },
+        eSIMPackage: { findFirst: mockFindFirst, create: mockCreate, update: vi.fn(), findUnique: vi.fn().mockResolvedValue(null) },
+        packagePriceSnapshot: { create: mockCreate },
+      }
+      mockUpdate.mockResolvedValue({})
+      await cb(tx)
+    })
+    mockFindUniqueRetail.mockResolvedValue(makeRetail({
+      sellingPrice: { toString: () => '17.00' },
+    }))
+
+    const result = await publishProviderPackageToRetailCatalog('pp-1', { reason: 'PUBLISH' })
+
+    expect(result.success).toBe(true)
+    expect(result.created).toBe(true)
+
+    // CRITICAL: retail create must use the POST-FINALIZATION price ($17),
+    // NOT the stale initial load price ($5)
+    const retailCreateCalls = mockCreate.mock.calls.filter(c => c[0]?.data?.source === 'CATALOG_PRODUCT')
+    expect(retailCreateCalls).toHaveLength(1)
+    expect(retailCreateCalls[0][0].data.priceUSD).toBe(17)
+    expect(retailCreateCalls[0][0].data.localPrice).toBe(17)
+    expect(retailCreateCalls[0][0].data.sellingCurrency || retailCreateCalls[0][0].data.currency).toBe('USD')
+  })
+
+  it('P4B-2: reload failure after finalization → PROVIDER_PACKAGE_NOT_FOUND', async () => {
+    // If the reload after finalization returns null (deleted race), the
+    // publish must fail-closed rather than using stale data.
+    const pp = makeProviderPackage()
+    mockFindUniqueProviderPackage
+      .mockResolvedValueOnce(pp)  // Step 1: initial load
+      .mockResolvedValueOnce(pp)  // finalizer Step 1
+      .mockResolvedValueOnce(pp)  // recalc load
+      .mockResolvedValueOnce(makeProviderPackage({ costStatus: 'VALID', pricingStatus: 'READY', activePriceSnapshotId: 'snap-1' }))  // finalizer verified
+      .mockResolvedValueOnce(null)  // Step 2b reload: deleted/missing!
+
+    const result = await publishProviderPackageToRetailCatalog('pp-1', { reason: 'PUBLISH' })
+
+    expect(result.success).toBe(false)
+    expect(result.failedStage).toBe('PROVIDER_PACKAGE_NOT_FOUND')
+    expect(result.error).toContain('after finalization')
+  })
+
   it('strict post-publish verification catches a non-purchasable final state (e.g. provider lacks PURCHASE)', async () => {
     mockFindUniqueProviderPackage.mockResolvedValue(makeProviderPackage())
     mockFindUniqueProviderPackage

@@ -36,6 +36,10 @@ vi.mock('./package-backing-resolver', () => ({
   resolvePackageBacking: vi.fn(),
 }))
 
+vi.mock('@/lib/pricing/purchase-price-guard', () => ({
+  enforcePurchasePriceGuard: vi.fn().mockResolvedValue({ passed: true }),
+}))
+
 // Mock the provider-attempt service so the custom-backing branch is tested in
 // isolation (no adapter/provider-attempt DB chain).
 const { mockExecuteProviderAttempt, mockTryFailoverAfterAttempt } = vi.hoisted(() => ({

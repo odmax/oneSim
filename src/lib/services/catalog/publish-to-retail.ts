@@ -23,6 +23,10 @@ export interface PublishToRetailResult {
  * 2. Run finalizeCatalogPackageConfiguration() in PRE_PUBLISH mode (creates
  *    snapshot, sets pricingStatus=READY, verifies eligibility + readiness
  *    WITHOUT requiring PUBLISHED).
+ * 2b. RELOAD ProviderPackage — finalization may have updated sellingPrice,
+ *    markupPercent, effectiveCostPrice, costStatus, activePriceSnapshotId.
+ *    The retail write MUST use post-finalization values, not the stale
+ *    initial load.
  * 3. Create or update the retail ESIMPackage (first-time publish creates it).
  * 4. Transition ProviderPackage → PUBLISHED (same transaction as retail so
  *    there is no partial state where PUBLISHED but retail creation failed).
@@ -39,11 +43,11 @@ export async function publishProviderPackageToRetailCatalog(
   const reason = options?.reason || 'PUBLISH'
 
   // Step 1: Load ProviderPackage with provider
-  const pp = await prisma.providerPackage.findUnique({
+  const initialPp = await prisma.providerPackage.findUnique({
     where: { id: providerPackageId },
     include: { provider: { select: { id: true, name: true, code: true } } },
   })
-  if (!pp) {
+  if (!initialPp) {
     return { success: false, providerPackageId, created: false, updated: false, publishStatusSet: false, ready: false, readinessReasons: [], failedStage: 'PROVIDER_PACKAGE_NOT_FOUND', error: 'Provider package not found' }
   }
 
@@ -51,6 +55,19 @@ export async function publishProviderPackageToRetailCatalog(
   const finalized = await finalizeCatalogPackageConfiguration(providerPackageId, { reason })
   if (!finalized.success) {
     return { success: false, providerPackageId, created: false, updated: false, publishStatusSet: false, ready: false, readinessReasons: finalized.readinessReasons, failedStage: 'FINALIZATION_FAILED', error: finalized.error || 'Finalization failed' }
+  }
+
+  // Step 2b: RELOAD ProviderPackage after finalization.
+  // recalculatePackagePrice() inside finalization may have updated sellingPrice,
+  // sellingCurrency, markupPercent, effectiveCostPrice, costStatus, and
+  // activePriceSnapshotId. The initial load (Step 1) is stale — the retail write
+  // MUST use the post-finalization values.
+  const pp = await prisma.providerPackage.findUnique({
+    where: { id: providerPackageId },
+    include: { provider: { select: { id: true, name: true, code: true } } },
+  })
+  if (!pp) {
+    return { success: false, providerPackageId, created: false, updated: false, publishStatusSet: false, ready: false, readinessReasons: [], failedStage: 'PROVIDER_PACKAGE_NOT_FOUND', error: 'Provider package not found after finalization' }
   }
 
   // Step 3 + 4: Create/update the retail ESIMPackage AND transition to

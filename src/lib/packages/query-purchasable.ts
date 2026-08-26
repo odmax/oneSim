@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { getPackagePurchaseReadiness } from './purchase-readiness'
 import { isCapabilityExposedToPortal, isCapabilityExposedToApi } from '@/lib/providers/capabilities/exposure'
 import { ProviderCapability } from '@/lib/providers/capabilities/types'
+import { parseDecimalSafe } from '@/lib/services/catalog-price-utils'
 
 const READINESS_INCLUDE = {
   providerPackage: {
@@ -35,10 +36,25 @@ export async function queryPurchasablePackages(context?: 'portal' | 'api') {
     return readiness.ready
   })
 
+  // Price parity filter: exclude BOUND packages whose retail priceUSD does
+  // not match the ProviderPackage sellingPrice (stale-price detection).
+  // CUSTOM and unlinked packages are not checked.
+  const priceValid = ready.filter(pkg => {
+    if (!pkg.providerPackageId || !pkg.providerPackage) return true
+    const retailPrice = parseDecimalSafe(pkg.priceUSD)
+    const ppSellingPrice = parseDecimalSafe(pkg.providerPackage.sellingPrice)
+    if (retailPrice === null || ppSellingPrice === null) return true
+    if (Math.abs(retailPrice - ppSellingPrice) >= 0.005) {
+      console.warn(`[CATALOG_PRICE_PARITY] Excluding stale-price package ${pkg.id} (retail=$${retailPrice} pp=$${ppSellingPrice})`)
+      return false
+    }
+    return true
+  })
+
   // Capability exposure filter
-  if (context && ready.length > 0) {
-    const filtered: typeof ready = []
-    for (const pkg of ready) {
+  if (context && priceValid.length > 0) {
+    const filtered: typeof priceValid = []
+    for (const pkg of priceValid) {
       const pp = pkg.providerPackage
       const providerId = pp?.providerId || pkg.provider?.id
       if (providerId) {
@@ -52,5 +68,5 @@ export async function queryPurchasablePackages(context?: 'portal' | 'api') {
     return filtered
   }
 
-  return ready
+  return priceValid
 }

@@ -51,6 +51,10 @@ vi.mock('@/lib/services/jobs/queue', () => ({
   enqueueJob: vi.fn(),
 }))
 
+vi.mock('@/lib/pricing/purchase-price-guard', () => ({
+  enforcePurchasePriceGuard: vi.fn().mockResolvedValue({ passed: true }),
+}))
+
 import { prisma } from '@/lib/prisma'
 import { isProviderOperational, getAdapterForType } from '@/lib/providers/adapter-manager'
 import { getProviderBalance } from '@/lib/services/providers/provider-balance'

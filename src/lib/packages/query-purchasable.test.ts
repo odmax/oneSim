@@ -96,4 +96,52 @@ describe('queryPurchasablePackages — client-facing flows stay strict PURCHASE'
       expect(await queryPurchasablePackages('portal')).toHaveLength(1)
     }
   })
+
+  it('P4B-13: stale-price BOUND package (retail=5 pp=17) is excluded from catalog', async () => {
+    const stale = makeRetail('PUBLISHED', {
+      priceUSD: 5,
+      providerPackage: {
+        costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED',
+        configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1',
+        sellingPrice: { toString: () => '17' },
+        costPrice: { toString: () => '4' },
+        providerId: 'prov-1', country: 'ZA', region: null, normalizedCountry: 'ZA', providerRawData: null,
+      },
+    })
+    mockFindMany.mockResolvedValue([stale])
+    const result = await queryPurchasablePackages('portal')
+    expect(result).toHaveLength(0)
+  })
+
+  it('P4B-14: consistent-price BOUND package (retail=17 pp=17) IS included', async () => {
+    const consistent = makeRetail('PUBLISHED', {
+      priceUSD: 17,
+      providerPackage: {
+        costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED',
+        configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1',
+        sellingPrice: { toString: () => '17' },
+        costPrice: { toString: () => '4' },
+        providerId: 'prov-1', country: 'ZA', region: null, normalizedCountry: 'ZA', providerRawData: null,
+      },
+    })
+    mockFindMany.mockResolvedValue([consistent])
+    const result = await queryPurchasablePackages('portal')
+    expect(result).toHaveLength(1)
+  })
+
+  it('P4B-15: sub-cent tolerance — package with 0.004 price difference is NOT excluded', async () => {
+    const nearMatch = makeRetail('PUBLISHED', {
+      priceUSD: 17.004,
+      providerPackage: {
+        costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED',
+        configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1',
+        sellingPrice: { toString: () => '17.00' },
+        costPrice: { toString: () => '4' },
+        providerId: 'prov-1', country: 'ZA', region: null, normalizedCountry: 'ZA', providerRawData: null,
+      },
+    })
+    mockFindMany.mockResolvedValue([nearMatch])
+    const result = await queryPurchasablePackages('portal')
+    expect(result).toHaveLength(1)
+  })
 })
