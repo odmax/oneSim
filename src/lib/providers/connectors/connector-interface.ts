@@ -507,6 +507,65 @@ export interface CustomPackageCreateResult {
   rawMetadata?: Record<string, unknown>
 }
 
+/**
+ * Provider-neutral category for an upstream custom-offering creation outcome.
+ * Lets the generic Mode B service take safe action (recover / retry / require
+ * reconciliation) WITHOUT branching on provider code.
+ */
+export type UpstreamCreateCategory =
+  | 'VALIDATION'
+  | 'AUTH'
+  | 'NOT_ENTITLED'
+  | 'ALREADY_EXISTS'
+  | 'RETRYABLE'
+  | 'AMBIGUOUS'
+  | 'UNKNOWN'
+
+/**
+ * Classify a connector error into a provider-neutral category for upstream
+ * custom-package creation.
+ *
+ * AMBIGUOUS is reserved for outcomes where the request MAY have reached the
+ * provider (timeout after dispatch, connection reset, socket closed) — a blind
+ * re-create is never safe there.
+ */
+export function classifyUpstreamCreateError(error: { code?: string; message?: string; details?: any } | undefined | null): UpstreamCreateCategory {
+  if (!error) return 'UNKNOWN'
+  const code = String(error.code || '').toUpperCase()
+  const msg = String(error.message || '').toLowerCase()
+  const details = error.details || {}
+
+  // Ambiguous transport outcomes.
+  if (code === 'TIMEOUT' || details?.ambiguous === true || ['ECONNRESET', 'EPIPE', 'ERR_SOCKET_CLOSED', 'ETIMEDOUT'].includes(details?.causeCode || '')) {
+    return 'AMBIGUOUS'
+  }
+
+  // Provider already has the object.
+  if (code === 'ALREADY_EXISTS' || code === 'DUPLICATE' || (code === 'PROVIDER_REJECTED' && /already exists|duplicate|already used|conflict/.test(msg))) {
+    return 'ALREADY_EXISTS'
+  }
+
+  // Auth / entitlement.
+  if (code.includes('AUTH') || code === 'CHOICE_CREDENTIALS_MISSING' || code === 'UNAUTHORIZED' || code === 'CHOICE_AUTH_UNAUTHORIZED') {
+    return 'AUTH'
+  }
+  if (code === 'CAPABILITY_NOT_ENABLED' || code === 'NOT_ENTITLED' || msg.includes('not enabled') || msg.includes('entitlement')) {
+    return 'NOT_ENTITLED'
+  }
+
+  // Client-side validation.
+  if (code === 'INVALID_REQUEST' || code === 'INVALID_JSON' || code === 'NO_BASE_URL') {
+    return 'VALIDATION'
+  }
+
+  // Safe retries (request never dispatched / provider-side transient).
+  if (code === 'NETWORK_ERROR' && details?.preDispatch === true) {
+    return 'RETRYABLE'
+  }
+
+  return 'UNKNOWN'
+}
+
 export interface IProviderConnector {
   readonly providerId: string
   readonly name: string

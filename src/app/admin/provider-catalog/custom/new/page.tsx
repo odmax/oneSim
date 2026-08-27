@@ -4,7 +4,8 @@ import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { CustomPackageForm } from './CustomPackageForm'
-import { getEligibleCustomPackageProviders, getEligibleProviderPackagesForProvider } from '@/lib/services/custom-package/eligible-providers'
+import { getEligibleBackingProviders, getEligibleUpstreamCreationProviders, getEligibleProviderPackagesForProvider } from '@/lib/services/custom-package/eligible-providers'
+import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 
 export default async function CustomPackageNewPage() {
   const session = await getServerSession(authOptions)
@@ -12,14 +13,14 @@ export default async function CustomPackageNewPage() {
   const perm = await checkPermission(Permissions.MANAGE_PRODUCTS)
   if (!perm.allowed) redirect('/admin/unauthorized')
 
-  // Provider-neutral: load eligible providers first, then their packages.
-  const eligibleProviders = await getEligibleCustomPackageProviders()
+  // MODE A: providers that can back a custom package from existing ProviderPackages.
+  const backingProvidersRaw = await getEligibleBackingProviders()
 
-  const providers = []
-  for (const provider of eligibleProviders) {
+  const backingProviders = []
+  for (const provider of backingProvidersRaw) {
     const packages = await getEligibleProviderPackagesForProvider(provider.id)
     if (packages.length === 0) continue
-    providers.push({
+    backingProviders.push({
       id: provider.id,
       name: provider.name,
       code: provider.code,
@@ -43,15 +44,39 @@ export default async function CustomPackageNewPage() {
     })
   }
 
+  // MODE B: providers that can author a NEW upstream package/template. Preload
+  // their provider-neutral creation definitions (dynamic provider fields) so the
+  // client form renders provider-specific inputs without a round-trip. Best-effort.
+  const upstreamProviders = []
+  for (const provider of await getEligibleUpstreamCreationProviders()) {
+    let definition = null
+    try {
+      const connector = await buildConnectorFromProvider(provider.id)
+      const def = connector?.getCustomPackageDefinition ? await connector.getCustomPackageDefinition() : null
+      if (def?.success && def.definition) definition = def.definition
+    } catch { /* best-effort */ }
+    upstreamProviders.push({
+      id: provider.id,
+      name: provider.name,
+      code: provider.code,
+      status: provider.status,
+      contractSupported: provider.contractSupported,
+      implementationSupported: provider.implementationSupported,
+      accountEnabled: provider.accountEnabled,
+      gatedReason: provider.gatedReason || null,
+      definition,
+    })
+  }
+
   return (
     <div className="p-6 space-y-6">
       <div>
         <Link href="/admin/provider-catalog" className="text-sm text-cyan-600 hover:underline">← Back to Provider Catalog</Link>
         <h2 className="mt-2 text-2xl font-bold text-gray-900">Create Custom Package</h2>
-        <p className="mt-1 text-gray-600">Create a OneSIM package backed by one or more connected providers.</p>
+        <p className="mt-1 text-gray-600">Build a OneSIM package from existing provider plans, or create a new package at a provider that supports upstream authoring.</p>
       </div>
 
-      <CustomPackageForm providers={providers} />
+      <CustomPackageForm backingProviders={backingProviders} upstreamProviders={upstreamProviders} />
     </div>
   )
 }

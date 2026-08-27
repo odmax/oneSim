@@ -2416,3 +2416,115 @@ describe('UrlTokenConnector — read-only reconciliation endpoints', () => {
     })
   })
 })
+
+describe('UrlTokenConnector — MODE B Choice upstream creation (createCustomPackage)', () => {
+  function choiceConnector() {
+    const c = makeConnector({ fieldMappings: { activationPayloadType: 'CHOICE_ADD_BUNDLE_FROM_POOL', userId: 'test-user-1' } })
+    // ensureAuthenticated reads token state; stub it to a resolved, no-http result.
+    vi.spyOn(c, 'ensureAuthenticated').mockResolvedValue({ success: true })
+    return c
+  }
+
+  it('declares customPackageCreation capability (Choice documented POST create_bundle_template)', () => {
+    const caps = makeConnector().capabilities!
+    expect(caps.customPackageCreation).toBe(true)
+  })
+
+  it('CPB-UI-13: maps only documented Choice create_bundle_template fields upstream; allowance+qtyp+user_id sourced safely', async () => {
+    const c = choiceConnector()
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, template_version: 'v1' }))
+    vi.stubGlobal('fetch', mockFetch)
+
+    const r = await c.createCustomPackage({
+      name: 'Tanzania 5GB',
+      dataGB: 5,
+      validityDays: 7,
+      providerValues: {
+        sku: 'TZN-5GB-7D',
+        bundle_name: 'Tanzania 5GB',
+        pool: 3,
+        rate_group_allow_days: 7,
+        rate_group_occurrences: 1,
+        roaming_profile_id: 'rp-1',
+        allow_throttle: false,
+        allow_tethering: true,
+        serving_networks: 'VODAFONE, AIRTEL',
+      },
+    })
+    expect(r.success).toBe(true)
+    expect(r.data?.providerPlanId).toBe('TZN-5GB-7D')
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain('/account/v03_09/create_bundle_template/test-token-abc123')
+    const sent = JSON.parse((options as any).body)
+    // Only documented fields are sent — no arbitrary passthrough.
+    expect(sent.sku).toBe('TZN-5GB-7D')
+    expect(sent.bundle_name).toBe('Tanzania 5GB')
+    expect(sent.pool).toBe(3)
+    expect(sent.rate_group_allow_days).toBe(7)
+    expect(sent.rate_group_occurrences).toBe(1)
+    expect(sent.roaming_profile_id).toBe('rp-1')
+    expect(sent.allow_throttle).toBe(false)
+    expect(sent.allow_tethering).toBe(true)
+    expect(sent.serving_networks).toBe('VODAFONE, AIRTEL')
+    // Data allowance maps to Choice rate_groups[].rate_group_allowance + qtyp.
+    expect(Array.isArray(sent.rate_groups)).toBe(true)
+    expect(sent.rate_groups).toEqual([
+      { rate_group_allowance: 5, rate_group_allow_qtyp: 'GB' },
+    ])
+    // user_id is sourced from authenticated provider context (fieldMappings
+    // userId 'test-user-1' in the fixture), never from client input.
+    expect(sent.user_id).toBe('test-user-1')
+    // No local OneSIM id / credentials leak upstream.
+    expect(sent.eu_email_address ?? sent.email).toBeUndefined()
+    expect(JSON.stringify(sent)).not.toContain('apiToken')
+    expect(JSON.stringify(sent)).not.toContain('password')
+    vi.unstubAllGlobals()
+  })
+
+  it('rejects when a provider SKU is absent (no guess creation)', async () => {
+    const c = choiceConnector()
+    const r = await c.createCustomPackage({ name: 'X', dataGB: 1, validityDays: 7, providerValues: {} })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_REQUEST')
+  })
+
+  it('rejects invalid allowance/validity before any HTTP', async () => {
+    const c = choiceConnector()
+    expect((await c.createCustomPackage({ name: '', dataGB: 1, validityDays: 7, providerValues: { sku: 'S' } })).error?.code).toBe('INVALID_REQUEST')
+    expect((await c.createCustomPackage({ name: 'X', dataGB: 0, validityDays: 7, providerValues: { sku: 'S' } })).error?.code).toBe('INVALID_REQUEST')
+    expect((await c.createCustomPackage({ name: 'X', dataGB: 1, validityDays: 0, providerValues: { sku: 'S' } })).error?.code).toBe('INVALID_REQUEST')
+  })
+
+  it('surfaces provider rejection (success=false) with a provider-neutral ALREADY_EXISTS code for duplicate SKU', async () => {
+    const c = choiceConnector()
+    const mockFetch = vi.fn().mockResolvedValue(okJson({ success: false, errmsg: 'Bundle code already exists' }))
+    vi.stubGlobal('fetch', mockFetch)
+    const r = await c.createCustomPackage({ name: 'X', dataGB: 1, validityDays: 7, providerValues: { sku: 'DUP-SKU', pool: 1 } })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('ALREADY_EXISTS')
+    expect(r.error?.message).toContain('already exists')
+    vi.unstubAllGlobals()
+  })
+
+  it('getCustomPackageDefinition exposes documented provider fields without credentials', async () => {
+    const c = choiceConnector()
+    // Deterministic: stub the roaming-profiles fetch so the definition does not
+    // depend on real network behavior.
+    vi.spyOn(c, 'getRoamingProfiles').mockResolvedValue({ success: true, data: [{ id: 'rp-1', code: 'RP1', name: 'Roam 1' }] })
+    const r = await c.getCustomPackageDefinition()
+    expect(r.success).toBe(true)
+    expect(r.definition?.providerFields.find(f => f.key === 'roaming_profile_id')?.options).toEqual([{ value: 'rp-1', label: 'Roam 1' }])
+    const keys = new Set((r.definition?.providerFields || []).map(f => f.key))
+    expect(keys.has('pool')).toBe(true)
+    expect(keys.has('bundle_name')).toBe(true)
+    expect(keys.has('roaming_profile_id')).toBe(true)
+    expect(keys.has('serving_networks')).toBe(true)
+    expect(keys.has('allow_throttle')).toBe(true)
+    expect(keys.has('allow_tethering')).toBe(true)
+    // No credentials/secret-like fields.
+    const allKeys = JSON.stringify(r.definition).toLowerCase()
+    expect(allKeys).not.toContain('password')
+    expect(allKeys).not.toContain('apitoken')
+    expect(allKeys).not.toContain('secret')
+  })
+})

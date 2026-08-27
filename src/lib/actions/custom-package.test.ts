@@ -221,7 +221,8 @@ describe('createCustomPackage (server action)', () => {
   it('CPB-UI-13: partial binding failure rolls back the entire creation (atomic transaction)', async () => {
     mockPrisma.providerPackage.findMany.mockResolvedValue([backingRow('pp-1'), backingRow('pp-2')] as any)
     // Simulate a binding failure: the binding create throws inside the transaction
-    // (e.g. DB unique constraint on the 2nd binding).
+    // (e.g. DB unique constraint on the 2nd binding). The canonical service catches
+    // it and returns a clean failure (no half-created package, no redirect).
     mockPrisma.$transaction.mockImplementationOnce(async (fn: any) => {
       await fn({
         eSIMPackage: { create: vi.fn().mockResolvedValue({ id: 'esim-custom-1' }) },
@@ -234,11 +235,12 @@ describe('createCustomPackage (server action)', () => {
       throw new Error('Transaction aborted (binding failed)')
     })
 
-    await expect(createCustomPackage(cf({
+    const r = await createCustomPackage(cf({
       providerPackageIds: ['pp-1', 'pp-2'],
       providerIds: ['p-1', 'p-2'],
       priorities: ['1', '2'],
-    }))).rejects.toThrow()
+    }))
+    expect(r.success).toBe(false)
 
     // The transaction did not commit: no audit "CUSTOM_PACKAGE_CREATED" recorded
     // for a completed creation, and the action never reached the success redirect.

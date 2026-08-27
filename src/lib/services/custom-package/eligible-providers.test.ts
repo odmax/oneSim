@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { mockFindManyProviders, mockCountPackages, mockFindManyPackages } = vi.hoisted(() => ({
+const { mockFindManyProviders, mockCountPackages, mockFindManyPackages, mockBuildConnector, mockReadiness } = vi.hoisted(() => ({
   mockFindManyProviders: vi.fn(),
   mockCountPackages: vi.fn(),
   mockFindManyPackages: vi.fn(),
+  mockBuildConnector: vi.fn(),
+  mockReadiness: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => ({
@@ -13,7 +15,15 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
-import { getEligibleCustomPackageProviders, getEligibleProviderPackagesForProvider } from './eligible-providers'
+vi.mock('@/lib/providers/connectors/connector-factory', () => ({
+  buildConnectorFromProvider: mockBuildConnector,
+}))
+
+vi.mock('@/lib/providers/capability-state', () => ({
+  getCustomPackageCreationReadiness: mockReadiness,
+}))
+
+import { getEligibleCustomPackageProviders, getEligibleProviderPackagesForProvider, getEligibleUpstreamCreationProviders } from './eligible-providers'
 
 function provider(id: string, overrides: any = {}) {
   return {
@@ -95,13 +105,23 @@ describe('getEligibleCustomPackageProviders — provider-neutral eligibility', (
     expect(result.map(r => r.id)).toEqual(['p-purchase'])
   })
 
-  it('CPB-UI-10b: provider with CUSTOM_PACKAGE_CREATION but no PURCHASE is eligible', async () => {
+  it('CPB-UI-4-modeA: requires PURCHASE — provider with CUSTOM_PACKAGE_CREATION but no PURCHASE is NOT a Mode A backing provider', async () => {
     mockFindManyProviders.mockResolvedValue([
       provider('p-custom', { enabledCapabilities: ['CUSTOM_PACKAGE_CREATION'] }),
     ])
     const result = await getEligibleCustomPackageProviders()
-    expect(result.map(r => r.id)).toEqual(['p-custom'])
-    expect(result[0].hasCustomPackageCreationCapability).toBe(true)
+    // Mode A (build-from-existing) requires PURCHASE; customPackageCreation alone
+    // does NOT qualify a provider as a backing provider.
+    expect(result).toHaveLength(0)
+  })
+
+  it('CPB-UI-4-modeA2: provider with PURCHASE but WITHOUT CUSTOM_PACKAGE_CREATION is eligible (Mode A)', async () => {
+    mockFindManyProviders.mockResolvedValue([
+      provider('p-purchase-only', { enabledCapabilities: ['PURCHASE'] }),
+    ])
+    const result = await getEligibleCustomPackageProviders()
+    expect(result.map(r => r.id)).toEqual(['p-purchase-only'])
+    expect(result[0].hasCustomPackageCreationCapability).toBe(false)
   })
 
   it('excludes providers with zero eligible ProviderPackages', async () => {
@@ -133,5 +153,90 @@ describe('getEligibleProviderPackagesForProvider — scope to provider', () => {
     expect(query.where.providerId).toBe('p-1')
     expect(query.where.sellingPrice.gt).toBe(0)
     expect(query.where.costPrice.gt).toBe(0)
+  })
+})
+
+describe('getEligibleUpstreamCreationProviders — MODE B (capability-driven)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockReadiness.mockResolvedValue({ ready: false, reason: 'account-not-enabled' })
+  })
+
+  function upstreamConnector(overrides = {}) {
+    return {
+      constructor: { name: 'AnyConnector' },
+      capabilities: { customPackageCreation: true, ...overrides },
+      getCustomPackageDefinition: vi.fn().mockResolvedValue({ success: true, definition: { providerFields: [] } }),
+      createCustomPackage: vi.fn(),
+    }
+  }
+
+  it('CPB-UI-5: excludes providers without upstream creation support (AirHub/iBASIS/Rakuten/US-Matrix/Choice-not-enabled)', async () => {
+    mockFindManyProviders.mockResolvedValue([
+      provider('p-airhub', { code: 'AIRHUB', enabledCapabilities: ['PURCHASE'] }),
+      provider('p-ibasis', { code: 'IBASIS', enabledCapabilities: ['PURCHASE'] }),
+      provider('p-rakuten', { code: 'RAKUTEN', enabledCapabilities: ['PURCHASE'] }),
+      provider('p-usmatrix', { code: 'USMATRIX', enabledCapabilities: ['PURCHASE'] }),
+    ])
+    mockBuildConnector.mockResolvedValue({ capabilities: { customPackageCreation: false } })
+    const result = await getEligibleUpstreamCreationProviders()
+    expect(result).toHaveLength(0)
+    expect(mockReadiness).not.toHaveBeenCalled()
+  })
+
+  it('CPB-UI-5b: connector with customPackageCreation capability but missing createCustomPackage methods is NOT contract-supported', async () => {
+    mockFindManyProviders.mockResolvedValue([provider('p-1', { enabledCapabilities: ['CUSTOM_PACKAGE_CREATION'] })])
+    mockBuildConnector.mockResolvedValue({ capabilities: { customPackageCreation: true } }) // no methods
+    const result = await getEligibleUpstreamCreationProviders()
+    expect(result).toHaveLength(0)
+  })
+
+  it('CPB-UI-6: Choice qualifies for Mode B when capability + account enabled', async () => {
+    mockFindManyProviders.mockResolvedValue([provider('p-choice', { code: 'CHOICE', enabledCapabilities: ['CUSTOM_PACKAGE_CREATION'] })])
+    mockBuildConnector.mockResolvedValue(upstreamConnector())
+    mockReadiness.mockResolvedValue({ ready: true })
+    const result = await getEligibleUpstreamCreationProviders()
+    expect(result).toHaveLength(1)
+    expect(result[0].code).toBe('CHOICE')
+    expect(result[0].accountEnabled).toBe(true)
+    expect(result[0].contractSupported).toBe(true)
+    expect(result[0].implementationSupported).toBe(true)
+  })
+
+  it('CPB-UI-7: Telna remains gated while accountEnabled=false (account certification required)', async () => {
+    mockFindManyProviders.mockResolvedValue([provider('p-telna', { code: 'TELNA', enabledCapabilities: [] })])
+    mockBuildConnector.mockResolvedValue(upstreamConnector())
+    mockReadiness.mockResolvedValue({ ready: false, reason: 'account-not-enabled' })
+    const result = await getEligibleUpstreamCreationProviders()
+    expect(result).toHaveLength(1)
+    expect(result[0].accountEnabled).toBe(false)
+    expect(result[0].gatedReason).toContain('account certification required')
+  })
+
+  it('CPB-UI-8-modeB: US-Matrix remains gated while implementation not certified/wired', async () => {
+    mockFindManyProviders.mockResolvedValue([provider('p-usmatrix', { code: 'USMATRIX', enabledCapabilities: [] })])
+    // US-Matrix does NOT declare customPackageCreation → not contract-supported.
+    mockBuildConnector.mockResolvedValue({ capabilities: { customPackageCreation: false } })
+    const result = await getEligibleUpstreamCreationProviders()
+    expect(result.map(r => r.id)).not.toContain('p-usmatrix')
+    expect(mockReadiness).not.toHaveBeenCalled()
+  })
+
+  it('CPB-UI-11: never fabricates support flags — a connector without customPackageCreation is never surfaced', async () => {
+    mockFindManyProviders.mockResolvedValue([provider('p-x', { code: 'X', enabledCapabilities: ['CUSTOM_PACKAGE_CREATION'] })])
+    mockBuildConnector.mockResolvedValue(null)
+    const result = await getEligibleUpstreamCreationProviders()
+    expect(result).toHaveLength(0)
+  })
+
+  it('CPB-UI-10: provider-neutral — no provider-name branch; eligibility derived purely from capabilities', async () => {
+    // A future provider code is eligible when capability + readiness line up.
+    mockFindManyProviders.mockResolvedValue([provider('p-future', { code: 'SOME_FUTURE', enabledCapabilities: ['CUSTOM_PACKAGE_CREATION'] })])
+    mockBuildConnector.mockResolvedValue(upstreamConnector())
+    mockReadiness.mockResolvedValue({ ready: true })
+    const result = await getEligibleUpstreamCreationProviders()
+    expect(result).toHaveLength(1)
+    expect(result[0].code).toBe('SOME_FUTURE')
+    expect(result[0].accountEnabled).toBe(true)
   })
 })

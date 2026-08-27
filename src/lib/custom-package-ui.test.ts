@@ -97,3 +97,30 @@ describe('Prisma query structural integrity (select+include sibling guard)', () 
     expect(conflicts).toEqual([])
   })
 })
+
+describe('CPB-UI — two creation modes', () => {
+  it('custom/new form presents a mode selector with both creation modes', () => {
+    const src = read('src/app/admin/provider-catalog/custom/new/CustomPackageForm.tsx')
+    expect(src).toContain('EXISTING_BACKINGS')
+    expect(src).toContain('UPSTREAM_CREATE')
+    expect(src).toContain('Build from Existing Provider Packages')
+    expect(src).toContain('Create New Provider Package')
+  })
+
+  it('Mode B requires an explicit upstream confirmation checkbox', () => {
+    const src = read('src/app/admin/provider-catalog/custom/new/CustomPackageForm.tsx')
+    expect(src).toContain('upstreamConfirmed')
+    expect(src).toContain('I understand this creates a package with the provider.')
+    expect(src).toContain('This action will create a new package/template with the selected provider')
+  })
+
+  it('Mode B form does not send provider credentials/secrets as providerValues', () => {
+    const src = read('src/app/admin/provider-catalog/custom/new/CustomPackageForm.tsx')
+    // The form only serialises explicit provider fields + sku; no apiToken/password
+    // inputs are rendered for upstream creation.
+    expect(src).not.toMatch(/name="apiToken"/)
+    expect(src).not.toMatch(/name="password"/)
+    expect(src).not.toMatch(/name="api_token"/)
+    expect(src).not.toMatch(/name="secret"/)
+  })
+})

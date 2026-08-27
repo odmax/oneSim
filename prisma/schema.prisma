@@ -3134,6 +3134,53 @@ model SystemJobLock {
   @@map("system_job_locks")
 }
 
+/// Durable ledger for Custom Package Builder Mode B (UPSTREAM_CREATE).
+///
+/// Records are created BEFORE any upstream provider mutation and updated after
+/// every state transition so a crash, timeout, or partial local failure can be
+/// recovered without re-issuing the upstream create. The operation row stores
+/// only safe identifiers and the request fingerprint — never credentials,
+/// tokens, activation codes, or secrets.
+///
+/// Status transitions (single writer via unique idempotencyKey + CAS to
+/// UPSTREAM_IN_PROGRESS):
+///   PENDING → UPSTREAM_IN_PROGRESS → UPSTREAM_SUCCEEDED → LOCAL_PERSISTING → COMPLETED
+///   PENDING → AMBIGUOUS_UPSTREAM_RESULT | FAILED | UPSTREAM_ALREADY_EXISTS
+///   UPSTREAM_SUCCEEDED / LOCAL_PERSISTING / PARTIAL_FAILURE → COMPLETED (resume)
+///   UPSTREAM_ALREADY_EXISTS → COMPLETED (only after safe read-back match)
+model UpstreamPackageCreationOperation {
+  id                   String    @id @default(cuid())
+  /// Stable caller/UI idempotency key (cpb_upstream_<uuid>). Unique per operation.
+  idempotencyKey       String    @unique
+  /// SHA-256 fingerprint of normalized mutation-critical fields. Replaying the
+  /// same key with a different fingerprint is rejected (IDEMPOTENCY_CONFLICT).
+  requestFingerprint   String
+  providerId           String
+  /// Provider code snapshot at creation (for audit/recovery, never for branching).
+  providerCode         String
+  requestedSku         String
+  requestedByName      String?
+  status               String    @default("PENDING") /// PENDING | UPSTREAM_IN_PROGRESS | UPSTREAM_SUCCEEDED | LOCAL_PERSISTING | COMPLETED | UPSTREAM_ALREADY_EXISTS | AMBIGUOUS_UPSTREAM_RESULT | PARTIAL_FAILURE | FAILED
+  upstreamReference    String?
+  upstreamExternalId   String?
+  providerPackageId    String?
+  esimPackageId        String?
+  requestedBy          String?
+  upstreamStartedAt    DateTime?
+  upstreamCompletedAt  DateTime?
+  localCompletedAt     DateTime?
+  lastErrorCode        String?
+  lastErrorMessageSafe String?
+  retryCount           Int       @default(0)
+  recoveryState        Json?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([providerId, requestedSku], map: "upstream_op_provider_sku_idx")
+  @@index([status])
+  @@map("upstream_package_creation_operations")
+}
+
 model ProviderInventoryReservation {
   id                           String    @id @default(cuid())
   providerId                   String

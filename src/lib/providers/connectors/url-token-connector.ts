@@ -1,5 +1,5 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
-import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, InstallationLookupDiagnostics, ConnectorInstallDataOutput, AmbiguousPurchaseReconcileInput, AmbiguousPurchaseReconcileResult } from './connector-interface'
+import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, InstallationLookupDiagnostics, ConnectorInstallDataOutput, AmbiguousPurchaseReconcileInput, AmbiguousPurchaseReconcileResult, CustomPackageDefinitionResult, CustomPackageCreateInput, CustomPackageCreateResult } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
@@ -1219,6 +1219,9 @@ export class UrlTokenConnector extends RestCatalogConnector {
     balance: true,
     inventory: false,
     webhooks: false,
+    // Choice POST /account/v03_09/create_bundle_template is documented and the
+    // connector implements createCustomPackage() → createBundleTemplate().
+    customPackageCreation: true,
   }
 
   /** Choice uses runtime credentials → getaccounts token exchange. */
@@ -1608,9 +1611,137 @@ export class UrlTokenConnector extends RestCatalogConnector {
       const { text, error } = await fetchText(this.baseUrl(path), { method: 'POST', headers: this.headers, body })
       if (error) return { success: false, error }
       const json = JSON.parse(text || '{}')
+      if (json.success === false) {
+        const msg = json.errmsg || json.message || json.error_message || 'Provider rejected bundle template creation'
+        return { success: false, error: { code: 'PROVIDER_REJECTED', message: String(msg).slice(0, 300) } }
+      }
       return { success: true, data: { sku: params.sku, template_version: json.template_version || json.version || json.data?.template_version } }
     } catch (e: any) {
       return { success: false, error: { code: 'CHOICE_CREATE_BUNDLE_FAILED', message: e.message } }
+    }
+  }
+
+  /**
+   * Provider-neutral custom offering definition for Choice (POST
+   * /account/v03_09/create_bundle_template). Exposes the documented Choice
+   * provider-specific fields the admin must supply (pool, roaming profile,
+   * throttling/tethering, serving networks, rate-group occurrences). No
+   * credentials are exposed as fields.
+   */
+  async getCustomPackageDefinition(): Promise<CustomPackageDefinitionResult> {
+    let roamingProfiles: Array<{ value: string; label: string }> = []
+    try {
+      const rp = await this.getRoamingProfiles()
+      if (rp.success) roamingProfiles = (rp.data || []).map(p => ({ value: p.id, label: p.name || p.code }))
+    } catch { /* best-effort */ }
+
+    return {
+      success: true,
+      definition: {
+        providerFields: [
+          { key: 'pool', label: 'Pool', type: 'number', required: true },
+          { key: 'bundle_name', label: 'Bundle Name', type: 'string', required: true },
+          { key: 'rate_group_allow_days', label: 'Rate Group Allow Days', type: 'number', required: false },
+          { key: 'rate_group_occurrences', label: 'Rate Group Occurrences', type: 'number', required: false },
+          { key: 'roaming_profile_id', label: 'Roaming Profile', type: 'select', required: false, options: roamingProfiles },
+          { key: 'allow_throttle', label: 'Allow Throttle', type: 'boolean', required: false },
+          { key: 'allow_tethering', label: 'Allow Tethering', type: 'boolean', required: false },
+          { key: 'serving_networks', label: 'Serving Networks', type: 'string', required: false },
+        ],
+      },
+    }
+  }
+
+  /**
+   * Provider-side custom package creation for Choice (POST
+   * /account/v03_09/create_bundle_template/{token}).
+   *
+   * Maps the provider-neutral CustomPackageCreateInput onto the documented
+   * Choice create_bundle_template request. Only fields that are clearly
+   * documented are sent upstream. providerPlanCode = the SKU (bundle_code);
+   * providerPlanId = the SKU too (Choice creates by SKU). No local OneSIM id is
+   * sent upstream.
+   */
+  async createCustomPackage(input: CustomPackageCreateInput): Promise<ConnectorResult<CustomPackageCreateResult>> {
+    await this.ensureAuthenticated()
+    const token = this.config.apiToken || ''
+    if (!this.config.apiBaseUrl) return { success: false, error: { code: 'NO_BASE_URL', message: 'API Base URL not configured' } }
+    if (!token) return { success: false, error: { code: 'CHOICE_CREDENTIALS_MISSING', message: 'No Choice API token configured' } }
+    if (!input.name || !String(input.name).trim()) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'name is required' } }
+    }
+    if (!Number.isFinite(input.dataGB) || input.dataGB <= 0) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'dataGB must be > 0' } }
+    }
+    if (!Number.isFinite(input.validityDays) || input.validityDays <= 0) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'validityDays must be > 0' } }
+    }
+
+    const pv = (input.providerValues || {}) as Record<string, unknown>
+    const sku = String(input.providerValues?.sku || '').trim()
+    if (!sku) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'A provider SKU is required for Choice upstream creation' } }
+    }
+
+    // user_id is NEVER accepted from client input — it is resolved from the
+    // authenticated provider context (fieldMappings.userId → config.userId →
+    // selectedAccountId). A missing user_id fails BEFORE the mutation.
+    const effectiveUserId = this.resolveEffectiveChoiceUserId()
+    if (!effectiveUserId) {
+      return { success: false, error: { code: 'CHOICE_USER_ID_MISSING', message: 'Choice user_id could not be resolved from the authenticated account' } }
+    }
+
+    // Data allowance → Choice rate_groups[].rate_group_allowance +
+    // rate_group_allow_qtyp. Choice documents the allowance quantity and unit
+    // per rate group; the OneSIM dataGB is the GB quantity, qtyp="GB".
+    const rateGroups = [
+      {
+        rate_group_allowance: Number(input.dataGB),
+        rate_group_allow_qtyp: String(pv.rate_group_allow_qtyp || 'GB').toUpperCase(),
+      },
+    ]
+
+    const result = await this.createBundleTemplate({
+      sku,
+      user_id: effectiveUserId,
+      bundle_name: String(pv.bundle_name || input.name),
+      pool: pv.pool != null ? Number(pv.pool) : 1,
+      rate_groups: rateGroups,
+      ...(pv.rate_group_allow_days != null ? { rate_group_allow_days: Number(pv.rate_group_allow_days) } : { rate_group_allow_days: Math.round(input.validityDays) }),
+      ...(pv.rate_group_occurrences != null ? { rate_group_occurrences: Number(pv.rate_group_occurrences) } : {}),
+      ...(pv.roaming_profile_id ? { roaming_profile_id: String(pv.roaming_profile_id) } : {}),
+      ...(pv.allow_throttle != null ? { allow_throttle: Boolean(pv.allow_throttle) } : {}),
+      ...(pv.allow_tethering != null ? { allow_tethering: Boolean(pv.allow_tethering) } : {}),
+      ...(pv.serving_networks ? { serving_networks: String(pv.serving_networks) } : {}),
+    })
+
+    if (!result.success) {
+      // Surface provider rejections with a provider-neutral code so the generic
+      // Mode B orchestrator can safely classify (ALREADY_EXISTS / AMBIGUOUS /
+      // VALIDATION ...).
+      const msg = result.error?.message || 'Provider rejected upstream creation'
+      const lower = msg.toLowerCase()
+      if (/already exists|duplicate|already used|conflict/.test(lower)) {
+        return { success: false, error: { code: 'ALREADY_EXISTS', message: msg } }
+      }
+      if (result.error?.code === 'TIMEOUT' || String(result.error?.code || '').includes('NETWORK_ERROR')) {
+        return { success: false, error: { code: result.error?.code || 'NETWORK_ERROR', message: msg, details: result.error?.details } }
+      }
+      return { success: false, error: result.error }
+    }
+
+    return {
+      success: true,
+      data: {
+        success: true,
+        providerPlanId: sku,
+        providerPlanCode: sku,
+        status: 'READY',
+        rawMetadata: {
+          upstream: 'CHOICE_CREATE_BUNDLE_TEMPLATE',
+          ...(result.data?.template_version != null ? { template_version: String(result.data.template_version) } : {}),
+        },
+      },
     }
   }
 
