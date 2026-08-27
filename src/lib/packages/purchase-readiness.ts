@@ -71,6 +71,12 @@ export function getPackagePurchaseReadiness(params: {
     code: string | null
   } | null
   mode?: PurchaseReadinessMode
+  /** Custom retail package: number of purchase-ready backing ProviderPackages
+   *  (provider-neutral). When set, the package is fulfilled by backings and has
+   *  no single linked ProviderPackage/price snapshot. */
+  customBackingCount?: number
+  /** Custom retail package selling price (from the retail package itself). */
+  customSellingPrice?: number
 }): PackageReadiness {
   const reasons: string[] = []
   const { pkg = {}, providerPkg, provider, mode = 'PURCHASE' } = params
@@ -79,7 +85,22 @@ export function getPackagePurchaseReadiness(params: {
   if (pkg.hiddenFromCatalog) reasons.push('Package is hidden from catalog')
   if (pkg.archivedAt) reasons.push('Package is archived')
   if (pkg.source === 'PROVIDER_PLAN') reasons.push('Source is PROVIDER_PLAN (not purchasable)')
-  if (pkg.providerPackageId !== undefined && !pkg.providerPackageId) reasons.push('No provider package linked')
+  if (pkg.providerPackageId !== undefined && !pkg.providerPackageId && params.customBackingCount === undefined) reasons.push('No provider package linked')
+
+  // Custom retail package path: no single ProviderPackage/price snapshot. It is
+  // purchase-ready when it has ≥1 purchase-ready backing AND a valid retail
+  // selling price. Backing purchase-readiness is enforced by the caller
+  // (resolveCustomPackageBackings). Provider-neutral.
+  if (params.customBackingCount !== undefined) {
+    if ((params.customBackingCount ?? 0) <= 0) reasons.push('No purchase-ready backing providers')
+    const customSell = Number(params.customSellingPrice || 0)
+    if (customSell <= 0) reasons.push('No valid selling price')
+    if (provider) {
+      const operationalStatuses = ['ACTIVE', 'DEGRADED', 'TESTING']
+      if (!operationalStatuses.includes(provider.status)) reasons.push(`Provider is ${provider.status}`)
+    }
+    return { ready: reasons.length === 0, reasons }
+  }
 
   if (!providerPkg) {
     reasons.push('Provider package not found')

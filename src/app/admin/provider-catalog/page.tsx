@@ -98,6 +98,10 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
             Ready to Publish
           </Link>
+          <Link href="/admin/provider-catalog/custom/new"
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
+            Create Custom Package
+          </Link>
           <Link href="/admin/package-rules" className="rounded-lg border border-purple-300 px-4 py-2 text-sm font-medium text-purple-700 hover:bg-purple-50">
             Manage Rules
           </Link>

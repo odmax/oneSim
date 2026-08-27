@@ -79,6 +79,10 @@ export default async function AdminPackagesPage({
     include: {
       providerPackage: { select: { publishStatus: true, costStatus: true, pricingStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true } },
       provider: { select: { status: true, enabledCapabilities: true, code: true, adapterStrategy: true } },
+      providerBindings: {
+        orderBy: { priority: 'asc' },
+        include: { providerPackage: { select: { id: true, providerId: true }, include: { provider: { select: { name: true } } } } },
+      },
       _count: { select: { purchases: true, topUpRecords: true } },
     },
     orderBy: { priceUSD: 'asc' },
@@ -301,9 +305,24 @@ export default async function AdminPackagesPage({
                   </div>
                 </div>
 
-                <div className="mb-3">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
                   <StatusBadge isActive={pkg.isActive} hiddenFromCatalog={pkg.hiddenFromCatalog || undefined} purchaseReady={pkg._readiness.ready} />
+                  {(pkg.providerBindings?.length ?? 0) > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-600">
+                      CUSTOM
+                      <span className="text-indigo-400">· {(pkg.providerBindings.filter((b: any) => b.isActive !== false).length || pkg.providerBindings.length)} providers</span>
+                    </span>
+                  )}
                 </div>
+
+                {(pkg.providerBindings?.length ?? 0) > 0 && (
+                  <div className="mb-3 rounded-lg bg-indigo-50/50 px-3 py-2 text-xs text-indigo-700">
+                    <span className="font-medium">Primary:</span> {pkg.providerBindings[0]?.providerPackage?.provider?.name || '?'}
+                    {(pkg.providerBindings.length || 0) > 1 && (
+                      <span className="text-indigo-500"> · {(pkg.providerBindings.length || 0) - 1} fallback{(pkg.providerBindings.length || 0) - 1 > 1 ? 's' : ''}</span>
+                    )}
+                  </div>
+                )}
 
                 {(pkg.customerDescription || pkg.description) && (
                   <p className="mb-3 text-xs text-gray-500 line-clamp-2">{pkg.customerDescription || pkg.description}</p>

@@ -144,8 +144,8 @@ model Business {
   pricingRules        PricingRule[]
   assignedSalesUserId String?
 
-  salesAgent     InternalAdmin?  @relation("SalesAssignment", fields: [assignedSalesUserId], references: [id])
-  billingRecords BillingRecord[] @relation("BillingRecordBusiness")
+  salesAgent         InternalAdmin?          @relation("SalesAssignment", fields: [assignedSalesUserId], references: [id])
+  billingRecords     BillingRecord[]         @relation("BillingRecordBusiness")
   callbackDeliveries OrderCallbackDelivery[]
 
   @@map("businesses")
@@ -319,11 +319,11 @@ model ProviderPackage {
   normalizedCoverageType String?
 
   // Travel-date / activation policy fields
-  activationPolicy        String?   @default("IMMEDIATE")  /// IMMEDIATE | SCHEDULED | FLEXIBLE
-  travelDateRequirement   String?   @default("NOT_REQUIRED") /// NOT_REQUIRED | OPTIONAL | REQUIRED
-  travelDateLeadDays      Int       @default(0)
+  activationPolicy         String? @default("IMMEDIATE") /// IMMEDIATE | SCHEDULED | FLEXIBLE
+  travelDateRequirement    String? @default("NOT_REQUIRED") /// NOT_REQUIRED | OPTIONAL | REQUIRED
+  travelDateLeadDays       Int     @default(0)
   travelDateMaxAdvanceDays Int?
-  travelDateSource        String?    /// PROVIDER | TEMPLATE | ADMIN_OVERRIDE | INFERRED
+  travelDateSource         String? /// PROVIDER | TEMPLATE | ADMIN_OVERRIDE | INFERRED
 
   // Cheapest ranking fields
   cheapestRank         Int?
@@ -357,12 +357,14 @@ model ProviderPackage {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  provider         Provider                  @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  publishedAs      ESIMPackage?
-  configuredByRule PackageConfigurationRule? @relation("PackageAutoConfiguration", fields: [autoConfiguredByRuleId], references: [id], onDelete: SetNull)
-  changeItems      CatalogChangeItem[]       @relation("PackageChangeItems")
-  fees             ProviderPackageFee[]
-  costSnapshots    ProviderCostSnapshot[]
+  provider              Provider                     @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  publishedAs           ESIMPackage?
+  configuredByRule      PackageConfigurationRule?    @relation("PackageAutoConfiguration", fields: [autoConfiguredByRuleId], references: [id], onDelete: SetNull)
+  changeItems           CatalogChangeItem[]          @relation("PackageChangeItems")
+  fees                  ProviderPackageFee[]
+  costSnapshots         ProviderCostSnapshot[]
+  /// Custom package backings that use this ProviderPackage as a fulfillment backend.
+  customPackageBindings ESIMPackageProviderBinding[]
 
   @@unique([providerId, providerPlanId])
   @@index([providerId])
@@ -492,22 +494,47 @@ model ESIMPackage {
   hiddenFromCatalog         Boolean       @default(false)
   providerPackageId         String?       @unique
 
-  purchases       ESIMPurchase[]
-  provider        Provider?        @relation(fields: [providerId], references: [id], onDelete: SetNull)
-  providerPackage ProviderPackage? @relation(fields: [providerPackageId], references: [id], onDelete: SetNull)
-  pricingRules    PricingRule[]
-  topUpRecords    ESIMTopUp[]
+  purchases        ESIMPurchase[]
+  provider         Provider?                    @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  providerPackage  ProviderPackage?             @relation(fields: [providerPackageId], references: [id], onDelete: SetNull)
+  pricingRules     PricingRule[]
+  topUpRecords     ESIMTopUp[]
+  /// Custom package: backing ProviderPackage assignments (one retail → many backings, priority-ordered).
+  providerBindings ESIMPackageProviderBinding[]
 
   @@map("esim_packages")
 }
 
+/// Provider-neutral binding of a OneSIM custom retail package to one or more
+/// existing ProviderPackage fulfillment backends (priority-ordered).
+/// A retail package may back onto MANY ProviderPackages; a ProviderPackage may
+/// back MANY retail packages.
+model ESIMPackageProviderBinding {
+  id                String   @id @default(cuid())
+  esimPackageId     String
+  providerPackageId String
+  /// Routing priority (1 = highest). Preserved in purchase routing order.
+  priority          Int      @default(1)
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  esimPackage     ESIMPackage     @relation(fields: [esimPackageId], references: [id], onDelete: Cascade)
+  providerPackage ProviderPackage @relation(fields: [providerPackageId], references: [id], onDelete: Cascade)
+
+  @@unique([esimPackageId, providerPackageId])
+  @@index([providerPackageId])
+  @@index([esimPackageId])
+  @@map("esim_package_provider_bindings")
+}
+
 model ESIMPurchase {
-  id                    String    @id @default(cuid())
-  businessId            String
-  userId                String
-  packageId             String
-  quantity              Int
-  totalAmount           Decimal
+  id                     String    @id @default(cuid())
+  businessId             String
+  userId                 String
+  packageId              String
+  quantity               Int
+  totalAmount            Decimal
   /// Immutable pricing copied from quote/price snapshot at creation.
   /// These are the financial source of truth for all order operations.
   purchaseQuoteId        String?   @unique
@@ -518,59 +545,59 @@ model ESIMPurchase {
   quotedQuantity         Int?
   pricingEngineVersion   String?
   /// Partial-fulfillment quantity accounting
-  fulfilledQuantity      Int          @default(0)
-  failedQuantity         Int          @default(0)
+  fulfilledQuantity      Int       @default(0)
+  failedQuantity         Int       @default(0)
   fulfillmentCompletedAt DateTime?
   capturedAmount         Decimal?
   releasedAmount         Decimal?
   refundedAmount         Decimal?
-  status                String    @default("PENDING")
-  providerStatus        String?
-  providerResponse      Json?
-  callbackUrl           String?
-  packageSnapshot       Json?
-  packageName           String?
-  packageDataGB         Int?
-  packageValidityDays   Int?
-  packageUnitPrice      Decimal?
-  packageCurrency       String?
+  status                 String    @default("PENDING")
+  providerStatus         String?
+  providerResponse       Json?
+  callbackUrl            String?
+  packageSnapshot        Json?
+  packageName            String?
+  packageDataGB          Int?
+  packageValidityDays    Int?
+  packageUnitPrice       Decimal?
+  packageCurrency        String?
   /// State machine fields
-  previousStatus        String?
-  statusChangedAt       DateTime?
-  failureReason         String?
-  providerErrorCode     String?
-  providerErrorMessage  String?
+  previousStatus         String?
+  statusChangedAt        DateTime?
+  failureReason          String?
+  providerErrorCode      String?
+  providerErrorMessage   String?
   /// Provider dispatch fields
-  providerId            String?
-  providerReservationId String?
-  providerFulfillId     String?
+  providerId             String?
+  providerReservationId  String?
+  providerFulfillId      String?
   /// Idempotency key for duplicate prevention
-  providerPurchaseKey   String?   @unique
+  providerPurchaseKey    String?   @unique
   /// Retry fields
-  retryCount            Int       @default(0)
-  maxRetries            Int       @default(3)
-  nextRetryAt           DateTime?
-  lastRetryAt           DateTime?
-  retryReason           String?
+  retryCount             Int       @default(0)
+  maxRetries             Int       @default(3)
+  nextRetryAt            DateTime?
+  lastRetryAt            DateTime?
+  retryReason            String?
   /// Travel-date persistence for retry stability
-  requestedTravelDate   String?
-  resolvedTravelDate    String?  /// Never recomputed on retry — stored once, reused always
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  requestedTravelDate    String?
+  resolvedTravelDate     String? /// Never recomputed on retry — stored once, reused always
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
-  business           Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  package            ESIMPackage          @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  esims              ESIM[]
-  invoice            Invoice?
-  events             OrderTimelineEvent[]
-  provider           Provider?            @relation(fields: [providerId], references: [id], onDelete: SetNull)
-  billingRecords     BillingRecord[]      @relation("BillingRecordOrder")
-  purchaseQuote      PurchaseQuote?       @relation(fields: [purchaseQuoteId], references: [id], onDelete: SetNull)
-  packagePriceSnapshot PackagePriceSnapshot? @relation(fields: [packagePriceSnapshotId], references: [id], onDelete: SetNull)
+  business              Business                       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user                  User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  package               ESIMPackage                    @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  esims                 ESIM[]
+  invoice               Invoice?
+  events                OrderTimelineEvent[]
+  provider              Provider?                      @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  billingRecords        BillingRecord[]                @relation("BillingRecordOrder")
+  purchaseQuote         PurchaseQuote?                 @relation(fields: [purchaseQuoteId], references: [id], onDelete: SetNull)
+  packagePriceSnapshot  PackagePriceSnapshot?          @relation(fields: [packagePriceSnapshotId], references: [id], onDelete: SetNull)
   inventoryReservations ProviderInventoryReservation[]
   callbackDeliveries    OrderCallbackDelivery[]
-  walletTransactions    WalletTransaction[]      @relation("WalletOrderTx")
+  walletTransactions    WalletTransaction[]            @relation("WalletOrderTx")
 
   @@map("esim_purchases")
 }
@@ -594,52 +621,52 @@ model OrderTimelineEvent {
 }
 
 model ESIM {
-  id                     String    @id @default(cuid())
-  purchaseId             String
-  customerId             String?
-  iccid                  String    @unique
-  imsi                   String?
-  activationCode         String?
-  qrCodeUrl              String?
-  qrCode                 String?
-  smdpAddress            String?
-  matchingId             String?
-  status                 String    @default("PENDING")
-  activatedAt            DateTime?
-  expiresAt              DateTime?
-  deliveryStatus         String    @default("NOT_SENT")
-  deliveredAt            DateTime?
-  providerActivationId   String?
-  providerSubscriptionId String?
-  providerSubscriberId   String?
-  providerStatus         String?
-  providerResponse       Json?
-  lastSyncAt             DateTime?
-  dataUsedMB             Int       @default(0)
-  dataRemainingMB        Int?
-  dataTotalMB            Int?
-  lastUsageAt            DateTime?
-  activationDetectedAt   DateTime?
-  lastUsageSyncAt        DateTime?
-  lastStatusSyncAt       DateTime?
+  id                        String    @id @default(cuid())
+  purchaseId                String
+  customerId                String?
+  iccid                     String    @unique
+  imsi                      String?
+  activationCode            String?
+  qrCodeUrl                 String?
+  qrCode                    String?
+  smdpAddress               String?
+  matchingId                String?
+  status                    String    @default("PENDING")
+  activatedAt               DateTime?
+  expiresAt                 DateTime?
+  deliveryStatus            String    @default("NOT_SENT")
+  deliveredAt               DateTime?
+  providerActivationId      String?
+  providerSubscriptionId    String?
+  providerSubscriberId      String?
+  providerStatus            String?
+  providerResponse          Json?
+  lastSyncAt                DateTime?
+  dataUsedMB                Int       @default(0)
+  dataRemainingMB           Int?
+  dataTotalMB               Int?
+  lastUsageAt               DateTime?
+  activationDetectedAt      DateTime?
+  lastUsageSyncAt           DateTime?
+  lastStatusSyncAt          DateTime?
   /// Installation/QR reconciliation
-  installationStatus      String?   @default("PENDING")
-  installationRetryCount  Int       @default(0)
+  installationStatus        String?   @default("PENDING")
+  installationRetryCount    Int       @default(0)
   installationLastCheckedAt DateTime?
-  installationLastError   String?
+  installationLastError     String?
   /// Auto-sync scheduling
-  statusNextSyncAt       DateTime?
-  usageNextSyncAt        DateTime?
-  statusSyncRetryCount   Int        @default(0)
-  usageSyncRetryCount    Int        @default(0)
-  sharedAt               DateTime?
-  sharedToEmail          String?
-  packageSnapshot        Json?
-  packageName            String?
-  packageDataGB          Int?
-  packageValidityDays    Int?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  statusNextSyncAt          DateTime?
+  usageNextSyncAt           DateTime?
+  statusSyncRetryCount      Int       @default(0)
+  usageSyncRetryCount       Int       @default(0)
+  sharedAt                  DateTime?
+  sharedToEmail             String?
+  packageSnapshot           Json?
+  packageName               String?
+  packageDataGB             Int?
+  packageValidityDays       Int?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
 
   purchase       ESIMPurchase     @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
   customer       Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
@@ -654,51 +681,51 @@ model ESIM {
 }
 
 model ESIMTopUp {
-  id                String          @id @default(cuid())
-  businessId        String
-  esimId            String
-  customerId        String?
-  packageId         String
-  providerId        String?
-  providerReference String?
-  amount            Decimal
-  currency          String          @default("USD")
-  status            ESIMTopUpStatus @default(PENDING)
+  id                        String          @id @default(cuid())
+  businessId                String
+  esimId                    String
+  customerId                String?
+  packageId                 String
+  providerId                String?
+  providerReference         String?
+  amount                    Decimal
+  currency                  String          @default("USD")
+  status                    ESIMTopUpStatus @default(PENDING)
   /// Immutable pricing copied from the top-up quote at creation.
   /// These are the financial source of truth — the provider response never
   /// changes the customer charge.
-  quotedUnitPrice      Decimal?
-  quotedTotalAmount    Decimal?
-  quotedCurrency       String?
-  quotedQuantity       Int?
-  pricingEngineVersion String?
-  requestedQuantity    Int          @default(1)
+  quotedUnitPrice           Decimal?
+  quotedTotalAmount         Decimal?
+  quotedCurrency            String?
+  quotedQuantity            Int?
+  pricingEngineVersion      String?
+  requestedQuantity         Int             @default(1)
   /// Dedup key scoped to the business — one logical top-up per business may only
   /// be created once. A key supplied by Business A never collides with Business B.
-  idempotencyKey       String?
-  errorMessage         String?
-  dataAddedMB       Int?
-  validityDaysAdded Int?
-  providerResponse  Json?
-  createdAt         DateTime        @default(now())
-  completedAt       DateTime?
+  idempotencyKey            String?
+  errorMessage              String?
+  dataAddedMB               Int?
+  validityDaysAdded         Int?
+  providerResponse          Json?
+  createdAt                 DateTime        @default(now())
+  completedAt               DateTime?
   /// PENDING_REVIEW reconciliation tracking. These are additive metadata only —
   /// the wallet reserve stays untouched until a resolution path captures or
   /// releases it. No provider mutation is ever re-dispatched from reconciliation.
-  reconciliationAttempts    Int       @default(0)
-  nextReconcileAt          DateTime?
-  lastReconcileAt          DateTime?
-  lastReconcileErrorCode   String?
-  reconcileLockedAt        DateTime?
-  reconcileLockOwner       String?
+  reconciliationAttempts    Int             @default(0)
+  nextReconcileAt           DateTime?
+  lastReconcileAt           DateTime?
+  lastReconcileErrorCode    String?
+  reconcileLockedAt         DateTime?
+  reconcileLockOwner        String?
   reconciliationEscalatedAt DateTime?
 
-  business           Business             @relation("BusinessESIMTopUps", fields: [businessId], references: [id], onDelete: Cascade)
-  esim               ESIM                 @relation("ESIMTopUps", fields: [esimId], references: [id], onDelete: Restrict)
-  package            ESIMPackage          @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  business           Business            @relation("BusinessESIMTopUps", fields: [businessId], references: [id], onDelete: Cascade)
+  esim               ESIM                @relation("ESIMTopUps", fields: [esimId], references: [id], onDelete: Restrict)
+  package            ESIMPackage         @relation(fields: [packageId], references: [id], onDelete: Restrict)
   Invoice            Invoice?
-  customer           Customer?            @relation(fields: [customerId], references: [id])
-  walletTransactions WalletTransaction[]  @relation("WalletTopUpTx")
+  customer           Customer?           @relation(fields: [customerId], references: [id])
+  walletTransactions WalletTransaction[] @relation("WalletTopUpTx")
 
   @@unique([businessId, idempotencyKey])
   @@map("esim_top_ups")
@@ -935,17 +962,17 @@ model AuditLog {
 }
 
 model Customer {
-  id                    String         @id @default(cuid())
-  businessId            String
-  name                  String
-  email                 String
-  phone                 String?
-  country               String
-  status                CustomerStatus @default(ACTIVE)
-  providerSubscriberId  String?
-  providerMetadata      Json?
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
+  id                   String         @id @default(cuid())
+  businessId           String
+  name                 String
+  email                String
+  phone                String?
+  country              String
+  status               CustomerStatus @default(ACTIVE)
+  providerSubscriberId String?
+  providerMetadata     Json?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
 
   business   Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
   esims      ESIM[]
@@ -1009,24 +1036,24 @@ enum ApiKeyStatus {
 }
 
 model BusinessApiKey {
-  id              String       @id @default(cuid())
-  businessId      String
-  name            String
-  keyHash         String
-  keyPrefix       String       @unique
-  status          ApiKeyStatus @default(ACTIVE)
-  lastUsedAt      DateTime?
-  expiresAt       DateTime?
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  id               String       @id @default(cuid())
+  businessId       String
+  name             String
+  keyHash          String
+  keyPrefix        String       @unique
+  status           ApiKeyStatus @default(ACTIVE)
+  lastUsedAt       DateTime?
+  expiresAt        DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
   /// Access control
-  scopes          String[]     @default([])
+  scopes           String[]     @default([])
   /// Key rotation
-  replacedById    String?
-  rotatedAt       DateTime?
+  replacedById     String?
+  rotatedAt        DateTime?
   gracePeriodEndAt DateTime?
   /// Environment label
-  environment     String       @default("production")
+  environment      String       @default("production")
 
   business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
@@ -2789,7 +2816,7 @@ model ProviderWalletTransaction {
   fingerprint       String   @unique
   providerReference String?
   orderId           String?
-  transactionType   String   // CREDIT | DEBIT | PURCHASE | REFUND | ADJUSTMENT | UNKNOWN
+  transactionType   String // CREDIT | DEBIT | PURCHASE | REFUND | ADJUSTMENT | UNKNOWN
   amount            Float
   currency          String   @default("USD")
   balanceBefore     Float?
@@ -2973,12 +3000,11 @@ model PurchaseQuote {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  order ESIMPurchase?
+
   @@index([businessId, status])
   @@index([providerPackageId])
   @@index([expiresAt])
-
-  order ESIMPurchase?
-
   @@map("purchase_quotes")
 }
 
@@ -2996,25 +3022,25 @@ model SystemJobLock {
 }
 
 model ProviderInventoryReservation {
-  id                          String   @id @default(cuid())
-  providerId                  String
-  orderId                     String?
-  reservationKey              String   @unique
-  requestedQuantity           Int
-  reservedQuantity            Int      @default(0)
-  fulfilledQuantity           Int      @default(0)
-  releasedQuantity            Int      @default(0)
-  status                      String   @default("PENDING")
+  id                           String    @id @default(cuid())
+  providerId                   String
+  orderId                      String?
+  reservationKey               String    @unique
+  requestedQuantity            Int
+  reservedQuantity             Int       @default(0)
+  fulfilledQuantity            Int       @default(0)
+  releasedQuantity             Int       @default(0)
+  status                       String    @default("PENDING")
   providerReservationReference String?
-  expiresAt                   DateTime
-  fulfilledAt                 DateTime?
-  releasedAt                  DateTime?
-  metadata                    Json?
-  createdAt                   DateTime @default(now())
-  updatedAt                   DateTime @updatedAt
+  expiresAt                    DateTime
+  fulfilledAt                  DateTime?
+  releasedAt                   DateTime?
+  metadata                     Json?
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
 
-  provider  Provider      @relation(fields: [providerId], references: [id], onDelete: Restrict)
-  order     ESIMPurchase? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  provider Provider      @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  order    ESIMPurchase? @relation(fields: [orderId], references: [id], onDelete: SetNull)
 
   @@index([providerId])
   @@index([orderId])
@@ -3025,26 +3051,26 @@ model ProviderInventoryReservation {
 }
 
 model OrderCallbackDelivery {
-  id                String   @id @default(cuid())
-  orderId           String
-  businessId        String
-  eventType         String
-  eventId           String   @unique
-  callbackUrl       String
-  payload           Json
-  payloadHash       String?
-  status            String   @default("PENDING")
-  attemptCount      Int      @default(0)
-  maxAttempts       Int      @default(7)
-  nextAttemptAt     DateTime?
-  lastAttemptAt     DateTime?
-  deliveredAt       DateTime?
-  lastHttpStatus    Int?
-  lastErrorCode     String?
-  lastErrorMessage  String?
-  signatureVersion  String   @default("v1")
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id               String    @id @default(cuid())
+  orderId          String
+  businessId       String
+  eventType        String
+  eventId          String    @unique
+  callbackUrl      String
+  payload          Json
+  payloadHash      String?
+  status           String    @default("PENDING")
+  attemptCount     Int       @default(0)
+  maxAttempts      Int       @default(7)
+  nextAttemptAt    DateTime?
+  lastAttemptAt    DateTime?
+  deliveredAt      DateTime?
+  lastHttpStatus   Int?
+  lastErrorCode    String?
+  lastErrorMessage String?
+  signatureVersion String    @default("v1")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   order    ESIMPurchase @relation(fields: [orderId], references: [id], onDelete: Cascade)
   business Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
