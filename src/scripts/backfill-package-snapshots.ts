@@ -1,4 +1,4 @@
-const { PrismaClient } = require('@prisma/client')
+import { PrismaClient, Prisma } from '@prisma/client'
 const prisma = new PrismaClient()
 
 async function main() {
@@ -6,7 +6,7 @@ async function main() {
 
   // Backfill purchases
   const purchases = await prisma.eSIMPurchase.findMany({
-    where: { packageSnapshot: null },
+    where: { packageSnapshot: { equals: Prisma.DbNull } },
     include: { package: true },
   })
   console.log(`Found ${purchases.length} purchases without snapshots`)
@@ -53,7 +53,7 @@ async function main() {
 
   // Backfill ESIMs
   const esims = await prisma.eSIM.findMany({
-    where: { packageSnapshot: null },
+    where: { packageSnapshot: { equals: Prisma.DbNull } },
     include: { purchase: { include: { package: true } } },
   })
   console.log(`\nFound ${esims.length} eSIMs without snapshots`)

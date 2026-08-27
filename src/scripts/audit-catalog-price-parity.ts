@@ -18,8 +18,8 @@
  *   npx tsx src/scripts/audit-catalog-price-parity.ts --apply   # repair RETAIL_STALE only
  */
 
-const { PrismaClient } = require('@prisma/client')
-const { classifyPackage, buildSyncDataFromClassifierInput } = require('../../lib/pricing/catalog-parity-classifier')
+import { PrismaClient } from '@prisma/client'
+import { classifyPackage, buildSyncDataFromClassifierInput } from '../lib/pricing/catalog-parity-classifier'
 const prisma = new PrismaClient()
 
 const APPLY = process.argv.includes('--apply')
@@ -80,7 +80,7 @@ async function main() {
       retailLocalPrice: pkg.localPrice ? parseFloat(pkg.localPrice.toString()) : null,
       retailCurrency: pkg.currency,
       providerPackageId: ppId,
-      providerPackageSellingPrice: pkg.providerPackage ? parseFloat(pkg.providerPackage.sellingPrice.toString()) : null,
+      providerPackageSellingPrice: pkg.providerPackage && pkg.providerPackage.sellingPrice != null ? parseFloat(pkg.providerPackage.sellingPrice.toString()) : null,
       providerPackageSellingCurrency: pkg.providerPackage?.sellingCurrency ?? null,
       providerPackageCostStatus: pkg.providerPackage?.costStatus ?? null,
       providerPackagePricingStatus: pkg.providerPackage?.pricingStatus ?? null,
@@ -116,7 +116,7 @@ async function main() {
         retailLocalPrice: pkg.localPrice ? parseFloat(pkg.localPrice.toString()) : null,
         retailCurrency: pkg.currency,
         providerPackageId: ppId,
-        providerPackageSellingPrice: parseFloat(pkg.providerPackage.sellingPrice.toString()),
+        providerPackageSellingPrice: pkg.providerPackage.sellingPrice != null ? parseFloat(pkg.providerPackage.sellingPrice.toString()) : null,
         providerPackageSellingCurrency: pkg.providerPackage.sellingCurrency,
         providerPackageCostStatus: pkg.providerPackage.costStatus,
         providerPackagePricingStatus: pkg.providerPackage.pricingStatus,
