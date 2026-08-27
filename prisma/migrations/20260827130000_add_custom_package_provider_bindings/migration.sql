@@ -1,4 +1,4 @@
-﻿-- CreateTable
+-- CreateTable
 CREATE TABLE "esim_package_provider_bindings" (
     "id" TEXT NOT NULL,
     "esimPackageId" TEXT NOT NULL,

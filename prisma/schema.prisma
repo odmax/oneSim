@@ -239,6 +239,9 @@ model Provider {
   lastSyncAt               DateTime? /// Last successful plan sync
   lastSyncResult           String? /// Summary of last sync result
   lastSyncCount            Int? /// Number of plans fetched in last sync
+  /// Self-heal lease (nullable timestamp; written by provider self-heal raw SQL
+  /// to prevent concurrent workers healing the same provider).
+  selfHealLeaseUntil       DateTime?
   /// Certification workflow fields
   certificationStatus      String?        @default("CONFIGURING")
   certifiedAt              DateTime?
@@ -1326,6 +1329,116 @@ model ProviderFailoverEvent {
   @@index([fallbackProviderId])
   @@index([createdAt])
   @@map("provider_failover_events")
+}
+
+/// Provider API endpoint telemetry — per (provider, operation) aggregate.
+/// `providerId` is intentionally plain (no FK in the canonical migrations).
+model ProviderEndpointCall {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()"))
+  providerId          String
+  operation           String
+  endpointPath        String
+  lastAttemptedAt     DateTime?
+  lastSuccessAt       DateTime?
+  lastFailureAt       DateTime?
+  lastHttpStatus      Int?
+  totalCalls          Int       @default(0)
+  totalSuccesses      Int       @default(0)
+  totalFailures       Int       @default(0)
+  lastLatencyMs       Int?
+  totalLatencyMs      BigInt?   @default(0)
+  consecutiveFailures Int?      @default(0)
+  updatedAt           DateTime  @default(now())
+
+  @@unique([providerId, operation], map: "provider_endpoint_calls_provider_operation_key")
+  @@map("provider_endpoint_calls")
+}
+
+/// Admin-created SKU/bundle definitions per provider. No FK on providerId.
+model ProviderBundleDefinition {
+  id                       String   @id @default(dbgenerated("gen_random_uuid()"))
+  providerId               String
+  externalSku              String?
+  bundleCode               String?
+  bundleName               String
+  dataAllowance            Int?
+  dataUnit                 String?  @default("MB")
+  validityDays             Int?
+  occurrences              Int?     @default(1)
+  tethering                Boolean? @default(false)
+  throttling               Boolean? @default(false)
+  throttleThresholdPercent Int?
+  throttleSpeedKbps        Int?
+  roamingProfileId         String?
+  pool                     String?
+  servingNetworks          String?
+  smsAllowance             Int?
+  voiceMinutes             Int?
+  providerMetadata         Json?
+  status                   String   @default("DRAFT") /// DRAFT | ACTIVE
+  externalVersion          String?
+  createdBy                String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @default(now())
+
+  @@index([providerId], map: "provider_bundle_definitions_providerId_idx")
+  @@index([status], map: "provider_bundle_definitions_status_idx")
+  @@map("provider_bundle_definitions")
+}
+
+/// Client Portal / Client API exposure toggles per provider capability.
+/// No FK on providerId.
+model ProviderCapabilityExposure {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()"))
+  providerId          String
+  capability          String
+  clientPortalEnabled Boolean  @default(false)
+  clientApiEnabled    Boolean  @default(false)
+  updatedAt           DateTime @default(now())
+
+  @@unique([providerId, capability], map: "provider_capability_exposure_provider_capability_key")
+  @@map("provider_capability_exposure")
+}
+
+/// Persistent provider alerts with deduplication. No FK on providerId.
+model ProviderAlert {
+  id                String    @id @default(dbgenerated("gen_random_uuid()"))
+  providerId        String
+  code              String
+  severity          String    @default("WARNING") /// INFO | WARNING | ERROR | CRITICAL
+  message           String?
+  firstSeenAt       DateTime  @default(now())
+  lastSeenAt        DateTime  @default(now())
+  resolvedAt        DateTime?
+  recommendedAction String?
+  occurrenceCount   Int       @default(1)
+  metadata          Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @default(now())
+
+  /// NOTE: the migration also creates a PARTIAL unique index
+  /// (providerId, code) WHERE "resolvedAt" IS NULL
+  /// (`provider_alerts_provider_code_unresolved`) relied on by
+  /// upsertProviderAlert `ON CONFLICT ... WHERE "resolvedAt" IS NULL`.
+  /// Prisma cannot model partial indexes, so it is intentionally unrepresented
+  /// here and must NEVER be dropped by any generated migration.
+  @@index([providerId])
+  @@map("provider_alerts")
+}
+
+/// Provider self-heal action history. No FK on providerId.
+model ProviderSelfHealEvent {
+  id          String    @id @default(dbgenerated("gen_random_uuid()"))
+  providerId  String
+  action      String
+  result      String    @default("attempted") /// attempted | success | failure | ...
+  errorCode   String?
+  attemptedAt DateTime  @default(now())
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([providerId, attemptedAt(sort: Desc)], map: "provider_self_heal_events_providerId_idx")
+  @@map("provider_self_heal_events")
 }
 
 model SupportTicket {
