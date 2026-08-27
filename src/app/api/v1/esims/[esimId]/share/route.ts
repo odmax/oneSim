@@ -38,7 +38,7 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
     const esim = await prisma.eSIM.findUnique({
       where: { id: params.esimId },
       include: {
-        purchase: { select: { businessId: true }, include: { package: true } },
+        purchase: { select: { businessId: true, package: true } },
       },
     })
     if (!esim) return respond(request, makeError('ESIM_NOT_FOUND', 'eSIM not found'), 404, startTime, businessId, { errorMessage: 'eSIM not found', rateLimit })

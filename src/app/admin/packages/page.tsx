@@ -81,7 +81,7 @@ export default async function AdminPackagesPage({
       provider: { select: { status: true, enabledCapabilities: true, code: true, adapterStrategy: true } },
       providerBindings: {
         orderBy: { priority: 'asc' },
-        include: { providerPackage: { select: { id: true, providerId: true }, include: { provider: { select: { name: true } } } } },
+        include: { providerPackage: { select: { id: true, providerId: true, provider: { select: { name: true } } } } },
       },
       _count: { select: { purchases: true, topUpRecords: true } },
     },

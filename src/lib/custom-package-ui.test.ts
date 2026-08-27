@@ -9,6 +9,39 @@ function read(rel: string): string {
   return readFileSync(path.join(ROOT, rel), 'utf8')
 }
 
+// Files whose Prisma queries must never combine `select` and `include` on the
+// same relation (Prisma Client rejects this at runtime, even though mocked
+// tests pass). These are the Admin Provider/Product Catalog + Custom Package
+// Builder query-bearing files.
+const QUERY_FILES = [
+  'src/app/admin/packages/page.tsx',
+  'src/app/admin/provider-catalog/page.tsx',
+  'src/app/admin/provider-catalog/custom/new/page.tsx',
+  'src/lib/packages/query-purchasable.ts',
+  'src/lib/services/orders/package-backing-resolver.ts',
+  'src/lib/services/custom-package/custom-package.ts',
+  'src/lib/services/custom-package/eligible-providers.ts',
+  'src/lib/actions/custom-package.ts',
+  'src/app/api/v1/esims/[esimId]/share/route.ts',
+]
+
+/**
+ * Structural guard: Prisma does not allow `select` and `include` as siblings on
+ * the same relation object. This catches that runtime break that unit tests
+ * with mocked Prisma never see (mocks skip Prisma Client validation).
+ */
+function findSiblingSelectInclude(src: string): string[] {
+  const found: string[] = []
+  // A relation object like: rel: { select: { ... }, include: { ... } }
+  for (const m of src.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*?)\s*:\s*\{\s*select\s*:\s*\{[^{}]*\}\s*,\s*include\s*:/g)) {
+    found.push(`${m[1]}: select+include sibling`)
+  }
+  for (const m of src.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*?)\s*:\s*\{\s*include\s*:\s*\{[^{}]*\}\s*,\s*select\s*:/g)) {
+    found.push(`${m[1]}: include+select sibling`)
+  }
+  return found
+}
+
 describe('CPB-UI — admin UI visibility', () => {
   it('CPB-UI-1: /admin/provider-catalog exposes Create Custom Package', () => {
     const src = read('src/app/admin/provider-catalog/page.tsx')
@@ -54,5 +87,13 @@ describe('CPB-UI-19 — business/public API never exposes provider identities/ba
     expect(Object.keys(dto)).not.toContain('providerName')
     expect(Object.keys(dto)).not.toContain('providerBindings')
     expect(Object.keys(dto)).not.toContain('providerRawData')
+  })
+})
+
+describe('Prisma query structural integrity (select+include sibling guard)', () => {
+  it.each(QUERY_FILES)('%s has no relation combining select+include on the same object', (file) => {
+    const src = read(file)
+    const conflicts = findSiblingSelectInclude(src)
+    expect(conflicts).toEqual([])
   })
 })
