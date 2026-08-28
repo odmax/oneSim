@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
 import { serializePublicWebhook } from '@/lib/api/public-dto'
+import { requireRouteScopes } from '@/lib/api/v1-response'
 import { deliverWebhook } from '@/lib/services/business-webhooks/dispatcher'
 
 function makeError(code: string, message: string) { return { success: false, error: { code, message } } }
@@ -39,9 +40,13 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     const auth = await authenticateApiKey(request)
     if (!auth.authenticated) return respond(request, makeError('AUTH_FAILED', auth.error || ''), auth.status || 401, startTime, 'unknown', { errorMessage: auth.error })
     const businessId = auth.businessId!
+    const apiKeyId = auth.apiKeyId
     const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
+
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) return scopeError
 
     const existing = await prisma.businessWebhookEndpoint.findFirst({ where: { id: params.id, businessId } })
     if (!existing) return respond(request, makeError('NOT_FOUND', 'Webhook not found'), 404, startTime, businessId, { errorMessage: 'Not found', rateLimit })
@@ -66,9 +71,13 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
     const auth = await authenticateApiKey(request)
     if (!auth.authenticated) return respond(request, makeError('AUTH_FAILED', auth.error || ''), auth.status || 401, startTime, 'unknown', { errorMessage: auth.error })
     const businessId = auth.businessId!
+    const apiKeyId = auth.apiKeyId
     const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
+
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) return scopeError
 
     const existing = await prisma.businessWebhookEndpoint.findFirst({ where: { id: params.id, businessId } })
     if (!existing) return respond(request, makeError('NOT_FOUND', 'Webhook not found'), 404, startTime, businessId, { errorMessage: 'Not found', rateLimit })

@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
 import { serializePublicCustomerDetail, serializePublicCustomer } from '@/lib/api/public-dto'
+import { requireRouteScopes } from '@/lib/api/v1-response'
 
 function makeError(c: string, m: string) { return { success: false, error: { code: c, message: m } } }
 
@@ -41,9 +42,13 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     const auth = await authenticateApiKey(request)
     if (!auth.authenticated) return respond(request, makeError('AUTH_FAILED', auth.error || ''), auth.status || 401, startTime, 'unknown', { errorMessage: auth.error })
     const businessId = auth.businessId!
+    const apiKeyId = auth.apiKeyId
     const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
+
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) return scopeError
 
     const existing = await prisma.customer.findFirst({ where: { id: params.id, businessId } })
     if (!existing) return respond(request, makeError('NOT_FOUND', 'Customer not found'), 404, startTime, businessId, { errorMessage: 'Not found', rateLimit })
@@ -58,6 +63,6 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     if (body.status) update.status = body.status
 
     const customer = await prisma.customer.update({ where: { id: params.id, businessId }, data: update })
-    return respond(request, { success: true, customer: serializePublicCustomer(customer) }, 200, startTime, businessId, { apiKeyId: auth.apiKeyId, rateLimit })
+    return respond(request, { success: true, customer: serializePublicCustomer(customer) }, 200, startTime, businessId, { apiKeyId: apiKeyId, rateLimit })
   } catch (e: any) { console.error(e); return NextResponse.json(makeError('INTERNAL_ERROR', ''), { status: 500 }) }
 }

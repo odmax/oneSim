@@ -9,7 +9,19 @@ export function GET() {
     info: {
       title: 'OneSIM Business API',
       version: 'v1',
-      description: 'Business API for eSIM purchasing, quoting, order management, webhooks and inventory. Every request must include an `Authorization: Bearer YOUR_API_KEY` header.',
+      description: `Business API for eSIM purchasing, quoting, order management, webhooks and inventory.
+
+## Authentication
+Every request must include an \`Authorization: Bearer ONESIM_API_KEY\` header (key prefix \`onesim_\`).
+
+## Authorization scopes
+API keys carry a set of scopes. Each endpoint requires the scope listed under its \`x-required-scope\` extension:
+
+- 401 \`UNAUTHORIZED\` — missing/invalid/expired/revoked API key
+- 403 \`FORBIDDEN\` — authenticated but the key lacks the required scope for this route
+- 403 \`FORBIDDEN\` — resource belongs to a different business (tenant isolation)
+
+Businesses interact with OneSIM only — no provider identifiers, provider credentials, or provider wallet balances are ever exposed.`,
     },
     servers: [
       { url: `${BASE_URL}/api/v1`, description: 'Production' },
@@ -90,20 +102,20 @@ export function GET() {
       },
     },
     paths: {
-      '/packages': {
+'/packages': {
         get: {
-          summary: 'List available eSIM packages', tags: ['Packages'],
+          summary: 'List available eSIM packages', tags: ['Packages'], 'x-required-scope': 'packages:read',
           responses: { '200': { description: 'Package list', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, packages: { type: 'array', items: { $ref: '#/components/schemas/Package' } } } } } } } },
         },
       },
       '/esims/order': {
         get: {
-          summary: 'List recent orders (alias)', tags: ['Orders'],
-          description: 'Alias for GET /orders. Returns recent orders for the authenticated business.',
-          responses: { '200': { description: 'List of orders' } },
+          summary: 'List recent orders (alias)', tags: ['Orders'], 'x-required-scope': null,
+          description: 'Bootstrap/service banner — no authentication or scope required.',
+          responses: { '200': { description: 'Service banner' } },
         },
         post: {
-          summary: 'Create an eSIM order', tags: ['Orders'],
+          summary: 'Create an eSIM order', tags: ['Orders'], 'x-required-scope': 'orders:write',
           description: 'Place a new order. Use `Idempotency-Key` header for safe retries. Returns the order with status and eSIM details when fulfilled.',
           requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['packageId', 'customerName', 'customerEmail'], properties: { packageId: { type: 'string', description: 'Package ID (or use sku/packageCode)' }, sku: { type: 'string', description: 'Package SKU (alternative to packageId)' }, packageCode: { type: 'string', description: 'Package code (alternative to packageId)' }, quantity: { type: 'integer', default: 1, minimum: 1, maximum: 100 }, customerName: { type: 'string' }, customerEmail: { type: 'string', format: 'email' }, customerPhone: { type: 'string' }, country: { type: 'string' }, externalCustomerId: { type: 'string' }, callbackUrl: { type: 'string', format: 'uri' }, travelDate: { type: 'string', format: 'date' } } } } } },
           responses: {
@@ -122,23 +134,23 @@ export function GET() {
         },
       },
       '/orders': {
-        get: { summary: 'List all orders', tags: ['Orders'], parameters: [{ name: 'status', in: 'query', schema: { type: 'string' } }], responses: { '200': { description: 'List of orders' } } },
+        get: { summary: 'List all orders', tags: ['Orders'], 'x-required-scope': 'orders:read', parameters: [{ name: 'status', in: 'query', schema: { type: 'string' } }], responses: { '200': { description: 'List of orders' } } },
       },
       '/orders/{orderId}': {
-        get: { summary: 'Get order detail', tags: ['Orders'], parameters: [{ name: 'orderId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Order detail' } } },
+        get: { summary: 'Get order detail', tags: ['Orders'], 'x-required-scope': 'orders:read', parameters: [{ name: 'orderId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Order detail' } } },
       },
       '/esims/{esimId}': {
-        get: { summary: 'Get eSIM detail', tags: ['eSIMs'], parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'eSIM detail' } } },
+        get: { summary: 'Get eSIM detail', tags: ['eSIMs'], 'x-required-scope': 'esims:read', parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'eSIM detail' } } },
       },
       '/esims/{esimId}/usage': {
-        get: { summary: 'Get eSIM usage records', tags: ['eSIMs'], parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Usage records (last 100)' } } },
+        get: { summary: 'Get eSIM usage records', tags: ['eSIMs'], 'x-required-scope': 'esims:read', parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Usage records (last 100)' } } },
       },
       '/esims/{esimId}/refresh-status': {
-        post: { summary: 'Refresh eSIM status from provider', tags: ['eSIMs'], parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Status refreshed' } } },
+        post: { summary: 'Refresh eSIM status from provider', tags: ['eSIMs'], 'x-required-scope': 'esims:write', parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Status refreshed' } } },
       },
       '/esims/{esimId}/refresh-qr': {
         post: {
-          summary: 'Refresh eSIM QR code / installation data', tags: ['eSIMs'],
+          summary: 'Refresh eSIM QR code / installation data', tags: ['eSIMs'], 'x-required-scope': 'esims:write',
           description: 'Retrieves the latest QR code and installation data from the provider. This operation is read-only — it does not purchase another eSIM, change the ICCID, or mutate the wallet. Provider support may vary. Refreshing is safe to retry.',
           parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' }, description: 'eSIM ID' }],
           responses: {
@@ -168,48 +180,48 @@ export function GET() {
         },
       },
       '/esims/{esimId}/top-up': {
-        post: { summary: 'Top-up an existing eSIM', tags: ['eSIMs'], parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], requestBody: { content: { 'application/json': { schema: { type: 'object', required: ['packageId'], properties: { packageId: { type: 'string' }, quantity: { type: 'integer' } } } } } }, responses: { '200': { description: 'Top-up completed' } } },
+        post: { summary: 'Top-up an existing eSIM', tags: ['eSIMs'], 'x-required-scope': 'esims:write', parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], requestBody: { content: { 'application/json': { schema: { type: 'object', required: ['packageId'], properties: { packageId: { type: 'string' }, quantity: { type: 'integer' } } } } } }, responses: { '200': { description: 'Top-up completed' } } },
       },
       '/esims/{esimId}/share': {
-        post: { summary: 'Share eSIM activation details', tags: ['eSIMs'], parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Share link generated' } } },
+        post: { summary: 'Share eSIM activation details', tags: ['eSIMs'], 'x-required-scope': 'esims:write', parameters: [{ name: 'esimId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Share link generated' } } },
       },
       '/usage': {
-        get: { summary: 'List eSIMs with usage summaries', tags: ['Usage'], responses: { '200': { description: 'Usage summaries' } } },
+        get: { summary: 'List eSIMs with usage summaries', tags: ['Usage'], 'x-required-scope': 'esims:read', responses: { '200': { description: 'Usage summaries' } } },
       },
       '/wallet': {
-        get: { summary: 'Get wallet balance', tags: ['Wallet'], responses: { '200': { description: 'Wallet balance' } } },
+        get: { summary: 'Get wallet balance', tags: ['Wallet'], 'x-required-scope': 'wallet:read', responses: { '200': { description: 'Wallet balance' } } },
       },
       '/wallet/transactions': {
-        get: { summary: 'List wallet transactions', tags: ['Wallet'], responses: { '200': { description: 'Transaction list' } } },
+        get: { summary: 'List wallet transactions', tags: ['Wallet'], 'x-required-scope': 'wallet:read', responses: { '200': { description: 'Transaction list' } } },
       },
       '/customers': {
-        get: { summary: 'List customers', tags: ['Customers'], responses: { '200': { description: 'Customer list' } } },
-        post: { summary: 'Create customer', tags: ['Customers'], requestBody: { content: { 'application/json': { schema: { type: 'object', required: ['name','email'], properties: { name: { type: 'string' }, email: { type: 'string' }, phone: { type: 'string' }, country: { type: 'string' } } } } } }, responses: { '201': { description: 'Customer created' } } },
+        get: { summary: 'List customers', tags: ['Customers'], 'x-required-scope': 'customers:read', responses: { '200': { description: 'Customer list' } } },
+        post: { summary: 'Create customer', tags: ['Customers'], 'x-required-scope': 'customers:write', requestBody: { content: { 'application/json': { schema: { type: 'object', required: ['name','email'], properties: { name: { type: 'string' }, email: { type: 'string' }, phone: { type: 'string' }, country: { type: 'string' } } } } } }, responses: { '201': { description: 'Customer created' } } },
       },
       '/customers/{id}': {
-        get: { summary: 'Get customer detail', tags: ['Customers'], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Customer detail' } } },
-        patch: { summary: 'Update customer', tags: ['Customers'], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Customer updated' } } },
+        get: { summary: 'Get customer detail', tags: ['Customers'], 'x-required-scope': 'customers:read', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Customer detail' } } },
+        patch: { summary: 'Update customer', tags: ['Customers'], 'x-required-scope': 'customers:write', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Customer updated' } } },
       },
       '/webhooks': {
-        get: { summary: 'List webhook endpoints', tags: ['Webhooks'], responses: { '200': { description: 'Webhook list' } } },
-        post: { summary: 'Create webhook endpoint', tags: ['Webhooks'], responses: { '201': { description: 'Webhook created' } } },
+        get: { summary: 'List webhook endpoints', tags: ['Webhooks'], 'x-required-scope': 'webhooks:read', responses: { '200': { description: 'Webhook list' } } },
+        post: { summary: 'Create webhook endpoint', tags: ['Webhooks'], 'x-required-scope': 'webhooks:write', responses: { '201': { description: 'Webhook created' } } },
       },
       '/webhooks/{id}': {
-        get: { summary: 'Get webhook endpoint', tags: ['Webhooks'], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Webhook detail' } } },
-        patch: { summary: 'Update webhook endpoint', tags: ['Webhooks'], responses: { '200': { description: 'Updated' } } },
-        delete: { summary: 'Delete webhook endpoint', tags: ['Webhooks'], responses: { '200': { description: 'Deleted' } } },
+        get: { summary: 'Get webhook endpoint', tags: ['Webhooks'], 'x-required-scope': 'webhooks:read', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Webhook detail' } } },
+        patch: { summary: 'Update webhook endpoint', tags: ['Webhooks'], 'x-required-scope': 'webhooks:write', responses: { '200': { description: 'Updated' } } },
+        delete: { summary: 'Delete webhook endpoint', tags: ['Webhooks'], 'x-required-scope': 'webhooks:write', responses: { '200': { description: 'Deleted' } } },
       },
       '/webhooks/{id}/test': {
-        post: { summary: 'Send test webhook', tags: ['Webhooks'], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Test result' } } },
+        post: { summary: 'Send test webhook', tags: ['Webhooks'], 'x-required-scope': 'webhooks:write', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Test result' } } },
       },
       '/webhooks/{id}/deliveries': {
-        get: { summary: 'List webhook delivery history', tags: ['Webhooks'], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Delivery list' } } },
+        get: { summary: 'List webhook delivery history', tags: ['Webhooks'], 'x-required-scope': 'webhooks:read', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Delivery list' } } },
       },
       '/webhooks/deliveries/{deliveryId}/retry': {
-        post: { summary: 'Retry failed webhook delivery', tags: ['Webhooks'], parameters: [{ name: 'deliveryId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Retry response' } } },
+        post: { summary: 'Retry failed webhook delivery', tags: ['Webhooks'], 'x-required-scope': 'webhooks:write', parameters: [{ name: 'deliveryId', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Retry response' } } },
       },
       '/auth/verify': {
-        get: { summary: 'Verify API key validity', tags: ['Authentication'], responses: { '200': { description: 'Key is valid' } } },
+        get: { summary: 'Verify API key validity', tags: ['Authentication'], 'x-required-scope': null, responses: { '200': { description: 'Key is valid' } } },
       },
     },
     tags: [

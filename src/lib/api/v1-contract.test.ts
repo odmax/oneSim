@@ -1154,3 +1154,39 @@ describe('API-CONTRACT-21: Secrets and sensitive data detection', () => {
     }
   })
 })
+
+describe('API-CONTRACT-22: OpenAPI scope parity + fail-closed V1 scope policy', () => {
+  it('OpenAPI documents a required scope for protected routes and null for public/verify', () => {
+    const content = fs.readFileSync('src/app/api/openapi.json/route.ts', 'utf8')
+    const mentions = (s: string) => content.includes(s)
+    // Protected endpoints must declare their scope extension; READ endpoints.
+    expect(mentions("'x-required-scope': 'packages:read'")).toBe(true)
+    expect(mentions("'x-required-scope': 'orders:write'")).toBe(true)
+    expect(mentions("'x-required-scope': 'orders:read'")).toBe(true)
+    expect(mentions("'x-required-scope': 'esims:read'")).toBe(true)
+    expect(mentions("'x-required-scope': 'esims:write'")).toBe(true)
+    expect(mentions("'x-required-scope': 'wallet:read'")).toBe(true)
+    expect(mentions("'x-required-scope': 'customers:read'")).toBe(true)
+    expect(mentions("'x-required-scope': 'customers:write'")).toBe(true)
+    expect(mentions("'x-required-scope': 'webhooks:read'")).toBe(true)
+    expect(mentions("'x-required-scope': 'webhooks:write'")).toBe(true)
+    // Public/verify endpoints are explicitly bootstrap-exempt.
+    expect(mentions("'x-required-scope': null")).toBe(true)
+    // Security description explains 401 / 403 / tenant isolation.
+    expect(content).toContain('403')
+    expect(content).toContain('UNAUTHORIZED')
+    expect(content).toContain('FORBIDDEN')
+    expect(content).toContain('tenant isolation')
+  })
+
+  it('fail-closed scope policy does not silently allow unknown routes', () => {
+    const content = fs.readFileSync('src/lib/api/scopes.ts', 'utf8')
+    // UNREGISTERED classification exists and must not be an implicit allow.
+    expect(content).toContain("kind: 'UNREGISTERED'")
+    expect(content).toContain('No API scope policy registered')
+    // Every route is PROTECTED or BOOTSTRAP-exempt; there is no implicit rule.
+    expect(content).toContain('implicit all-access fallback')
+    expect(content).toContain('FAIL-CLOSED')
+    expect(content).toContain('requireRouteScopes')
+  })
+})

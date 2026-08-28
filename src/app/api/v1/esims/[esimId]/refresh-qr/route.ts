@@ -4,7 +4,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
+import { requireRouteScopes } from '@/lib/api/v1-response'
 import { refreshEsimQrCode } from '@/lib/services/esims/refresh-qr'
+import { isCapabilityExposedToApi } from '@/lib/providers/capabilities/exposure'
+import { ProviderCapability } from '@/lib/providers/capabilities/types'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -31,6 +34,38 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
     const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
+
+    // Scope enforcement: QR refresh is an esims:write operation.
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) {
+      await logApiRequest(request, scopeError, startTime, businessId, { apiKeyId, errorMessage: 'insufficient_scopes' })
+      return scopeError
+    }
+
+    // Resolve the eSIM + owning provider for tenant + capability checks. QR /
+    // installation retrieval must be API-exposed for the provider (INSTALLATION,
+    // distinct from STATUS). Businesses may never pick a provider.
+    const row = await prisma.eSIM.findUnique({
+      where: { id: params.esimId },
+      select: {
+        id: true,
+        purchase: { select: { businessId: true, package: { select: { providerId: true } } } },
+      },
+    })
+    if (!row) {
+      return respond(request, makeError('NOT_FOUND', 'eSIM not found'), 404, startTime, businessId, { apiKeyId, rateLimit })
+    }
+    if (row.purchase.businessId !== businessId) {
+      return respond(request, makeError('FORBIDDEN', 'Access denied'), 403, startTime, businessId, { apiKeyId, rateLimit })
+    }
+
+    const providerId = row.purchase.package.providerId
+    if (providerId) {
+      const allowed = await isCapabilityExposedToApi(providerId, ProviderCapability.INSTALLATION).catch(() => false)
+      if (!allowed) {
+        return respond(request, makeError('CAPABILITY_NOT_AVAILABLE', 'QR refresh is not available for this provider'), 403, startTime, businessId, { apiKeyId, rateLimit })
+      }
+    }
 
     const result = await refreshEsimQrCode({
       esimId: params.esimId,

@@ -6,6 +6,7 @@ import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
 import { syncESIMStatus } from '@/lib/services/esims/sync-esim-status'
 import { isCapabilityExposedToApi } from '@/lib/providers/capabilities/exposure'
+import { requireRouteScopes } from '@/lib/api/v1-response'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -31,9 +32,15 @@ export async function POST(request: NextRequest, { params }: { params: { esimId:
     const businessId = auth.businessId!
     const apiKeyId = auth.apiKeyId
 
-    const rateCheck = await checkRateLimit(businessId)
+const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
+
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) {
+      await logApiRequest(request, scopeError, startTime, businessId, { apiKeyId, errorMessage: 'insufficient_scopes' })
+      return scopeError
+    }
 
     const esim = await prisma.eSIM.findUnique({
       where: { id: params.esimId },

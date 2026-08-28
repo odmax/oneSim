@@ -4,12 +4,18 @@ import { parseCapabilities } from '@/lib/providers/capabilities/registry'
 
 /**
  * Check if a capability is exposed to Client Portal or Client API.
- * Defaults: normal capabilities (PURCHASE, STATUS, USAGE, TOP_UP, SUSPEND, RESUME) → true
+ * Defaults: normal capabilities (PURCHASE, STATUS, USAGE, TOP_UP, SUSPEND, RESUME,
+ * INSTALLATION, QR_CODE, BALANCE) → true
  *          sensitive capabilities (CREATE_BUNDLE, UPDATE_BUNDLE, DIRECT_IMSI_CREATE, EVENT_LOGS, RATE_LIST) → false
+ *
+ * INSTALLATION is deliberately distinct from STATUS: it gates delivery of
+ * install/provisioning data (activation code, LPA/QR payload, SM-DP+) to the
+ * client, while STATUS gates lifecycle reads. They must never be conflated.
  */
 const DEFAULT_EXPOSED_CAPABILITIES = new Set<string>([
   ProviderCapability.PURCHASE, ProviderCapability.STATUS, ProviderCapability.USAGE,
   ProviderCapability.TOP_UP, ProviderCapability.SUSPEND, ProviderCapability.RESUME,
+  ProviderCapability.INSTALLATION, ProviderCapability.QR_CODE,
   ProviderCapability.BALANCE,
 ])
 

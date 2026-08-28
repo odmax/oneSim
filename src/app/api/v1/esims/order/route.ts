@@ -9,6 +9,7 @@ import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import { getActivationInstructions } from '@/lib/esim/activation-instructions'
 import { isValidTravelDate } from '@/lib/providers/travel-date-utils'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
+import { requireRouteScopes } from '@/lib/api/v1-response'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -36,6 +37,12 @@ export async function POST(request: NextRequest) {
     const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
+
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) {
+      await logApiRequest(request, scopeError, startTime, businessId, { apiKeyId, errorMessage: 'insufficient_scopes' })
+      return scopeError
+    }
 
     // Business check
     const business = await prisma.business.findUnique({ where: { id: businessId }, select: { id: true, status: true, walletBalance: true } })

@@ -76,7 +76,13 @@ export function inferProviderCapabilities(provider: any): ProviderCapabilities {
   }
 
   const caps: ProviderCapabilities = {
-    supportsESIM: true, // All providers can provision eSIM
+    // supportsESIM is NOT hardcoded true. Purchase/provision capability is only
+    // claimed when the provider actually has an activation path (or a purchase
+    // endpoint mapping / explicit DB flag). A connector that has no proven
+    // purchase path must not be advertised as eSIM-provisioning here. The
+    // RUNTIME authority for purchase is the connector's `purchase` /
+    // `installationDataAtPurchase` capability, not this legacy inference.
+    supportsESIM: checkWithPath('supportsESIM', 'activationPath', 'PURCHASE_ESIM'),
     supportsPlanSync: checkWithPath('supportsPlanSync', 'planListPath', 'GET_PLANS'),
     supportsQRCode: checkWithPath('supportsQRCode', 'activationPath', 'GET_ACTIVATION_CODE'),
     supportsTopUp: checkWithPath('supportsTopUp', 'topUpPath', 'TOP_UP'),

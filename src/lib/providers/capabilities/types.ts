@@ -9,6 +9,17 @@ export const ProviderCapability = {
   STATUS: 'STATUS',
   SUSPEND: 'SUSPEND',
   RESUME: 'RESUME',
+  /**
+   * Installation / provisioning data delivery to the client (activation code,
+   * LPA/QR payload, SM-DP+ address). Distinct from STATUS: installation is
+   * about delivering install data, status is lifecycle state.
+   */
+  INSTALLATION: 'INSTALLATION',
+  /**
+   * QR / LPA retrieval capability. Distinct from INSTALLATION for providers that
+   * deliver install data at purchase but have no read-only QR recovery path.
+   */
+  QR_CODE: 'QR_CODE',
   CANCEL: 'CANCEL',
   WEBHOOKS: 'WEBHOOKS',
   SMS_MT: 'SMS_MT',
@@ -46,6 +57,8 @@ export const CAPABILITY_LABELS: Record<ProviderCapability, string> = {
   STATUS: 'Status',
   SUSPEND: 'Suspend',
   RESUME: 'Resume',
+  INSTALLATION: 'Installation Data',
+  QR_CODE: 'QR / LPA Retrieval',
   CANCEL: 'Cancel',
   WEBHOOKS: 'Webhooks',
   SMS_MT: 'SMS (Outbound)',
@@ -75,6 +88,8 @@ export const CAPABILITY_COLORS: Record<ProviderCapability, string> = {
   STATUS: 'bg-teal-100 text-teal-700',
   SUSPEND: 'bg-orange-100 text-orange-700',
   RESUME: 'bg-lime-100 text-lime-700',
+  INSTALLATION: 'bg-teal-100 text-teal-700',
+  QR_CODE: 'bg-indigo-100 text-indigo-700',
   CANCEL: 'bg-red-100 text-red-700',
   WEBHOOKS: 'bg-indigo-100 text-indigo-700',
   SMS_MT: 'bg-pink-100 text-pink-700',

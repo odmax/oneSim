@@ -105,9 +105,13 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
     enabledCapabilities: (provider?.enabledCapabilities as string[]) || [],
   }
 
+  // Exposure is queried PER CAPABILITY. INSTALLATION (install/provisioning data)
+  // is distinct from STATUS (lifecycle reads) and must never be projected from
+  // STATUS — an admin can now expose delivery of install data while keeping
+  // lifecycle status internal, or vice versa.
   const [installPortal, installApi, statusPortal, statusApi, usagePortal, usageApi, topUpPortal, topUpApi] = await Promise.all([
-    isCapabilityExposedToPortal(providerId, ProviderCapability.STATUS).catch(() => false),
-    isCapabilityExposedToApi(providerId, ProviderCapability.STATUS).catch(() => false),
+    isCapabilityExposedToPortal(providerId, ProviderCapability.INSTALLATION).catch(() => false),
+    isCapabilityExposedToApi(providerId, ProviderCapability.INSTALLATION).catch(() => false),
     isCapabilityExposedToPortal(providerId, ProviderCapability.STATUS).catch(() => false),
     isCapabilityExposedToApi(providerId, ProviderCapability.STATUS).catch(() => false),
     isCapabilityExposedToPortal(providerId, ProviderCapability.USAGE).catch(() => false),

@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
 import { serializePublicWebhook } from '@/lib/api/public-dto'
+import { requireRouteScopes } from '@/lib/api/v1-response'
 import crypto from 'crypto'
 
 const EVENT_TYPES = ['order.completed', 'order.failed', 'esim.provisioned', 'esim.activated', 'esim.expired', 'esim.suspended', 'usage.updated', 'topup.completed', 'topup.failed', 'wallet.low_balance']
@@ -43,9 +44,13 @@ export async function POST(request: NextRequest) {
     const auth = await authenticateApiKey(request)
     if (!auth.authenticated) return respond(request, makeError('AUTH_FAILED', auth.error || ''), auth.status || 401, startTime, 'unknown', { errorMessage: auth.error })
     const businessId = auth.businessId!
+    const apiKeyId = auth.apiKeyId
     const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
+
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) return scopeError
 
     let body: any
     try { body = await request.json() } catch { return respond(request, makeError('INVALID_JSON', 'Invalid JSON'), 400, startTime, businessId, { errorMessage: 'Invalid JSON', rateLimit }) }

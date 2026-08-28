@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
 import { deliverWebhook } from '@/lib/services/business-webhooks/dispatcher'
+import { requireRouteScopes } from '@/lib/api/v1-response'
 
 function makeError(code: string, message: string) { return { success: false, error: { code, message } } }
 
@@ -20,7 +21,10 @@ export async function POST(request: NextRequest, { params }: { params: { deliver
   try {
     const auth = await authenticateApiKey(request)
     if (!auth.authenticated) return respond(request, makeError('AUTH_FAILED', auth.error || ''), auth.status || 401, startTime, 'unknown', { errorMessage: auth.error })
-    const businessId = auth.businessId!
+const businessId = auth.businessId!
+
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) return scopeError
 
     const delivery = await prisma.webhookDelivery.findUnique({
       where: { id: params.deliveryId },

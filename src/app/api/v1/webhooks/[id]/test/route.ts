@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
 import { apiError, generateRequestId } from '@/lib/api/error-contract'
+import { requireRouteScopes } from '@/lib/api/v1-response'
 import crypto from 'crypto'
 
 function makeError(c: string, m: string) { return { success: false, error: { code: c, message: m } } }
@@ -26,6 +27,9 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
+
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) return scopeError
 
     const endpoint = await prisma.businessWebhookEndpoint.findFirst({ where: { id: params.id, businessId } })
     if (!endpoint) return apiError('NOT_FOUND', 'Webhook endpoint not found', 404, undefined, requestId)

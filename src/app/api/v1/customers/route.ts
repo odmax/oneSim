@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
 import { serializePublicCustomer } from '@/lib/api/public-dto'
+import { requireRouteScopes } from '@/lib/api/v1-response'
 
 function makeError(c: string, m: string) { return { success: false, error: { code: c, message: m } } }
 
@@ -52,9 +53,13 @@ export async function POST(request: NextRequest) {
     const auth = await authenticateApiKey(request)
     if (!auth.authenticated) return respond(request, makeError('AUTH_FAILED', auth.error || ''), auth.status || 401, startTime, 'unknown', { errorMessage: auth.error })
     const businessId = auth.businessId!
+    const apiKeyId = auth.apiKeyId
     const rateCheck = await checkRateLimit(businessId)
     const rateLimit = { limit: rateCheck.limit, remaining: rateCheck.remaining }
     if (!rateCheck.allowed) return addRateLimitHeaders(createRateLimitResponse(), rateCheck)
+
+    const scopeError = requireRouteScopes(request, auth)
+    if (scopeError) return scopeError
 
     let body: any; try { body = await request.json() } catch { return respond(request, makeError('INVALID_JSON', 'Invalid JSON'), 400, startTime, businessId, { errorMessage: 'Invalid JSON', rateLimit }) }
     if (!body.name || !body.email) return respond(request, makeError('MISSING_FIELDS', 'name and email are required'), 400, startTime, businessId, { errorMessage: 'Missing fields', rateLimit })
