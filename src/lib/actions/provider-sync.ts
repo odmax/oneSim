@@ -14,6 +14,9 @@ import { inferProviderCapabilities, getPersistableCapabilities } from '@/lib/pro
 import { advanceCertificationTo } from '@/lib/providers/certification-machine'
 import { startPipelineRun, recordStageFromCounts, completePipelineRun, failPipelineRun } from '@/lib/catalog-pipeline'
 import { normalizeTravelDateRequirement, withTravelDateMarker } from '@/lib/providers/travel-date-utils'
+import { resolvePricingStateOnCostSync, PRICING_STATUS } from '@/lib/pricing/pricing-state'
+import { recalculatePackagePrice } from '@/lib/pricing/price-recalculation-service'
+import { syncProviderPackageToPublishedProducts } from '@/lib/services/catalog-price-sync'
 
 export type { ProviderPlan }
 
@@ -201,15 +204,31 @@ export async function syncProviderPlans(providerId: string) {
       // Phase 5C — normalize provider cost
       const normalizedStatus = Number(pkgData.costPrice) > 0 ? 'VALID' :
         (existing?.adminCostPrice && Number(existing.adminCostPrice) > 0) ? 'OVERRIDDEN' : 'MISSING'
-      const pricingStatus = normalizedStatus === 'VALID' || normalizedStatus === 'OVERRIDDEN' ? 'READY' : 'COST_UNAVAILABLE'
+
+      // Canonical pricing-state semantics: cost-valid does NOT imply READY. A
+      // cost-valid package without an established pricing policy is
+      // REQUIRES_PRICING (selling is never fabricated from cost alone). A
+      // package with an established policy whose provider cost changed is
+      // REQUIRES_RECALCULATION, and repricing runs after the cost write.
+      const providerCostWritten = Number(pkgData.costPrice)
+      const reportedProviderCost = plan.price_usd ? providerCostWritten : Number(existing?.costPrice ?? providerCostWritten)
+      const pricingStatus = resolvePricingStateOnCostSync({
+        costStatus: normalizedStatus,
+        providerCost: reportedProviderCost,
+        previousCost: existing?.costPrice ?? null,
+        existingPolicy: existing,
+        existingPricingStatus: existing?.pricingStatus,
+      })
+      const shouldRecalculate = pricingStatus === PRICING_STATUS.REQUIRES_RECALCULATION
 
       ;(pkgData as any).costStatus = normalizedStatus
       ;(pkgData as any).pricingStatus = pricingStatus
       ;(pkgData as any).costReceivedAt = new Date()
 
       try {
+        let persistedId: string | null = null
         if (existing) {
-          await prisma.providerPackage.update({
+          const result = await prisma.providerPackage.update({
             where: { id: existing.id },
             data: {
               ...pkgData,
@@ -221,6 +240,7 @@ export async function syncProviderPlans(providerId: string) {
               ...(plan.price_usd ? {} : { costPrice: existing.costPrice }),
             },
           })
+          persistedId = result?.id ?? existing.id
           updated++
         } else {
           // Fallback: check by providerId + providerPlanCode if no match by planId
@@ -229,19 +249,32 @@ export async function syncProviderPlans(providerId: string) {
               where: { providerId, providerPlanCode, providerPlanId: { not: providerPlanId } },
             })
             if (fallback) {
-              await prisma.providerPackage.update({
+              const result = await prisma.providerPackage.update({
                 where: { id: fallback.id },
                 data: { ...pkgData, providerPlanId, comparableKey, effectiveCostPrice, costSource },
               })
+              persistedId = result?.id ?? fallback.id
               updated++
+              // A fallback match means a policy may exist on that row; treat it
+              // like an existing row so a cost change reprices it.
+              if (shouldRecalculate) {
+                await recalculateProviderPackageAfterCostChange(persistedId)
+              }
               continue
             }
           }
 
-          await prisma.providerPackage.create({
+          const result = await prisma.providerPackage.create({
             data: { providerId, providerPlanId, ...pkgData, comparableKey, effectiveCostPrice, costSource },
           })
+          persistedId = result?.id ?? null
           imported++
+        }
+
+        // New rows carry no established policy, so create never reprices. Only
+        // existing relationships (updated/fallback) can reach REQUIRES_RECALCULATION.
+        if (existing && shouldRecalculate) {
+          await recalculateProviderPackageAfterCostChange(persistedId)
         }
       } catch (e: any) {
         if (e.code === 'P2002') {
@@ -254,6 +287,10 @@ export async function syncProviderPlans(providerId: string) {
                 where: { id: retry.id },
                 data: { ...pkgData, comparableKey, effectiveCostPrice, costSource, readyToPublish: retry.readyToPublish },
               })
+              // The row already existed — honor the policy-implied repricing.
+              if (shouldRecalculate) {
+                await recalculateProviderPackageAfterCostChange(retry.id)
+              }
               duplicatesSkipped++
             }
           } catch { skipped++ }
@@ -329,6 +366,66 @@ export async function syncProviderPlans(providerId: string) {
     await failPipelineRun(pipelineRunId, error.message || 'Unknown error')
 
     return { error: `Sync failed: ${error.message || 'Unknown error'}`, diagnostics }
+  }
+}
+
+/**
+ * Canonical cost-change repricing after a provider cost write.
+ *
+ * Runs the single pricing engine (recalculatePackagePrice) which derives the
+ * selling price from the established rule/policy, creates a new price snapshot,
+ * validates the minimum margin, and sets pricingStatus=READY. Only on success do
+ * we synchronize a linked retail ESIMPackage through the existing catalog-price
+ * sync service — preserving publication state and never creating a second retail
+ * row.
+ *
+ * On failure the row is left non-ready (recalculatePackagePrice already writes an
+ * explicit failure state such as MARGIN_BELOW_MINIMUM / CALCULATION_FAILED /
+ * EXCHANGE_RATE_MISSING) and the retail side is NOT rewritten, so purchase
+ * readiness stays fail-closed.
+ */
+async function recalculateProviderPackageAfterCostChange(packageId: string): Promise<void> {
+  const result = await recalculatePackagePrice(packageId, 'PROVIDER_COST_CHANGED')
+  if (!result.success) {
+    console.log(`[PROVIDER_COST_REPRICE] ${packageId} blocked: ${result.reason || result.pricingStatus}`)
+    return
+  }
+
+  // Success — synchronize a linked retail package to the new canonical selling
+  // price (preserving publication, no duplicate retail row). Read once inside a
+  // transaction so the sync uses post-recalculation values.
+  try {
+    await prisma.$transaction(async (tx) => {
+      const pp = await tx.providerPackage.findUnique({
+        where: { id: packageId },
+        select: {
+          id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true,
+          sellingPrice: true, sellingCurrency: true, markupPercent: true, providerPlanId: true,
+          providerId: true, publishStatus: true,
+        },
+      })
+      if (!pp) return
+      await syncProviderPackageToPublishedProducts(tx, {
+        id: pp.id,
+        name: pp.name,
+        dataGB: pp.dataGB,
+        validityDays: pp.validityDays,
+        costPrice: pp.costPrice,
+        currency: pp.currency,
+        sellingPrice: pp.sellingPrice,
+        sellingCurrency: pp.sellingCurrency,
+        markupPercent: pp.markupPercent,
+        providerPlanId: pp.providerPlanId,
+        providerId: pp.providerId,
+        publishStatus: pp.publishStatus,
+      })
+    })
+  } catch (e: any) {
+    // Retail sync failure must not leave the package priced-but-stale silently:
+    // log and surface via the row (recalc already wrote READY; a subsequent
+    // purchase-price-guard / parity audit will flag a drift). Do not roll back
+    // the provider cost (upstream already changed) and do not rewrite retail.
+    console.error(`[PROVIDER_COST_REPRICE] ${packageId} retail sync failed: ${e.message}`)
   }
 }
 

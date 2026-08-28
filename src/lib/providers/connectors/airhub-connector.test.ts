@@ -1238,7 +1238,35 @@ expect(mockPrisma.provider.update).toHaveBeenCalledWith(
     })
   })
 
-  describe('syncPlans travel-date metadata', () => {
+describe('syncPlans travel-date metadata', () => {
+    it('11. connector writes catalog facts only — never pricingStatus/costStatus/pricing state (single-owner sync)', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        getInformation: [
+          { planCode: 'ZONE-1GB-7D', planName: 'Zone 1GB', capacity: '1', capacityUnit: 'GB', validity: '7', price: 3.5, currency: 'USD', countryName: 'ZA' },
+        ],
+      })
+      mockPrisma.providerPackage.findFirst.mockResolvedValue(null)
+      mockPrisma.providerPackage.findMany.mockResolvedValue([
+        { id: 'pp-1', name: 'Zone 1GB', dataGB: 1, validityDays: 7, costPrice: 3.5, currency: 'USD', providerPlanCode: 'ZONE-1GB-7D', providerRawData: { planCode: 'ZONE-1GB-7D' } },
+      ] as any)
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.syncPlans()
+
+      expect(result.success).toBe(true)
+      const created = mockPrisma.providerPackage.create.mock.calls.at(-1)![0].data
+      // Catalog facts are persisted.
+      expect(created.costPrice).toBe(3.5)
+      expect(created.providerPlanCode).toBe('ZONE-1GB-7D')
+      // Pricing/status ownership stays with the shared sync: the connector must
+      // NOT claim READY or set costStatus/pricingStatus (avoids double-pricing).
+      expect(created.pricingStatus).toBeUndefined()
+      expect(created.costStatus).toBeUndefined()
+      expect(created.costSource).toBeUndefined()
+      expect(created.sellingPrice).toBeUndefined()
+    })
+
     it('persists __requiresTravelDate=true when the plan mandates a travel date', async () => {
       mockFetchSuccess({
         isSuccess: true,

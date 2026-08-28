@@ -726,6 +726,9 @@ export class AirHubConnector implements IProviderConnector {
             const dataGB = unit === 'MB' ? Math.round((cap / 1024) * 100) / 100 : unit === 'KB' ? Math.round((cap / 1024 / 1024) * 100) / 100 : cap
             const rawCost = parseFloat(plan.price || '0')
             const hasValidCost = Number.isFinite(rawCost) && rawCost > 0
+            // Catalog facts only. Pricing status/cost state is owned by the
+            // canonical shared sync (syncProviderPlans) so a connector write can
+            // never claim pricingStatus=READY from cost alone (see pricing-state).
             const pkg = {
               name: plan.planName || '',
               dataGB: Math.max(0.01, dataGB || 0.01),
@@ -738,9 +741,6 @@ export class AirHubConnector implements IProviderConnector {
               providerPlanCode: planCode,
               providerRawData: withTravelDateMarker(plan, normalizeTravelDateRequirement(plan)),
               isAvailable: true,
-              costSource: hasValidCost ? 'PROVIDER' : undefined,
-              costStatus: hasValidCost ? 'VALID' : 'MISSING',
-              pricingStatus: hasValidCost ? 'READY' : 'COST_UNAVAILABLE',
             }
             const existing = await prisma.providerPackage.findFirst({ where: { providerId: this.providerId, providerPlanId: planCode } })
             if (existing) { await prisma.providerPackage.update({ where: { id: existing.id }, data: pkg }); updated++ }
