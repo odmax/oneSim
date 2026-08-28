@@ -28,32 +28,39 @@ export async function fetchAirhubWallet(providerId: string, syncSource: string =
     if (provider.code === 'AIRHUB') {
       const { AirHubConnector } = await import('@/lib/providers/connectors/airhub-connector')
       const connector = new AirHubConnector(providerId)
-      await connector.authenticate({ username: (provider.config as any)?.username || '', password: (provider.config as any)?.password || '' })
-      const result = await connector.getWalletBalance()
-      if (result.success && result.data) {
-        balance = result.data.balance
-        currency = result.data.currency
-        connectSuccess = true
-        // Persist transaction history
-        if (result.data?.transactions && result.data.transactions.length > 0) {
-          for (const tx of result.data.transactions) {
-            const fp = `${tx.providerReference || ''}-${tx.orderId || ''}-${tx.occurredAt}-${tx.amount}`
-            await prisma.providerWalletTransaction.upsert({
-              where: { fingerprint: fp },
-              create: {
-                providerId, fingerprint: fp,
-                providerReference: tx.providerReference, orderId: tx.orderId,
-                transactionType: tx.transactionType, amount: tx.amount, currency: tx.currency,
-                balanceBefore: tx.balanceBefore, balanceAfter: tx.balanceAfter,
-                runningBalance: tx.runningBalance, occurredAt: new Date(tx.occurredAt),
-                description: tx.description,
-              },
-              update: {},
-            }).catch(() => {})
-          }
-        }
+      // Authentication is the canonical source of partnerCode: it persists the
+      // AirHub-derived partner code into provider.config, so the subsequent
+      // getWalletBalance() (which re-reads provider.config) can resolve it.
+      const authResult = await connector.authenticate({ username: (provider.config as any)?.username || '', password: (provider.config as any)?.password || '' })
+      if (!authResult.success) {
+        errorMessage = authResult.error?.message || 'AirHub authentication failed'
       } else {
-        errorMessage = result.error?.message || 'Wallet fetch failed'
+        const result = await connector.getWalletBalance()
+        if (result.success && result.data) {
+          balance = result.data.balance
+          currency = result.data.currency
+          connectSuccess = true
+          // Persist transaction history
+          if (result.data?.transactions && result.data.transactions.length > 0) {
+            for (const tx of result.data.transactions) {
+              const fp = `${tx.providerReference || ''}-${tx.orderId || ''}-${tx.occurredAt}-${tx.amount}`
+              await prisma.providerWalletTransaction.upsert({
+                where: { fingerprint: fp },
+                create: {
+                  providerId, fingerprint: fp,
+                  providerReference: tx.providerReference, orderId: tx.orderId,
+                  transactionType: tx.transactionType, amount: tx.amount, currency: tx.currency,
+                  balanceBefore: tx.balanceBefore, balanceAfter: tx.balanceAfter,
+                  runningBalance: tx.runningBalance, occurredAt: new Date(tx.occurredAt),
+                  description: tx.description,
+                },
+                update: {},
+              }).catch(() => {})
+            }
+          }
+        } else {
+          errorMessage = result.error?.message || 'Wallet fetch failed'
+        }
       }
     } else {
       // Generic connector: Choice, Telna, etc.

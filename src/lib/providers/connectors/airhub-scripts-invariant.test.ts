@@ -115,3 +115,42 @@ describe('repair-airhub-auth.cjs — stays AIRHUB, idempotent, safe', () => {
     expect(src).toContain('tokenStored')
   })
 })
+
+describe('test-airhub-wallet.ts — canonical wallet action, no pre-abort on missing partnerCode', () => {
+  const src = readScript('scripts/test-airhub-wallet.ts')
+
+  it('I. does not pre-abort solely because config.partnerCode is absent', () => {
+    // The script must call the canonical fetchAirhubWallet regardless of a
+    // missing config partnerCode (auth derives/persists it first).
+    expect(src).toContain('fetchAirhubWallet')
+    expect(src).not.toContain("No partnerCode configured")
+    expect(src).not.toContain("cfg.partnerCode")
+  })
+
+  it('never prints credentials or raw tokens', () => {
+    expect(src).not.toMatch(/console\.log\([^)]*password/)
+    expect(src).not.toMatch(/console\.log\([^)]*token/)
+    expect(src).not.toMatch(/console\.log\([^)]*apiToken/)
+  })
+})
+
+describe('diag-airhub-auth.ts — nested partnerCode support, safe output', () => {
+  const src = readScript('scripts/diag-airhub-auth.ts')
+
+  it('6. reads partnerCode from the nested data.data?.partnerCode response shape', () => {
+    expect(src).toContain('data.data?.partnerCode')
+  })
+
+  it('does not expose credentials or raw token values', () => {
+    // Password/username values are only ever printed through mask().
+    expect(src).toContain('mask(cfg.password)')
+    expect(src).toContain('mask(rawPassword)')
+    // The raw login `data.token` / `sanitized.token` values are never echoed.
+    expect(src).not.toMatch(/console\.log\([^)]*`\$\{data\.token\}/)
+    expect(src).not.toMatch(/console\.log\([^)]*`\$\{sanitized\.token\}/)
+    // Token is reported as a masked boolean-length indicator only.
+    expect(src).toContain('Token present: YES (len=')
+    // The sanitized full-response body masks the token before printing.
+    expect(src).toContain(`sanitized.token = `)
+  })
+})

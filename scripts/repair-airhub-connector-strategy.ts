@@ -191,9 +191,9 @@ async function main() {
   console.log(`AIRHUB_TARGETS=${plan.rows.length}`)
   console.log(`APPLYABLE=${plan.rows.filter(r => r.applyable && !r.skipReason).length}`)
   console.log(`REQUIRES_EXPLICIT_TARGET=${plan.requiresExplicitTarget}`)
-  console.log(`MODE=${APPLY ? 'APPLY' : 'DRY-RUN'}  WRITES_PERFORMED=0`)
   console.log('Same-row re-run is idempotent (strategy already AIRHUB → no change).')
-  console.log('\nDone.\n')
+
+  let writesPerformed = 0
 
   if (APPLY && !plan.requiresExplicitTarget) {
     const applyable = plan.rows.filter(r => r.applyable && !r.skipReason)
@@ -201,6 +201,7 @@ async function main() {
       const provider = await prisma.provider.findUnique({ where: { id: row.providerId } })
       if (!provider) continue
       const result = await applyAirHubRepair(row, provider.config)
+      if (result.applied) writesPerformed++
       console.log(`APPLIED ${row.providerId}: ${result.message}`)
     }
     console.log('NOTE: verify with a subsequent dry-run (should show zero applyable rows).')
@@ -208,6 +209,9 @@ async function main() {
   if (APPLY && plan.requiresExplicitTarget) {
     console.log('No writes performed — explicit target required.')
   }
+
+  console.log(`MODE=${APPLY ? 'APPLY' : 'DRY-RUN'}  WRITES_PERFORMED=${writesPerformed}`)
+  console.log('\nDone.\n')
 
   await prisma.$disconnect()
 }

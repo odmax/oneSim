@@ -112,6 +112,7 @@ let fetchSpy: ReturnType<typeof vi.fn>
 const originalFetch = globalThis.fetch
 
 beforeEach(() => {
+  vi.clearAllMocks()
   fetchSpy = vi.fn()
   globalThis.fetch = fetchSpy as any
   mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
@@ -1085,7 +1086,7 @@ describe('AirHubConnector', () => {
 
       expect(result.success).toBe(true)
       expect(result.data?.token).toBe('fresh-token-abcdef')
-      expect(mockPrisma.provider.update).toHaveBeenCalledWith(
+expect(mockPrisma.provider.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: 'airhub-1' },
           data: expect.objectContaining({
@@ -1094,6 +1095,146 @@ describe('AirHubConnector', () => {
           }),
         })
       )
+    })
+
+    it('A. persists a top-level partnerCode from the login response into config', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        token: 'fresh-token-abcdef',
+        partnerCode: 200652387,
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiToken: null, config: { username: 'testuser', password: 'testpass' } }))
+
+      const connector = new AirHubConnector('airhub-1', null)
+      await connector.authenticate({ username: 'testuser', password: 'testpass' })
+
+      const arg = (mockPrisma.provider.update as any).mock.calls[0][0]
+      expect(arg.data.config.partnerCode).toBe('200652387')
+      // accountInfo carries it back transiently as well.
+      expect((await connector.authenticate({ username: 'testuser', password: 'testpass' })).data?.accountInfo?.partnerCode).toBe('200652387')
+    })
+
+    it('B. persists a nested login-response partnerCode (data.partnerCode)', async () => {
+      // Real AirHub shape: token at top-level, partnerCode nested under data.
+      mockFetchSuccess({
+        isSuccess: true,
+        token: 'fresh-token-abcdef',
+        data: { partnerCode: '200652387' },
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiToken: null }))
+      mockPrisma.provider.update.mockResolvedValue(makeProvider({ config: { partnerCode: '200652387', username: 'testuser', password: 'testpass' } }))
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const result = await connector.authenticate({ username: 'testuser', password: 'testpass' })
+
+      expect(result.success).toBe(true)
+      const arg = (mockPrisma.provider.update as any).mock.calls[0][0]
+      expect(arg.data.config.partnerCode).toBe('200652387')
+    })
+
+    it('C. existing provider.config keys survive authentication persistence', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        token: 'fresh-token-abcdef',
+        data: { partnerCode: '200652388' },
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({
+        apiToken: null,
+        config: { username: 'testuser', password: 'testpass', countryCode: 'US', flag: 6, multiplecountrycode: ['US'], _note: 'keep-me' },
+      }))
+
+      const connector = new AirHubConnector('airhub-1', null)
+      await connector.authenticate({ username: 'testuser', password: 'testpass' })
+
+      const arg = (mockPrisma.provider.update as any).mock.calls[0][0]
+      const cfg = arg.data.config
+      expect(cfg.countryCode).toBe('US')
+      expect(cfg.flag).toBe(6)
+      expect(cfg.multiplecountrycode).toEqual(['US'])
+      expect(cfg._note).toBe('keep-me')
+      expect(cfg.partnerCode).toBe('200652388')
+      expect(cfg.username).toBe('testuser')
+    })
+
+    it('D. tokenExpiry continues to persist from token_expire / expiresAt', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        token: 'fresh-token-abcdef',
+        partnerCode: 200652387,
+        token_expire: 9999999999,
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiToken: null }))
+
+      const connector = new AirHubConnector('airhub-1', null)
+      await connector.authenticate({ username: 'testuser', password: 'testpass' })
+
+      const arg = (mockPrisma.provider.update as any).mock.calls[0][0]
+      expect(arg.data.config.tokenExpiry).toBe(9999999999)
+    })
+
+    it('E. no hard-coded partnerCode fallback is invented when the response provides none', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        token: 'fresh-token-abcdef',
+        // no partnerCode, no data.partnerCode, and config has none
+      })
+
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiToken: null, config: { username: 'testuser', password: 'testpass' } }))
+
+      const connector = new AirHubConnector('airhub-1', null)
+      const result = await connector.authenticate({ username: 'testuser', password: 'testpass' })
+
+      expect(result.success).toBe(true)
+      const arg = (mockPrisma.provider.update as any).mock.calls[0][0]
+      // PartnerCode is neither invented nor overwritten to a literal.
+      expect(arg.data.config.partnerCode).toBeUndefined()
+    })
+
+    it('F. plan sync fails safely with a specific error when partnerCode is unavailable', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ config: { username: 'testuser', password: 'testpass' } }))
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.syncPlans()
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AIRHUB_PARTNER_CODE_MISSING')
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it('F2. purchase fails safely with a specific error when partnerCode is unavailable', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider({ apiToken: null, config: { username: 'testuser', password: 'testpass' } }))
+      mockPrisma.provider.update.mockResolvedValue(makeProvider())
+
+      const connector = new AirHubConnector('airhub-1', null)
+      // No partnerCode in config and no token → purchase path must fail safely.
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AIRHUB_PARTNER_CODE_MISSING')
+    })
+
+    it('J. authentication logs never expose the raw token or password', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        token: 'super-secret-token-abc123',
+        partnerCode: 200652387,
+      })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      mockPrisma.provider.findUnique.mockResolvedValue(makeProvider())
+      mockPrisma.provider.update.mockResolvedValue(makeProvider())
+
+      const connector = new AirHubConnector('airhub-1', null)
+      await connector.authenticate({ username: 'testuser', password: 'testpass' })
+
+      const logs = logSpy.mock.calls.map(c => String(c[0])).join('\n')
+      expect(logs).not.toContain('super-secret-token-abc123')
+      expect(logs).not.toContain('testpass')
+      expect(logs).not.toContain('Bearer super-secret')
+      logSpy.mockRestore()
     })
   })
 

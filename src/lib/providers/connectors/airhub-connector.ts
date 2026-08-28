@@ -306,6 +306,24 @@ function isTokenExpired(expiry: unknown, bufferMs = 5 * 60 * 1000): boolean {
   return Date.now() >= expiryMs - bufferMs
 }
 
+/**
+ * Normalize a partner code for persistence/use. The login response (top-level
+ * `partnerCode`, nested `data.partnerCode`, or an explicit existing config
+ * value) may be a number or a numeric string. Returns a trimmed string when a
+ * non-empty value exists, else null. NEVER invents a code and never injects a
+ * customer-specific literal.
+ */
+function normalizePartnerCode(value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  const s = String(value).trim()
+  return s.length > 0 ? s : null
+}
+
+/** Existing stored token expiry (unix seconds or ISO string), if any. */
+function existingTokenExpiry(cfg: Record<string, any> | null | undefined): unknown {
+  return cfg?.tokenExpiry ?? null
+}
+
 export function urlHostname(baseUrl: string): string {
   try { return new URL(baseUrl).hostname } catch { return baseUrl }
 }
@@ -478,8 +496,13 @@ export class AirHubConnector implements IProviderConnector {
       if (!token || token.length < 8) return { success: false, error: { code: 'NO_TOKEN', message: 'No valid token returned' } }
 
       const cleanToken = token.startsWith('Bearer ') ? token.slice(7) : token.trim()
-      const partnerCode = (data as any).partnerCode || (data as any).data?.partnerCode || (provider.config as any)?.partnerCode
-      const tokenExpiry = data.token_expire || data.expiresAt || null
+      // AirHub-derived partnerCode (canonical source is the login response),
+      // falling back to an existing valid config value. Nothing is invented.
+      const existingPartnerCode = (provider.config as any)?.partnerCode
+      const partnerCode = normalizePartnerCode(
+        (data as any).data?.partnerCode ?? (data as any).partnerCode ?? existingPartnerCode,
+      )
+      const tokenExpiry = data.token_expire || data.expiresAt || existingTokenExpiry((provider.config as any))
 
       await prisma.provider.update({
         where: { id: this.providerId },
@@ -491,6 +514,7 @@ export class AirHubConnector implements IProviderConnector {
           errorCount: 0,
           config: {
             ...((provider.config as any) || {}),
+            ...(partnerCode !== null ? { partnerCode } : {}),
             lastAuthenticatedAt: new Date().toISOString(),
             authEnvironmentAtAuth: ((provider.config as any)?.upstreamEnvironment) || provider.environment || 'production',
             tokenExpiry: tokenExpiry || null,
@@ -608,7 +632,10 @@ export class AirHubConnector implements IProviderConnector {
     }
 
     const config = (provider.config as any) || {}
-    const partnerCode = config.partnerCode || 200652387
+    const partnerCode = normalizePartnerCode(config.partnerCode)
+    if (partnerCode === null) {
+      return { success: false, error: { code: 'AIRHUB_PARTNER_CODE_MISSING', message: 'AirHub partnerCode is not configured. Authenticate to derive and persist it from the login response.' } }
+    }
     const flag = config.flag ?? 6
     const countryCode = config.countryCode ?? ''
     const multiplecountrycode = Array.isArray(config.multiplecountrycode) ? config.multiplecountrycode : ['UK']
@@ -767,7 +794,10 @@ export class AirHubConnector implements IProviderConnector {
     if (!provider) return { success: false, error: { code: 'NOT_FOUND', message: 'Provider not found' } }
 
     const cfg = (provider.config as any) || {}
-    const partnerCode = cfg.partnerCode || 200652387
+    const partnerCode = normalizePartnerCode(cfg.partnerCode)
+    if (partnerCode === null) {
+      return { success: false, error: { code: 'AIRHUB_PARTNER_CODE_MISSING', message: 'AirHub partnerCode is not configured. Authenticate to derive and persist it from the login response.' } }
+    }
 
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
     const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/PurhaseSim`
@@ -1002,7 +1032,11 @@ export class AirHubConnector implements IProviderConnector {
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
     const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/OrderDetails`
     const cfg = (provider.config as any) || {}
-    const body = { partnerCode: cfg.partnerCode || 200652387, orderId: subscriptionId }
+    const partnerCode = normalizePartnerCode(cfg.partnerCode)
+    if (partnerCode === null) {
+      return { success: false, error: { code: 'AIRHUB_PARTNER_CODE_MISSING', message: 'AirHub partnerCode is not configured. Authenticate to derive and persist it from the login response.' } }
+    }
+    const body = { partnerCode, orderId: subscriptionId }
 
     console.log(`[AIRHUB_STATUS] correlationId=${correlationId} orderId=${subscriptionId}`)
 
@@ -1106,7 +1140,11 @@ export class AirHubConnector implements IProviderConnector {
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
     const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/GetActivationCode`
     const cfg = (provider.config as any) || {}
-    const body = { partnerCode: cfg.partnerCode || 200652387, iccid }
+    const partnerCode = normalizePartnerCode(cfg.partnerCode)
+    if (partnerCode === null) {
+      return { success: false, error: { code: 'AIRHUB_PARTNER_CODE_MISSING', message: 'AirHub partnerCode is not configured. Authenticate to derive and persist it from the login response.' } }
+    }
+    const body = { partnerCode, iccid }
 
     console.log(`[AIRHUB_QR] correlationId=${correlationId} iccid=${iccid}`)
 

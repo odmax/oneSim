@@ -107,7 +107,11 @@ async function main() {
       if (data.title) console.log(`Title: ${data.title}`)
       if (data.isSuccess !== undefined) console.log(`isSuccess: ${data.isSuccess}`)
       if (data.token) console.log(`Token present: YES (len=${data.token.length})`)
-      if (data.partnerCode) console.log(`partnerCode: ${data.partnerCode}`)
+      // partnerCode may be top-level or nested under data (data.data?.partnerCode).
+      const partnerCode = data.partnerCode ?? data.data?.partnerCode ?? null
+      if (partnerCode !== null && partnerCode !== undefined && String(partnerCode).trim() !== '') {
+        console.log(`partnerCode: ${partnerCode}`)
+      }
 
       // Full sanitized body
       const sanitized = { ...data }

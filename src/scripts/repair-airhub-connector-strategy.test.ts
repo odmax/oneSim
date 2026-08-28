@@ -140,4 +140,18 @@ describe('repair script structural safety (source-level)', () => {
     expect(src).toMatch(/process\.argv\.includes\('--apply'\)/)
     expect(src).toContain('DRY-RUN')
   })
+
+  it('write counter reflects actual passes (not a static literal printed before apply)', () => {
+    // Regression: the old script printed `WRITES_PERFORMED=0` in a summary block
+    // that ran BEFORE the --apply loop, so a successful mutation still reported
+    // a zero counter. The counter must be computed from the apply loop and
+    // printed AFTER it.
+    const writesLine = src.match(/WRITES_PERFORMED=\$\{(.*?)\}/)
+    expect(writesLine).not.toBeNull()
+    expect(writesLine![1]).toContain('writesPerformed')
+    // It must be interpolated (backtick template), not a hardcoded string.
+    expect(src).not.toMatch(/MODE=\$\{APPLY[^}]*\}\s+WRITES_PERFORMED=0/)
+    // The variable is incremented when a row is applied.
+    expect(src).toContain('if (result.applied) writesPerformed++')
+  })
 })
