@@ -158,6 +158,7 @@ export async function getAdapterForType(type: string, config?: { apiBaseUrl?: st
  * - provider has a template relation with providerFamily === "CUSTOM_TEMPLATE"
  */
 export function isTemplateDrivenProvider(provider: {
+  code?: string | null
   adapterStrategy?: string | null
   type?: string
   config?: any
@@ -165,6 +166,11 @@ export function isTemplateDrivenProvider(provider: {
   template?: any
   providerTemplateId?: string | null
 }): boolean {
+  // AirHub safety invariant: code AIRHUB ALWAYS uses its dedicated connector,
+  // even when a stale TEMPLATE strategy is persisted (the AirHub template mode
+  // was removed in the clean rebuild). Without this, plan sync would go through
+  // TemplateProviderAdapter while purchase uses AirHubConnector — a split-brain.
+  if (provider.code === 'AIRHUB') return false
   // adapterStrategy is the primary signal — explicit non-template strategies must be respected
   if (provider.adapterStrategy === 'AIRHUB') return false // AirHub uses dedicated connector
   if (provider.adapterStrategy === 'TELNA') return false // Telna uses dedicated connector

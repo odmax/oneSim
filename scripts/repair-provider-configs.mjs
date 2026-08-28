@@ -24,7 +24,7 @@ const CONFIGS = {
   AIRHUB: {
     name: 'Airhub Outreach (Staging)',
     type: 'CUSTOM',
-    adapterStrategy: 'TEMPLATE',
+    adapterStrategy: 'AIRHUB',
     authType: 'credentials',
     tokenPlacement: 'BEARER_HEADER',
     environment: 'staging',
@@ -33,7 +33,7 @@ const CONFIGS = {
     apiBaseUrl: null,  // must be set by admin
     authUrl: null,     // from endpointMappings
     apiVersion: 'v1',
-    config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true },
+    config: { ...STAGING_NOTE },
     supportsESIM: true, supportsTopUp: true, supportsQRCode: true,
     templateName: 'Airhub Outreach',
   },

@@ -76,7 +76,15 @@ export async function createProvider(formData: FormData) {
   // Validate adapterStrategy — required for non-MOCK providers
   // Template-driven providers auto-set "TEMPLATE"
   const effectiveStrategy = isTemplate ? 'TEMPLATE' : (adapterStrategy || (type === 'MOCK' ? 'MOCK' : null))
-  const resolvedStrategy = effectiveStrategy
+
+  // AirHub canonical identity invariant: a provider with code exactly AIRHUB
+  // (after canonical upper normalization) ALWAYS persists the dedicated
+  // AirHubConnector strategy, regardless of a stale saved-template strategy
+  // (TEMPLATE/CUSTOM/REST_CATALOG/STANDARD/null). TEMPLATE is historical from
+  // before the dedicated AirHub integration and must never be re-created here.
+  const normalizedCode = (code || '').trim().toUpperCase()
+  const isAirHub = normalizedCode === 'AIRHUB'
+  const resolvedStrategy = isAirHub ? 'AIRHUB' : effectiveStrategy
   if (!resolvedStrategy) {
     redirect('/admin/providers/new?error=Adapter+Strategy+is+required+for+non-MOCK+providers')
   }
@@ -118,7 +126,10 @@ export async function createProvider(formData: FormData) {
       configFromForm[key] = value as string
     }
   }
-  const config: any = isTemplate
+  // AirHub uses a dedicated connector: never stamp obsolete template-driven
+  // config (providerMode/templateDriven) even when a stale saved template was
+  // used to create it. Generic template providers keep the stamp.
+  const config: any = isTemplate && !isAirHub
     ? { ...configFromForm, providerMode: 'TEMPLATE', templateDriven: true }
     : Object.keys(configFromForm).length > 0 ? configFromForm : undefined
 

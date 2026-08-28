@@ -132,6 +132,19 @@ const BUILTIN_TEMPLATES: Record<string, BuiltInTemplate> = {
       capabilities: ['AUTH','CATALOG_SYNC','INVENTORY','ESIM'],
     },
   },
+  airhub: {
+    label: 'AirHub',
+    description: 'AirHub eSIM — runtime username/password login, Bearer token, dedicated AirHubConnector',
+    presets: {
+      adapterStrategy: 'AIRHUB',
+      authType: 'credentials',
+      apiBaseUrl: 'https://api.airhubapp.com',
+      authUrl: '/api/Authentication/UserLogin',
+      environment: 'staging',
+      name: 'AirHub',
+      code: 'AIRHUB',
+    },
+  },
 }
 
 function setField(name: string, value: string) {
@@ -186,7 +199,13 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
     }
     // Detect template-driven providers: if template has capability-style endpoints, use TEMPLATE adapter strategy
     const isTemplateDriven = !!(t.endpointMappings && (t.endpointMappings.AUTH_LOGIN || t.endpointMappings.GET_PLANS || t.endpointMappings.PURCHASE_ESIM))
-    const effectiveStrategy = isTemplateDriven ? 'TEMPLATE' : (connectorToAdapter[t.connectorType] || 'REST_CATALOG')
+    const templateStrategy = isTemplateDriven ? 'TEMPLATE' : (connectorToAdapter[t.connectorType] || 'REST_CATALOG')
+    // AirHub canonical invariant: an exact saved-template code AIRHUB must NEVER
+    // advertise/adopt TEMPLATE (a historical AirHub template persisted
+    // adapterStrategy=TEMPLATE before the dedicated connector). The server-side
+    // createProvider invariant is authoritative; this keeps the UI consistent.
+    const tCode = String((t as any).code || '').trim().toUpperCase()
+    const effectiveStrategy = tCode === 'AIRHUB' ? 'AIRHUB' : templateStrategy
     setField('adapterStrategy', effectiveStrategy)
     setResolvedAdapterStrategy(effectiveStrategy)
     setField('authType', t.authType || 'bearer_token')
@@ -337,7 +356,8 @@ export function NewProviderForm({ templates = [] }: { templates?: SavedTemplate[
           <option value="IBASIS">iBASIS — Reseller Gateway (static API token)</option>
           <option value="USMATRIX">US-Matrix — eSIM API (email/password login, Bearer token)</option>
           <option value="TELNA">Telna — Header-based KeyID authentication</option>
-          <option value="TEMPLATE">Template-Driven — Capability/endpoint mapped provider (e.g., Airhub)</option>
+          <option value="AIRHUB">AirHub — Dedicated connector (runtime login, Bearer token)</option>
+          <option value="TEMPLATE">Template-Driven — Capability/endpoint mapped provider</option>
         </select>
       </div>
 

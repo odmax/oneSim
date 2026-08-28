@@ -2,7 +2,7 @@
  * OneSim Africa — Staging Provider Setup
  *
  * Creates/updates provider templates and provider records for:
- *   - Airhub Outreach (template-based)
+ *   - Airhub Outreach (dedicated AirHubConnector)
  *   - Rakuten Mobile (template-based)
  *   - Choice Wireless (legacy connector-based)
  *
@@ -80,13 +80,13 @@ const templates = [
       code: 'AIRHUB',
       name: 'Airhub Outreach (Staging)',
       type: 'CUSTOM',
-      adapterStrategy: 'TEMPLATE',
+      adapterStrategy: 'AIRHUB',
       authType: 'credentials',
       tokenPlacement: 'BEARER_HEADER',
       environment: 'staging',
       status: 'TESTING',
       priority: 10,
-      config: { ...STAGING_NOTE, providerMode: 'TEMPLATE', templateDriven: true, numericFields: ['partnerCode', 'flag'], arrayFields: ['multiplecountrycode'], responseListKey: 'getInformation', configurationFields: [
+      config: { ...STAGING_NOTE, numericFields: ['partnerCode', 'flag'], arrayFields: ['multiplecountrycode'], responseListKey: 'getInformation', configurationFields: [
         { key: 'username', label: 'Username', type: 'text', required: true, secret: false, group: 'credentials', placeholder: 'Airhub API username' },
         { key: 'password', label: 'Password', type: 'password', required: true, secret: true, group: 'credentials', placeholder: 'Airhub API password' },
         { key: 'countryCode', label: 'Country Code', type: 'text', required: false, group: 'config', placeholder: 'US' },
