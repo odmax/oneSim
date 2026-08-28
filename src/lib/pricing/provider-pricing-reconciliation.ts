@@ -40,6 +40,18 @@ export type ReconciliationClassification =
   | 'COST_UNAVAILABLE'
   | 'REQUIRES_PRICING'
 
+/**
+ * What reconciliation may do for a row.
+ *
+ * - NONE             — report-only / manual; reconciliation performs zero writes.
+ * - PRICE_AND_SNAPSHOT — canonical forward reprice → new CURRENT snapshot. Only
+ *                         for established-policy packages with an actionable
+ *                         current drift (BELOW_COST_REPRICE / STALE_SNAPSHOT_COST).
+ * - RETAIL_ONLY      — canonical retail parity sync (no recalc, no snapshot
+ *                       rewrite, no retail creation).
+ */
+export type ReconciliationMutationType = 'NONE' | 'PRICE_AND_SNAPSHOT' | 'RETAIL_ONLY'
+
 export interface ResolvedRule {
   ruleAvailable: boolean
   resolvedRuleId: string | null
@@ -67,6 +79,7 @@ export interface PackageReconciliationResult {
   rule: ResolvedRule
   classifications: ReconciliationClassification[]
   applyAllowed: boolean
+  mutationType: ReconciliationMutationType
   proposedAction: string
   reason: string
   establishedPolicy: boolean
@@ -220,12 +233,64 @@ export function isAutoApplicable(classifications: ReconciliationClassification[]
 }
 
 /**
+ * Explicit, deterministic reconciliation admission decision.
+ *
+ * Returns the ONLY mutation the row is allowed to receive. `reconcileProviderPackage`
+ * (report) and `applyPackageReconciliation` (mutation) both use THIS single
+ * decision, so the report can never disagree with the mutation gate.
+ *
+ * Matrix:
+ *   - MISSING_SNAPSHOT only                              → NONE (manual)
+ *   - UNPRICED_RULE_AVAILABLE (+ anything)               → NONE (report-only)
+ *   - UNPRICED_NO_RULE / COST_UNAVAILABLE / REQUIRES_PRICING → NONE
+ *   - BELOW_COST_REPRICE + MISSING_SNAPSHOT, no policy    → NONE (manual)
+ *   - BELOW_COST_REPRICE + MISSING_SNAPSHOT + policy      → PRICE_AND_SNAPSHOT
+ *   - STALE_SNAPSHOT_COST + policy                        → PRICE_AND_SNAPSHOT
+ *   - RETAIL_PARITY_MISMATCH (retail-only) + valid state  → RETAIL_ONLY
+ *   - MISSING_RETAIL present                              → NONE (always blocks)
+ */
+export function decideMutation(input: {
+  classifications: ReconciliationClassification[]
+  establishedPolicy: boolean
+  hasActiveSnapshot: boolean
+  hasRetail: boolean
+  sellingPrice: number | null
+}): ReconciliationMutationType {
+  const c = input.classifications
+
+  // MISSING_RETAIL always blocks: reconciliation never creates a retail product.
+  if (c.includes('MISSING_RETAIL')) return 'NONE'
+
+  // Report-only / never-config classes.
+  if (c.includes('UNPRICED_RULE_AVAILABLE')) return 'NONE'
+  if (c.includes('UNPRICED_NO_RULE')) return 'NONE'
+  if (c.includes('COST_UNAVAILABLE')) return 'NONE'
+  if (c.includes('REQUIRES_PRICING')) return 'NONE'
+
+  // Retail-only parity sync: only when no recalc class is present and the retail
+  // row already exists with a current active snapshot.
+  const hasRecalcClass = c.includes('BELOW_COST_REPRICE') || c.includes('STALE_SNAPSHOT_COST')
+  if (c.includes('RETAIL_PARITY_MISMATCH') && !hasRecalcClass) {
+    if (input.hasRetail && input.hasActiveSnapshot && (input.sellingPrice ?? 0) > 0) return 'RETAIL_ONLY'
+    return 'NONE'
+  }
+
+  // Canonical forward reprice into a NEW CURRENT snapshot. Requires proven
+  // package-level pricing intent and a valid current cost.
+  if (hasRecalcClass) {
+    if (!input.establishedPolicy) return 'NONE'
+    return 'PRICE_AND_SNAPSHOT'
+  }
+
+  return 'NONE'
+}
+
+/**
  * Build the reconciliation result for one package. Pure with respect to the
  * provided data — the caller fetches DB rows and passes them in.
  */
 export function reconcileProviderPackage(input: ClassificationInput): PackageReconciliationResult {
   const classifications = classifyPackage(input)
-  const applyAllowed = isAutoApplicable(classifications)
   const establishedPolicy = hasEstablishedPricingPolicy({
     markupPercent: input.markupPercent,
     sellingPrice: input.sellingPrice,
@@ -234,6 +299,14 @@ export function reconcileProviderPackage(input: ClassificationInput): PackageRec
     configurationStatus: input.configurationStatus,
     autoConfiguredByRuleId: input.autoConfiguredByRuleId,
   })
+  const mutationType = decideMutation({
+    classifications,
+    establishedPolicy,
+    hasActiveSnapshot: !!input.activeSnapshotId,
+    hasRetail: input.retailLinked,
+    sellingPrice: input.sellingPrice != null ? Number(input.sellingPrice) : null,
+  })
+  const applyAllowed = mutationType !== 'NONE'
 
   let proposedAction = 'none (OK)'
   if (classifications.includes('COST_UNAVAILABLE')) {
@@ -246,14 +319,17 @@ export function reconcileProviderPackage(input: ClassificationInput): PackageRec
     proposedAction = 'REPORT ONLY — matching pricing rule exists; explicit admin configuration required'
   } else if (classifications.includes('UNPRICED_NO_RULE')) {
     proposedAction = 'REPORT ONLY — no applicable rule; explicit admin configuration required'
-  } else if (classifications.includes('MISSING_SNAPSHOT')) {
-    proposedAction = 'MANUAL REVIEW — snapshot/policy history insufficient for automatic repair'
-  } else if (applyAllowed) {
+  } else if (mutationType === 'PRICE_AND_SNAPSHOT') {
     if (classifications.includes('STALE_SNAPSHOT_COST') || classifications.includes('BELOW_COST_REPRICE')) {
       proposedAction = 'canonical forward reprice → new current snapshot'
-    } else if (classifications.includes('RETAIL_PARITY_MISMATCH')) {
-      proposedAction = 'canonical retail parity sync'
     }
+  } else if (mutationType === 'RETAIL_ONLY') {
+    proposedAction = 'canonical retail parity sync'
+  } else if (classifications.includes('MISSING_SNAPSHOT')) {
+    // This branch is only reached for MISSING_SNAPSHOT WITHOUT an actionable
+    // current-drift class (BELOW_COST / STALE) — a historical snapshot gap that
+    // reconciliation must NOT auto-reconstruct.
+    proposedAction = 'MANUAL REVIEW — snapshot/policy history insufficient for automatic repair'
   }
 
   const reason = classifications.join(' + ') || 'OK'
@@ -278,6 +354,7 @@ export function reconcileProviderPackage(input: ClassificationInput): PackageRec
     rule: input.rule,
     classifications,
     applyAllowed,
+    mutationType,
     proposedAction,
     reason,
     establishedPolicy,
@@ -288,9 +365,10 @@ export function reconcileProviderPackage(input: ClassificationInput): PackageRec
  * Apply the conservative, deterministic fix for one package. Returns an outcome
  * object. Never publishes, never deletes, never creates retail.
  *
- * The mutation gate re-enforces policy here (not just in the report): a row is
- * only mutated when isAutoApplicable() passes AND — for any recalc path — the
- * package carries established package-level pricing/configuration intent.
+ * The mutation gate uses the SAME single `decideMutation` decision as the report
+ * (via `pricingResult.mutationType`) so the mutation path can never disagree
+ * with the classification. For any recalc path it additionally requires
+ * established package-level pricing intent.
  */
 export async function applyPackageReconciliation(
   packageRow: {
@@ -301,33 +379,24 @@ export async function applyPackageReconciliation(
   },
   pricingResult: PackageReconciliationResult,
 ): Promise<{ applied: boolean; skipped: boolean; error?: string }> {
-  // First gate: the classification set itself must be safe to auto-apply.
-  if (!isAutoApplicable(pricingResult.classifications)) {
+  // Single admission decision (report + mutation share it).
+  if (pricingResult.mutationType === 'NONE') {
     return { applied: false, skipped: true }
   }
 
-  // Second gate: any path that derives pricing (BELOW_COST / STALE_SNAPSHOT /
-  // missing-snapshot forward reprice) requires established package-level intent.
-  // A bare matching PackageConfigurationRule is NOT intent evidence.
-  const requiresReprice = pricingResult.classifications.some(c =>
-    ['BELOW_COST_REPRICE', 'STALE_SNAPSHOT_COST'].includes(c))
-  if (requiresReprice && !pricingResult.establishedPolicy) {
+  // Recalc paths require established package-level intent; MISSING_RETAIL always
+  // blocked (decideMutation already returns NONE when retail repair implied).
+  if (pricingResult.mutationType === 'PRICE_AND_SNAPSHOT' && !pricingResult.establishedPolicy) {
     return { applied: false, skipped: true, error: 'no established package-level pricing policy' }
   }
 
-  // RETAIL_PARITY_MISMATCH alone is retail-only. Everything else goes through
-  // the canonical pricing engine (which creates a fresh snapshot).
-  const retailOnly = pricingResult.classifications.includes('RETAIL_PARITY_MISMATCH')
-    && !pricingResult.classifications.includes('STALE_SNAPSHOT_COST')
-    && !pricingResult.classifications.includes('BELOW_COST_REPRICE')
-    && !pricingResult.classifications.includes('UNPRICED_RULE_AVAILABLE')
-
   try {
-    if (retailOnly) {
+    if (pricingResult.mutationType === 'RETAIL_ONLY') {
       await syncRetailFromPackage(packageRow.id)
       return { applied: true, skipped: false }
     }
 
+    // PRICE_AND_SNAPSHOT — canonical forward reprice into a NEW CURRENT snapshot.
     const result = await recalculatePackagePrice(packageRow.id, 'PROVIDER_COST_CHANGED')
     if (!result.success) {
       return {

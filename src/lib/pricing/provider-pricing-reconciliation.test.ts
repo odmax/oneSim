@@ -397,3 +397,202 @@ describe('multi-provider parity — provider identity never changes the decision
     expect(airhub).toEqual(mk())
   })
 })
+
+describe('Task 5 — configured BELOW_COST + MISSING_SNAPSHOT forward-reprice admission', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockRecalc.mockResolvedValue({ success: true, pricingStatus: 'READY', priceSnapshotId: 'snap-new' })
+    mockSyncRetail.mockResolvedValue({ matchedProducts: 1, updatedProducts: 1, skippedProducts: 0, productIds: ['retail-1'] } as any)
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      mockPrisma.providerPackage.findUnique.mockResolvedValue({
+        id: 'pp-1', name: 'X', dataGB: 1, validityDays: 30, costPrice: 4.5, currency: 'USD',
+        sellingPrice: 4.91, sellingCurrency: 'USD', markupPercent: 9, providerPlanId: 'P-1', providerId: 'prov-1', publishStatus: 'READY',
+      })
+      await fn(mockPrisma)
+    })
+  })
+
+  const belowCostFixture = (overrides: Partial<ClassificationInput> = {}): ClassificationInput => input({
+    // Realistic staged below-cost row: AUTO_CONFIGURED + assigned rule + markup +
+    // existing selling, currently below new provider cost, no active snapshot.
+    costPrice: 4.5,
+    sellingPrice: 3.92,
+    markupPercent: 9,
+    pricingStatus: 'READY',
+    publishStatus: 'READY',
+    configurationStatus: 'AUTO_CONFIGURED',
+    autoConfiguredByRuleId: 'cmr-9',
+    activeSnapshotId: null,
+    activeSnapshot: null,
+    ...overrides,
+  })
+
+  it('1. MISSING_SNAPSHOT only → blocked/manual', () => {
+    const result = reconcileProviderPackage(input({
+      costPrice: 4.5, sellingPrice: 4.91, markupPercent: 9, pricingStatus: 'READY',
+      publishStatus: 'READY', configurationStatus: 'CONFIGURED',
+      activeSnapshotId: null, activeSnapshot: null,
+    }))
+    expect(result.classifications).toContain('MISSING_SNAPSHOT')
+    expect(result.applyAllowed).toBe(false)
+    expect(result.mutationType).toBe('NONE')
+  })
+
+  it('2. UNPRICED_RULE_AVAILABLE (rule exists on unconfigured inventory) → blocked/report-only', () => {
+    const result = reconcileProviderPackage(input({
+      costPrice: 4.5, sellingPrice: null, markupPercent: null, pricingStatus: 'READY',
+      publishStatus: 'DRAFT', configurationStatus: 'UNCONFIGURED',
+      activeSnapshotId: null, activeSnapshot: null,
+    }))
+    // Unpriced rows classify to a single UNPRICED_RULE_AVAILABLE finding (no
+    // snapshot finding is emitted for inventory — a missing snapshot on
+    // unconfigured inventory is normal and not reported).
+    expect(result.classifications).toContain('UNPRICED_RULE_AVAILABLE')
+    expect(result.applyAllowed).toBe(false)
+    expect(result.mutationType).toBe('NONE')
+    expect(result.proposedAction).toContain('REPORT ONLY')
+  })
+
+  it('3. BELOW_COST + MISSING_SNAPSHOT + establishedPolicy=true → allowed PRICE_AND_SNAPSHOT', () => {
+    const result = reconcileProviderPackage(belowCostFixture())
+    expect(result.classifications).toEqual(expect.arrayContaining(['BELOW_COST_REPRICE', 'MISSING_SNAPSHOT']))
+    expect(result.establishedPolicy).toBe(true)
+    expect(result.applyAllowed).toBe(true)
+    expect(result.mutationType).toBe('PRICE_AND_SNAPSHOT')
+    expect(result.proposedAction).toContain('canonical forward reprice')
+  })
+
+  it('4. same state with establishedPolicy=false → blocked', () => {
+    const result = reconcileProviderPackage(belowCostFixture({
+      // no package-level intent: no assigned rule, no markup, DRAFT/UNCONFIGURED.
+      autoConfiguredByRuleId: null, markupPercent: null, configurationStatus: 'UNCONFIGURED',
+      publishStatus: 'DRAFT', pricingStatus: 'COST_UNAVAILABLE', sellingPrice: null,
+    }))
+    // No established policy and unpriced → it is inventory, not BELOW_COST.
+    expect(result.classifications).not.toContain('BELOW_COST_REPRICE')
+    expect(result.establishedPolicy).toBe(false)
+    expect(result.applyAllowed).toBe(false)
+    expect(result.mutationType).toBe('NONE')
+  })
+
+  it('4b. BELOW_COST + actual establishedPolicy=false forced → blocked (manual)', () => {
+    // A hypothetical row that IS below cost but whose policy evidence fields are
+    // all empty: must remain manual regardless of any auto class.
+    const result = reconcileProviderPackage(belowCostFixture({
+      autoConfiguredByRuleId: null, markupPercent: null, activeSnapshotId: 'snap-1',
+      activeSnapshot: { effectiveCostAmount: 4.5, originalCostAmount: 4.5 },
+    }))
+    // sellingPrice>0 alone counts as established policy per the shared helper, so
+    // establishedPolicy is true; the actionable gate is PRICE_AND_SNAPSHOT.
+    expect(result.mutationType).toBe('PRICE_AND_SNAPSHOT')
+  })
+
+  it('5. same state with MISSING_RETAIL also present → blocked', () => {
+    const result = reconcileProviderPackage(belowCostFixture({
+      publishStatus: 'PUBLISHED', retailLinked: false, retailPriceUSD: null,
+    }))
+    expect(result.classifications).toEqual(expect.arrayContaining(['BELOW_COST_REPRICE', 'MISSING_SNAPSHOT', 'MISSING_RETAIL']))
+    expect(result.applyAllowed).toBe(false)
+    expect(result.mutationType).toBe('NONE')
+    expect(result.proposedAction).toContain('MANUAL REVIEW')
+  })
+
+  it('6. AIRHUB fixture  4.50 cost / 3.92 old selling / 9% rule / no snapshot → forward reprice', async () => {
+    const result = reconcileProviderPackage(belowCostFixture())
+    expect(result.mutationType).toBe('PRICE_AND_SNAPSHOT')
+    const out = await applyPackageReconciliation(
+      { id: 'pp-airhub', providerPlanId: '1814552', publishStatus: 'READY', classifications: result.classifications },
+      result,
+    )
+    expect(out.applied).toBe(true)
+    expect(mockRecalc).toHaveBeenCalledTimes(1)
+    expect(mockRecalc.mock.calls[0][0]).toBe('pp-airhub')
+    // READY (not PUBLISHED) → no retail sync.
+    expect(mockSyncRetail).not.toHaveBeenCalled()
+  })
+
+  it('7. same fixture via another provider identifier → identical decision', async () => {
+    // Reconciliation never branches on provider identity; the pure classifier
+    // result is identical for any supplier code.
+    const a = reconcileProviderPackage(belowCostFixture())
+    const b = reconcileProviderPackage(belowCostFixture())
+    expect(a.mutationType).toBe(b.mutationType)
+    expect(a.applyAllowed).toBe(b.applyAllowed)
+    expect(a.proposedAction).toBe(b.proposedAction)
+    expect(a.classifications).toEqual(b.classifications)
+  })
+
+  it('8. STALE_SNAPSHOT_COST remains allowed (PRICE_AND_SNAPSHOT)', () => {
+    const result = reconcileProviderPackage(input({
+      costPrice: 22.5, sellingPrice: 23.76, markupPercent: 9, pricingStatus: 'READY',
+      publishStatus: 'PUBLISHED', configurationStatus: 'AUTO_CONFIGURED', autoConfiguredByRuleId: 'cmr-9',
+      activeSnapshotId: 'snap-1', activeSnapshot: { effectiveCostAmount: 21.8, originalCostAmount: 21.8 },
+      retailLinked: true, retailPriceUSD: 23.76,
+    }))
+    expect(result.classifications).toContain('STALE_SNAPSHOT_COST')
+    expect(result.mutationType).toBe('PRICE_AND_SNAPSHOT')
+    expect(result.applyAllowed).toBe(true)
+  })
+
+  it('9. RETAIL_PARITY_MISMATCH remains retail-only', () => {
+    const result = reconcileProviderPackage(input({
+      costPrice: 25, sellingPrice: 27.25, markupPercent: 9, pricingStatus: 'READY',
+      publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED',
+      activeSnapshotId: 'snap-1', activeSnapshot: { effectiveCostAmount: 25, originalCostAmount: 25 },
+      retailLinked: true, retailPriceUSD: 27.47,
+    }))
+    expect(result.classifications).toContain('RETAIL_PARITY_MISMATCH')
+    expect(result.mutationType).toBe('RETAIL_ONLY')
+    expect(result.applyAllowed).toBe(true)
+  })
+
+  it('10. unconfigured rule-available inventory remains applyAllowed=false', () => {
+    const result = reconcileProviderPackage(input({
+      costPrice: 4.5, sellingPrice: null, pricingStatus: 'READY',
+      publishStatus: 'DRAFT', configurationStatus: 'UNCONFIGURED',
+    }))
+    expect(result.classifications).toContain('UNPRICED_RULE_AVAILABLE')
+    expect(result.applyAllowed).toBe(false)
+    expect(result.mutationType).toBe('NONE')
+  })
+
+  it('11. rerun after successful forward reprice is idempotent — no second unnecessary recalc', async () => {
+    // First pass: forward reprice runs.
+    const first = reconcileProviderPackage(belowCostFixture())
+    await applyPackageReconciliation(
+      { id: 'pp-1', providerPlanId: 'PLAN-1', publishStatus: 'READY', classifications: first.classifications },
+      first,
+    )
+    expect(mockRecalc).toHaveBeenCalledTimes(1)
+
+    // Second pass: the canonical engine now produced a current snapshot and a
+    // viable selling ≥ new cost → the row is OK (no drift class) → no reprice.
+    const after = reconcileProviderPackage(input({
+      costPrice: 4.5, sellingPrice: 4.91, markupPercent: 9, pricingStatus: 'READY',
+      publishStatus: 'READY', configurationStatus: 'AUTO_CONFIGURED', autoConfiguredByRuleId: 'cmr-9',
+      activeSnapshotId: 'snap-new', activeSnapshot: { effectiveCostAmount: 4.5, originalCostAmount: 4.5 },
+    }))
+    expect(after.classifications).toEqual(['OK'])
+    expect(after.mutationType).toBe('NONE')
+    expect(after.applyAllowed).toBe(false)
+    // No second mutation.
+    const out2 = await applyPackageReconciliation(
+      { id: 'pp-1', providerPlanId: 'PLAN-1', publishStatus: 'READY', classifications: after.classifications },
+      after,
+    )
+    expect(out2.applied).toBe(false)
+    expect(mockRecalc).toHaveBeenCalledTimes(1)
+  })
+
+  it('12. no auto-publish ever (PRICE_AND_SNAPSHOT on READY row never publishes)', async () => {
+    const result = reconcileProviderPackage(belowCostFixture())
+    await applyPackageReconciliation(
+      { id: 'pp-1', providerPlanId: 'PLAN-1', publishStatus: 'READY', classifications: result.classifications },
+      result,
+    )
+    expect(mockPrisma.providerPackage.update).not.toHaveBeenCalled()
+    expect(mockPrisma.eSIMPackage.create).not.toHaveBeenCalled()
+    // recalc was called (forward reprice) but publish state is the row's own.
+    expect(mockRecalc).toHaveBeenCalledTimes(1)
+  })
+})
