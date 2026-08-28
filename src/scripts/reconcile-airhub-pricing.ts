@@ -25,9 +25,13 @@
  * Safety:
  *   - --provider fails closed unless it resolves exactly to AIRHUB
  *   - --plan-id / --class only narrow the scan
- *   - MISSING_RETAIL, MISSING_SNAPSHOT (no reconstructable policy),
- *     UNPRICED_NO_RULE, COST_UNAVAILABLE, and REQUIRES_PRICING are NEVER
- *     auto-applied.
+ *   - UNPRICED_RULE_AVAILABLE, UNPRICED_NO_RULE, MISSING_RETAIL,
+ *     MISSING_SNAPSHOT (no reconstructable policy), COST_UNAVAILABLE, and
+ *     REQUIRES_PRICING are NEVER auto-applied. A matching active pricing rule
+ *     is NOT package configuration intent.
+ *   - Auto-apply is limited to genuine existing pricing drift on packages with
+ *     established package-level intent: BELOW_COST_REPRICE, STALE_SNAPSHOT_COST,
+ *     RETAIL_PARITY_MISMATCH (each subject to its safety prerequisites).
  */
 import { PrismaClient } from '@prisma/client'
 import {

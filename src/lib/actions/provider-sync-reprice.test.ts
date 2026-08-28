@@ -174,9 +174,10 @@ describe('syncProviderPlans — pricing state + cost-change repricing', () => {
     expect(mockRe).not.toHaveBeenCalled()
   })
 
-  it('5. 9%-style rule: unconfigured package with a rule applied still reprices on cost change (no hardcoded 9)', async () => {
-    // The package is autoConfiguredByRuleId → established policy → cost change
-    // must reprice through the canonical engine which resolves the rule itself.
+  it('5. package with explicit assigned rule (autoConfiguredByRuleId) + cost change → reprices (no hardcoded 9)', async () => {
+    // autoConfiguredByRuleId IS package-level intent (a rule was applied to THIS
+    // package), so a cost change must reprice through the canonical engine which
+    // resolves the rule itself.
     mockPrisma.providerPackage.findFirst.mockResolvedValue(existingRow({
       costPrice: 4.0, autoConfiguredByRuleId: 'cmr-rule', pricingStatus: 'READY',
     }))
@@ -189,6 +190,43 @@ describe('syncProviderPlans — pricing state + cost-change repricing', () => {
     expect(mockRe).toHaveBeenCalledTimes(1)
     expect(mockRe.mock.calls[0][1]).toBe('PROVIDER_COST_CHANGED')
     // The engine (mocked here) is what derives 4.50 → ~4.91; no 9 literal in sync.
+  })
+
+  it('20. matching active package rule ALONE (never configured) + cost change → NO auto-pricing, REQUIRES_PRICING', async () => {
+    // The provider has a resolvable active rule (canonical rule resolution would
+    // return it), but THIS package was never configured: no autoConfiguredByRuleId,
+    // no markup, no selling, no snapshot, DRAFT/UNCONFIGURED. A provider-level
+    // matching rule is NOT package configuration intent — sync must not price it.
+    mockPrisma.providerPackage.findFirst.mockResolvedValue(existingRow({
+      costPrice: 4.0, pricingStatus: 'COST_UNAVAILABLE',
+      autoConfiguredByRuleId: null, markupPercent: null, sellingPrice: null,
+      publishStatus: 'DRAFT', configurationStatus: 'UNCONFIGURED',
+    }))
+    mockAdapter.mockResolvedValue(adapterReturning([
+      { id: 'PLAN-1', name: 'Zone 5GB', data_gb: 5, validity_days: 30, price_usd: 4.5, isAvailable: true, raw_data: {} },
+    ]) as any)
+
+    await syncProviderPlans('prov-x')
+
+    const update = mockPrisma.providerPackage.update.mock.calls[0][0] as any
+    expect(update.data.pricingStatus).toBe('REQUIRES_PRICING')
+    expect(update.data.sellingPrice).toBeUndefined()
+    expect(mockRe).not.toHaveBeenCalled()
+  })
+
+  it('21. previously configured package + assigned policy + cost change → canonical repricing allowed', async () => {
+    mockPrisma.providerPackage.findFirst.mockResolvedValue(existingRow({
+      costPrice: 4.0, autoConfiguredByRuleId: 'cmr-rule', markupPercent: 9,
+      sellingPrice: 4.36, pricingStatus: 'READY', configurationStatus: 'AUTO_CONFIGURED',
+    }))
+    mockAdapter.mockResolvedValue(adapterReturning([
+      { id: 'PLAN-1', name: 'Zone 5GB', data_gb: 5, validity_days: 30, price_usd: 4.5, isAvailable: true, raw_data: {} },
+    ]) as any)
+
+    await syncProviderPlans('prov-x')
+
+    expect(mockRe).toHaveBeenCalledTimes(1)
+    expect(mockRe.mock.calls[0][1]).toBe('PROVIDER_COST_CHANGED')
   })
 
   it('6. selling is never left below cost after a successful recalc (engine mock returns >= cost)', async () => {

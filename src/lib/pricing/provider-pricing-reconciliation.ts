@@ -56,6 +56,8 @@ export interface PackageReconciliationResult {
   markupPercent: number | null
   pricingStatus: string | null
   publishStatus: string | null
+  configurationStatus: string | null
+  autoConfiguredByRuleId?: string | null
   activeSnapshotId: string | null
   hasActiveSnapshot: boolean
   hasRetail: boolean
@@ -67,6 +69,7 @@ export interface PackageReconciliationResult {
   applyAllowed: boolean
   proposedAction: string
   reason: string
+  establishedPolicy: boolean
 }
 
 export interface ReconciliationSummary {
@@ -189,22 +192,29 @@ export function classifyPackage(input: ClassificationInput): ReconciliationClass
 }
 
 const AUTO_APPLY_CLASSES: ReconciliationClassification[] = [
-  'UNPRICED_RULE_AVAILABLE',
+  // NOTE: UNPRICED_RULE_AVAILABLE is intentionally NOT here. A matching active
+  // PackageConfigurationRule proves a policy COULD be applied, not that an
+  // administrator configured THIS package. Auto-pricing unconfigured inventory
+  // from a matching rule violates the OneSIM multi-provider architecture
+  // (inventory exposure ≠ product). These rows are report-only.
   'BELOW_COST_REPRICE',
   'STALE_SNAPSHOT_COST',
   'RETAIL_PARITY_MISMATCH',
 ]
 
 const NEVER_AUTO_APPLY: ReconciliationClassification[] = [
-  'MISSING_RETAIL',
+  'UNPRICED_RULE_AVAILABLE',
   'UNPRICED_NO_RULE',
+  'MISSING_RETAIL',
   'COST_UNAVAILABLE',
   'REQUIRES_PRICING',
 ]
 
 export function isAutoApplicable(classifications: ReconciliationClassification[]): boolean {
-  // A package is never auto-applied if any never-auto class is present
-  // (e.g. a PUBLISHED row that also lacks retail stays manual).
+  // A package is never auto-applied if any never-auto class is present. This
+  // makes MISSING_RETAIL block retail-creating mutations, and makes
+  // UNPRICED_RULE_AVAILABLE / UNPRICED_NO_RULE report-only regardless of any
+  // other auto class.
   if (classifications.some(c => NEVER_AUTO_APPLY.includes(c))) return false
   return classifications.some(c => AUTO_APPLY_CLASSES.includes(c))
 }
@@ -216,20 +226,33 @@ export function isAutoApplicable(classifications: ReconciliationClassification[]
 export function reconcileProviderPackage(input: ClassificationInput): PackageReconciliationResult {
   const classifications = classifyPackage(input)
   const applyAllowed = isAutoApplicable(classifications)
+  const establishedPolicy = hasEstablishedPricingPolicy({
+    markupPercent: input.markupPercent,
+    sellingPrice: input.sellingPrice,
+    activePriceSnapshotId: input.activeSnapshotId,
+    publishStatus: input.publishStatus,
+    configurationStatus: input.configurationStatus,
+    autoConfiguredByRuleId: input.autoConfiguredByRuleId,
+  })
 
   let proposedAction = 'none (OK)'
-  if (classifications.includes('COST_UNAVAILABLE')) proposedAction = 'report only — no cost to price'
-  else if (classifications.includes('MISSING_RETAIL')) proposedAction = 'MANUAL — PUBLISHED without retail link; never auto-create retail'
-  else if (classifications.includes('REQUIRES_PRICING')) proposedAction = 'keep REQUIRES_PRICING — no fabrication'
-  else if (classifications.includes('UNPRICED_NO_RULE')) proposedAction = 'report only — no applicable rule; do not fabricate selling'
-  else if (classifications.includes('MISSING_SNAPSHOT')) proposedAction = 'MANUAL — priced/published without active snapshot; historical policy needed'
-  else if (applyAllowed) {
+  if (classifications.includes('COST_UNAVAILABLE')) {
+    proposedAction = 'report only — no cost to price'
+  } else if (classifications.includes('MISSING_RETAIL')) {
+    proposedAction = 'MANUAL REVIEW — missing retail product; reconciliation will not create one'
+  } else if (classifications.includes('REQUIRES_PRICING')) {
+    proposedAction = 'keep REQUIRES_PRICING — no fabrication'
+  } else if (classifications.includes('UNPRICED_RULE_AVAILABLE')) {
+    proposedAction = 'REPORT ONLY — matching pricing rule exists; explicit admin configuration required'
+  } else if (classifications.includes('UNPRICED_NO_RULE')) {
+    proposedAction = 'REPORT ONLY — no applicable rule; explicit admin configuration required'
+  } else if (classifications.includes('MISSING_SNAPSHOT')) {
+    proposedAction = 'MANUAL REVIEW — snapshot/policy history insufficient for automatic repair'
+  } else if (applyAllowed) {
     if (classifications.includes('STALE_SNAPSHOT_COST') || classifications.includes('BELOW_COST_REPRICE')) {
-      proposedAction = 'canonical recalculatePackagePrice() → fresh snapshot'
-    } else if (classifications.includes('UNPRICED_RULE_AVAILABLE')) {
-      proposedAction = 'apply canonical rule → derive selling + snapshot'
+      proposedAction = 'canonical forward reprice → new current snapshot'
     } else if (classifications.includes('RETAIL_PARITY_MISMATCH')) {
-      proposedAction = 'canonical retail parity sync (no snapshot rewrite)'
+      proposedAction = 'canonical retail parity sync'
     }
   }
 
@@ -244,6 +267,8 @@ export function reconcileProviderPackage(input: ClassificationInput): PackageRec
     markupPercent: input.markupPercent != null ? Number(input.markupPercent) : null,
     pricingStatus: input.pricingStatus,
     publishStatus: input.publishStatus,
+    configurationStatus: input.configurationStatus,
+    autoConfiguredByRuleId: input.autoConfiguredByRuleId,
     activeSnapshotId: input.activeSnapshotId,
     hasActiveSnapshot: !!input.activeSnapshotId,
     hasRetail: input.retailLinked,
@@ -255,12 +280,17 @@ export function reconcileProviderPackage(input: ClassificationInput): PackageRec
     applyAllowed,
     proposedAction,
     reason,
+    establishedPolicy,
   }
 }
 
 /**
  * Apply the conservative, deterministic fix for one package. Returns an outcome
  * object. Never publishes, never deletes, never creates retail.
+ *
+ * The mutation gate re-enforces policy here (not just in the report): a row is
+ * only mutated when isAutoApplicable() passes AND — for any recalc path — the
+ * package carries established package-level pricing/configuration intent.
  */
 export async function applyPackageReconciliation(
   packageRow: {
@@ -271,8 +301,18 @@ export async function applyPackageReconciliation(
   },
   pricingResult: PackageReconciliationResult,
 ): Promise<{ applied: boolean; skipped: boolean; error?: string }> {
+  // First gate: the classification set itself must be safe to auto-apply.
   if (!isAutoApplicable(pricingResult.classifications)) {
     return { applied: false, skipped: true }
+  }
+
+  // Second gate: any path that derives pricing (BELOW_COST / STALE_SNAPSHOT /
+  // missing-snapshot forward reprice) requires established package-level intent.
+  // A bare matching PackageConfigurationRule is NOT intent evidence.
+  const requiresReprice = pricingResult.classifications.some(c =>
+    ['BELOW_COST_REPRICE', 'STALE_SNAPSHOT_COST'].includes(c))
+  if (requiresReprice && !pricingResult.establishedPolicy) {
+    return { applied: false, skipped: true, error: 'no established package-level pricing policy' }
   }
 
   // RETAIL_PARITY_MISMATCH alone is retail-only. Everything else goes through
