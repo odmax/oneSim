@@ -91,15 +91,19 @@ async function main() {
         { purchase: await isCapabilityExposedToApi(provider.id, ProviderCapability.PURCHASE).catch(() => false), statusLookup: await isCapabilityExposedToApi(provider.id, ProviderCapability.STATUS).catch(() => false), usageLookup: await isCapabilityExposedToApi(provider.id, ProviderCapability.USAGE).catch(() => false), topUp: await isCapabilityExposedToApi(provider.id, ProviderCapability.TOP_UP).catch(() => false), suspend: await isCapabilityExposedToApi(provider.id, ProviderCapability.SUSPEND).catch(() => false), resume: await isCapabilityExposedToApi(provider.id, ProviderCapability.RESUME).catch(() => false), installationLookup: await isCapabilityExposedToApi(provider.id, ProviderCapability.INSTALLATION).catch(() => false), installationLookupHistorical: await isCapabilityExposedToApi(provider.id, ProviderCapability.QR_CODE).catch(() => false), balance: await isCapabilityExposedToApi(provider.id, ProviderCapability.BALANCE).catch(() => false) },
         BUSINESS_ROUTE_AVAILABILITY,
         (provider.enabledCapabilities as string[]) || [],
+        {},
+        {},
+        ['customPackageCreation'],
+        (provider.code || '') === 'TELNA' ? ['customPackageCreation'] : [],
       )
-      console.log('  Capability             DB     Internal  APIExp  Route  Contract  Impl  Classification')
+      console.log('  Capability             DB     Internal  APIExp  Route  Contract  Impl  Classification        Remediation')
       for (const row of rows.rows) {
         const contract = row.contractSupports === true ? 'Y' : row.contractSupports === false ? 'N' : (row.contractSupports === 'NOT_DECLARED' ? 'ND' : '?')
         const impl = row.connectorImplements ? 'Y' : 'N'
-        console.log(`  ${row.capability.padEnd(22)} ${String(!!row.dbEnabled).padEnd(7)} ${String(row.internallyEnabled).padEnd(10)} ${String(row.clientApiExposed).padEnd(8)} ${String(row.businessRouteExists).padEnd(7)} ${contract.padEnd(8)} ${impl.padEnd(5)} ${row.classification}`)
+        console.log(`  ${row.capability.padEnd(22)} ${String(!!row.dbEnabled).padEnd(7)} ${String(row.internallyEnabled).padEnd(10)} ${String(row.clientApiExposed).padEnd(8)} ${String(row.businessRouteExists).padEnd(7)} ${contract.padEnd(8)} ${impl.padEnd(5)} ${row.classification.padEnd(24)} ${(row.remediation || '—').padEnd(26)}`)
         if (row.classification === 'PASS') businessReadyCount++
-        if (row.classification === 'INTERNAL_ONLY' || row.classification === 'NOT_EXPOSED') internalOnlyCount++
-        if (row.classification === 'DOC_MISMATCH' || row.classification === 'CONFIG_MISMATCH' || row.classification === 'API_ROUTE_MISSING') mismatchCount++
+        if (['INTERNAL_ONLY', 'NOT_EXPOSED', 'API_ROUTE_INTENTIONALLY_MISSING', 'ADMIN_ONLY', 'ENTITLEMENT_PENDING'].includes(row.classification)) internalOnlyCount++
+        if (['DOC_MISMATCH', 'CONFIG_MISMATCH', 'DB_FLAG_STALE_TRUE', 'INTERNAL_ENABLE_MISSING', 'API_EXPOSURE_MISSING', 'API_ROUTE_MISSING'].includes(row.classification)) mismatchCount++
       }
       for (const m of rows.mismatches) console.log(`  ⚠ mismatch: ${m}`)
     } else {
