@@ -1236,6 +1236,178 @@ expect(mockPrisma.provider.update).toHaveBeenCalledWith(
       expect(logs).not.toContain('Bearer super-secret')
       logSpy.mockRestore()
     })
+
+    it('Observed AirHub PurhaseSim success (top-level simID + orderid + activationCode) normalizes to iccids and preserves metadata', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        message: 'success',
+        activationCode: 'LPA:1$smdp.example.com$ABCDEF',
+        apn: 'airhub.io',
+        simID: '8912345678901234567',
+        simPin: 1357,
+        orderid: 'AH-ORDER-7',
+        sellingPrice: 1.09,
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(result.error).toBeUndefined()
+      expect(result.data?.iccids).toEqual(['8912345678901234567'])
+      expect(result.data?.iccidOrSimId).toBe('8912345678901234567')
+      expect(result.data?.activationId).toBe('AH-ORDER-7')
+      expect(result.data?.activationCodes).toEqual(['LPA:1$smdp.example.com$ABCDEF'])
+      expect(result.data?.rawMetadata?.orderId).toBe('AH-ORDER-7')
+      expect(result.data?.rawMetadata?.simId).toBe('8912345678901234567')
+    })
+
+    it('supports the camelCase simId alias', async () => {
+      mockFetchSuccess({ isSuccess: true, simId: '8912345678901222222', orderid: 'AH-SIMID' })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['8912345678901222222'])
+    })
+
+    it('supports the snake_case sim_id alias', async () => {
+      mockFetchSuccess({ isSuccess: true, sim_id: '8912345678901333333', orderid: 'AH-SIM_ID' })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['8912345678901333333'])
+    })
+
+    it('a whitespace-only simID does not fabricate an ICCID, and upstream-confirmed success stays ambiguous', async () => {
+      mockFetchSuccess({ isSuccess: true, simID: '   ', orderid: 'AH-WS' })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NO_ICCIDS')
+      expect(result.error?.details?.ambiguous).toBe(true)
+      expect(result.error?.details?.upstreamConfirmed).toBe(true)
+      expect(result.error?.details?.providerOrderId).toBe('AH-WS')
+    })
+
+    it('an explicit provider FAILED status keeps NO_ICCIDS as a definitive (non-ambiguous) failure', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { orderId: 'AH-DEF', status: 'FAILED' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NO_ICCIDS')
+      expect(result.error?.details?.ambiguous).not.toBe(true)
+    })
+
+    it('canonical top-level iccid string response still works alongside simID fallback', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { orderId: 'AH-ICCID', iccid: '8901234567890444444', status: 'ACTIVATED' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['8901234567890444444'])
+    })
+
+    it('canonical iccids array response still works', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { orderId: 'AH-ARR', iccids: ['8901234567890555555'], status: 'ACTIVATED' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['8901234567890555555'])
+    })
+
+    it('existing nested result.iccids response shape remains supported', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { orderId: 'AH-NEST', result: { iccids: ['8901234567890666666'] }, status: 'ACTIVATED' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['8901234567890666666'])
+    })
+
+    it('a stronger canonical iccid is preferred over simID when both are present', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { orderId: 'AH-BOTH', iccids: ['8901234567890888888'], simID: '8912345678901234567', status: 'ACTIVATED' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['8901234567890888888'])
+    })
+
+    it('unique_order_id derives from params.orderId when provided', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { orderId: 'AH-OID', iccids: ['8901234567890123456'], qrCodeUrl: 'https://qr.airhub.com/oid', status: 'ACTIVATED' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM({ ...ACTIVATE_PARAMS, orderId: 'cmtdh4ham000341ncia8cqjqe' })
+
+      expect(result.success).toBe(true)
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+      expect(body.unique_order_id).toBe('cmtdh4ham000341ncia8cqjqe')
+    })
+
+    it('two different OneSIM orders for the same business yield different AirHub unique_order_id values', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { orderId: 'AH-2ORD', iccids: ['8901234567890123456'], qrCodeUrl: 'https://qr.airhub.com/2ord', status: 'ACTIVATED' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      await connector.activateESIM({ ...ACTIVATE_PARAMS, externalId: 'biz-same', orderId: 'cmt-order-A' })
+      await connector.activateESIM({ ...ACTIVATE_PARAMS, externalId: 'biz-same', orderId: 'cmt-order-B' })
+
+      const body1 = JSON.parse(fetchSpy.mock.calls[0][1].body)
+      const body2 = JSON.parse(fetchSpy.mock.calls[1][1].body)
+      expect(body1.unique_order_id).toBe('cmt-order-A')
+      expect(body2.unique_order_id).toBe('cmt-order-B')
+      expect(body1.unique_order_id).not.toBe(body2.unique_order_id)
+    })
+
+    it('retry/re-dispatch of the SAME order produces the SAME unique_order_id', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { orderId: 'AH-RETRY', iccids: ['8901234567890123456'], qrCodeUrl: 'https://qr.airhub.com/retry', status: 'ACTIVATED' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      await connector.activateESIM({ ...ACTIVATE_PARAMS, orderId: 'cmt-order-1' })
+      await connector.activateESIM({ ...ACTIVATE_PARAMS, orderId: 'cmt-order-1' })
+
+      const body1 = JSON.parse(fetchSpy.mock.calls[0][1].body)
+      const body2 = JSON.parse(fetchSpy.mock.calls[1][1].body)
+      expect(body1.unique_order_id).toBe('cmt-order-1')
+      expect(body2.unique_order_id).toBe('cmt-order-1')
+    })
+
+    it('never emits raw activation code, full ICCID, token, or simPin in diagnostic logs', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        message: 'success',
+        activationCode: 'LPA:1$smdp.example.com$SECRET-CODE',
+        simID: '8901234567890777777',
+        simPin: 1357,
+        orderid: 'AH-SEC',
+        sellingPrice: 1.09,
+      })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+      expect(result.success).toBe(true)
+      const logs = logSpy.mock.calls.map(c => String(c[0])).join('\n')
+      expect(logs).not.toContain('SECRET-CODE')
+      expect(logs).not.toContain('8901234567890777777')
+      expect(logs).not.toContain('1357')
+      expect(logs).not.toContain('testpass')
+      expect(logs).not.toContain('test-token')
+      logSpy.mockRestore()
+    })
   })
 
 describe('syncPlans travel-date metadata', () => {

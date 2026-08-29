@@ -151,7 +151,8 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
           data: {
             status: 'AMBIGUOUS', completedAt: new Date(), latencyMs, retryClassification: 'NON_RETRYABLE',
             errorCode: err?.code, errorMessage: err?.message,
-            metadata: { ambiguous: true, reconciliationRequired: true, causeCode: err?.details?.causeCode ?? null },
+            providerReference: err?.details?.providerOrderId || undefined,
+            metadata: { ambiguous: true, reconciliationRequired: true, causeCode: err?.details?.causeCode ?? null, providerOrderId: err?.details?.providerOrderId ?? null, upstreamConfirmed: err?.details?.upstreamConfirmed === true },
           },
         })
         return { success: false, status: 'AMBIGUOUS', errorCode: 'AMBIGUOUS_PROVIDER_OUTCOME', errorMessage: 'Provider activation outcome is unknown (request may have completed); reconciliation required' }
@@ -212,6 +213,7 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
           retryClassification: 'NON_RETRYABLE',
           errorCode: 'INCOMPLETE_RESPONSE',
           errorMessage: 'Response missing ICCID data — activation may have succeeded',
+          providerReference: providerOrderId || undefined,
           metadata: { ambiguous: true, reconciliationRequired: true, causeCode: 'INCOMPLETE_RESPONSE' },
         },
       })

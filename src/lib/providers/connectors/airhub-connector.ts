@@ -78,6 +78,13 @@ function safeDiagValue(v: unknown): string {
   return String(v)
 }
 
+/** Mask a provider identifier (ICCID/simID) for logs: keep only the first and last 4 chars. */
+function maskIdentifier(v: unknown): string {
+  const s = String(v ?? '')
+  if (s.length <= 8) return '[REDACTED]'
+  return `${s.slice(0, 4)}...${s.slice(-4)}`
+}
+
 /** The single structured diagnostic entry per call site; emits nothing when disabled. */
 function logBalanceDiagnostics(
   scope: 'purchase' | 'wallet',
@@ -835,7 +842,14 @@ export class AirHubConnector implements IProviderConnector {
     // --- Build the exact documented payload. quantity/email/orderId/packageId
     // are OneSIM-internal and MUST NOT be serialized to AirHub. ---
     const planCode = params.planId
-    const uniqueOrderId = params.externalId || `onesim-${Date.now()}`
+    // AirHub treats unique_order_id as its upstream idempotent/order key: it must
+    // be deterministic, unique per OneSIM order, and stable across safe retries of
+    // the SAME order. The OneSIM ESIMPurchase id (params.orderId) satisfies all
+    // three. params.externalId is the business id — shared by many orders, so it
+    // is only a legacy fallback for callers that do not pass an orderId. Date.now()
+    // remains a last resort for callers that provide neither (never an idempotency
+    // retry path).
+    const uniqueOrderId = params.orderId || params.externalId || `onesim-${Date.now()}`
     const rawTravelDate = (params as any).travelDate || (params.subscriber as any)?.travelDate || undefined
     console.log(`[TRAVEL_DATE_TRACE] stage=AIRHUB_CONNECTOR travelDatePresent=${!!rawTravelDate}`)
 
@@ -942,7 +956,7 @@ export class AirHubConnector implements IProviderConnector {
         const d = data.data || data
         const iccids = this.extractIccids(d, params.quantity)
         const simId = d.simID || d.simId || d.sim_id || d.data?.simID || d.data?.simId || undefined
-        const orderId = d.orderId || d.order_id || d.transactionId || d.id || data.orderId || data.order_id || simId || ''
+        const orderId = d.orderId || d.order_id || d.orderid || d.orderID || d.OrderID || d.transactionId || d.id || data.orderId || data.order_id || data.orderid || simId || ''
 
         if (!iccids.length) {
           console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} warning=NO_ICCIDS orderId=${orderId} dataKeys=${Object.keys(d).join(',')}`)
@@ -951,7 +965,33 @@ export class AirHubConnector implements IProviderConnector {
             console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} pendingStatus=${pendingStatus}`)
             return { success: true, data: { activationId: orderId, iccids: [], status: pendingStatus } }
           }
-          return { success: false, error: { code: 'NO_ICCIDS', message: 'AirHub returned no ICCIDs in response', details: { retryable: false, providerStatus: response.status } } }
+
+          // AirHub confirmed the purchase (HTTP 200 + isSuccess=true) but returned
+          // no usable ICCID/status. Only an EXPLICIT provider failure status makes
+          // this a definitive failure. Otherwise the upstream mutation may have
+          // completed, so flag AMBIGUOUS + upstreamConfirmed: marking a definitive
+          // failure here could release the wallet for a purchase the provider has
+          // already charged. Any discovered order/sim reference is carried in the
+          // details so reconciliation can locate the asset — never re-purchase.
+          const explicitFailure = this.detectExplicitFailure(d)
+          if (explicitFailure) {
+            return { success: false, error: { code: 'NO_ICCIDS', message: explicitFailure, details: { retryable: false, providerStatus: response.status } } }
+          }
+          return {
+            success: false,
+            error: {
+              code: 'NO_ICCIDS',
+              message: 'AirHub confirmed success but returned no usable ICCID — the outcome is ambiguous and requires reconciliation',
+              details: {
+                retryable: false,
+                providerStatus: response.status,
+                ambiguous: true,
+                upstreamConfirmed: true,
+                ...(orderId ? { providerOrderId: orderId } : {}),
+                ...(simId ? { simId } : {}),
+              },
+            },
+          }
         }
 
         const activationCode = d.activationCode || d.data?.activationCode || d.lpa || d.data?.lpa || d.lpaProfile || undefined
@@ -973,7 +1013,7 @@ export class AirHubConnector implements IProviderConnector {
 
         if (!qrCodeUrl) {
           try {
-            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR iccid=${iccids[0]}`)
+            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR iccid=${maskIdentifier(iccids[0])}`)
             const qrResult = await this.getQRCode(iccids[0])
             if (qrResult.success && qrResult.data?.qrCodeUrl) {
               console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR success=true`)
@@ -1146,7 +1186,7 @@ export class AirHubConnector implements IProviderConnector {
     }
     const body = { partnerCode, iccid }
 
-    console.log(`[AIRHUB_QR] correlationId=${correlationId} iccid=${iccid}`)
+    console.log(`[AIRHUB_QR] correlationId=${correlationId} iccid=${maskIdentifier(iccid)}`)
 
     try {
       const controller = new AbortController()
@@ -1203,7 +1243,30 @@ export class AirHubConnector implements IProviderConnector {
     for (const s of singles) {
       if (s && typeof s === 'string' && s.length >= 10 && !iccids.includes(s)) { iccids.push(s); break }
     }
+
+    // AirHub PurhaseSim success responses use a scalar `simID`/`simId`/`sim_id`
+    // for the provisioned SIM identifier (top-level or nested under `data`).
+    // This is only a FALLBACK: it is used when no stronger canonical ICCID is
+    // already captured, and only for a non-empty, non-whitespace value. A
+    // numeric simID is normalized to its string form. Pending/provisional
+    // identifiers that are empty are rejected.
+    if (iccids.length === 0) {
+      const simId = this.normalizeSimId(d)
+      if (simId) iccids.push(simId)
+    }
+
     return iccids
+  }
+
+  /** Normalize a scalar top-level/nested AirHub `simID`/`simId`/`sim_id` value. */
+  private normalizeSimId(d: any): string | null {
+    const raw = d.simID ?? d.simId ?? d.sim_id ?? d.data?.simID ?? d.data?.simId ?? d.data?.sim_id ?? null
+    if (raw === null || raw === undefined) return null
+    const s = String(raw).trim()
+    if (s.length === 0) return null
+    // Numeric strings are accepted as provided by AirHub (a provisioned SIM ref).
+    if (isNaN(Number(s))) return s
+    return s
   }
 
   /** Local validation of the documented purchase payload. Rejects before any HTTP call. */
@@ -1272,6 +1335,15 @@ export class AirHubConnector implements IProviderConnector {
     if (['PROCESSING', 'QUEUED', 'PENDING', 'IN_PROGRESS', 'INITIATED'].includes(raw)) {
       if (raw === 'PROCESSING' || raw === 'QUEUED' || raw === 'IN_PROGRESS') return 'PROCESSING'
       return 'PENDING'
+    }
+    return null
+  }
+
+  /** Returns a message when the response carries an explicit provider failure status. */
+  private detectExplicitFailure(d: any): string | null {
+    const raw = (d.status || d.orderStatus || '').toString().toUpperCase()
+    if (['FAILED', 'CANCELLED', 'REJECTED', 'EXPIRED'].includes(raw)) {
+      return `AirHub reported purchase status ${raw}`
     }
     return null
   }

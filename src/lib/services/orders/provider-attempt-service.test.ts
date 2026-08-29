@@ -284,6 +284,36 @@ describe('executeProviderAttempt — cross-provider plan-binding ownership guard
     expect(updateCall.data.metadata).toMatchObject({ ambiguous: true, reconciliationRequired: true })
     expect(mockComplete).not.toHaveBeenCalled()
   })
+
+  it('persists a recovered provider order reference on an upstream-confirmed ambiguous outcome', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockGetAdapter.mockResolvedValue({
+      validatePurchase: undefined,
+      activateESIM: vi.fn().mockResolvedValue({
+        success: false,
+        error: {
+          code: 'NO_ICCIDS',
+          message: 'AirHub confirmed success but returned no usable ICCID — the outcome is ambiguous',
+          details: { retryable: false, providerStatus: 200, ambiguous: true, upstreamConfirmed: true, providerOrderId: 'AH-ORDER-7', simId: '8901234567890123456' },
+        },
+      }),
+    } as any)
+    mockClassifyOutcome.mockReturnValue('AMBIGUOUS_PROVIDER_OUTCOME')
+
+    const result = await executeProviderAttempt(baseInput())
+
+    expect(result.status).toBe('AMBIGUOUS')
+    const updateCall = mockPrisma.providerAttempt.update.mock.calls[0][0] as any
+    expect(updateCall.data.status).toBe('AMBIGUOUS')
+    expect(updateCall.data.providerReference).toBe('AH-ORDER-7')
+    expect(updateCall.data.metadata).toMatchObject({
+      ambiguous: true,
+      reconciliationRequired: true,
+      providerOrderId: 'AH-ORDER-7',
+      upstreamConfirmed: true,
+    })
+    expect(mockComplete).not.toHaveBeenCalled()
+  })
 })
 
 describe('executeProviderAttempt — three-provider cross-failover safety (USMATRIX/CHOICE/AIRHUB)', () => {
