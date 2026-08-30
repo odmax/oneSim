@@ -79,6 +79,7 @@ export async function executePurchase(params: {
   const validated = purchaseESIMSchema.safeParse({
     packageId: params.packageId,
     quantity: params.quantity,
+    quoteReference: params.quoteReference,
     idempotencyKey: params.idempotencyKey,
     travelDate: params.travelDate,
   })
@@ -88,7 +89,7 @@ export async function executePurchase(params: {
     return { success: false, code: 'invalid_input', message: 'Invalid input' }
   }
 
-  const { packageId, quantity, travelDate } = validated.data
+  const { packageId, quantity, quoteReference, idempotencyKey, travelDate } = validated.data
   const businessId = session.user.businessId!
 
   const result = await createOrder({
@@ -96,6 +97,8 @@ export async function executePurchase(params: {
     userId: session.user.id,
     packageId,
     quantity,
+    quoteReference: quoteReference || undefined,
+    idempotencyKey: idempotencyKey || undefined,
     travelDate: travelDate || undefined,
     correlationId,
     async: true,

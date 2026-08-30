@@ -71,6 +71,10 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
             expiresAt: r.data.expiresAt,
             evidence: r.data.evidence,
             rawMetadata: r.data.rawMetadata,
+            activationCode: r.data.activationCode,
+            qrCodeUrl: r.data.qrCodeUrl,
+            smdpAddress: r.data.smdpAddress,
+            matchingId: r.data.matchingId,
           } : {}),
         },
       }

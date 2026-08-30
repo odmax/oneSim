@@ -689,7 +689,7 @@ describe('TelnaSeamlessConnector', () => {
       vi.unstubAllGlobals()
     })
 
-    it('handles pending subscription without ICCID', async () => {
+    it('handles pending subscription without ICCID (empty iccids + provider reference, no fabricated ICCID)', async () => {
       const mockFetch = vi.fn()
         .mockResolvedValueOnce({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(makeOrderResponse({ state: 'PENDING' }))) })
         .mockResolvedValueOnce({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ orderId: 'order-xyz', state: 'SUBMITTED' })) })
@@ -700,7 +700,37 @@ describe('TelnaSeamlessConnector', () => {
       const result = await connector.activateESIM(validParams)
       expect(result.success).toBe(true)
       expect(result.data?.status).toBe('PENDING_ACTIVATION')
-      expect(result.data?.iccids.length).toBeGreaterThan(0)
+      expect(result.data?.iccids).toEqual([])
+      expect(result.data?.activationId).toBe('sub-abc')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('derives externalPayment.reference and X-Idempotency-Key from orderId first (retry-stable)', async () => {
+      const flow = [
+        { ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(makeOrderResponse({ state: 'SUBMITTED' }))) },
+        { ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ orderId: 'order-xyz', state: 'SUBMITTED' })) },
+        { ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(makeOrderResponse({ state: 'COMPLETED', createdEntities: { subscriptions: [{ subscriptionId: 'sub-abc' }] } }))) },
+        { ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(makeSubscriptionResponse())) },
+        { ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(makeQRResponse())) },
+      ]
+      const mockFetch = vi.fn()
+      for (const r of [...flow, ...flow, ...flow, ...flow]) mockFetch.mockResolvedValueOnce(r)
+      vi.stubGlobal('fetch', mockFetch)
+
+      await connector.activateESIM({ ...validParams, orderId: 'cmt-order-1' })
+      await connector.activateESIM({ ...validParams, orderId: 'cmt-order-1' })
+      await connector.activateESIM({ ...validParams, externalId: 'biz-1', orderId: 'cmt-order-2' })
+
+      const body1 = JSON.parse(mockFetch.mock.calls[0][1].body)
+      const body2 = JSON.parse(mockFetch.mock.calls[5][1].body)
+      const body3 = JSON.parse(mockFetch.mock.calls[10][1].body)
+      expect(body1.externalPayment.reference).toBe('cmt-order-1')
+      expect(body2.externalPayment.reference).toBe('cmt-order-1')
+      expect(body3.externalPayment.reference).toBe('cmt-order-2')
+      expect(mockFetch.mock.calls[1][1].headers['X-Idempotency-Key']).toBe('onesim-cmt-order-1-submit-order')
+      expect(mockFetch.mock.calls[6][1].headers['X-Idempotency-Key']).toBe('onesim-cmt-order-1-submit-order')
+      expect(mockFetch.mock.calls[11][1].headers['X-Idempotency-Key']).toBe('onesim-cmt-order-2-submit-order')
 
       vi.unstubAllGlobals()
     })

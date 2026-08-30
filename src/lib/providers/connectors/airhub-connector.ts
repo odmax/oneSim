@@ -1070,15 +1070,20 @@ export class AirHubConnector implements IProviderConnector {
     if (!tokenResult.success) return { success: false, error: tokenResult.error }
 
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
-    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/OrderDetails`
+    // The documented AirHub order-detail read is POST /api/ESIM/GetActivationCode,
+    // keyed by the purchase-returned AirHub `orderid` (array). There is NO
+    // /api/ESIM/OrderDetails endpoint (it returns HTTP 404). The identifier must
+    // be the provider-owned order reference — never a local OneSIM id and never
+    // an ICCID (this endpoint does not accept ICCIDs).
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/GetActivationCode`
     const cfg = (provider.config as any) || {}
     const partnerCode = normalizePartnerCode(cfg.partnerCode)
     if (partnerCode === null) {
       return { success: false, error: { code: 'AIRHUB_PARTNER_CODE_MISSING', message: 'AirHub partnerCode is not configured. Authenticate to derive and persist it from the login response.' } }
     }
-    const body = { partnerCode, orderId: subscriptionId }
+    const body = { partnerCode: Number(partnerCode), orderid: [String(subscriptionId)] }
 
-    console.log(`[AIRHUB_STATUS] correlationId=${correlationId} orderId=${subscriptionId}`)
+    console.log(`[AIRHUB_STATUS] correlationId=${correlationId} endpoint=/api/ESIM/GetActivationCode orderid=${subscriptionId}`)
 
     try {
       const controller = new AbortController()
@@ -1094,29 +1099,107 @@ export class AirHubConnector implements IProviderConnector {
       const text = await response.text()
       let data: any
       try { data = JSON.parse(text) } catch {
+        if (response.status === 404) {
+          return { success: false, error: { code: 'NOT_FOUND', message: `AirHub returned HTTP 404 for order ${subscriptionId} — the order was not found` } }
+        }
         return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: 'AirHub returned non-JSON status response' } }
       }
 
       console.log(`[AIRHUB_STATUS] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess}`)
 
-      if (!response.ok) return { success: false, error: { code: `HTTP_${response.status}`, message: `AirHub status check returned ${response.status}` } }
-      if (data.isSuccess === false) return { success: false, error: { code: 'PROVIDER_REJECTED', message: `AirHub rejected status check: ${data.message || 'isSuccess=false'}` } }
+      if (!response.ok) {
+        const code = this.classifyStatusHttpError(response.status, data)
+        return {
+          success: false,
+          error: {
+            code,
+            message: `AirHub status returned HTTP ${response.status}: ${data.message || text.substring(0, 200)}`,
+            details: { retryable: response.status >= 500, providerStatus: response.status },
+          },
+        }
+      }
+      if (data.isSuccess === false) {
+        const code = this.classifyStatusRejection(data)
+        const retryable = code === 'PROVIDER_UNAVAILABLE' || code === 'RATE_LIMITED'
+        return {
+          success: false,
+          error: { code, message: `AirHub rejected status lookup: ${data.message || 'isSuccess=false'}`, details: { retryable, providerStatus: response.status } },
+        }
+      }
 
-      const d = data.data || data
-      const status = this.normalizeStatus(d.status || d.orderStatus || data.status || 'UNKNOWN')
-      const iccids = this.extractIccids(d, 1)
+      // GetActivationCode may return a single object or an array of order rows.
+      const rows = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [data.data || data]
+      const row: any = rows[0] || {}
+      const rawStatus = row.status || row.orderStatus || data.status || data.orderStatus || ''
+      const iccids = this.extractIccids(row, 0)
+      const fulfilled = iccids.length > 0 || Boolean(row.activationCode) || Boolean(row.activation_code)
+      const status = this.normalizeStatusValue(rawStatus, fulfilled)
 
-      return { success: true, data: { status, iccids: iccids.length ? iccids : undefined, iccid: iccids[0] || undefined } }
+      const install = {
+        ...(row.activationCode || row.activation_code ? { activationCode: row.activationCode || row.activation_code } : {}),
+        ...(row.qrCodeUrl || row.qr_code_url ? { qrCodeUrl: row.qrCodeUrl || row.qr_code_url } : {}),
+        ...(row.smdpAddress || row.smdp_address ? { smdpAddress: row.smdpAddress || row.smdp_address } : {}),
+        ...(row.matchingId || row.matching_id ? { matchingId: row.matchingId || row.matching_id } : {}),
+      }
+
+      return {
+        success: true,
+        data: {
+          status,
+          iccids: iccids.length ? iccids : undefined,
+          iccid: iccids[0] || undefined,
+          rawStatus: rawStatus || null,
+          ...install,
+          rawMetadata: {
+            orderid: subscriptionId,
+            ...(row.simID || row.simId || row.sim_id ? { simId: row.simID || row.simId || row.sim_id } : {}),
+            ...(row.apn ? { apn: row.apn } : {}),
+            ...(row.message ? { message: row.message } : {}),
+          },
+        },
+      }
     } catch (e: any) {
       if (e.name === 'AbortError') return { success: false, error: { code: 'TIMEOUT', message: 'AirHub status check timed out' } }
       return { success: false, error: { code: 'NETWORK_ERROR', message: `AirHub status error: ${e.message?.substring(0, 200)}` } }
     }
   }
 
+  /** Maps a raw AirHub status string (or detected fulfillment) into the canonical lifecycle value. */
+  private normalizeStatusValue(raw: unknown, fulfilled: boolean): string {
+    const s = String(raw || '').trim().toUpperCase()
+    if (['ACTIVE', 'ACTIVATED', 'COMPLETED', 'SUCCESS', 'READY'].includes(s)) return 'ACTIVE'
+    if (['FAILED'].includes(s)) return 'FAILED'
+    if (['CANCELLED', 'CANCELED'].includes(s)) return 'CANCELLED'
+    if (['REJECTED', 'REJECT'].includes(s)) return 'REJECTED'
+    if (['EXPIRED'].includes(s)) return 'EXPIRED'
+    if (['QUEUED', 'PROCESSING', 'IN_PROGRESS', 'PROVISIONING', 'SUBMITTED'].includes(s)) return 'PROCESSING'
+    if (fulfilled) return 'ACTIVE'
+    return 'PENDING'
+  }
+
+  /** Classify an HTTP failure for a status lookup (provider-neutral codes). */
+  private classifyStatusHttpError(status: number, data: any): string {
+    if (status === 401 || status === 403) return 'AUTH_ERROR'
+    if (status === 404) return 'NOT_FOUND'
+    if (status === 429) return 'RATE_LIMITED'
+    if (status >= 500) return 'PROVIDER_UNAVAILABLE'
+    return `HTTP_${status}`
+  }
+
+  /** Classify an isSuccess=false status response. */
+  private classifyStatusRejection(data: any): string {
+    const msg = (data.message || data.error || '').toLowerCase()
+    if (/not found|no record|does not exist|invalid order/.test(msg)) return 'NOT_FOUND'
+    if (/auth|login|credential/.test(msg)) return 'AUTH_ERROR'
+    if (/timeout|unavailable|maintenance/.test(msg)) return 'PROVIDER_UNAVAILABLE'
+    return 'PROVIDER_REJECTED'
+  }
+
   /**
-   * AirHub OrderDetails is keyed by the AirHub order id, so the status lookup
-   * must use the provider-owned reference — never a local OneSIM id and never an
-   * ICCID. Returns null when no order reference exists so the caller skips.
+   * AirHub GetActivationCode is keyed by the purchase-returned AirHub order id
+   * (orderid), so the status lookup must use the provider-owned reference —
+   * never a local OneSIM id and never an ICCID. Returns null when no order
+   * reference exists so the caller skips.
    */
   resolveStatusLookup(esim: StatusLookupEsim): string | null {
     return esim.providerSubscriptionId || esim.providerActivationId || null
@@ -1317,17 +1400,6 @@ export class AirHubConnector implements IProviderConnector {
     if (raw === 'PROCESSING' || raw === 'QUEUED' || raw === 'IN_PROGRESS') return 'PROCESSING'
     if (raw === 'PENDING' || raw === 'INITIATED') return 'PENDING'
     return 'PENDING_ACTIVATION'
-  }
-
-  private normalizeStatus(raw: string): 'PENDING' | 'PENDING_ACTIVATION' | 'ACTIVE' | 'PROCESSING' {
-    if (!raw) return 'PENDING'
-    const s = raw.toUpperCase()
-    // Only ACTIVE from status check (not purchase) means network-active
-    if (s === 'ACTIVE') return 'ACTIVE'
-    // AirHub purchase completion states → provisioned but not device-active
-    if (s === 'COMPLETED' || s === 'SUCCESS' || s === 'ACTIVATED') return 'PENDING_ACTIVATION'
-    if (s === 'PROCESSING' || s === 'QUEUED' || s === 'PENDING' || s === 'IN_PROGRESS' || s === 'INITIATED') return 'PROCESSING'
-    return 'PENDING'
   }
 
   private detectPendingStatus(d: any): 'PENDING' | 'PROCESSING' | null {

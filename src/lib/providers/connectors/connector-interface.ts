@@ -112,6 +112,13 @@ export interface StatusResult {
   expiresAt?: string
   /** Canonical activation-evidence signals the connector verified (see StatusResultEvidence). */
   evidence?: StatusResultEvidence
+  /** Optional canonical install data recovered during a status lookup (e.g.
+   *  AirHub GetActivationCode). Forwarded to finalization without inventing a
+   *  second status type. */
+  activationCode?: string
+  qrCodeUrl?: string
+  smdpAddress?: string
+  matchingId?: string
   /** Sanitized provider metadata safe to persist. */
   rawMetadata?: Record<string, any>
 }
@@ -674,4 +681,38 @@ export interface AmbiguousPurchaseReconcileResult {
   imsi?: string
   reason?: 'unique-match' | 'no-match' | 'multiple-matches' | 'inconclusive'
   evidence?: Record<string, unknown>
+}
+
+/**
+ * Canonical classification of a purchase response that carried NO usable ICCID.
+ *
+ * A provider that accepted the mutation (HTTP 2xx, no explicit rejection) but
+ * returned no ICCID MUST NOT be treated as a definitive failure — marking it so
+ * could release reserved wallet funds for a purchase the provider has already
+ * charged. Connectors call this to normalize that outcome using the existing
+ * lifecycle semantics:
+ *   - PENDING / PROCESSING  when the provider carries an explicit pending status
+ *     and a usable reference (the async polling path polls the same provider).
+ *   - DEFINITIVE            only when the provider explicitly reports failure.
+ *   - AMBIGUOUS             when the provider signals success/unknown but OneSIM
+ *     cannot prove fulfillment (caller returns an error whose `details` mark
+ *     `ambiguous: true` / `upstreamConfirmed: true`, never retried against
+ *     another provider, wallet never released).
+ *
+ * Never fabricates an ICCID.
+ */
+export type IccidlessOutcome =
+  | { kind: 'PENDING'; status: 'PENDING' | 'PROCESSING'; providerOrderId: string }
+  | { kind: 'DEFINITIVE'; providerOrderId: string }
+  | { kind: 'AMBIGUOUS'; providerOrderId: string }
+
+export function classifyPurchaseWithoutIccid(rawStatus: unknown, providerOrderId: string): IccidlessOutcome {
+  const s = String(rawStatus || '').trim().toUpperCase()
+  if (['PENDING', 'PROCESSING', 'QUEUED', 'IN_PROGRESS', 'INITIATED', 'RESERVED', 'PROVISIONING', 'PENDING_ACTIVATION'].includes(s)) {
+    return { kind: 'PENDING', status: s === 'PROCESSING' ? 'PROCESSING' : 'PENDING', providerOrderId }
+  }
+  if (['FAILED', 'CANCELLED', 'REJECTED', 'EXPIRED', 'ERROR'].includes(s)) {
+    return { kind: 'DEFINITIVE', providerOrderId }
+  }
+  return { kind: 'AMBIGUOUS', providerOrderId }
 }

@@ -353,7 +353,13 @@ export class TelnaSeamlessConnector implements IProviderConnector {
   async activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>> {
     const correlationId = generateCorrelationId()
     const startMs = Date.now()
-    const purchaseRef = params.externalId || `onesim-${Date.now()}`
+    // SeamlessOS uses externalPayment.reference + X-Idempotency-Key as its
+    // upstream idempotency keys. They must be deterministic and unique per
+    // OneSIM order and stable across retries of the SAME order: params.orderId
+    // (the OneSIM ESIMPurchase id) satisfies all three. params.externalId is a
+    // legacy fallback for callers that do not pass an orderId; Date.now() stays
+    // a last resort for callers that provide neither (never a retry path).
+    const purchaseRef = params.orderId || params.externalId || `onesim-${Date.now()}`
     const subscriberName = [params.subscriber.first_name, params.subscriber.last_name].filter(Boolean).join(' ') || params.subscriber.email
 
     const config = await this.loadConfig()
@@ -463,8 +469,12 @@ export class TelnaSeamlessConnector implements IProviderConnector {
     return {
       success: true,
       data: {
+        // subscriptionId is a provider REFERENCE, never an ICCID — when the
+        // subscription carries no ICCID yet the canonical result reports the
+        // reference via activationId and an empty iccids array (the async
+        // polling path resolves the ICCID). An ICCID is never fabricated.
         activationId: subscriptionId || orderId,
-        iccids: iccids.length ? iccids : [subscriptionId || orderId],
+        iccids,
         activationCodes,
         qrCodeUrl,
         matchingId,

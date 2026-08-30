@@ -1,5 +1,6 @@
 import { RestCatalogConnector } from './rest-catalog-connector'
 import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, StatusResult, UsageResult, DiagnosticInfo, EsimLifecycleResult, ConnectorCapabilities } from './connector-interface'
+import { classifyPurchaseWithoutIccid } from './connector-interface'
 
 interface HeaderTokenConfig {
   apiBaseUrl: string
@@ -134,13 +135,35 @@ export class HeaderTokenRestConnector extends RestCatalogConnector {
       if (!activateRes.data) return { success: false, error: activateRes.error || { code: 'ACTIVATE_FAILED', message: 'Activation request failed' } }
 
       const iccids: string[] = activateRes.data.iccid ? [activateRes.data.iccid] : activateRes.data.iccids || activateRes.data.subscriptions?.map((s: any) => s.iccid).filter(Boolean) || []
+      const activationId = activateRes.data.id || activateRes.data.activation_id || ''
+      // HeaderToken fulfills asynchronously by protocol: absent status means PENDING.
+      const effectiveStatus = activateRes.data.status || 'PENDING'
+
+      if (iccids.length === 0) {
+        const outcome = classifyPurchaseWithoutIccid(effectiveStatus, activationId)
+        if (outcome.kind === 'PENDING') {
+          return { success: true, data: { activationId: outcome.providerOrderId, iccids: [], status: outcome.status } }
+        }
+        if (outcome.kind === 'DEFINITIVE') {
+          return { success: false, error: { code: 'NO_ICCIDS', message: `Provider reported activation status ${effectiveStatus} without ICCIDs` } }
+        }
+        return {
+          success: false,
+          error: {
+            code: 'NO_ICCIDS',
+            message: 'Provider accepted the purchase but returned no ICCID — outcome is ambiguous and requires reconciliation',
+            details: { retryable: false, ambiguous: true, upstreamConfirmed: true, ...(outcome.providerOrderId ? { providerOrderId: outcome.providerOrderId } : {}) },
+          },
+        }
+      }
+
       return {
         success: true,
         data: {
-          activationId: activateRes.data.id || activateRes.data.activation_id || '',
+          activationId,
           iccids,
           qrCodeUrl: activateRes.data.qr_code_url || activateRes.data.qrCodeUrl || '',
-          status: activateRes.data.status || 'PENDING',
+          status: effectiveStatus,
         },
       }
     } catch (e: any) {

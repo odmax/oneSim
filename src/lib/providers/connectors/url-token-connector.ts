@@ -1,5 +1,6 @@
 import { RestCatalogConnector, type RestCatalogConfig } from './rest-catalog-connector'
 import type { ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, DiagnosticInfo, StatusLookupIdentifier, StatusLookupEsim, UsageResult, EsimLifecycleResult, QRCodeResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, InstallationLookupDiagnostics, ConnectorInstallDataOutput, AmbiguousPurchaseReconcileInput, AmbiguousPurchaseReconcileResult, CustomPackageDefinitionResult, CustomPackageCreateInput, CustomPackageCreateResult } from './connector-interface'
+import { classifyPurchaseWithoutIccid } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { normalizeBalanceResponse, probeBalanceFields, sanitizeDiagnosticSensitive } from '@/lib/providers/balance/normalize-balance'
 
@@ -849,7 +850,22 @@ export class UrlTokenConnector extends RestCatalogConnector {
 
         if (iccids.length === 0) {
           console.log(`[UrlTokenConnector] WARNING: Choice response has no ICCIDs in data.imsis. Top keys: ${topKeys.join(', ')}`)
-          return { success: false, error: { code: 'NO_ICCIDS', message: 'Provider returned 0 ICCIDs' } }
+          const providerOrderId = json.transaction_id || json.order_id || json.id || ''
+          const outcome = classifyPurchaseWithoutIccid(json.status, providerOrderId)
+          if (outcome.kind === 'PENDING') {
+            return { success: true, data: { activationId: outcome.providerOrderId, iccids: [], status: outcome.status } }
+          }
+          if (outcome.kind === 'DEFINITIVE') {
+            return { success: false, error: { code: 'NO_ICCIDS', message: `Provider reported purchase status ${json.status} without ICCIDs` } }
+          }
+          return {
+            success: false,
+            error: {
+              code: 'NO_ICCIDS',
+              message: 'Provider accepted the purchase but returned no ICCID — outcome is ambiguous and requires reconciliation',
+              details: { retryable: false, ambiguous: true, upstreamConfirmed: true, ...(outcome.providerOrderId ? { providerOrderId: outcome.providerOrderId } : {}) },
+            },
+          }
         }
 
         return {
@@ -882,6 +898,26 @@ export class UrlTokenConnector extends RestCatalogConnector {
         console.log(`[UrlTokenConnector] WARNING: No ICCID field found in response. Top keys: ${topKeys.join(', ')}`)
         return []
       })()
+
+      if (iccids.length === 0) {
+        const providerOrderId = json.transaction_id || json.order_id || json.id || json.response?.transaction_id || ''
+        const outcome = classifyPurchaseWithoutIccid(json.status, providerOrderId)
+        console.log(`[UrlTokenConnector] WARNING: activation accepted with zero ICCIDs. status=${json.status || '(none)'}`)
+        if (outcome.kind === 'PENDING') {
+          return { success: true, data: { activationId: outcome.providerOrderId, iccids: [], status: outcome.status } }
+        }
+        if (outcome.kind === 'DEFINITIVE') {
+          return { success: false, error: { code: 'NO_ICCIDS', message: `Provider reported purchase status ${json.status} without ICCIDs` } }
+        }
+        return {
+          success: false,
+          error: {
+            code: 'NO_ICCIDS',
+            message: 'Provider accepted the purchase but returned no ICCID — outcome is ambiguous and requires reconciliation',
+            details: { retryable: false, ambiguous: true, upstreamConfirmed: true, ...(outcome.providerOrderId ? { providerOrderId: outcome.providerOrderId } : {}) },
+          },
+        }
+      }
 
       return {
         success: true,

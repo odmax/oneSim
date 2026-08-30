@@ -29,12 +29,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'travelDate must be a valid date in YYYY-MM-DD format' }, { status: 400 })
     }
 
-    const result = await createOrder({
+const result = await createOrder({
       businessId: busId,
       userId: session.user.id,
       packageId,
       quantity,
       travelDate: travelDate || undefined,
+      // Route through the same canonical async lifecycle as the portal/V1 API:
+      // order creation + wallet reserve complete here, provider dispatch runs
+      // in the background job, and GET /api/v1/orders/{orderId} surfaces the
+      // result. This endpoint is a legacy duplicate of POST /api/v1/esims/order
+      // (no client references), so async is contract-compatible.
+      async: true,
     })
 
     if (!result.success) {
@@ -50,7 +56,7 @@ export async function POST(request: NextRequest) {
         id: result.orderId,
         status: result.status,
       },
-      esims: result.esims,
+      esims: result.esims || [],
     })
   } catch (error) {
     console.error('Purchase error:', error)

@@ -105,6 +105,14 @@ async function markFailedWithRetry(jobId: string, error: string) {
   if (!job) return
 
   if (job.attempts >= job.maxAttempts) {
+    // Exhaustion safety: never let a paid activation poll be silently stranded
+    // forever. Move unresolvable activation jobs into reconciliation (wallet
+    // held, provider reference preserved) instead of leaving the order at
+    // PENDING_PROVIDER.
+    if (job.type === 'PROVIDER_OPERATION') {
+      const { reconcileExhaustedActivationJob } = await import('./handlers/provider-operation')
+      await reconcileExhaustedActivationJob(job.payload)
+    }
     await prisma.backgroundJob.update({
       where: { id: jobId },
       data: { status: 'FAILED', lastError: error },

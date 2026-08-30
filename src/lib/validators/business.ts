@@ -18,6 +18,10 @@ export const addTeamMemberSchema = z.object({
 export const purchaseESIMSchema = z.object({
   packageId: z.string().min(1, 'Package is required'),
   quantity: z.number().min(1, 'Quantity must be at least 1').max(100, 'Maximum 100 eSIMs per purchase'),
+  /** Pre-requested purchase quote reference — consumed transactionally when present. */
+  quoteReference: z.string().trim().optional(),
+  /** Business-scoped idempotency key for the purchase (providerPurchaseKey). */
+  idempotencyKey: z.string().trim().optional(),
   travelDate: z
     .string()
     .trim()

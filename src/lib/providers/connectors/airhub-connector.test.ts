@@ -1559,8 +1559,8 @@ describe('syncPlans travel-date metadata', () => {
     })
   })
 
-  describe('getStatus', () => {
-    it('returns ACTIVE status for activated order', async () => {
+describe('getStatus', () => {
+    it('queries the documented GetActivationCode endpoint keyed by provider orderid', async () => {
       mockFetchSuccess({
         isSuccess: true,
         data: { status: 'ACTIVATED', iccid: '8901234567890123456' },
@@ -1570,15 +1570,48 @@ describe('syncPlans travel-date metadata', () => {
       const result = await connector.getStatus('AH-789')
 
       expect(result.success).toBe(true)
-      expect(result.data?.status).toBe('PENDING_ACTIVATION')
-      expect(result.data?.iccid).toBe('8901234567890123456')
-
       const [url, opts] = fetchSpy.mock.calls[0]
-      expect(url).toContain('/api/ESIM/OrderDetails')
-      expect(JSON.parse(opts.body).orderId).toBe('AH-789')
+      expect(url).toContain('/api/ESIM/GetActivationCode')
+      expect(url).not.toContain('OrderDetails')
+      const body = JSON.parse(opts.body)
+      expect(body.partnerCode).toBe(200652387)
+      expect(body.orderid).toEqual(['AH-789'])
+      expect(body.orderId).toBeUndefined()
+      expect(body.iccid).toBeUndefined()
     })
 
-    it('returns PROCESSING status', async () => {
+    it('returns ACTIVE status for an activated order with ICCID normalized', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        data: { status: 'ACTIVATED', iccid: '8901234567890123456' },
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('AH-789')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.iccid).toBe('8901234567890123456')
+      expect(result.data?.rawStatus).toBe('ACTIVATED')
+    })
+
+    it('normalizes a completed order with simID into canonical ACTIVE + ICCID', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        data: { simID: '8912345678901222222', activationCode: 'LPA:1$smdp.example.com$CODE', message: 'success' },
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.iccid).toBe('8912345678901222222')
+      expect(result.data?.activationCode).toBe('LPA:1$smdp.example.com$CODE')
+      expect(result.data?.rawMetadata?.orderid).toBe('12811381')
+    })
+
+    it('returns PROCESSING status while queued', async () => {
       mockFetchSuccess({
         isSuccess: true,
         data: { status: 'QUEUED' },
@@ -1591,17 +1624,48 @@ describe('syncPlans travel-date metadata', () => {
       expect(result.data?.status).toBe('PROCESSING')
     })
 
-    it('returns error on HTTP failure', async () => {
+    it('returns PENDING when no status and no fulfillment evidence', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { message: 'processing' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('AH-PEND')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('PENDING')
+    })
+
+    it('reports explicit FAILED status without inventing PENDING', async () => {
+      mockFetchSuccess({ isSuccess: true, data: { status: 'FAILED', message: 'order failed' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('AH-BAD')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('FAILED')
+    })
+
+    it('returns NOT_FOUND on HTTP 404 (contract error is never fake PENDING)', async () => {
       mockFetchFailure(404, { message: 'Order not found' })
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.getStatus('AH-MISSING')
 
       expect(result.success).toBe(false)
-      expect(result.error?.code).toContain('404')
+      expect(result.error?.code).toBe('NOT_FOUND')
     })
 
-    it('returns error on provider rejection', async () => {
+    it('returns PROVIDER_UNAVAILABLE on HTTP 500 and marks retryable', async () => {
+      mockFetchFailure(500, { message: 'boom' })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('AH-500')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('PROVIDER_UNAVAILABLE')
+      expect(result.error?.details?.retryable).toBe(true)
+    })
+
+    it('returns NOT_FOUND when provider rejects with an invalid-order message', async () => {
       mockFetchSuccess({
         isSuccess: false,
         message: 'Invalid order ID',
@@ -1611,7 +1675,20 @@ describe('syncPlans travel-date metadata', () => {
       const result = await connector.getStatus('AH-BAD')
 
       expect(result.success).toBe(false)
-      expect(result.error?.code).toBe('PROVIDER_REJECTED')
+      expect(result.error?.code).toBe('NOT_FOUND')
+    })
+
+    it('returns AUTH_ERROR when provider rejects with an auth message', async () => {
+      mockFetchSuccess({
+        isSuccess: false,
+        message: 'Authentication failed',
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('AH-BAD')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AUTH_ERROR')
     })
 
     it('returns TIMEOUT on abort', async () => {
@@ -1631,6 +1708,19 @@ describe('syncPlans travel-date metadata', () => {
 
       const connector = new AirHubConnector('missing', 'test-token')
       const result = await connector.getStatus('AH-789')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_FOUND')
+    })
+
+    it('handles an empty 404 body (documented AirHub behavior) as NOT_FOUND', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: false, status: 404, text: () => Promise.resolve(''),
+        headers: { get: () => '' },
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
 
       expect(result.success).toBe(false)
       expect(result.error?.code).toBe('NOT_FOUND')

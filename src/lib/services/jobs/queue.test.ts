@@ -17,6 +17,7 @@ vi.mock('./handlers/provider-operation', () => ({
       ? { completed: false, error: 'Unknown provider operation' }
       : { completed: true },
   ),
+  reconcileExhaustedActivationJob: vi.fn(),
 }))
 
 import { prisma } from '@/lib/prisma'

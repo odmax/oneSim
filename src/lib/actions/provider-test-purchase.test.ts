@@ -8,6 +8,9 @@ vi.mock('@/lib/prisma', () => ({
   prisma: {
     provider: { findUnique: vi.fn() },
     providerPackage: { findFirst: vi.fn() },
+    eSIMPurchase: { create: vi.fn() },
+    walletTransaction: { create: vi.fn() },
+    eSIM: { create: vi.fn() },
   },
 }))
 
@@ -176,5 +179,23 @@ describe('testProviderPurchase travel-date handling', () => {
 
     expect(result.success).toBe(true)
     expect(activateESIM.mock.calls[0][0].travelDate).toBe('2026-09-15')
+  })
+
+  it('is a direct provider diagnostic: never creates an order, wallet ledger, or eSIM row', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(NON_AIRHUB_PROVIDER as any)
+    mockPrisma.providerPackage.findFirst.mockResolvedValue({
+      ...PACKAGE_BASE,
+      providerRawData: { planCode: 'US-5GB-30D', __requiresTravelDate: false },
+    } as any)
+    const activateESIM = vi.fn().mockResolvedValue(ACTIVATE_RESULT)
+    setupAdapter({ activateESIM })
+
+    const result = await testProviderPurchase('prov-1', 'pp-1', 1)
+
+    expect(result.success).toBe(true)
+    expect(activateESIM).toHaveBeenCalledTimes(1)
+    expect(mockPrisma.eSIMPurchase.create).not.toHaveBeenCalled()
+    expect(mockPrisma.walletTransaction.create).not.toHaveBeenCalled()
+    expect(mockPrisma.eSIM.create).not.toHaveBeenCalled()
   })
 })

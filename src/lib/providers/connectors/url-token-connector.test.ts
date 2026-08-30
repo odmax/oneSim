@@ -367,6 +367,42 @@ describe('UrlTokenConnector', () => {
       vi.unstubAllGlobals()
     })
 
+    it('marks empty-imsis + no status as AMBIGUOUS upstreamConfirmed (never a definitive failure)', async () => {
+      const c = makeConnectorWithChoiceFieldMappings()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        data: { imsis: [{ imsi: '123' }] },
+        transaction_id: 'txn-empty',
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.activateESIM(choiceParams)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NO_ICCIDS')
+      expect(result.error?.details?.ambiguous).toBe(true)
+      expect(result.error?.details?.upstreamConfirmed).toBe(true)
+      expect(result.error?.details?.providerOrderId).toBe('txn-empty')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns canonical PENDING success for empty imsis + explicit pending status', async () => {
+      const c = makeConnectorWithChoiceFieldMappings()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        data: { imsis: [] },
+        transaction_id: 'txn-pending',
+        status: 'pending',
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.activateESIM(choiceParams)
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual([])
+      expect(result.data?.status).toBe('PENDING')
+      expect(result.data?.activationId).toBe('txn-pending')
+
+      vi.unstubAllGlobals()
+    })
+
     it('sends CHOICE-specific body fields', async () => {
       const c = makeConnectorWithChoiceFieldMappings()
       const mockFetch = vi.fn().mockResolvedValue(okJson({
@@ -477,6 +513,48 @@ describe('UrlTokenConnector', () => {
 
       const result = await c.activateESIM(genericParams)
       expect(result.data?.iccids).toEqual(['sim-icc'])
+
+      vi.unstubAllGlobals()
+    })
+
+    it('marks empty-ICCID + terminal status as AMBIGUOUS upstreamConfirmed (not unsafe terminal success)', async () => {
+      const c = makeConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ id: 'order-empty', status: 'ACTIVATED' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.activateESIM(genericParams)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NO_ICCIDS')
+      expect(result.error?.details?.ambiguous).toBe(true)
+      expect(result.error?.details?.upstreamConfirmed).toBe(true)
+      expect(result.error?.details?.providerOrderId).toBe('order-empty')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('returns canonical PENDING success for empty-ICCID + explicit pending status', async () => {
+      const c = makeConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ id: 'order-pending', status: 'processing' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.activateESIM(genericParams)
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual([])
+      expect(result.data?.status).toBe('PROCESSING')
+      expect(result.data?.activationId).toBe('order-pending')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('reports a DEFINITIVE failure for an explicit failed status with no ICCIDs', async () => {
+      const c = makeConnector()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ id: 'order-failed', status: 'FAILED' }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.activateESIM(genericParams)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NO_ICCIDS')
+      expect(result.error?.details?.ambiguous).not.toBe(true)
 
       vi.unstubAllGlobals()
     })

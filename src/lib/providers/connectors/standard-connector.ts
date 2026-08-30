@@ -1,5 +1,5 @@
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, StatusResult, UsageResult, RateResult, DiagnosticInfo, EsimLifecycleResult, ConnectorCapabilities } from './connector-interface'
-import { classifyError } from './connector-interface'
+import { classifyError, classifyPurchaseWithoutIccid } from './connector-interface'
 
 interface StandardConnectorConfig {
   providerId: string
@@ -408,11 +408,32 @@ export class StandardProviderConnector implements IProviderConnector {
     if (error) return { success: false, error }
     const fm = this.config.fieldMappings || {}
     const iccidField = fm.iccid || 'iccid'
+    const activationId = data.transaction_id || data.order_id || data.id || ''
+    const iccids: string[] = data[iccidField] ? [String(data[iccidField])] : (Array.isArray(data.iccids) ? data.iccids.map(String) : [])
+
+    if (iccids.length === 0) {
+      const outcome = classifyPurchaseWithoutIccid(data.status, activationId)
+      if (outcome.kind === 'PENDING') {
+        return { success: true, data: { activationId: outcome.providerOrderId, iccids: [], status: outcome.status } }
+      }
+      if (outcome.kind === 'DEFINITIVE') {
+        return { success: false, error: { code: 'NO_ICCIDS', message: `Provider reported purchase status ${data.status} without ICCIDs` } }
+      }
+      return {
+        success: false,
+        error: {
+          code: 'NO_ICCIDS',
+          message: 'Provider accepted the purchase but returned no ICCID — outcome is ambiguous and requires reconciliation',
+          details: { retryable: false, ambiguous: true, upstreamConfirmed: true, ...(outcome.providerOrderId ? { providerOrderId: outcome.providerOrderId } : {}) },
+        },
+      }
+    }
+
     return {
       success: true,
       data: {
-        activationId: data.transaction_id || data.order_id || data.id || '',
-        iccids: data[iccidField] ? [String(data[iccidField])] : data.iccids || [],
+        activationId,
+        iccids,
         qrCodeUrl: data.qr_code_url || data.qrCodeUrl || '',
         status: data.status || 'ACTIVATED',
       },

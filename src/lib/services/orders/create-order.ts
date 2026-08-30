@@ -18,6 +18,8 @@ export interface CreateOrderParams {
   customer?: CreateOrderCustomer
   callbackUrl?: string
   idempotencyKey?: string
+  /** Pre-requested purchase quote reference (validated/consumed at purchase). */
+  quoteReference?: string
   /** Travel date (YYYY-MM-DD) required by plans that mandate it. */
   travelDate?: string
   /** Internal trace correlation ID */
@@ -73,6 +75,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     } : undefined,
     callbackUrl: params.callbackUrl,
     idempotencyKey: params.idempotencyKey,
+    quoteReference: params.quoteReference,
     travelDate: params.travelDate,
   })
 
