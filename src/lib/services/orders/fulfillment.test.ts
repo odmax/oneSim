@@ -499,8 +499,8 @@ describe('wallet release guard (Task 7)', () => {
 describe('resumeProviderFinalization', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  it('19. resumes finalization when providerFulfillId exists on order', async () => {
-    const order = mockOrder({ providerFulfillId: 'prov-ref-1', providerReservationId: 'res-1', esims: [] })
+  it('19. resumes finalization when providerFulfillId exists on order WITH eSIM records', async () => {
+    const order = mockOrder({ providerFulfillId: 'prov-ref-1', providerReservationId: 'res-1', esims: [mockEsim()] })
     mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(order)
     mockPrisma.eSIM.findMany.mockResolvedValue([])
     mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
@@ -520,6 +520,23 @@ describe('resumeProviderFinalization', () => {
 
     expect(result.success).toBe(true)
     expect(result.eSIMsPersisted).toBe(true)
+  })
+
+  it('19b. resume with providerFulfillId but ZERO eSIM records → blocked (wallet never captured, no FULFILLED)', async () => {
+    const order = mockOrder({ providerFulfillId: 'prov-ref-1', providerReservationId: 'res-1', esims: [] })
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(order)
+    mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
+      if (type === 'WALLET_CAPTURE') return Promise.resolve(null)
+      return Promise.resolve(null)
+    })
+
+    const result = await resumeProviderFinalization('order-1')
+
+    expect(result.success).toBe(false)
+    expect(result.recoveryRequired).toBe(true)
+    expect(result.error).toContain('No eSIM records')
+    expect(mockPrisma.walletTransaction.create).not.toHaveBeenCalled()
+    expect(mockTransition).not.toHaveBeenCalled()
   })
 
   it('20. resumes finalization when providerResponse has ICCIDs', async () => {

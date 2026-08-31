@@ -1833,6 +1833,41 @@ describe('getStatus', () => {
       expect(result.error?.code).toBe('NOT_FOUND')
     })
 
+    it('B2. activationCode present but simID/ICCID absent → PENDING (never fulfillment-ready), activationCode retained as diagnostic', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        message: 'Successfull',
+        getOrderdetails: [{ orderId: 12811381, activationCode: 'LPA:1$smdp.example.com$CODE-ONLY', apn: 'internet', isActive: false }],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('PENDING')
+      expect(result.data?.iccids).toBeUndefined()
+      expect(result.data?.iccid).toBeUndefined()
+      // activationCode retained as install/diagnostic evidence only — safe to
+      // capture for later, never used to mark fulfillment ready.
+      expect(result.data?.activationCode).toBe('LPA:1$smdp.example.com$CODE-ONLY')
+    })
+
+    it('C2. simID present with activationCode absent → ACTIVE fulfillment-ready (ICCID identity suffices; install may arrive later)', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        message: 'Successfull',
+        getOrderdetails: [{ orderId: 12811381, simID: '89012345678905555555', isActive: false }],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.iccids).toEqual(['89012345678905555555'])
+      expect(result.data?.activationCode).toBeUndefined()
+    })
+
     it('I. no raw activation code / full simID / token leaks into logs', async () => {
       mockFetchSuccess({
         isSuccess: true,

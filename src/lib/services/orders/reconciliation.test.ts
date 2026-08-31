@@ -227,6 +227,64 @@ describe('reconcileProviderOrder', () => {
     expect(created.status).toBe('SUCCEEDED')
   })
 
+  it('7. FOUND_SUCCESS with activationCode but ZERO ICCIDs → KEEP_WAITING, finalizer NOT called, wallet held, no redispatch', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', activationCode: 'LPA:1$smdp.example.com$CODE-ONLY' },
+      }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    expect(result.status).toBe('PROVIDER_RECONCILIATION')
+    expect(mockFinal).not.toHaveBeenCalled()
+    expect(mockRelease).not.toHaveBeenCalled()
+    expect(mockTransition).toHaveBeenCalledWith('order-1', 'PROVIDER_RECONCILIATION')
+    const created = mockPrisma.providerAttempt.create.mock.calls[0][0].data
+    // The reconciliation LOOKUP succeeded (provider returned ACTIVE+activationCode);
+    // the ORDER still stays in PROVIDER_RECONCILIATION because finalization is
+    // ICCID-gated — no eSIM is created and no attempt implies completion.
+    expect(created.status).toBe('SUCCEEDED')
+  })
+
+  it('9. ICCID-only fulfillment (activationCode absent) finalizes canonically exactly once', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', iccids: ['89012345678901234567'] } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(mockFinal).toHaveBeenCalledTimes(1)
+    expect(mockFinal).toHaveBeenCalledWith(expect.objectContaining({
+      providerResult: expect.objectContaining({ iccids: ['89012345678901234567'] }),
+    }))
+    expect(mockRelease).not.toHaveBeenCalled()
+  })
+
+  it('10. provider acceptance evidence + activationCode-only response keeps redispatch blocked even after reconciliation exhaustion', async () => {
+    setupAirHubShape([attempt({ attemptNumber: 1, status: 'PROCESSING', providerReference: '12811381' })])
+    mockPrisma.providerAttempt.count.mockResolvedValue(7) // exhaustion threshold reached
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', activationCode: 'LPA:1$smdp.example.com$CODE' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    expect(createTimelineEvent).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'REDISPATCH_BLOCKED' }))
+    expect(mockRelease).not.toHaveBeenCalled()
+    expect(createTimelineEvent).not.toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'REDISPATCH_ALLOWED' }))
+  })
+
   it('3. FOUND_FAILURE outcome — provider confirms failure', async () => {
     mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
     mockPrisma.providerAttempt.count.mockResolvedValue(0)

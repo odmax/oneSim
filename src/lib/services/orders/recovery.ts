@@ -358,13 +358,16 @@ async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; s
     if (!result.success) return { fulfilled: false, stillProcessing: false, status: order.status, error: result.error?.message || 'Status check failed' }
 
     const status = result.data?.status || ''
-    const isTerminal = ['ACTIVE', 'FULFILLED', 'COMPLETED', 'INSTALLED'].includes(status.toUpperCase())
+    // A poll may only report fulfilled when a real eSIM/ICCID identity exists —
+    // an ACTIVE status with no ICCID must stay pending (finalization is ICCID-backed).
+    const hasIdentity = Boolean(result.data?.iccid) || (Array.isArray(result.data?.iccids) && result.data.iccids.length > 0)
+    const isTerminal = hasIdentity && ['ACTIVE', 'FULFILLED', 'COMPLETED', 'INSTALLED'].includes(status.toUpperCase())
     const isPending = ['PENDING', 'PROCESSING', 'PENDING_ACTIVATION', 'RESERVED', 'QUEUED'].includes(status.toUpperCase())
 
     if (isTerminal) return { fulfilled: true, status: 'FULFILLED', stillProcessing: false }
     if (isPending) return { fulfilled: false, status: order.status, stillProcessing: true }
 
-    return { fulfilled: false, stillProcessing: false, status: order.status, error: `Unknown polling status: ${status}` }
+    return { fulfilled: false, stillProcessing: false, status: order.status, error: hasIdentity ? `Unknown polling status: ${status}` : `No ICCID identity yet (status: ${status})` }
   } catch (e: any) {
     return { fulfilled: false, stillProcessing: false, status: order.status, error: e.message }
   }

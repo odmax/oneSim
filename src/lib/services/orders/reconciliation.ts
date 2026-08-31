@@ -144,13 +144,19 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
       const iccids = [...new Set([...existingIccids, ...recoveredIccids])]
       const installData = result.installData || {}
 
-      // Canonical finalizer requires actual fulfillment evidence: an ICCID or a
-      // usable install payload. NEVER transition FULFILLED with zero eSIMs.
-      const hasFulfillmentEvidence = iccids.length > 0 || Boolean(installData.activationCode)
-      if (!hasFulfillmentEvidence) {
-        await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION_TIMEOUT', message: 'Provider reports success but no ICCID/install evidence to finalize' })
+      // Canonical finalizer is ICCID-backed: wallet capture and FULFILLED are
+      // only legal once real eSIM records exist. A provider status carrying
+      // install/activation data but ZERO ICCIDs must NEVER be treated as
+      // locally finalizable (fail closed, wallet held, no redispatch). An ICCID
+      // is never fabricated from activationCode/order id/matching id.
+      const hasFulfillmentIdentity = iccids.length > 0
+      if (!hasFulfillmentIdentity) {
+        await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION_TIMEOUT', message: 'Provider reports success but returned no ICCID identity to finalize' })
+        if (acceptanceEvidence && isRedispatchAllowed(attemptNum)) {
+          await createTimelineEvent(orderId, { eventType: 'REDISPATCH_BLOCKED', message: 'Provider acceptance evidence exists but no ICCID identity — no redispatch; existing provider transaction must be resolved' })
+        }
         await transitionOrder(orderId, 'PROVIDER_RECONCILIATION')
-        return { ...result, outcome: 'STILL_PENDING', action: 'KEEP_WAITING', status: 'PROVIDER_RECONCILIATION', message: 'Provider reports success but returned no fulfillment evidence' }
+        return { ...result, outcome: 'STILL_PENDING', action: 'KEEP_WAITING', status: 'PROVIDER_RECONCILIATION', message: 'Provider reports success but no ICCID identity was returned' }
       }
 
       const ref = result.providerReference || order.providerFulfillId || ''

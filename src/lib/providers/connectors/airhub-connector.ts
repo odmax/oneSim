@@ -1144,13 +1144,17 @@ export class AirHubConnector implements IProviderConnector {
       const simValue = row.simID ?? row.simId ?? row.sim_id ?? row.iccid ?? row.iccidNumber
       const iccids: string[] = simValue != null && String(simValue).trim() !== '' ? [String(simValue)] : this.extractIccids(row, 0)
       const activationCode = row.activationCode || row.activation_code || undefined
-      const fulfilled = iccids.length > 0 || Boolean(activationCode)
 
-      // IMPORTANT SEMANTICS: for AirHub, `isActive=false` describes whether the
-      // DELIVERED eSIM has subsequently become network-active. It does NOT mean
-      // provisioning is pending. simID + activationCode present = fulfillment
-      // evidence exists, so the order is fulfillment-ready even when isActive
-      // is false. isActive is kept only as safe diagnostic metadata.
+      // IMPORTANT SEMANTICS: OneSIM fulfillment is ICCID-backed. Fulfillment is
+      // only considered READY once a real SIM/ICCID identity exists:
+      //   - simID present (+ optional activationCode) → fulfillment-ready.
+      //   - activationCode present but simID/ICCID absent → NOT fulfillment-ready
+      //     (installation data alone cannot create an eSIM record); activationCode
+      //     is still forwarded as diagnostic install evidence for later use, but
+      //     status must NOT become ACTIVE.
+      // `isActive=false` describes network activity of an already-DELIVERED eSIM;
+      // it never blocks fulfillment and is kept only as diagnostic metadata.
+      const fulfilled = iccids.length > 0
       const status = this.normalizeStatusValue(rawStatus, fulfilled)
 
       const install = {

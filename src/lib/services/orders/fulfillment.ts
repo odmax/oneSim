@@ -390,6 +390,8 @@ export async function resumeProviderFinalization(orderId: string): Promise<Final
 
   await createTimelineEvent(orderId, { eventType: 'LOCAL_FINALIZATION_RESUMED', message: 'Local finalization resumed' })
 
+  let persistResult: { persistedQuantity: number; requestedQuantity: number; failedItems: Array<{ iccid: string; reason: string }> } | undefined
+
   // Check: is there provider fulfillment evidence?
   if (!order.providerFulfillId && !order.providerReservationId) {
     // Check the providerResponse for ICCIDs
@@ -407,7 +409,7 @@ export async function resumeProviderFinalization(orderId: string): Promise<Final
       rawMetadata: order.providerResponse,
     }
 
-    const persistResult = await persistProviderFulfillment({
+    persistResult = await persistProviderFulfillment({
       orderId,
       businessId: order.businessId,
       providerResult,
@@ -423,6 +425,16 @@ export async function resumeProviderFinalization(orderId: string): Promise<Final
     if (persistResult.failedItems.length > 0) {
       return { success: false, orderStatus: order.status, walletCaptured: false, eSIMsPersisted: false, error: 'eSIM persistence incomplete', recoveryRequired: true }
     }
+  }
+
+  // Wallet capture / FULFILLED are ICCID-backed: never capture or transition
+  // FULFILLED solely because provider evidence exists without actual eSIM/ICCID
+  // records. Counts both pre-existing order rows and rows persisted by this resume.
+  const effectiveEsimCount = persistResult
+    ? Math.max(order.esims.length, persistResult.persistedQuantity)
+    : order.esims.length
+  if (effectiveEsimCount === 0) {
+    return { success: false, orderStatus: order.status, walletCaptured: false, eSIMsPersisted: false, error: 'No eSIM records to finalize — resume blocked', recoveryRequired: true }
   }
 
   // Check wallet transactions
