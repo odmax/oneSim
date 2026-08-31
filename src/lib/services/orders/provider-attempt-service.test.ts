@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     eSIMPurchase: { findUnique: vi.fn(), update: vi.fn().mockResolvedValue({}) },
-    providerAttempt: { count: vi.fn(), create: vi.fn(), update: vi.fn() },
+    providerAttempt: { count: vi.fn(), create: vi.fn(), update: vi.fn(), aggregate: vi.fn().mockResolvedValue({ _max: { attemptNumber: null } }) },
     provider: { findUnique: vi.fn() },
     providerPackage: { findUnique: vi.fn() },
   },

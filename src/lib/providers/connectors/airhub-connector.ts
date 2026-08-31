@@ -1127,16 +1127,34 @@ export class AirHubConnector implements IProviderConnector {
         }
       }
 
-      // GetActivationCode may return a single object or an array of order rows.
-      const rows = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [data.data || data]
-      const row: any = rows[0] || {}
+      // Normalize the documented GetActivationCode shape: rows live under
+      // `getOrderdetails: [...]`, each with orderId + simID + activationCode.
+      // The requested provider order reference is matched deterministically
+      // (never blindly trusting rows[0] when multiple orders are returned).
+      const extraction = this.extractGetActivationCodeRow(data, String(subscriptionId))
+      if (extraction.state === 'NOT_FOUND') {
+        return { success: false, error: { code: 'NOT_FOUND', message: `AirHub returned no activation record for order ${subscriptionId}` } }
+      }
+      const row: any = extraction.row || {}
       const rawStatus = row.status || row.orderStatus || data.status || data.orderStatus || ''
-      const iccids = this.extractIccids(row, 0)
-      const fulfilled = iccids.length > 0 || Boolean(row.activationCode) || Boolean(row.activation_code)
+
+      // Fulfillment evidence: AirHub uses simID for the provisioned SIM id and
+      // activationCode for the LPA activation payload. simID is normalized into
+      // the canonical iccid/iccids identifier.
+      const simValue = row.simID ?? row.simId ?? row.sim_id ?? row.iccid ?? row.iccidNumber
+      const iccids: string[] = simValue != null && String(simValue).trim() !== '' ? [String(simValue)] : this.extractIccids(row, 0)
+      const activationCode = row.activationCode || row.activation_code || undefined
+      const fulfilled = iccids.length > 0 || Boolean(activationCode)
+
+      // IMPORTANT SEMANTICS: for AirHub, `isActive=false` describes whether the
+      // DELIVERED eSIM has subsequently become network-active. It does NOT mean
+      // provisioning is pending. simID + activationCode present = fulfillment
+      // evidence exists, so the order is fulfillment-ready even when isActive
+      // is false. isActive is kept only as safe diagnostic metadata.
       const status = this.normalizeStatusValue(rawStatus, fulfilled)
 
       const install = {
-        ...(row.activationCode || row.activation_code ? { activationCode: row.activationCode || row.activation_code } : {}),
+        ...(activationCode ? { activationCode } : {}),
         ...(row.qrCodeUrl || row.qr_code_url ? { qrCodeUrl: row.qrCodeUrl || row.qr_code_url } : {}),
         ...(row.smdpAddress || row.smdp_address ? { smdpAddress: row.smdpAddress || row.smdp_address } : {}),
         ...(row.matchingId || row.matching_id ? { matchingId: row.matchingId || row.matching_id } : {}),
@@ -1152,9 +1170,19 @@ export class AirHubConnector implements IProviderConnector {
           ...install,
           rawMetadata: {
             orderid: subscriptionId,
-            ...(row.simID || row.simId || row.sim_id ? { simId: row.simID || row.simId || row.sim_id } : {}),
+            ...(row.orderId || row.orderid ? { providerOrderId: String(row.orderId ?? row.orderid) } : {}),
+            ...(iccids[0] ? { simId: iccids[0] } : {}),
             ...(row.apn ? { apn: row.apn } : {}),
-            ...(row.message ? { message: row.message } : {}),
+            ...(row.planName ? { planName: row.planName } : {}),
+            ...(row.planCode ? { planCode: row.planCode } : {}),
+            ...(row.countryName ? { countryName: row.countryName } : {}),
+            ...(row.currency ? { currency: row.currency } : {}),
+            ...(row.price != null ? { price: row.price } : {}),
+            ...(row.purchaseDate ? { purchaseDate: row.purchaseDate } : {}),
+            ...(row.capacity != null ? { capacity: row.capacity } : {}),
+            ...(row.capacityUnit ? { capacityUnit: row.capacityUnit } : {}),
+            ...(typeof row.isActive === 'boolean' ? { isActive: row.isActive } : {}),
+            ...(data.message ? { message: data.message } : {}),
           },
         },
       }
@@ -1162,6 +1190,37 @@ export class AirHubConnector implements IProviderConnector {
       if (e.name === 'AbortError') return { success: false, error: { code: 'TIMEOUT', message: 'AirHub status check timed out' } }
       return { success: false, error: { code: 'NETWORK_ERROR', message: `AirHub status error: ${e.message?.substring(0, 200)}` } }
     }
+  }
+
+  /**
+   * Extract the order row from a documented GetActivationCode response.
+   *
+   * Canonical shape (live-verified): `{ isSuccess, message, getOrderdetails: [] }`
+   * where each row carries `orderId` + `simID`/`activationCode`. The requested
+   * provider order reference is matched against `row.orderId`/`row.orderid`
+   * deterministically so multiple returned rows never mis-target another order.
+   * Legacy shapes (`data.data` array/object, or a bare object) are still
+   * supported leniently (first row) for backward compatibility.
+   *
+   * Returns:
+   *   FOUND       — a row matching the requested reference (or a legacy row)
+   *   EMPTY       — getOrderdetails is present but empty → no fulfillment
+   *   NOT_FOUND   — getOrderdetails has rows but none match the requested order
+   */
+  private extractGetActivationCodeRow(envelope: any, providerRef: string): { row: any | null; state: 'FOUND' | 'EMPTY' | 'NOT_FOUND' } {
+    if (Array.isArray(envelope?.getOrderdetails)) {
+      const rows = envelope.getOrderdetails as any[]
+      if (rows.length === 0) return { row: null, state: 'EMPTY' }
+      const match = rows.find((r) => r && String(r.orderId ?? r.orderid ?? '') === String(providerRef))
+      if (!match) return { row: null, state: 'NOT_FOUND' }
+      return { row: match, state: 'FOUND' }
+    }
+
+    const legacyArray = Array.isArray(envelope?.data) ? envelope.data : Array.isArray(envelope) ? envelope : []
+    if (legacyArray.length > 0) return { row: legacyArray[0], state: 'FOUND' }
+    const single = envelope?.data && typeof envelope.data === 'object' ? envelope.data : envelope
+    if (single && typeof single === 'object' && !Array.isArray(single)) return { row: single, state: 'FOUND' }
+    return { row: null, state: 'EMPTY' }
   }
 
   /** Maps a raw AirHub status string (or detected fulfillment) into the canonical lifecycle value. */

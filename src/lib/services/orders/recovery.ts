@@ -10,6 +10,7 @@ import { reconcileProviderOrder } from './reconciliation'
 import { resolvePackageBacking } from './package-backing-resolver'
 import type { classifyRetry as ClassifyRetryFn } from '@/lib/services/routing/provider-failover-engine'
 import { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, loadOrderAttemptReferences, type ProviderReferenceOrderLike } from './provider-reference'
+import { allocateProviderAttemptNumber } from './provider-attempt-number'
 
 // ─────────────────────────────────────────────
 // Recovery Classification (Task 2)
@@ -427,11 +428,11 @@ async function redispatchProvider(order: any): Promise<{ success: boolean; statu
     }
 
     // Record the attempt BEFORE any provider HTTP so a crash after the mutation
-    // still leaves evidence (mirrors executeProviderAttempt ordering).
-    const existingCount = await prisma.providerAttempt.count({ where: { orderId: order.id, source: 'PURCHASE' } })
+    // still leaves evidence (mirrors executeProviderAttempt ordering). The
+    // attemptNumber is globally monotonic per order across all sources.
     const attempt = await prisma.providerAttempt.create({
       data: {
-        orderId: order.id, providerId: order.providerId, attemptNumber: existingCount + 1,
+        orderId: order.id, providerId: order.providerId, attemptNumber: await allocateProviderAttemptNumber(order.id),
         source: 'PURCHASE', status: 'STARTED', startedAt: new Date(),
         metadata: { redispatched: true, retailPackageId: order.packageId } as any,
       },

@@ -10,7 +10,7 @@ const { mockFindOrder, mockFindAttempt, mockBuildConnector, mockTimeline } = vi.
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     eSIMPurchase: { findUnique: mockFindOrder },
-    providerAttempt: { findFirst: mockFindAttempt },
+    providerAttempt: { findFirst: mockFindAttempt, aggregate: vi.fn().mockResolvedValue({ _max: { attemptNumber: null } }) },
   },
 }))
 vi.mock('@/lib/providers/connectors/connector-factory', () => ({

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     provider: { findUnique: vi.fn() },
-    providerAttempt: { findMany: vi.fn() },
+    providerAttempt: { findMany: vi.fn(), aggregate: vi.fn().mockResolvedValue({ _max: { attemptNumber: null } }) },
     providerHealthSnapshot: { findFirst: vi.fn() },
     providerPackage: { count: vi.fn() },
     providerWebhookEvent: { aggregate: vi.fn() },

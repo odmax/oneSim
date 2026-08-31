@@ -33,6 +33,7 @@ vi.mock('@/lib/prisma', () => ({
       findFirst: vi.fn(),
     },
     providerAttempt: {
+      aggregate: vi.fn().mockResolvedValue({ _max: { attemptNumber: null } }),
       findFirst: vi.fn(),
       findMany: vi.fn().mockResolvedValue([]),
       count: vi.fn().mockResolvedValue(0),

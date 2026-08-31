@@ -5,6 +5,7 @@ import { completeProviderOperation, failProviderOperation } from '@/lib/services
 import { createTimelineEvent } from '@/lib/services/orders/order-state-machine'
 import { normalizeConnectorInstallData } from '@/lib/esim/installation-data'
 import type { ProviderScore } from '@/lib/services/routing/provider-routing-engine'
+import { allocateProviderAttemptNumber } from './provider-attempt-number'
 
 export type AttemptSource = 'PURCHASE' | 'POLLING' | 'WEBHOOK'
 export type AttemptStatus = 'STARTED' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'SKIPPED'
@@ -49,22 +50,25 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
   const existingAttempts = await prisma.providerAttempt.count({
     where: { orderId, source: 'PURCHASE' },
   })
-  const attemptNumber = existingAttempts + 1
+  const purchaseAttemptNumber = existingAttempts + 1
 
   // Check policy
   if (policy === 'STRICT' && existingAttempts > 0) {
     return { success: false, status: 'POLICY_VIOLATION', errorCode: 'STRICT_POLICY_NO_FAILOVER' }
   }
 
-  if (attemptNumber > 3) {
+  if (purchaseAttemptNumber > 3) {
     return { success: false, status: 'MAX_ATTEMPTS', errorCode: 'ALL_PROVIDERS_EXHAUSTED' }
   }
 
-  // Record attempt start
+  // Record attempt start. attemptNumber is globally monotonic PER ORDER across
+  // all sources (PURCHASE/RECONCILIATION/…) so it stays unambiguous for
+  // ordering consumers; the purchase-attempt guard above keeps its own
+  // PURCHASE-scoped count semantics.
   const startedAt = new Date()
   const attempt = await prisma.providerAttempt.create({
     data: {
-      orderId, providerId, attemptNumber,
+      orderId, providerId, attemptNumber: await allocateProviderAttemptNumber(orderId),
       source: 'PURCHASE', status: 'STARTED', startedAt,
       metadata: {
         providerPackageId: input.providerPackageId || null,

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     eSIMPurchase: { findUnique: vi.fn(), update: vi.fn() },
-    providerAttempt: { count: vi.fn(), create: vi.fn(), findMany: vi.fn() },
+    providerAttempt: { count: vi.fn(), create: vi.fn(), findMany: vi.fn(), aggregate: vi.fn().mockResolvedValue({ _max: { attemptNumber: null } }) },
     provider: { findUnique: vi.fn() },
     walletTransaction: { findFirst: vi.fn() },
     eSIM: { create: vi.fn(), findMany: vi.fn(), count: vi.fn() },
@@ -198,6 +198,35 @@ describe('reconcileProviderOrder', () => {
     expect(mockRelease).not.toHaveBeenCalled()
   })
 
+  it('J/K: live AirHub shape (ACTIVE + simID normalized + activationCode) finalizes exactly once via completeProviderFinalization, wallet never released, no redispatch', async () => {
+    // Live GetActivationCode normalization → StatusResult { status:'ACTIVE', iccids:[simID], activationCode, isActive:false }
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
+    const adapter = {
+      getActivationStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', iccids: ['89012345678901234567'], activationCode: 'LPA:1$smdp.example.com$CODE', isActive: false },
+      }),
+      // NOT a purchase connector: reconcileProviderOrder must never dispatch a purchase.
+    }
+    mockAdapter.mockResolvedValue(adapter as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(mockFinal).toHaveBeenCalledTimes(1)
+    expect(mockFinal).toHaveBeenCalledWith(expect.objectContaining({
+      providerRef: 'ref-1',
+      providerResult: expect.objectContaining({ iccids: ['89012345678901234567'], activationCode: 'LPA:1$smdp.example.com$CODE' }),
+    }))
+    expect(mockRelease).not.toHaveBeenCalled()
+    // No purchase dispatch: adapter has no activateESIM, and none was reached.
+    expect((adapter as any).activateESIM).toBeUndefined()
+    const created = mockPrisma.providerAttempt.create.mock.calls[0][0].data
+    expect(created.source).toBe('RECONCILIATION')
+    expect(created.status).toBe('SUCCEEDED')
+  })
+
   it('3. FOUND_FAILURE outcome — provider confirms failure', async () => {
     mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
     mockPrisma.providerAttempt.count.mockResolvedValue(0)
@@ -342,6 +371,57 @@ describe('reconciliation redispatch safety', () => {
     // No redispatch is authorized from within reconciliation without evidence of a
     // genuine provider not-found for a polled identifier.
     expect(createTimelineEvent).not.toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'REDISPATCH_ALLOWED' }))
+  })
+})
+
+describe('provider attempt numbering', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockAdapter.mockResolvedValue({ getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PROCESSING' } }) } as any)
+  })
+
+  it('a PURCHASE attempt numbered 1 is never duplicated: the first RECONCILIATION attempt becomes 2', async () => {
+    // Live-shape: order has a PURCHASE attempt (attemptNumber 1, status PROCESSING, ref preserved).
+    setupAirHubShape([attempt({ attemptNumber: 1, status: 'PROCESSING', providerReference: '12811381' })])
+    mockPrisma.providerAttempt.aggregate.mockResolvedValue({ _max: { attemptNumber: 1 } })
+
+    await reconcileProviderOrder('order-1')
+
+    const created = mockPrisma.providerAttempt.create.mock.calls[0][0].data
+    expect(created.source).toBe('RECONCILIATION')
+    expect(created.attemptNumber).toBe(2)
+    expect(created.providerReference).toBe('12811381')
+  })
+
+  it('repeated reconciliation continues monotonically (3, 4, …)', async () => {
+    setupAirHubShape([])
+    mockPrisma.providerAttempt.aggregate
+      .mockResolvedValueOnce({ _max: { attemptNumber: 1 } })
+      .mockResolvedValueOnce({ _max: { attemptNumber: 2 } })
+      .mockResolvedValueOnce({ _max: { attemptNumber: 3 } })
+
+    await reconcileProviderOrder('order-1')
+    await reconcileProviderOrder('order-1')
+    await reconcileProviderOrder('order-1')
+
+    const numbers = mockPrisma.providerAttempt.create.mock.calls.map((c) => c[0].data.attemptNumber)
+    expect(numbers).toEqual([2, 3, 4])
+  })
+
+  it('reconciliation attempt creation NEVER triggers a provider purchase (no activateESIM dispatch)', async () => {
+    setupAirHubShape([attempt({ attemptNumber: 1, status: 'PROCESSING', providerReference: '12811381' })])
+    mockPrisma.providerAttempt.aggregate.mockResolvedValue({ _max: { attemptNumber: 1 } })
+    const activate = vi.fn()
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PROCESSING' } }),
+      activateESIM: activate,
+    } as any)
+
+    await reconcileProviderOrder('order-1')
+
+    expect(activate).not.toHaveBeenCalled()
+    expect(mockPrisma.providerAttempt.create.mock.calls[0][0].data.status).toBe('PROCESSING')
   })
 })
 

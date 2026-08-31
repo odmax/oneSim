@@ -1738,6 +1738,121 @@ describe('getStatus', () => {
       expect(result.success).toBe(false)
       expect(result.error?.code).toBe('PROVIDER_RESPONSE_INVALID')
     })
+
+    it('A/C/D. documented getOrderdetails shape: simID + activationCode → fulfillment-ready ACTIVE, activationCode forwarded', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        message: 'Successfull',
+        getOrderdetails: [
+          {
+            planType: 'Local', planCode: '2116296', planName: 'UK 1MB Test Plan', countryName: 'UK',
+            orderId: 12811381, currency: 'USD', price: 1,
+            activationCode: 'LPA:1$smdp.example.com$REALCODE',
+            simpin: '', apn: 'internet', purchaseDate: '08/29/2026 12:21:52',
+            capacityUnit: 'MB', capacity: '1', simID: '89012345678901234567', isActive: false,
+          },
+        ],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.iccids).toEqual(['89012345678901234567'])
+      expect(result.data?.iccid).toBe('89012345678901234567')
+      expect(result.data?.activationCode).toBe('LPA:1$smdp.example.com$REALCODE')
+      expect(result.data?.rawMetadata?.providerOrderId).toBe('12811381')
+      expect(result.data?.rawMetadata?.apn).toBe('internet')
+    })
+
+    it('B. isActive=false does NOT block provisioning finalization (simID + activationCode = fulfillment evidence)', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        message: 'Successfull',
+        getOrderdetails: [{
+          orderId: 12811381, activationCode: 'LPA:1$smdp.example.com$CODE2', simID: '8901234567890999999', isActive: false,
+        }],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.rawMetadata?.isActive).toBe(false) // diagnostic only
+    })
+
+    it('E. multiple getOrderdetails rows select the requested order deterministically', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        message: 'Successfull',
+        getOrderdetails: [
+          { orderId: 99999999, simID: '89999999999999999999', activationCode: 'LPA:1$smdp$WRONG' },
+          { orderId: 12811381, simID: '89012345678901234567', activationCode: 'LPA:1$smdp.example.com$RIGHT' },
+        ],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['89012345678901234567'])
+      expect(result.data?.activationCode).toBe('LPA:1$smdp.example.com$RIGHT')
+    })
+
+    it('F. empty getOrderdetails → PENDING (no fulfillment)', async () => {
+      mockFetchSuccess({ isSuccess: true, message: 'Successfull', getOrderdetails: [] })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('PENDING')
+      expect(result.data?.iccids).toBeUndefined()
+    })
+
+    it('G. matching row without simID/activationCode → PENDING (no fulfillment evidence)', async () => {
+      mockFetchSuccess({ isSuccess: true, message: 'Successfull', getOrderdetails: [{ orderId: 12811381, apn: 'internet', isActive: false }] })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('PENDING')
+      expect(result.data?.iccids).toBeUndefined()
+    })
+
+    it('H. getOrderdetails rows exist but none match the requested order → NOT_FOUND (never finalizes another order)', async () => {
+      mockFetchSuccess({ isSuccess: true, message: 'Successfull', getOrderdetails: [{ orderId: 555, simID: '8955555', activationCode: 'LPA:1$smdp$OTHER' }] })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_FOUND')
+    })
+
+    it('I. no raw activation code / full simID / token leaks into logs', async () => {
+      mockFetchSuccess({
+        isSuccess: true,
+        message: 'Successfull',
+        getOrderdetails: [{
+          orderId: 12811381, activationCode: 'LPA:1$smdp.example.com$TOP-SECRET', simID: '89012345678901333333', apn: 'internet', isActive: false,
+        }],
+      })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      const logs = logSpy.mock.calls.map((c) => String(c[0])).join('\n')
+      expect(logs).not.toContain('TOP-SECRET')
+      expect(logs).not.toContain('89012345678901333333')
+      expect(logs).not.toContain('test-token')
+      logSpy.mockRestore()
+    })
   })
 
   describe('getQRCode', () => {

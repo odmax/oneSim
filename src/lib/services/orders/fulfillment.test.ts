@@ -9,7 +9,7 @@ vi.mock('@/lib/prisma', () => ({
     eSIMPurchase: { findUnique: vi.fn(), update: vi.fn(), findFirst: vi.fn(), create: vi.fn() },
     eSIMPackage: { findUnique: vi.fn() },
     walletTransaction: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
-    providerAttempt: { create: vi.fn(), update: vi.fn(), count: vi.fn() },
+    providerAttempt: { create: vi.fn(), update: vi.fn(), count: vi.fn(), aggregate: vi.fn().mockResolvedValue({ _max: { attemptNumber: null } }) },
     business: { findUnique: vi.fn(), update: vi.fn() },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
   },

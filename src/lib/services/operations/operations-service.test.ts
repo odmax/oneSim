@@ -5,7 +5,7 @@ vi.mock('@/lib/prisma', () => ({
     provider: { count: vi.fn(), findMany: vi.fn(), aggregate: vi.fn() },
     backgroundJob: { count: vi.fn(), findMany: vi.fn() },
     eSIMPurchase: { count: vi.fn() },
-    providerAttempt: { count: vi.fn() },
+    providerAttempt: { count: vi.fn(), aggregate: vi.fn().mockResolvedValue({ _max: { attemptNumber: null } }) },
     providerPackage: { groupBy: vi.fn(), count: vi.fn() },
   },
 }))

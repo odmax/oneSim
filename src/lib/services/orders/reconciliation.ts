@@ -8,6 +8,7 @@ import { failOrder } from './order-state-machine'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import { normalizeConnectorInstallData, type ProviderInstallData } from '@/lib/esim/installation-data'
 import { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, loadOrderAttemptReferences } from './provider-reference'
+import { allocateProviderAttemptNumber } from './provider-attempt-number'
 
 // ─────────────────────────────────────────────
 // Reconciliation outcome types
@@ -122,10 +123,12 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
   // Try to reconcile via provider
   const result = await tryReconcileWithProvider(order, authoritativeRef)
 
-  // Persist the attempt
+  // Persist the attempt. Retry scheduling (attemptNum) is counted per
+  // reconciliation pass; the persisted attemptNumber is globally monotonic
+  // PER ORDER across all sources so it can never collide with a PURCHASE row.
   await prisma.providerAttempt.create({
     data: {
-      orderId, providerId: order.providerId || '', attemptNumber: attemptNum,
+      orderId, providerId: order.providerId || '', attemptNumber: await allocateProviderAttemptNumber(orderId),
       source: 'RECONCILIATION', status: result.outcome === 'FOUND_SUCCESS' ? 'SUCCEEDED' : result.outcome === 'FOUND_FAILURE' ? 'FAILED' : 'PROCESSING',
       providerReference: result.providerReference || authoritativeRef || null,
       errorMessage: result.outcome !== 'FOUND_SUCCESS' ? result.message : null,
