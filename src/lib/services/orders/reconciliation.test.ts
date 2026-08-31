@@ -413,6 +413,25 @@ describe('reconciliation redispatch safety', () => {
     expect(mockRelease).not.toHaveBeenCalled()
   })
 
+  it('K. transient PROVIDER_UNAVAILABLE (200-empty after read retries) keeps reconciliation, wallet held, no redispatch', async () => {
+    setupAirHubShape([attempt()])
+    mockPrisma.providerAttempt.count.mockResolvedValue(7)
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({
+        success: false,
+        error: { code: 'PROVIDER_UNAVAILABLE', message: 'AirHub read endpoint returned an empty/non-JSON response after 2 attempts' },
+      }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    expect(result.status).toBe('PROVIDER_RECONCILIATION')
+    expect(mockRelease).not.toHaveBeenCalled()
+    expect(createTimelineEvent).not.toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'REDISPATCH_ALLOWED' }))
+  })
+
   it('H. no provider evidence: reconciliation itself never invents a redispatch — nothing to poll stays STILL_PENDING (controlled redispatch lives in the recovery classifier)', async () => {
     mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(
       mockOrder({ providerFulfillId: null, providerReservationId: null, provider: { id: 'prov-1', type: 'CHOICE', apiBaseUrl: 'https://api.test', apiToken: 'tok', environment: 'staging', authUrl: null } }),

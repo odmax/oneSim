@@ -1726,7 +1726,7 @@ describe('getStatus', () => {
       expect(result.error?.code).toBe('NOT_FOUND')
     })
 
-    it('handles non-JSON response gracefully', async () => {
+    it('handles 200 non-JSON as a TRANSIENT read failure (PROVIDER_UNAVAILABLE), max 2 read attempts', async () => {
       fetchSpy.mockResolvedValue({
         ok: true, status: 200, text: () => Promise.resolve('not json at all'),
         headers: { get: () => 'text/plain' },
@@ -1736,7 +1736,109 @@ describe('getStatus', () => {
       const result = await connector.getStatus('AH-789')
 
       expect(result.success).toBe(false)
-      expect(result.error?.code).toBe('PROVIDER_RESPONSE_INVALID')
+      expect(result.error?.code).toBe('PROVIDER_UNAVAILABLE')
+      expect(result.error?.details?.retryable).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+    })
+
+    it('A. first 200 empty body → one immediate retry uses the second valid JSON response', async () => {
+      fetchSpy
+        .mockResolvedValueOnce({ ok: true, status: 200, text: () => Promise.resolve(''), headers: { get: () => '' } })
+        .mockResolvedValueOnce({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ isSuccess: true, getOrderdetails: [{ orderId: 12811381, simID: '89012345678901234567', activationCode: 'LPA:1$smdp.example.com$CODE' }] })), headers: { get: () => 'application/json' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.iccids).toEqual(['89012345678901234567'])
+      expect(fetchSpy).toHaveBeenCalledTimes(2) // exactly one immediate read retry
+    })
+
+    it('B. first 200 non-JSON → retry uses the second valid JSON response', async () => {
+      fetchSpy
+        .mockResolvedValueOnce({ ok: true, status: 200, text: () => Promise.resolve('garbage'), headers: { get: () => 'text/plain' } })
+        .mockResolvedValueOnce({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ isSuccess: true, getOrderdetails: [{ orderId: 12811381, simID: '89012345678901234567' }] })), headers: { get: () => 'application/json' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+    })
+
+    it('C. both attempts 200 non-JSON → transient retryable error, never falsely ACTIVE', async () => {
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('garbage'), headers: { get: () => 'text/plain' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('PROVIDER_UNAVAILABLE')
+      expect(result.error?.details?.retryable).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+    })
+
+    it('D. both attempts empty → transient retryable error', async () => {
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(''), headers: { get: () => '' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('PROVIDER_UNAVAILABLE')
+      expect(result.error?.details?.retryable).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+    })
+
+    it('E. explicit isSuccess=false → NO immediate retry', async () => {
+      mockFetchSuccess({ isSuccess: false, message: 'Invalid order ID' })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NOT_FOUND')
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('F. HTTP 400 → NO retry (contract error preserved)', async () => {
+      mockFetchFailure(400, { message: 'bad request' })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('HTTP_400')
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('G. HTTP 401 auth failure → preserved as AUTH_ERROR, no retry loop', async () => {
+      mockFetchFailure(401, { message: 'unauthorized' })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AUTH_ERROR')
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('J. parse-failure diagnostics never reveal token, LPA/activation, simID or credentials', async () => {
+      fetchSpy.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('Bearer super-secret-token-abc LPA:1$smdp.example.com$TOP-SECRET SIMID 89012345678901333333'), headers: { get: () => 'text/plain' } })
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      await connector.getStatus('12811381')
+
+      const logs = logSpy.mock.calls.map((c) => String(c[0])).join('\n')
+      expect(logs).toContain('READ_FAIL')
+      expect(logs).not.toContain('super-secret-token-abc')
+      expect(logs).not.toContain('TOP-SECRET')
+      expect(logs).not.toContain('89012345678901333333')
+      expect(logs).not.toContain('LPA:1$')
+      logSpy.mockRestore()
     })
 
     it('A/C/D. documented getOrderdetails shape: simID + activationCode → fulfillment-ready ACTIVE, activationCode forwarded', async () => {

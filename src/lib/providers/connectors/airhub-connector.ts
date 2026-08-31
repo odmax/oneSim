@@ -1086,44 +1086,76 @@ export class AirHubConnector implements IProviderConnector {
     console.log(`[AIRHUB_STATUS] correlationId=${correlationId} endpoint=/api/ESIM/GetActivationCode orderid=${subscriptionId}`)
 
     try {
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 20000)
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      })
-      clearTimeout(timeout)
+      // READ-ONLY transport hardening for GetActivationCode. A documented
+      // success (HTTP 200) that arrives EMPTY or NON-JSON is an intermittent
+      // provider read failure (live-observed), so it is retried ONCE
+      // immediately against the SAME read endpoint. Max 2 calls per getStatus
+      // invocation. Only read-only retries — never a purchase endpoint.
+      let parsedData: any = null
+      const MAX_READ_ATTEMPTS = 2
+      for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 20000)
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+        clearTimeout(timeout)
 
-      const text = await response.text()
-      let data: any
-      try { data = JSON.parse(text) } catch {
-        if (response.status === 404) {
-          return { success: false, error: { code: 'NOT_FOUND', message: `AirHub returned HTTP 404 for order ${subscriptionId} — the order was not found` } }
+        const text = await response.text()
+        const contentType = response.headers?.get?.('content-type') || ''
+
+        // Non-2xx: contract/auth/not-found — never retried.
+        if (!response.ok) {
+          if (response.status === 404) {
+            return { success: false, error: { code: 'NOT_FOUND', message: `AirHub returned HTTP 404 for order ${subscriptionId} — the order was not found` } }
+          }
+          const code = this.classifyStatusHttpError(response.status, {})
+          const preview = text.length > 200 ? text.substring(0, 200) : text
+          return {
+            success: false,
+            error: {
+              code,
+              message: `AirHub status returned HTTP ${response.status}: ${preview}`,
+              details: { retryable: response.status >= 500, providerStatus: response.status },
+            },
+          }
         }
-        return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: 'AirHub returned non-JSON status response' } }
-      }
 
-      console.log(`[AIRHUB_STATUS] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess}`)
+        try { parsedData = JSON.parse(text) } catch { parsedData = null }
+        if (parsedData !== null) {
+          console.log(`[AIRHUB_STATUS] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${parsedData.isSuccess} attempt=${attempt}`)
+          break
+        }
 
-      if (!response.ok) {
-        const code = this.classifyStatusHttpError(response.status, data)
+        // HTTP 200 but empty or non-JSON: safe diagnostics (no credentials, no
+        // activation/ICCID values), then one immediate read retry.
+        this.logStatusReadDiagnostic(correlationId, response.status, contentType, text, attempt)
+        if (attempt < MAX_READ_ATTEMPTS) continue
         return {
           success: false,
           error: {
-            code,
-            message: `AirHub status returned HTTP ${response.status}: ${data.message || text.substring(0, 200)}`,
-            details: { retryable: response.status >= 500, providerStatus: response.status },
+            code: 'PROVIDER_UNAVAILABLE',
+            message: `AirHub read endpoint returned an empty/non-JSON response after ${MAX_READ_ATTEMPTS} attempts`,
+            details: { retryable: true, providerStatus: response.status },
           },
         }
       }
+
+      if (parsedData === null) {
+        return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: 'AirHub returned non-JSON status response' } }
+      }
+      const data = parsedData
+
       if (data.isSuccess === false) {
+        // Explicit provider rejection — NO immediate retry.
         const code = this.classifyStatusRejection(data)
         const retryable = code === 'PROVIDER_UNAVAILABLE' || code === 'RATE_LIMITED'
         return {
           success: false,
-          error: { code, message: `AirHub rejected status lookup: ${data.message || 'isSuccess=false'}`, details: { retryable, providerStatus: response.status } },
+          error: { code, message: `AirHub rejected status lookup: ${data.message || 'isSuccess=false'}`, details: { retryable, providerStatus: 200 } },
         }
       }
 
@@ -1196,8 +1228,27 @@ export class AirHubConnector implements IProviderConnector {
     }
   }
 
-  /**
-   * Extract the order row from a documented GetActivationCode response.
+/**
+ * Sanitized body preview for transport diagnostics. Never leaks a token,
+ * authorization header, credentials, activation/LPA payload, or ICCID/simID.
+ */
+private sanitizeStatusPreview(raw: string): string {
+  let s = raw.length > 300 ? raw.slice(0, 300) : raw
+  s = s.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+  s = s.replace(/LPA:[^"\s]+/gi, '[REDACTED_LPA]')
+  s = s.replace(/"(activationCode|activation_code|lpa|simID|simId|sim_id|iccid|simpin|qrCode|qr_code_url|smdpAddress|matchingId)"\s*:\s*"[^"]*"/gi, '"$1":"[REDACTED]"')
+  // ICCID/simID-like digit runs (14+ digits) anywhere in free-form text.
+  s = s.replace(/\b\d{14,}\b/g, '[REDACTED_DIGITS]')
+  return s
+}
+
+/** Safe, key-only diagnostic when a read response is empty or non-JSON. */
+private logStatusReadDiagnostic(correlationId: string, httpStatus: number, contentType: string, text: string, attempt: number): void {
+  console.log(`[AIRHUB_STATUS] correlationId=${correlationId} warning=READ_FAIL parse=none httpStatus=${httpStatus} contentType=${contentType || 'none'} bodyLength=${text.length} bodyEmpty=${text.length === 0} attempt=${attempt} preview=${JSON.stringify(this.sanitizeStatusPreview(text).substring(0, 200)) || '[EMPTY]'}`)
+}
+
+/**
+ * Extract the order row from a documented GetActivationCode response.
    *
    * Canonical shape (live-verified): `{ isSuccess, message, getOrderdetails: [] }`
    * where each row carries `orderId` + `simID`/`activationCode`. The requested
