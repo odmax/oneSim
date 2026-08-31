@@ -107,6 +107,7 @@ const mockComplete = vi.mocked(completeProviderFinalization)
 const mockResolveBacking = vi.mocked(resolvePackageBacking)
 
 beforeEach(() => {
+  vi.clearAllMocks()
   mockGetServerSession.mockReset()
   mockGetServerSession.mockResolvedValue(null)
 })

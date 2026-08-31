@@ -6,6 +6,8 @@ import { completeProviderFinalization } from './fulfillment'
 import { releaseReservedFundsUpTo } from './wallet-actions'
 import { failOrder } from './order-state-machine'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
+import { normalizeConnectorInstallData, type ProviderInstallData } from '@/lib/esim/installation-data'
+import { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, loadOrderAttemptReferences } from './provider-reference'
 
 // ─────────────────────────────────────────────
 // Reconciliation outcome types
@@ -22,6 +24,10 @@ export interface ReconciliationResult {
   outcome: ReconciliationOutcome
   providerStatus?: string
   providerReference?: string
+  /** ICCIDs recovered from the provider status lookup (never fabricated). */
+  iccids?: string[]
+  /** Canonical install data recovered from the provider status lookup. */
+  installData?: ProviderInstallData
   message: string
 }
 
@@ -82,6 +88,11 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
 
   if (order.status === 'FULFILLED') return { outcome: 'FOUND_SUCCESS', message: 'Already fulfilled' }
 
+  // Recover the authoritative provider-owned reference BEFORE any provider call:
+  // durable order evidence first, else the best matching ProviderAttempt reference.
+  const attempts = await loadOrderAttemptReferences(orderId)
+  const authoritativeRef = await resolveAuthoritativeProviderReference(order, attempts)
+
   // Track reconciliation attempt
   const reconAttempts = await prisma.providerAttempt.count({
     where: { orderId, source: 'RECONCILIATION' },
@@ -103,15 +114,20 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
     await persistReconciliationRetry(orderId, attemptNum)
   }
 
+  // Provider acceptance evidence: if the order has a durable provider reference
+  // (order-level or from an attempt), reconciliation exhaustion must NEVER
+  // authorize a second purchase — the existing provider transaction is real.
+  const acceptanceEvidence = hasProviderAcceptanceEvidence(order, attempts)
+
   // Try to reconcile via provider
-  const result = await tryReconcileWithProvider(order)
+  const result = await tryReconcileWithProvider(order, authoritativeRef)
 
   // Persist the attempt
   await prisma.providerAttempt.create({
     data: {
       orderId, providerId: order.providerId || '', attemptNumber: attemptNum,
       source: 'RECONCILIATION', status: result.outcome === 'FOUND_SUCCESS' ? 'SUCCEEDED' : result.outcome === 'FOUND_FAILURE' ? 'FAILED' : 'PROCESSING',
-      providerReference: result.providerReference || null,
+      providerReference: result.providerReference || authoritativeRef || null,
       errorMessage: result.outcome !== 'FOUND_SUCCESS' ? result.message : null,
       startedAt: new Date(), completedAt: new Date(),
     },
@@ -120,18 +136,33 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
   switch (result.outcome) {
     case 'FOUND_SUCCESS': {
       await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION_SUCCESS', message: result.message })
-      // Resume local finalization
-      const { completeProviderFinalization } = await import('./fulfillment')
-      const existingIccids = order.esims.map(e => e.iccid)
-      const iccids = existingIccids.length > 0 ? existingIccids : []
-      if (iccids.length > 0) {
-        await completeProviderFinalization({
-          orderId, businessId: order.businessId, providerId: order.providerId || '',
-          providerRef: result.providerReference || order.providerFulfillId || '',
-          providerName: order.provider?.name || '', totalAmount: Number(order.totalAmount),
-          providerResult: { iccids },
-          userId: order.userId,
-        })
+      const existingIccids = order.esims.map((e: any) => e.iccid).filter(Boolean)
+      const recoveredIccids = (result.iccids || []).filter(Boolean)
+      const iccids = [...new Set([...existingIccids, ...recoveredIccids])]
+      const installData = result.installData || {}
+
+      // Canonical finalizer requires actual fulfillment evidence: an ICCID or a
+      // usable install payload. NEVER transition FULFILLED with zero eSIMs.
+      const hasFulfillmentEvidence = iccids.length > 0 || Boolean(installData.activationCode)
+      if (!hasFulfillmentEvidence) {
+        await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION_TIMEOUT', message: 'Provider reports success but no ICCID/install evidence to finalize' })
+        await transitionOrder(orderId, 'PROVIDER_RECONCILIATION')
+        return { ...result, outcome: 'STILL_PENDING', action: 'KEEP_WAITING', status: 'PROVIDER_RECONCILIATION', message: 'Provider reports success but returned no fulfillment evidence' }
+      }
+
+      const ref = result.providerReference || order.providerFulfillId || ''
+      const finalResult = await completeProviderFinalization({
+        orderId, businessId: order.businessId, providerId: order.providerId || '',
+        providerRef: ref,
+        providerName: order.provider?.name || '', totalAmount: Number(order.totalAmount),
+        providerResult: { iccids, ...installData },
+        userId: order.userId,
+      })
+
+      if (finalResult && finalResult.success === false) {
+        await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION_TIMEOUT', message: finalResult.error || 'Finalization incomplete' })
+        await transitionOrder(orderId, 'PROVIDER_RECONCILIATION')
+        return { ...result, outcome: 'STILL_PENDING', action: 'KEEP_WAITING', status: 'PROVIDER_RECONCILIATION', message: finalResult.error || 'Finalization incomplete' }
       }
       return { ...result, action: 'FINALIZED', status: 'FULFILLED' }
     }
@@ -147,6 +178,9 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
 
     case 'STILL_PENDING': {
       await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION_TIMEOUT', message: result.message })
+      if (acceptanceEvidence && isRedispatchAllowed(attemptNum)) {
+        await createTimelineEvent(orderId, { eventType: 'REDISPATCH_BLOCKED', message: 'Provider acceptance evidence exists — no redispatch even after reconciliation exhaustion; existing provider transaction must be resolved' })
+      }
       // Keep in reconciliation with increased delay
       await transitionOrder(orderId, 'PROVIDER_RECONCILIATION')
       return { ...result, action: 'KEEP_WAITING', status: 'PROVIDER_RECONCILIATION' }
@@ -154,10 +188,17 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
 
     case 'NOT_FOUND': {
       await createTimelineEvent(orderId, { eventType: 'PROVIDER_RECONCILIATION_TIMEOUT', message: result.message })
-      if (isRedispatchAllowed(attemptNum)) {
+      // REDISPATCH SAFETY: only a reconciliation with NO provider acceptance
+      // evidence may eventually authorize a controlled redispatch. When durable
+      // provider reference evidence exists, exhaustion keeps the order in
+      // reconciliation — a second purchase must not be created to resolve it.
+      const redispatch = !acceptanceEvidence && isRedispatchAllowed(attemptNum)
+      if (redispatch) {
         await createTimelineEvent(orderId, { eventType: 'REDISPATCH_ALLOWED', message: 'Max reconciliation attempts reached — redispatch allowed' })
+      } else if (acceptanceEvidence) {
+        await createTimelineEvent(orderId, { eventType: 'REDISPATCH_BLOCKED', message: 'Provider acceptance evidence exists — no redispatch; existing provider transaction must be resolved' })
       }
-      return { ...result, action: isRedispatchAllowed(attemptNum) ? 'REDISPATCH_ALLOWED' : 'KEEP_WAITING', status: 'PROVIDER_RECONCILIATION' }
+      return { ...result, action: redispatch ? 'REDISPATCH_ALLOWED' : 'KEEP_WAITING', status: 'PROVIDER_RECONCILIATION' }
     }
 
     case 'UNSUPPORTED':
@@ -169,7 +210,7 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
 // Provider reconciliation attempt
 // ─────────────────────────────────────────────
 
-async function tryReconcileWithProvider(order: any): Promise<ReconciliationResult> {
+async function tryReconcileWithProvider(order: any, authoritativeRef: string | null): Promise<ReconciliationResult> {
   if (!order.providerId) return { outcome: 'UNSUPPORTED', message: 'No provider linked' }
 
   try {
@@ -181,42 +222,69 @@ async function tryReconcileWithProvider(order: any): Promise<ReconciliationResul
       authUrl: order.provider.authUrl,
     })
 
-    const ref = order.providerFulfillId || order.providerReservationId
+    const refParam = authoritativeRef
     const existingIccids = order.esims.map((e: any) => e.iccid).filter(Boolean)
 
-    // Strategy 1: Poll by provider reference
-    if (ref && typeof (adapter as any).getActivationStatus === 'function') {
+    // Strategy 1: Poll by the authoritative provider-owned reference (order-level
+    // evidence or the best matching ProviderAttempt reference). Local OneSIM ids
+    // are never used; only refParam is sent upstream.
+    if (refParam && typeof (adapter as any).getActivationStatus === 'function') {
       try {
-        const statusResult = await (adapter as any).getActivationStatus(ref)
+        const statusResult = await (adapter as any).getActivationStatus(refParam)
         if (statusResult.success && statusResult.data) {
           const status = (statusResult.data.status || '').toUpperCase()
+          const returnedIccids: string[] = [
+            ...((statusResult.data.iccids || []).filter((v: any) => v != null && String(v).trim() !== '').map(String)),
+            ...(statusResult.data.iccid ? [String(statusResult.data.iccid)] : []),
+          ]
+          const installData = normalizeConnectorInstallData(statusResult.data)
+
           if (['ACTIVE', 'FULFILLED', 'COMPLETED', 'INSTALLED'].includes(status)) {
-            return { outcome: 'FOUND_SUCCESS', message: `Provider confirms success — status: ${status}`, providerReference: ref }
+            return {
+              outcome: 'FOUND_SUCCESS',
+              message: `Provider confirms success — status: ${status}`,
+              providerReference: refParam,
+              providerStatus: status,
+              iccids: returnedIccids,
+              installData,
+            }
           }
           if (['FAILED', 'CANCELLED', 'REJECTED', 'EXPIRED'].includes(status)) {
-            return { outcome: 'FOUND_FAILURE', message: `Provider confirms failure — status: ${status}`, providerReference: ref }
+            return { outcome: 'FOUND_FAILURE', message: `Provider confirms failure — status: ${status}`, providerReference: refParam, providerStatus: status }
           }
           if (['PENDING', 'PROCESSING', 'QUEUED', 'RESERVED'].includes(status)) {
-            return { outcome: 'STILL_PENDING', message: `Provider still processing — status: ${status}`, providerReference: ref }
+            return { outcome: 'STILL_PENDING', message: `Provider still processing — status: ${status}`, providerReference: refParam, providerStatus: status }
           }
+        } else if (statusResult && statusResult.success === false) {
+          // Preserve the REAL lookup error. If the order carries a durable
+          // provider reference, "cannot confirm" is STILL_PENDING (wallet held,
+          // never redispatch). Only genuinely evidence-less orders may reach
+          // NOT_FOUND/controlled redispatch.
+          const code = String(statusResult.error?.code || 'UNKNOWN')
+          const transient = ['TIMEOUT', 'NETWORK_ERROR', 'PROVIDER_UNAVAILABLE', 'RATE_LIMITED', 'HTTP_50', 'HTTP_5']
+            .some((c) => code.startsWith(c))
+          return refParam
+            ? { outcome: 'STILL_PENDING', message: `Provider status query failed (${code}) — reference preserved`, providerReference: refParam }
+            : { outcome: transient ? 'STILL_PENDING' : 'NOT_FOUND', message: `Provider status query failed (${code})` }
         }
       } catch { /* fall through to next strategy */ }
     }
 
-    // Strategy 2: Search by ICCID (if we have any local ICCIDs)
-    if (existingIccids.length > 0 && typeof (adapter as any).getActivationStatus === 'function') {
+    // Strategy 2: Search by ICCID — ONLY when no authoritative reference exists
+    // (providers whose status endpoint is keyed by ICCID).
+    if (!refParam && existingIccids.length > 0 && typeof (adapter as any).getActivationStatus === 'function') {
       for (const iccid of existingIccids) {
         try {
           const statusResult = await (adapter as any).getActivationStatus(iccid)
           if (statusResult.success && statusResult.data) {
-            return { outcome: 'FOUND_SUCCESS', message: `Provider found ICCID — status confirmed`, providerReference: iccid }
+            return { outcome: 'FOUND_SUCCESS', message: `Provider found ICCID — status confirmed`, providerReference: iccid, iccids: [iccid], installData: normalizeConnectorInstallData(statusResult.data) }
           }
         } catch { continue }
       }
     }
 
     // Strategy 3: Connector-specific read-only reconciliation (e.g. Choice
-    // bundle_code search).  The connector's reconcileAmbiguousPurchase is
+    // bundle_code search). The connector's reconcileAmbiguousPurchase is
     // provider-owned and NEVER repeats the activation POST.
     try {
       const connector = await buildConnectorFromProvider(order.providerId).catch(() => null)
@@ -228,7 +296,7 @@ async function tryReconcileWithProvider(order: any): Promise<ReconciliationResul
           attemptedAt: order.createdAt?.toISOString() || '',
         })
         if (recResult?.success && recResult.data?.resolved && recResult.data?.iccid) {
-          return { outcome: 'FOUND_SUCCESS', message: `Connector reconciliation resolved — ICCID: ${recResult.data.iccid}`, providerReference: recResult.data.iccid }
+          return { outcome: 'FOUND_SUCCESS', message: `Connector reconciliation resolved — ICCID: ${recResult.data.iccid}`, providerReference: recResult.data.iccid, iccids: [recResult.data.iccid] }
         }
         if (recResult?.success && recResult.data?.reason === 'confirmed-failed') {
           return { outcome: 'FOUND_FAILURE', message: 'Connector confirmed provider failure via reconciliation' }
@@ -236,11 +304,17 @@ async function tryReconcileWithProvider(order: any): Promise<ReconciliationResul
       }
     } catch { /* connector reconciliation is best-effort */ }
 
-    return { outcome: 'STILL_PENDING', message: 'Provider query returned no terminal status' }
+    // No authoritative reference and no local ICCID fallback: there is nothing to
+    // poll, so remain reconciling (STILL_PENDING) rather than fabricating a
+    // "not found". Controlled redispatch for genuinely fresh, evidence-less
+    // orders is owned by the recovery classifier, never invented here.
+    return refParam
+      ? { outcome: 'STILL_PENDING', message: 'Provider query returned no terminal status — reference preserved', providerReference: refParam }
+      : { outcome: 'STILL_PENDING', message: 'Provider query returned no terminal status' }
   } catch (e: any) {
     const msg = (e.message || '').toLowerCase()
-    if (msg.includes('timeout') || msg.includes('network') || msg.includes('503') || msg.includes('502') || msg.includes('504')) {
-      return { outcome: 'STILL_PENDING', message: `Provider unreachable: ${e.message?.slice(0, 100)}` }
+    if (msg.includes('timeout') || msg.includes('network') || msg.includes('503') || msg.includes('502') || msg.includes('504') || authoritativeRef) {
+      return { outcome: 'STILL_PENDING', message: `Provider unreachable: ${e.message?.slice(0, 100)}`, providerReference: authoritativeRef || undefined }
     }
     return { outcome: 'NOT_FOUND', message: `Provider lookup failed: ${e.message?.slice(0, 100)}` }
   }

@@ -100,6 +100,32 @@ describe('classifyOrderRecovery', () => {
     input.providerAttempts = [makeAttempt({ errorCode: 'OUT_OF_STOCK', retryClassification: 'RETRYABLE' })]
     expect(classifyOrderRecovery(input).action).toBe('NOT_RETRYABLE')
   })
+
+  it('G. provider acceptance evidence (attempt reference) blocks REDISPATCH_PROVIDER', () => {
+    const input = makeOrder({ status: 'FAILED' })
+    input.providerAttempts = [makeAttempt({ providerId: 'prov-1', providerReference: '12811381', status: 'FAILED', errorCode: 'PROVIDER_ERROR', retryClassification: 'RETRYABLE' })]
+    const result = classifyOrderRecovery(input)
+    expect(result.action).toBe('RECONCILIATION_REQUIRED')
+    expect(result.reason).toMatch(/acceptance|redispatch blocked/i)
+  })
+
+  it('G2. acceptance evidence on the order-level id also blocks redispatch (routes to local finalization/reconciliation)', () => {
+    const input = makeOrder({ status: 'FAILED', providerFulfillId: 'ref-1' })
+    input.providerAttempts = [makeAttempt({ status: 'FAILED', errorCode: 'PROVIDER_ERROR', retryClassification: 'RETRYABLE' })]
+    expect(classifyOrderRecovery(input).action).not.toBe('REDISPATCH_PROVIDER')
+    expect(['RESUME_LOCAL_FINALIZATION', 'RECONCILIATION_REQUIRED']).toContain(classifyOrderRecovery(input).action)
+  })
+
+  it('H. no provider evidence (no attempts, no reference) retains controlled REDISPATCH_PROVIDER', () => {
+    const input = makeOrder({ status: 'PENDING_PROVIDER' })
+    expect(classifyOrderRecovery(input).action).toBe('REDISPATCH_PROVIDER')
+  })
+
+  it('H2. a FAILED retryable attempt WITHOUT any provider reference still allows controlled redispatch', () => {
+    const input = makeOrder({ status: 'FAILED' })
+    input.providerAttempts = [makeAttempt({ providerId: 'prov-1', providerReference: null, status: 'FAILED', errorCode: 'PROVIDER_ERROR', retryClassification: 'RETRYABLE' })]
+    expect(classifyOrderRecovery(input).action).toBe('REDISPATCH_PROVIDER')
+  })
 })
 
 describe('retry backoff', () => {

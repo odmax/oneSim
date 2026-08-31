@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     eSIMPurchase: { findUnique: vi.fn(), update: vi.fn() },
-    providerAttempt: { count: vi.fn(), create: vi.fn() },
+    providerAttempt: { count: vi.fn(), create: vi.fn(), findMany: vi.fn() },
     provider: { findUnique: vi.fn() },
     walletTransaction: { findFirst: vi.fn() },
     eSIM: { create: vi.fn(), findMany: vi.fn(), count: vi.fn() },
@@ -22,7 +22,6 @@ vi.mock('@/lib/services/orders/order-state-machine', () => ({
   createTimelineEvent: vi.fn(),
   transitionOrder: vi.fn().mockResolvedValue({ success: true }),
   failOrder: vi.fn(),
-  ORDER_LABELS: { PROVIDER_RECONCILIATION: 'Provider Reconciliation' },
 }))
 
 vi.mock('@/lib/services/orders/wallet-actions', () => ({
@@ -44,11 +43,14 @@ const { getAdapterForType } = await import('@/lib/providers/adapter-manager')
 const { createTimelineEvent, transitionOrder, failOrder } = await import('@/lib/services/orders/order-state-machine')
 const { reconcileProviderOrder, getReconciliationDelay, isRedispatchAllowed } = await import('./reconciliation')
 const { releaseReservedFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
+const { completeProviderFinalization } = await import('@/lib/services/orders/fulfillment')
+const { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence } = await import('./provider-reference')
 
 const mockPrisma = vi.mocked(prisma)
 const mockAdapter = vi.mocked(getAdapterForType)
 const mockRelease = vi.mocked(releaseReservedFundsUpTo)
 const mockTransition = vi.mocked(transitionOrder)
+const mockFinal = vi.mocked(completeProviderFinalization)
 
 function mockOrder(overrides: any = {}) {
   return {
@@ -62,10 +64,99 @@ function mockOrder(overrides: any = {}) {
   }
 }
 
+function attempt(overrides: any = {}) {
+  return {
+    providerId: 'prov-1', providerReference: '12811381', attemptNumber: 1, startedAt: new Date('2026-08-01T00:00:00Z'),
+    status: 'PROCESSING', source: 'PURCHASE', retryClassification: null, ...overrides,
+  }
+}
+
+function setupAirHubShape(attempts: any[] = [attempt()]) {
+  mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(
+    mockOrder({ providerFulfillId: null, providerReservationId: null, provider: { id: 'prov-1', type: 'CUSTOM', apiBaseUrl: 'https://api.airhubapp.com', apiToken: 'tok', environment: 'staging', authUrl: null } }),
+  )
+  mockPrisma.providerAttempt.findMany.mockResolvedValue(attempts)
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockPrisma.providerAttempt.count.mockResolvedValue(0)
+  mockPrisma.providerAttempt.findMany.mockResolvedValue([])
+  mockAdapter.mockResolvedValue({ getActivationStatus: vi.fn().mockResolvedValue({ success: false }) } as any)
+  mockFinal.mockResolvedValue({ success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true } as any)
+})
+
+describe('authoritative provider reference selection', () => {
+  it('A. providerFulfillId takes precedence over reservation and attempts', () => {
+    const ref = resolveAuthoritativeProviderReference(
+      { id: 'o', providerId: 'prov-1', providerFulfillId: 'fulfill-9', providerReservationId: 'res-1' },
+      [attempt({ attemptNumber: 9 })],
+    )
+    expect(ref).toBe('fulfill-9')
+  })
+
+  it('B. providerReservationId falls back when no fulfillment id', () => {
+    const ref = resolveAuthoritativeProviderReference(
+      { id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: 'res-1' },
+      [],
+    )
+    expect(ref).toBe('res-1')
+  })
+
+  it('C. ProviderAttempt.providerReference is recovered when order-level evidence is absent', () => {
+    const ref = resolveAuthoritativeProviderReference(
+      { id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null },
+      [attempt({ attemptNumber: 2 })],
+    )
+    expect(ref).toBe('12811381')
+  })
+
+  it('D. an attempt reference belonging to another provider is rejected', () => {
+    const ref = resolveAuthoritativeProviderReference(
+      { id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null },
+      [
+        attempt({ attemptNumber: 9, providerId: 'prov-OTHER', providerReference: 'other-ref' }),
+        attempt({ attemptNumber: 1, providerReference: 'mine' }),
+      ],
+    )
+    expect(ref).toBe('mine')
+  })
+
+  it('E. multiple matching attempts select deterministically (highest attemptNumber, then latest startedAt)', () => {
+    const ref = resolveAuthoritativeProviderReference(
+      { id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null },
+      [
+        attempt({ attemptNumber: 1, providerReference: 'old', startedAt: new Date('2026-01-01T00:00:00Z') }),
+        attempt({ attemptNumber: 3, providerReference: 'new', startedAt: new Date('2026-06-01T00:00:00Z') }),
+        attempt({ attemptNumber: 3, providerReference: 'newer', startedAt: new Date('2026-07-01T00:00:00Z') }),
+      ],
+    )
+    expect(ref).toBe('newer')
+  })
+
+  it('F. known staging legacy shape resolves "12811381"', async () => {
+    setupAirHubShape([attempt({ providerId: 'prov-1', status: 'PROCESSING', providerReference: '12811381' })])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PROCESSING' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    // The authoritative attempt reference is used for the provider lookup and
+    // persisted on the reconciliation attempt — no local order id.
+    const adapter: any = await mockAdapter.mock.results[0].value
+    expect(adapter.getActivationStatus).toHaveBeenCalledWith('12811381')
+    const created = mockPrisma.providerAttempt.create.mock.calls[0][0].data
+    expect(created.providerReference).toBe('12811381')
+  })
+})
+
 describe('reconcileProviderOrder', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
     mockAdapter.mockResolvedValue({ getActivationStatus: vi.fn().mockResolvedValue({ success: false }) } as any)
   })
 
@@ -78,16 +169,33 @@ describe('reconcileProviderOrder', () => {
     expect(createTimelineEvent).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'PROVIDER_RECONCILIATION_STARTED' }))
   })
 
-  it('2. FOUND_SUCCESS outcome — provider later confirms success', async () => {
+  it('L. ACTIVE + ICCID/install evidence finalizes through completeProviderFinalization', async () => {
     mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
-    mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', iccids: ['89012345678901234567'], activationCode: 'LPA:1$smdp$code' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(mockFinal).toHaveBeenCalledWith(expect.objectContaining({
+      providerResult: expect.objectContaining({ iccids: ['89012345678901234567'], activationCode: 'LPA:1$smdp$code' }),
+    }))
+    expect(mockRelease).not.toHaveBeenCalled()
+  })
+
+  it('M. ACTIVE without ICCID/fulfillment evidence does NOT mark FULFILLED', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
     mockAdapter.mockResolvedValue({
       getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE' } }),
     } as any)
 
     const result = await reconcileProviderOrder('order-1')
-    expect(result.outcome).toBe('FOUND_SUCCESS')
-    expect(createTimelineEvent).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'PROVIDER_RECONCILIATION_SUCCESS' }))
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.status).toBe('PROVIDER_RECONCILIATION')
+    expect(mockFinal).not.toHaveBeenCalled()
+    expect(mockRelease).not.toHaveBeenCalled()
   })
 
   it('3. FOUND_FAILURE outcome — provider confirms failure', async () => {
@@ -120,14 +228,15 @@ describe('reconcileProviderOrder', () => {
     expect(isRedispatchAllowed(6)).toBe(false)
   })
 
-  it('6. wallet not released during reconciliation', async () => {
+  it('I. PROCESSING keeps the wallet held', async () => {
     mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
-    mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([attempt({ status: 'PROCESSING' })])
     mockAdapter.mockResolvedValue({
       getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PROCESSING' } }),
     } as any)
 
-    await reconcileProviderOrder('order-1')
+    const result = await reconcileProviderOrder('order-1')
+    expect(result.outcome).toBe('STILL_PENDING')
     expect(mockRelease).not.toHaveBeenCalled()
   })
 
@@ -142,12 +251,97 @@ describe('reconcileProviderOrder', () => {
     expect(mockRelease).toHaveBeenCalledWith('order-1', 'biz-1', 10)
   })
 
-  it('8. duplicate reconciliation is idempotent', async () => {
+  it('8. duplicate reconciliation is idempotent (FULFILLED early return)', async () => {
     mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder({ status: 'FULFILLED' }))
-
     const result = await reconcileProviderOrder('order-1')
     expect(result.outcome).toBe('FOUND_SUCCESS')
     expect(result.message).toContain('Already fulfilled')
+  })
+
+  it('N. duplicate reconciliation/finalization is idempotent end-to-end', async () => {
+    let current: any = mockOrder()
+    mockPrisma.eSIMPurchase.findUnique.mockImplementation(async () => ({ ...current }))
+    mockPrisma.providerAttempt.create.mockImplementation(async () => {
+      // finalization flips the order to FULFILLED
+      current = { ...current, status: 'FULFILLED' }
+      return {}
+    })
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', iccids: ['89012345678901234567'] } }),
+    } as any)
+
+    const first = await reconcileProviderOrder('order-1')
+    const second = await reconcileProviderOrder('order-1')
+
+    expect(first.outcome).toBe('FOUND_SUCCESS')
+    expect(second.outcome).toBe('FOUND_SUCCESS')
+    expect(second.message).toContain('Already fulfilled')
+    expect(mockFinal).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('reconciliation redispatch safety', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.providerAttempt.count.mockResolvedValue(7) // attemptNum = 8 (exhausted)
+    mockRelease.mockResolvedValue({ success: true })
+    mockTransition.mockResolvedValue({ success: true })
+  })
+
+  it('G. existing provider reference + exhaustion does NOT authorize redispatch (wallet held)', async () => {
+    setupAirHubShape([attempt({ providerId: 'prov-1', status: 'PROCESSING', providerReference: '12811381' })])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: false, error: { code: 'NOT_FOUND', message: 'order not found' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    expect(isRedispatchAllowed(8)).toBe(true) // attempt threshold reached…
+    // …but evidence blocks it:
+    expect(createTimelineEvent).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'REDISPATCH_BLOCKED' }))
+    expect(mockRelease).not.toHaveBeenCalled()
+  })
+
+  it('K. NOT_FOUND with acceptance evidence does not release wallet nor redispatch', async () => {
+    setupAirHubShape([attempt()])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: false, error: { code: 'NOT_FOUND', message: 'no such order' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(mockRelease).not.toHaveBeenCalled()
+  })
+
+  it('J. transient status error keeps reconciliation (wallet held)', async () => {
+    setupAirHubShape([attempt()])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: false, error: { code: 'TIMEOUT', message: 'timed out' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(mockRelease).not.toHaveBeenCalled()
+  })
+
+  it('H. no provider evidence: reconciliation itself never invents a redispatch — nothing to poll stays STILL_PENDING (controlled redispatch lives in the recovery classifier)', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(
+      mockOrder({ providerFulfillId: null, providerReservationId: null, provider: { id: 'prov-1', type: 'CHOICE', apiBaseUrl: 'https://api.test', apiToken: 'tok', environment: 'staging', authUrl: null } }),
+    )
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: false, error: { code: 'NOT_FOUND', message: 'never dispatched' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+    // Nothing was ever queried and nothing can be polled → stay reconciling.
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    // No redispatch is authorized from within reconciliation without evidence of a
+    // genuine provider not-found for a polled identifier.
+    expect(createTimelineEvent).not.toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'REDISPATCH_ALLOWED' }))
   })
 })
 
@@ -175,5 +369,14 @@ describe('timeline events', () => {
 
     await reconcileProviderOrder('order-1')
     expect(createTimelineEvent).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'PROVIDER_RECONCILIATION_RETRY' }))
+  })
+})
+
+describe('provider acceptance evidence', () => {
+  it('is true when order-level or matching attempt reference evidence exists', () => {
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [{ providerId: 'prov-1', providerReference: '12811381' }])).toBe(true)
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: 'x', providerReservationId: null }, [])).toBe(true)
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [{ providerId: 'prov-OTHER', providerReference: 'other' }])).toBe(false)
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [])).toBe(false)
   })
 })

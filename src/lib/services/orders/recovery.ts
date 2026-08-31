@@ -9,6 +9,7 @@ import { transitionOrder } from './order-state-machine'
 import { reconcileProviderOrder } from './reconciliation'
 import { resolvePackageBacking } from './package-backing-resolver'
 import type { classifyRetry as ClassifyRetryFn } from '@/lib/services/routing/provider-failover-engine'
+import { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, loadOrderAttemptReferences, type ProviderReferenceOrderLike } from './provider-reference'
 
 // ─────────────────────────────────────────────
 // Recovery Classification (Task 2)
@@ -45,6 +46,7 @@ interface ClassificationInput {
     walletReleased?: boolean
   providerAttempts: Array<{
     id: string
+    providerId?: string | null
     status: string
     source: string
     retryClassification?: string | null
@@ -119,10 +121,21 @@ export function classifyOrderRecovery(input: ClassificationInput): RecoveryClass
     return { action: 'NOT_RETRYABLE', reason: `Provider rejected with non-retryable error: ${lastAttempt.errorCode}` }
   }
 
-  // Definite failure, retryable → redispatch — but only if funds are still held.
+  // REDISPATCH SAFETY (provider-neutral): durable provider acceptance/reference
+  // evidence — order-level OR a provider-owned reference on an attempt of this
+  // order's provider — means the provider may already have accepted/charged. A
+  // fresh purchase must NEVER be authorized to "resolve" that. The existing
+  // provider transaction must be resolved (poll/reconcile) with the wallet held.
+  const acceptanceEvidence = hasProviderAcceptanceEvidence(order, providerAttempts)
+  if (acceptanceEvidence && status !== 'FULFILLED') {
+    return { action: 'RECONCILIATION_REQUIRED', reason: 'Provider acceptance/reference evidence exists — recovery redispatch blocked; existing provider transaction must be reconciled' }
+  }
+
+  // Definite failure, retryable → redispatch — but only if funds are still held
+  // AND there is no provider acceptance evidence.
   // If the wallet already released/refunded, a fresh provider success could not
   // be captured; route to reconciliation instead of risking a free purchase.
-  if (isDefiniteFailure && !wasNonRetryable && !hasFulfillEvidence) {
+  if (isDefiniteFailure && !wasNonRetryable && !hasFulfillEvidence && !acceptanceEvidence) {
     if (walletReleased) {
       return { action: 'RECONCILIATION_REQUIRED', reason: 'Definite failure but funds were already released/refunded — manual reconciliation required' }
     }
@@ -214,7 +227,7 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
   const providerAttempts = await prisma.providerAttempt.findMany({
     where: { orderId },
     orderBy: { attemptNumber: 'desc' },
-    select: { id: true, status: true, source: true, retryClassification: true, errorCode: true, providerReference: true },
+    select: { id: true, providerId: true, status: true, source: true, retryClassification: true, errorCode: true, providerReference: true, startedAt: true },
   })
 
   // Provider polling support check
@@ -331,7 +344,13 @@ async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; s
       providerId: provider.id, environment: provider.environment, authUrl: provider.authUrl,
     })
 
-    const ref = order.providerFulfillId || order.providerReservationId
+    // Recover the authoritative provider-owned reference: order-level evidence
+    // first, else the best matching ProviderAttempt reference (e.g. 12811381).
+    const attemptRefs = await loadOrderAttemptReferences(order.id)
+    const ref = await resolveAuthoritativeProviderReference(
+      order as ProviderReferenceOrderLike,
+      attemptRefs,
+    )
     if (!ref) return { fulfilled: false, stillProcessing: false, status: order.status, error: 'No provider reference for polling' }
 
     const result = await adapter.getActivationStatus(ref)
@@ -353,6 +372,17 @@ async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; s
 async function redispatchProvider(order: any): Promise<{ success: boolean; status: string; reconciliation?: boolean; error?: string }> {
   try {
     if (!order.providerId) return { success: false, status: order.status, error: 'No provider linked' }
+
+    // REDISPATCH SAFETY (defense-in-depth, provider-neutral): if the order
+    // carries durable provider acceptance/reference evidence, a recovery
+    // redispatch would create a SECOND provider purchase for a transaction the
+    // provider may already have completed/charged. Refuse and stay in
+    // reconciliation until the existing provider transaction is resolved.
+    const attemptRefs = await loadOrderAttemptReferences(order.id)
+    if (hasProviderAcceptanceEvidence(order as ProviderReferenceOrderLike, attemptRefs)) {
+      return { success: false, status: 'PROVIDER_RECONCILIATION', reconciliation: true, error: 'Provider acceptance/reference evidence exists — redispatch blocked; resolve the existing provider transaction first' }
+    }
+
     const provider = await prisma.provider.findUnique({ where: { id: order.providerId } })
     if (!provider || !isProviderOperational(provider.status)) return { success: false, status: order.status, reconciliation: true, error: 'Provider unavailable' }
 
