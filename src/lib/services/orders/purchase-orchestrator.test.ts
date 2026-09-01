@@ -869,4 +869,100 @@ describe('PurchaseOrchestrator', () => {
     expect(result.errorCode).toBe('PACKAGE_UNAVAILABLE')
     expect(mockReserve).not.toHaveBeenCalled()
   })
+
+  // ── Trusted authenticated-business-identity pin (Phase 3.7) ─────────────
+
+  it('rejects a business mismatch between the authenticated identity and businessId (fail closed, no work)', async () => {
+    // Route authenticated Business A, but businessId is Business B.
+    const result = await orchestrator.executePurchase({ ...validRequest, authenticatedBusinessId: 'biz-A' })
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('BUSINESS_MISMATCH')
+    expect(result.retryable).toBe(false)
+    // No authoritative read, no package work, no wallet mutation.
+    expect(mockPrisma.business.findUnique).not.toHaveBeenCalled()
+    expect(mockReserve).not.toHaveBeenCalled()
+    expect(mockResolve).not.toHaveBeenCalled()
+  })
+
+  it('accepts a matching authenticated identity (pin satisfied) and proceeds to fresh authoritative checks', async () => {
+    setupBusiness()
+    setupProvider(['PURCHASE'])
+    setupSuccessAdapter()
+    const trusted = setupTrustedPackage()
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
+    mockPrisma.eSIMPurchase.create.mockResolvedValue({ id: 'order-1' } as any)
+    mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
+    mockCapture.mockResolvedValue({ success: true })
+    mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
+
+    const result = await orchestrator.executePurchase({ ...validRequest, resolvedPackage: trusted, authenticatedBusinessId: 'biz-1' })
+
+    expect(result.success).toBe(true)
+    // The FRESH authoritative business read still ran (state is never trusted
+    // from the identity context).
+    expect(mockPrisma.business.findUnique).toHaveBeenCalledWith({ where: { id: 'biz-1' } })
+    expect(mockReserve).toHaveBeenCalled()
+  })
+
+  it('business suspended AFTER route auth is still rejected by the fresh authoritative read', async () => {
+    mockPrisma.business.findUnique.mockResolvedValue({ id: 'biz-1', status: 'SUSPENDED', walletBalance: { toString: () => '100' } } as any)
+    const trusted = setupTrustedPackage()
+    setupProvider()
+
+    const result = await orchestrator.executePurchase({ ...validRequest, resolvedPackage: trusted, authenticatedBusinessId: 'biz-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('BUSINESS_SUSPENDED')
+    expect(mockReserve).not.toHaveBeenCalled()
+  })
+
+  it('business deleted after route auth fails safely via the fresh authoritative read', async () => {
+    mockPrisma.business.findUnique.mockResolvedValue(null)
+    const trusted = setupTrustedPackage()
+
+    const result = await orchestrator.executePurchase({ ...validRequest, resolvedPackage: trusted, authenticatedBusinessId: 'biz-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('BUSINESS_NOT_FOUND')
+    expect(mockReserve).not.toHaveBeenCalled()
+  })
+
+  it('wallet state is NEVER reused: an underfunded fresh read rejects before reserve', async () => {
+    // Business A authenticates with a healthy snapshot upstream, but by the time
+    // the purchase executes the fresh row is underfunded.
+    mockPrisma.business.findUnique.mockResolvedValue({ id: 'biz-1', status: 'APPROVED', walletBalance: { toString: () => '1' } } as any)
+    setupProvider(['PURCHASE'])
+
+    const result = await orchestrator.executePurchase({ ...validRequest, resolvedPackage: setupTrustedPackage(), authenticatedBusinessId: 'biz-1' })
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('INSUFFICIENT_WALLET')
+    expect(mockReserve).not.toHaveBeenCalled()
+  })
+
+  it('customer operations stay scoped to businessId — a cross-tenant customer can never match', async () => {
+    setupBusiness()
+    setupProvider(['PURCHASE'])
+    setupSuccessAdapter()
+    const trusted = setupTrustedPackage()
+    // Business B's customer row exists; only a findFirst scoped to biz-1 may match.
+    mockPrisma.customer.findFirst.mockResolvedValue(null)
+    mockPrisma.customer.create.mockResolvedValue({ id: 'cust-b' } as any)
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
+    mockPrisma.eSIMPurchase.create.mockResolvedValue({ id: 'order-1' } as any)
+    mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
+    mockCapture.mockResolvedValue({ success: true })
+    mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
+
+    const result = await orchestrator.executePurchase({ ...validRequest, customer: { name: 'X', email: 'b-customer@onesim.test' }, resolvedPackage: trusted, authenticatedBusinessId: 'biz-1' })
+
+    expect(result.success).toBe(true)
+    // Every customer lookup/create is pinned to the authenticated businessId;
+    // the identity context cannot redirect it to another tenant.
+    const findCalls = mockPrisma.customer.findFirst.mock.calls.map((c) => (c[0] as any)?.where?.businessId)
+    expect(findCalls).toContain('biz-1')
+    const createData = mockPrisma.customer.create.mock.calls.map((c) => (c[0] as any)?.data?.businessId)
+    expect(createData).toContain('biz-1')
+  })
 })

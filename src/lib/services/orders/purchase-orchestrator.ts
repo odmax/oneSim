@@ -68,6 +68,13 @@ export interface PurchaseRequest {
    * the authoritative ProviderPackage/snapshot reads. Absent ⇒ canonical path.
    */
   resolvedPackage?: Record<string, any> | null
+  /**
+   * TRUSTED REQUEST CONTEXT — internal only, never from the public request body.
+   * Business identity established by canonical API-key authentication. Carries
+   * NO business state. When present it MUST equal `businessId`; mismatch fails
+   * closed before any purchase work. Absent ⇒ canonical service path unchanged.
+   */
+  authenticatedBusinessId?: string | null
 }
 
 /**
@@ -135,6 +142,14 @@ export class PurchaseOrchestrator {
     try {
 
     // Step 1: Validate business
+    // Trusted identity pin (fail-closed): if an authenticated context is supplied
+    // it MUST equal the requested businessId. This is a pure identity assertion —
+    // no business state is trusted from the context. The authoritative business
+    // status/wallet read immediately below always runs fresh.
+    if (request.authenticatedBusinessId != null && request.authenticatedBusinessId !== businessId) {
+      return this.fail('BUSINESS_MISMATCH', 'Business identity mismatch', false)
+    }
+
     const business = await prisma.business.findUnique({ where: { id: businessId } })
     if (!business) return this.fail('BUSINESS_NOT_FOUND', 'Business not found', false)
     if (business.status === 'SUSPENDED') return this.fail('BUSINESS_SUSPENDED', 'Business suspended', false)

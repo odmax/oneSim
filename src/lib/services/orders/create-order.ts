@@ -61,6 +61,14 @@ export interface CreateOrderParams {
     providerName?: string | null
     [k: string]: any
   } | null
+  /**
+   * TRUSTED REQUEST CONTEXT — internal only, never from the public request body.
+   * The business identity established by canonical API-key authentication. It
+   * carries NO business state (no status, wallet, or rate-limit fields). When
+   * present it MUST equal `businessId`; any mismatch fails closed before any
+   * purchase work. Absent ⇒ canonical service path unchanged (non-API callers).
+   */
+  authenticatedBusinessId?: string | null
 }
 
 export interface CreateOrderResult {
@@ -109,6 +117,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     quoteReference: params.quoteReference,
     travelDate: params.travelDate,
     resolvedPackage: params.resolvedPackage ?? undefined,
+    authenticatedBusinessId: params.authenticatedBusinessId ?? undefined,
   })
 
   // Fire webhooks (fire-and-forget)

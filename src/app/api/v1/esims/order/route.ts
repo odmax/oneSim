@@ -123,6 +123,9 @@ export async function POST(request: NextRequest) {
       // validated (tenant-pinned to the authenticated business). The orchestrator
       // still runs backing/readiness/price-guard/travel/wallet checks unchanged.
       resolvedPackage: resolution.package,
+      // Identity-only pin: the authenticated business id (never from the body).
+      // No status/wallet state is passed; the orchestrator re-reads those fresh.
+      authenticatedBusinessId: businessId,
       async: true,
     })
 
