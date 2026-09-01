@@ -30,6 +30,37 @@ export interface CreateOrderParams {
    * system; poll GET /api/v1/orders/{orderId} for completion.
    */
   async?: boolean
+  /**
+   * TRUSTED REQUEST CONTEXT — internal only, never from the public request body.
+   * A package already resolved (and tenant/security-validated) by trusted route
+   * code before calling createOrder. When present the orchestrator skips its own
+   * identical re-resolution; all downstream checks (backing, readiness, price
+   * guard, travel date, wallet, provider status) still run unchanged. createOrder
+   * is fully safe and canonical when this is absent (all non-API callers).
+   */
+  resolvedPackage?: {
+    id: string
+    source?: string | null
+    providerId?: string | null
+    providerPlanId?: string | null
+    providerPackageId?: string | null
+    isActive?: boolean | null
+    hiddenFromCatalog?: boolean | null
+    archivedAt?: Date | null
+    name?: string | null
+    displayName?: string | null
+    sku?: string | null
+    packageCode?: string | null
+    customerDescription?: string | null
+    description?: string | null
+    dataGB?: number | null
+    validityDays?: number | null
+    priceUSD?: any
+    localPrice?: any
+    currency?: string | null
+    providerName?: string | null
+    [k: string]: any
+  } | null
 }
 
 export interface CreateOrderResult {
@@ -77,6 +108,7 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     idempotencyKey: params.idempotencyKey,
     quoteReference: params.quoteReference,
     travelDate: params.travelDate,
+    resolvedPackage: params.resolvedPackage ?? undefined,
   })
 
   // Fire webhooks (fire-and-forget)

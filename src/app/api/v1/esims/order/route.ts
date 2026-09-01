@@ -119,6 +119,10 @@ export async function POST(request: NextRequest) {
       idempotencyKey: idempotencyKey || undefined,
       customer: { name: customerName, email: customerEmail, phone: customerPhone, country, externalId: externalCustomerId },
       travelDate: travelDate || undefined,
+      // TRUSTED REQUEST CONTEXT: reuse the package the route already resolved and
+      // validated (tenant-pinned to the authenticated business). The orchestrator
+      // still runs backing/readiness/price-guard/travel/wallet checks unchanged.
+      resolvedPackage: resolution.package,
       async: true,
     })
 

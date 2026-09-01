@@ -788,4 +788,85 @@ describe('PurchaseOrchestrator', () => {
     expect(mockReserve).not.toHaveBeenCalled()
     expect(mockAdapter).not.toHaveBeenCalled()
   })
+
+  // ── Trusted request context (resolvedPackage reuse) ──────────────────────
+
+  function setupTrustedPackage(source = 'CATALOG' as string) {
+    // Same bound backing as setupPackage (pp-1 owned by prov-1), but supplied via
+    // the trusted route-resolved context instead of a fresh resolvePackageIdentifier.
+    mockResolve.mockReset()
+    mockPrisma.providerPackage.findUnique.mockResolvedValue({ id: 'pp-1', providerId: 'prov-1', providerPlanId: 'pl-1', costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1', sellingPrice: '5', costPrice: '2' } as any)
+    return {
+      id: 'pkg-1', displayName: 'Test Plan', dataGB: 1, validityDays: 7,
+      priceUSD: { toString: () => '5' }, localPrice: { toString: () => '5' }, currency: 'USD',
+      source, providerId: 'prov-1', providerPlanId: 'pl-1', providerName: 'CHOICE', providerPackageId: 'pp-1', sku: 'SKU1', packageCode: 'PC1', customerDescription: null,
+    } as any
+  }
+
+  it('reuses a trusted resolvedPackage and SKIPS the redundant re-resolution', async () => {
+    setupBusiness()
+    setupProvider(['PURCHASE'])
+    setupSuccessAdapter()
+    const trusted = setupTrustedPackage()
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
+    mockPrisma.eSIMPurchase.create.mockResolvedValue({ id: 'order-1' } as any)
+    mockReserve.mockResolvedValue({ success: true, reservationId: 'res-1' })
+    mockCapture.mockResolvedValue({ success: true })
+    mockPrisma.eSIM.findMany.mockResolvedValue([{ id: 'esim-1', iccid: '89012345678901234567', imsi: null, activationCode: 'CODE', status: 'PENDING_ACTIVATION', qrCodeUrl: 'https://qr' }] as any)
+
+    const result = await orchestrator.executePurchase({ ...validRequest, resolvedPackage: trusted })
+
+    expect(result.success).toBe(true)
+    // The package re-read (resolvePackageIdentifier) must NOT run when a trusted
+    // context is supplied — this is the intended query-only reduction.
+    expect(mockResolve).not.toHaveBeenCalled()
+    // Backing/readiness/provider/wallet guards run unchanged.
+    expect(mockPrisma.providerPackage.findUnique).toHaveBeenCalled()
+    expect(mockReserve).toHaveBeenCalled()
+  })
+
+  it('trusted provider-package-source context FAILS CLOSED for PROVIDER_PLAN', async () => {
+    setupBusiness()
+    setupTrustedPackage('PROVIDER_PLAN')
+    setupProvider()
+
+    const result = await orchestrator.executePurchase({ ...validRequest, resolvedPackage: setupTrustedPackage('PROVIDER_PLAN') })
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('PACKAGE_NOT_FOUND')
+    expect(mockReserve).not.toHaveBeenCalled()
+  })
+
+  it('stale/forged trusted context cannot bypass business status check', async () => {
+    // Forged context with a plausible package, but business is SUSPENDED.
+    mockPrisma.business.findUnique.mockResolvedValue({ id: 'biz-1', status: 'SUSPENDED', walletBalance: { toString: () => '100' } } as any)
+    const trusted = setupTrustedPackage()
+    setupProvider()
+
+    const result = await orchestrator.executePurchase({ ...validRequest, resolvedPackage: trusted })
+
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('BUSINESS_SUSPENDED')
+    // Never reached package/backing/wallet.
+    expect(mockReserve).not.toHaveBeenCalled()
+  })
+
+  it('stale/forged trusted context cannot bypass price guard / readiness', async () => {
+    setupBusiness()
+    setupProvider(['PURCHASE'])
+    const trusted = setupTrustedPackage()
+    // Backing provider package is missing → readiness/backing fails closed even
+    // with a route-supplied package context.
+    mockPrisma.providerPackage.findUnique.mockReset()
+    mockPrisma.providerPackage.findUnique.mockResolvedValue(null)
+    mockPrisma.providerPackage.findMany.mockResolvedValue([])
+
+    const result = await orchestrator.executePurchase({ ...validRequest, resolvedPackage: trusted })
+
+    // PACKAGE_UNAVAILABLE (deactivated/missing backing) — the forged context can
+    // not manufacture a purchase because backing + readiness re-check the DB.
+    expect(result.success).toBe(false)
+    expect(result.errorCode).toBe('PACKAGE_UNAVAILABLE')
+    expect(mockReserve).not.toHaveBeenCalled()
+  })
 })

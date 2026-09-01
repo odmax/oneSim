@@ -58,6 +58,16 @@ export interface PurchaseRequest {
   travelDate?: string
   /** Internal: enqueue dispatch and return PROCESSING instead of executing inline. */
   _async?: boolean
+  /**
+   * TRUSTED REQUEST CONTEXT — internal only, never from the public request body.
+   * Constructed by trusted route code AFTER canonical authentication + tenant
+   * validation (see createOrder). When present the orchestrator reuses this
+   * already-resolved package instead of re-reading the identical retail row;
+   * every downstream guarantee (backing resolution, readiness, price guard,
+   * travel date, wallet reserve, provider status) is unchanged and runs against
+   * the authoritative ProviderPackage/snapshot reads. Absent ⇒ canonical path.
+   */
+  resolvedPackage?: Record<string, any> | null
 }
 
 /**
@@ -133,11 +143,22 @@ export class PurchaseOrchestrator {
     if (quantity < 1 || quantity > 100) return this.fail('INVALID_QUANTITY', 'Quantity must be 1-100', false)
 
     // Step 3: Resolve package
-    const resolution = await resolvePackageIdentifier({ packageId, sku, packageCode })
-    if (!resolution || resolution.package.source === 'PROVIDER_PLAN') {
-      return this.fail('PACKAGE_NOT_FOUND', 'Package not available for purchase', false)
+    // Trusted request context (route-prevalidated) skips an identical re-read;
+    // otherwise canonical resolution runs unchanged. The PROVIDER_PLAN guard and
+    // tenant/security invariants are preserved in both paths.
+    let resolved: { package: any } | null = null
+    if (request.resolvedPackage) {
+      if (request.resolvedPackage.source === 'PROVIDER_PLAN') {
+        return this.fail('PACKAGE_NOT_FOUND', 'Package not available for purchase', false)
+      }
+      resolved = { package: request.resolvedPackage }
+    } else {
+      resolved = await resolvePackageIdentifier({ packageId, sku, packageCode })
+      if (!resolved || resolved.package.source === 'PROVIDER_PLAN') {
+        return this.fail('PACKAGE_NOT_FOUND', 'Package not available for purchase', false)
+      }
     }
-    const pkg = resolution.package
+    const pkg = resolved.package
     trace(correlationId, 'PACKAGE_RESOLVED', 'SUCCESS', { orderPackageId: pkg.id, providerBound: Boolean(pkg.providerId) })
 
     // ── Authoritative backing resolution (single source of truth) ─────────────
