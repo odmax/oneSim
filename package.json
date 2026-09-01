@@ -16,7 +16,14 @@
     "deploy:safe": "bash scripts/deploy-safe.sh",
     "check:prod": "bash scripts/check-production.sh",
     "seed:rakuten-template": "node scripts/seed-rakuten-template.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "load:test": "vitest run --config dts/load/vitest.config.ts",
+    "load:smoke": "npx tsx dts/load/run-load.ts",
+    "load:matrix": "npx tsx dts/load/run-matrix.ts",
+    "load:storm": "npx tsx dts/load/api-storm.ts",
+    "load:ingress": "npx tsx dts/load/api-bench.ts",
+    "load:drain": "npx tsx dts/load/drain-bench.ts",
+    "load:drop-dbs": "npx tsx dts/load/drop-load-dbs.ts"
   },
   "dependencies": {
     "@next-auth/prisma-adapter": "^1.0.7",

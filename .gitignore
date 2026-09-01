@@ -5,3 +5,7 @@ node_modules/
 *.log
 .DS_Store
 tsconfig.tsbuildinfo
+
+# Load-harness generated outputs (machine-specific benchmark artifacts)
+dts/load/results/**
+dts/load/**/output/**

@@ -19,6 +19,62 @@ import { normalizeChoiceUserId } from './url-token-connector'
 export { resolveConnectorType } from './connector-type'
 export type { ConnectorType } from './connector-type'
 
+type ConnectorFactoryConfig = Parameters<typeof createConnector>[3]
+export type ConnectorOverrideFactory = (providerId: string, name: string | undefined, config: ConnectorFactoryConfig) => IProviderConnector
+
+/**
+ * TEST/LOAD-HARNESS ONLY — connector override registry, EMPTY and useless in
+ * normal execution. Registration and lookup FAIL CLOSED unless BOTH:
+ *   A. an explicit load-harness mode is enabled (LOAD_HARNESS=1), AND
+ *   B. DATABASE_URL names a database beginning with `onesim_load_`.
+ * Application runtime never satisfies both, so normal development/staging/
+ * production connector resolution is behaviorally identical (registry never
+ * read when the gate fails). There is NO generic production feature flag.
+ */
+export const CONNECTOR_OPERATION_OVERRIDES: Record<string, ConnectorOverrideFactory> = {}
+
+export function databaseNameFromUrl(url: string | undefined): string {
+  if (!url) return ''
+  const m = /^(?:postgres(?:ql)?:\/\/)?[^@/]+@[^:/?]+:\d+\/([^?]+)/.exec(url)
+  return m ? decodeURIComponent(m[1]) : ''
+}
+
+function hostFromUrl(url: string | undefined): string {
+  if (!url) return ''
+  const m = /^(?:postgres(?:ql)?:\/\/)?[^@/]+@([^:/?]+):/.exec(url)
+  return m ? m[1] : ''
+}
+
+export function loadHarnessModeEnabled(): boolean {
+  return process.env.LOAD_HARNESS === '1'
+}
+
+export function loadOverrideGate(): { ok: boolean; reason?: string } {
+  if (!loadHarnessModeEnabled()) return { ok: false, reason: 'LOAD_HARNESS mode not enabled' }
+  const db = databaseNameFromUrl(process.env.DATABASE_URL)
+  if (!db.startsWith('onesim_load_')) return { ok: false, reason: `DATABASE_URL must name a onesim_load_* database (got ${db || '(none)'})` }
+  const low = hostFromUrl(process.env.DATABASE_URL).toLowerCase()
+  if (low.includes('staging')) return { ok: false, reason: 'staging-like host rejected' }
+  if ((low.includes('prod') || low.includes('production')) && !low.includes('staging')) return { ok: false, reason: 'production-like host rejected' }
+  return { ok: true }
+}
+
+function readConnectorOverride(connectorType: string): { gateOk: boolean; factory?: ConnectorOverrideFactory } {
+  const gate = loadOverrideGate()
+  if (!gate.ok) return { gateOk: false }
+  return { gateOk: true, factory: CONNECTOR_OPERATION_OVERRIDES[connectorType] }
+}
+
+/**
+ * Register a fake-connector override. Throws before ANY provider operation if
+ * the load environment gate is not satisfied (never silently ignored).
+ */
+export function registerConnectorOverride(connectorType: string, factory: ConnectorOverrideFactory): void {
+  const gate = loadOverrideGate()
+  if (!gate.ok) throw new Error(`CONNECTOR_OVERRIDE_BLOCKED: ${gate.reason}`)
+  CONNECTOR_OPERATION_OVERRIDES[connectorType] = factory
+}
+
 export function createConnector(providerId: string, name: string | undefined, connectorType: ConnectorTypeAlias, config: {
   apiBaseUrl?: string | null
   apiToken?: string | null
@@ -38,6 +94,21 @@ export function createConnector(providerId: string, name: string | undefined, co
   tokenPlacement?: string | null
   authType?: string | null
 }): IProviderConnector {
+  // TEST/LOAD-HARNESS ONLY seam — read-only here, gated fail-closed by
+  // `readConnectorOverride`:
+  //   gate FAILS (normal dev/staging/prod)        → registry never consulted,
+  //                                                  canonical resolution unchanged.
+  //   gate PASSES + override exists               → fake override returned.
+  //   gate PASSES + override missing (load mode)  → THROW — a permanent load
+  //                                                  harness must never fall
+  //                                                  through to a canonical
+  //                                                  connector it did not fake.
+  const override = readConnectorOverride(connectorType)
+  if (override.gateOk) {
+    if (override.factory) return override.factory(providerId, name, config)
+    throw new Error(`LOAD_HARNESS_CONNECTOR_OVERRIDE_MISSING: no fake connector override registered for '${connectorType}' in load mode`)
+  }
+
   const baseUrl = config.apiBaseUrl || ''
   const token = config.apiToken || undefined
   const authUrl = config.authUrl || undefined
