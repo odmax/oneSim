@@ -9,7 +9,7 @@ import { requireRouteScopes } from '@/lib/api/v1-response'
 
 function makeError(c: string, m: string) { return { success: false, error: { code: c, message: m } } }
 
-async function respond(req: NextRequest, body: any, status: number, startTime: number, businessId: string, opts?: { apiKeyId?: string; errorMessage?: string; rateLimit?: { limit: number; remaining: number } }) {
+async function respond(req: NextRequest, body: any, status: number, startTime: number, businessId: string, opts?: { apiKeyId?: string; errorMessage?: string; rateLimit?: { limit: number | null; remaining: number | null } }) {
   let r = NextResponse.json(body, { status })
   if (opts?.rateLimit) r = addRateLimitHeaders(r, opts.rateLimit)
   await logApiRequest(req, r, startTime, businessId, { ...opts, errorMessage: opts?.errorMessage || (body?.error?.message || undefined) })

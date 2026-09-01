@@ -10,12 +10,13 @@ import { getActivationInstructions } from '@/lib/esim/activation-instructions'
 import { isValidTravelDate } from '@/lib/providers/travel-date-utils'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 import { requireRouteScopes } from '@/lib/api/v1-response'
+import { canonicalPurchaseIdentity, stripIdempotencyIdentity, hasIdempotencyIdentity } from '@/lib/api/idempotency-identity'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
 }
 
-async function respond(request: NextRequest, body: any, status: number, startTime: number, businessId: string, options?: { apiKeyId?: string; idempotencyKey?: string; errorMessage?: string; rateLimit?: { limit: number; remaining: number } }) {
+async function respond(request: NextRequest, body: any, status: number, startTime: number, businessId: string, options?: { apiKeyId?: string; idempotencyKey?: string; errorMessage?: string; rateLimit?: { limit: number | null; remaining: number | null } }) {
   let response = NextResponse.json(body, { status })
   if (options?.rateLimit) response = addRateLimitHeaders(response, options.rateLimit)
   await logApiRequest(request, response, startTime, businessId, { ...options, errorMessage: options?.errorMessage || (body?.error?.message || undefined) })
@@ -49,13 +50,6 @@ export async function POST(request: NextRequest) {
     if (!business) return respond(request, makeError('BUSINESS_NOT_FOUND', 'Business not found'), 404, startTime, businessId, { errorMessage: 'Business not found', rateLimit })
     if (business.status === 'SUSPENDED') return respond(request, makeError('BUSINESS_SUSPENDED', 'Business account is suspended'), 403, startTime, businessId, { errorMessage: 'Business suspended', rateLimit })
 
-    // Idempotency
-    const idempotencyKey = request.headers.get('Idempotency-Key')
-    if (idempotencyKey) {
-      const existing = await prisma.idempotencyRecord.findUnique({ where: { key: `${businessId}:${idempotencyKey}` } })
-      if (existing) return respond(request, existing.response as any, 200, startTime, businessId, { idempotencyKey, rateLimit })
-    }
-
     // Parse body
     let body: any
     try { body = await request.json() } catch { return respond(request, makeError('INVALID_JSON', 'Invalid JSON body'), 400, startTime, businessId, { errorMessage: 'Invalid JSON', rateLimit }) }
@@ -77,7 +71,29 @@ export async function POST(request: NextRequest) {
     }
     const pkg = resolution.package
 
-    // Phase 5C — purchasability check using centralized readiness
+    // Idempotency â€” payload-bound replay (Phase 6.1). Same business + key +
+    // canonical purchase identity (resolved package, quantity, travelDate-as-
+    // provided) â‡’ deterministic replay of the original response. A materially
+    // different request under the same key is REJECTED with HTTP 409 (no second
+    // order, no second reserve, no second dispatch). Records without a stored
+    // identity (legacy/no-key-identity) fall back to replay â€” never a second order.
+    const idempotencyKey = request.headers.get('Idempotency-Key')
+    let incomingIdentity: string | null = null
+    if (idempotencyKey) {
+      incomingIdentity = canonicalPurchaseIdentity({ resolvedPackageId: pkg.id, quantity, travelDate })
+      const existing = await prisma.idempotencyRecord.findUnique({ where: { key: `${businessId}:${idempotencyKey}` } })
+      if (existing) {
+        if (hasIdempotencyIdentity(existing.response)) {
+          const stored = (existing.response as any)?.__requestIdentity
+          if (incomingIdentity !== stored) {
+            return respond(request, makeError('IDEMPOTENCY_KEY_REUSED', 'This idempotency key was already used for a different request.'), 409, startTime, businessId, { idempotencyKey, rateLimit })
+          }
+        }
+        return respond(request, stripIdempotencyIdentity(existing.response) as any, 200, startTime, businessId, { idempotencyKey, rateLimit })
+      }
+    }
+
+    // Phase 5C â€” purchasability check using centralized readiness
     if (pkg.providerPackageId) {
       const pp = await prisma.providerPackage.findUnique({
         where: { id: pkg.providerPackageId },
@@ -178,10 +194,11 @@ export async function POST(request: NextRequest) {
       },
     }
 
-    // Store idempotency record
+    // Store idempotency record â€” carries the canonical request identity (private
+    // `__requestIdentity`, stripped from every client-facing replay).
     if (idempotencyKey) {
       await prisma.idempotencyRecord.create({
-        data: { key: `${businessId}:${idempotencyKey}`, businessId, response: responseBody as any, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+        data: { key: `${businessId}:${idempotencyKey}`, businessId, response: { ...(responseBody as any), __requestIdentity: incomingIdentity } as any, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
       }).catch(() => {})
     }
 

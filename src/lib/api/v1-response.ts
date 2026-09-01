@@ -9,7 +9,7 @@ export interface RespondOptions {
   idempotencyKey?: string
   errorCode?: ApiErrorCode
   errorMessage?: string
-  rateLimit?: { limit: number; remaining: number }
+  rateLimit?: { limit: number | null; remaining: number | null }
   requestId?: string
   details?: any
 }
@@ -35,7 +35,7 @@ export interface AuthBusinessResult {
   businessId: string
   apiKeyId?: string
   scopes?: ApiScope[]
-  rateLimit?: { limit: number; remaining: number }
+  rateLimit?: { limit: number | null; remaining: number | null }
   requestId: string
 }
 
@@ -113,7 +113,7 @@ export async function authenticateAndCheck(
 
 export function addRateLimit(
   response: NextResponse,
-  rateLimit?: { limit: number; remaining: number },
+  rateLimit?: { limit: number | null; remaining: number | null },
 ): NextResponse {
   if (rateLimit) {
     return addRateLimitHeaders(response, rateLimit)

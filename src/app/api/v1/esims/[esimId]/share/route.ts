@@ -14,7 +14,7 @@ function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
 }
 
-async function respond(request: NextRequest, body: any, status: number, startTime: number, businessId: string, options?: { apiKeyId?: string; errorMessage?: string; rateLimit?: { limit: number; remaining: number } }) {
+async function respond(request: NextRequest, body: any, status: number, startTime: number, businessId: string, options?: { apiKeyId?: string; errorMessage?: string; rateLimit?: { limit: number | null; remaining: number | null } }) {
   let response = NextResponse.json(body, { status })
   if (options?.rateLimit) response = addRateLimitHeaders(response, options?.rateLimit)
   await logApiRequest(request, response, startTime, businessId, { ...options, errorMessage: options?.errorMessage || (body?.error?.message || undefined) })

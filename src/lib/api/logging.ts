@@ -34,19 +34,26 @@ export async function logApiRequest(
   }
 }
 
-export async function checkRateLimit(businessId: string): Promise<{ allowed: boolean; limit: number; remaining: number; resetAt: Date }> {
+export async function checkRateLimit(businessId: string): Promise<{ allowed: boolean; limit: number | null; remaining: number | null; resetAt: Date }> {
   const business = await prisma.business.findUnique({
     where: { id: businessId },
     select: { rateLimitPerMinute: true },
   })
 
-  const defaultLimit = 60
-  const limit = business?.rateLimitPerMinute || defaultLimit
-
+// NO business-level hard ceiling when the business has no explicit positive
+  // rateLimitPerMinute. The old accidental 60-per-minute default is removed —
+  // high-volume clients are not rejected by a fabricated default; provider
+  // safety is enforced by provider execution lanes + the durable queue, not by
+  // a client request ceiling.
+  const limit = business?.rateLimitPerMinute
   const now = Date.now()
   const oneMinuteAgo = new Date(now - 60 * 1000)
   const resetAt = new Date(now + 60 * 1000)
   resetAt.setSeconds(0, 0)
+
+  if (!limit || limit <= 0) {
+    return { allowed: true, limit: null, remaining: null, resetAt }
+  }
 
   const count = await prisma.apiRequestLog.count({
     where: {
@@ -61,10 +68,10 @@ export async function checkRateLimit(businessId: string): Promise<{ allowed: boo
 
 export function addRateLimitHeaders(
   response: NextResponse,
-  { limit, remaining, resetAt }: { limit: number; remaining: number; resetAt?: Date },
+  { limit, remaining, resetAt }: { limit: number | null | undefined; remaining: number | null | undefined; resetAt?: Date },
 ): NextResponse {
-  response.headers.set('X-RateLimit-Limit', String(limit))
-  response.headers.set('X-RateLimit-Remaining', String(remaining))
+  if (typeof limit === 'number' && Number.isFinite(limit)) response.headers.set('X-RateLimit-Limit', String(limit))
+  if (typeof remaining === 'number' && Number.isFinite(remaining)) response.headers.set('X-RateLimit-Remaining', String(remaining))
   if (resetAt) response.headers.set('X-RateLimit-Reset', String(Math.floor(resetAt.getTime() / 1000)))
   return response
 }

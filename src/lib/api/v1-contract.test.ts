@@ -364,9 +364,15 @@ describe('API-CONTRACT-6: Webhook event types and HMAC', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('API-CONTRACT-7: Rate limiting contract', () => {
-  it('default rate limit is 60 requests/minute', () => {
+  it('no hard default business rate ceiling (null means unlimited; explicit limit enforced)', () => {
     const content = fs.readFileSync('src/lib/api/logging.ts', 'utf8')
-    expect(content).toContain('defaultLimit = 60')
+    // The accidental `|| 60` default is removed — a business with no explicit
+    // limit is NOT hard-capped at 60/min. Provider protection is via lanes.
+    expect(content).not.toContain('defaultLimit = 60')
+    expect(content).not.toMatch(/\|\|\s*60\b/)
+    // Explicit per-business limit is enforced; null → allowed with null limit.
+    expect(content).toContain('rateLimitPerMinute')
+    expect(content).toContain('allowed: true, limit: null, remaining: null')
   })
 
   it('rate limit response includes Retry-After: 60', () => {
