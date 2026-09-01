@@ -32,14 +32,19 @@ async function reserveCore(client: any, ref: BillingRef, businessId: string, amo
   })
   if (existing) return { success: true }
 
-  const business = await client.business.findUnique({ where: { id: businessId }, select: { walletBalance: true } })
-  if (!business) return { success: false, error: 'Business not found' }
-
+  // ATOMIC DEBIT — single source of truth. The WHERE (id + walletBalance >= amount)
+  // is applied atomically by Postgres: count === 1 ⇒ debit succeeded; count === 0
+  // ⇒ the business is missing OR its balance is insufficient.
   const updated = await client.business.updateMany({
     where: { id: businessId, walletBalance: { gte: amount } },
     data: { walletBalance: { decrement: amount } },
   })
   if (updated.count === 0) {
+    // FAILURE-ONLY lookup — successful purchases never run this (hot path stays a
+    // pure atomic conditional update). Distinguishes a missing business from an
+    // under-funded one so the externally-compatible error messages are unchanged.
+    const business = await client.business.findUnique({ where: { id: businessId }, select: { walletBalance: true } })
+    if (!business) return { success: false, error: 'Business not found' }
     const balance = Number(business.walletBalance)
     return { success: false, error: `Insufficient wallet balance. Required: ${amount}, Available: ${balance}` }
   }
