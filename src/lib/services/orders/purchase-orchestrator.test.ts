@@ -388,6 +388,70 @@ describe('PurchaseOrchestrator', () => {
     expect(mockPrisma.eSIMPurchase.create).not.toHaveBeenCalled()
   })
 
+  it('replays an in-flight keyed order (PAYMENT_RESERVED) deterministically as accepted', async () => {
+    setupBusiness()
+    setupPackage()
+    setupProvider()
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null)
+    // Winner is mid-flight (not yet FULFILLED): the duplicate is STILL the same
+    // logical order — replay must be accepted, not reported as a purchase failure.
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({
+      id: 'order-1',
+      businessId: 'biz-1',
+      userId: 'user-1',
+      status: 'PAYMENT_RESERVED',
+      totalAmount: { toString: () => '5' },
+      esims: [],
+      packageId: 'pkg-1',
+      packageSnapshot: {},
+      packageName: 'Test',
+      packageDataGB: 1,
+      packageValidityDays: 7,
+    } as any)
+
+    const result = await orchestrator.executePurchase({ ...validRequest, idempotencyKey: 'client-key-2' })
+
+    expect(result.success).toBe(true)
+    expect(result.orderId).toBe('order-1')
+    expect(result.status).toBe('PAYMENT_RESERVED')
+    expect(mockPrisma.eSIMPurchase.create).not.toHaveBeenCalled()
+    expect(mockReserve).not.toHaveBeenCalled()
+  })
+
+  it('concurrent same-key duplicate hitting the P2002 create path replays the in-flight order as accepted', async () => {
+    setupBusiness()
+    setupPackage()
+    setupProvider()
+    setupCustomer()
+    mockPrisma.eSIMPurchase.findFirst.mockResolvedValue(null) // 30s window miss
+    // Keyed guard misses pre-insert; the create then collides with the winner's
+    // unique providerPurchaseKey; the catch re-reads the in-flight order.
+    mockPrisma.eSIMPurchase.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: 'order-1',
+        businessId: 'biz-1',
+        userId: 'user-1',
+        status: 'PAYMENT_RESERVED',
+        totalAmount: { toString: () => '5' },
+        esims: [],
+        packageId: 'pkg-1',
+        packageSnapshot: {},
+        packageName: 'Test',
+        packageDataGB: 1,
+        packageValidityDays: 7,
+      } as any)
+    mockPrisma.eSIMPurchase.create.mockRejectedValue(Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }))
+
+    const result = await orchestrator.executePurchase({ ...validRequest, idempotencyKey: 'client-key-3' })
+
+    expect(result.success).toBe(true)
+    expect(result.orderId).toBe('order-1')
+    expect(result.status).toBe('PAYMENT_RESERVED')
+    expect(mockReserve).not.toHaveBeenCalled()
+    expect(mockEnqueue).not.toHaveBeenCalled()
+  })
+
   function setupTravelPackage(providerPackageId = 'pp-1') {
     mockResolve.mockResolvedValue({
       package: {

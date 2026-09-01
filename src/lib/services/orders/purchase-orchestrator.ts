@@ -26,6 +26,14 @@ function trace(correlationId: string | undefined, stage: string, status: string,
 
 const DUP_WINDOW_MS = 30_000
 
+/** Terminal-failed order statuses — a replay of an order in any other status is
+ *  an ACCEPTED deterministic replay (in-flight or completed), aligned with the
+ *  30s dedup window (`status notIn [FAILED, CANCELLED, REFUNDED]`). */
+const TERMINAL_FAILED_STATUSES = new Set(['FAILED', 'CANCELLED', 'REFUNDED'])
+function replaySucceeded(status: string | undefined | null): boolean {
+  return !TERMINAL_FAILED_STATUSES.has(String(status ?? ''))
+}
+
 export interface PurchaseRequest {
   businessId: string
   userId: string
@@ -301,7 +309,7 @@ export class PurchaseOrchestrator {
       })
       if (existing) {
         return {
-          success: existing.status === 'FULFILLED',
+          success: replaySucceeded(existing.status),
           orderId: existing.id,
           status: existing.status,
           unitCost: unitPrice,
@@ -346,7 +354,7 @@ export class PurchaseOrchestrator {
         if (qtResult.alreadyConsumed && qtResult.existingOrderId) {
           const ex = await prisma.eSIMPurchase.findUnique({ where: { id: qtResult.existingOrderId }, include: { esims: { select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } } } })
           if (ex) {
-            return { success: ex.status === 'FULFILLED', orderId: ex.id, status: ex.status, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD', esims: ex.esims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi ?? null, activationCode: e.activationCode ?? null, status: e.status, qrCodeUrl: e.qrCodeUrl ?? null })) }
+            return { success: replaySucceeded(ex.status), orderId: ex.id, status: ex.status, unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD', esims: ex.esims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi ?? null, activationCode: e.activationCode ?? null, status: e.status, qrCodeUrl: e.qrCodeUrl ?? null })) }
           }
         }
         trace(correlationId, 'ORDER_CREATION', 'FAILED', { internalCode: qtResult.errorCode || 'QUOTE_FAILED' })
@@ -386,7 +394,7 @@ export class PurchaseOrchestrator {
           const existing = await prisma.eSIMPurchase.findUnique({ where: { providerPurchaseKey: purchaseKey }, include: { esims: { select: { id: true, iccid: true, imsi: true, activationCode: true, status: true, qrCodeUrl: true } } } })
           if (existing) {
             return {
-              success: existing.status === 'FULFILLED', orderId: existing.id, status: existing.status,
+              success: replaySucceeded(existing.status), orderId: existing.id, status: existing.status,
               unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD',
               esims: existing.esims.map(e => ({ id: e.id, iccid: e.iccid, imsi: e.imsi ?? null, activationCode: e.activationCode ?? null, status: e.status, qrCodeUrl: e.qrCodeUrl ?? null })),
             }
