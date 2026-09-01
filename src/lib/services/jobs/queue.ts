@@ -15,13 +15,19 @@ export async function enqueueJob(
       payload: payload as any,
       runAt: runAt || new Date(),
       maxAttempts,
+      // Populate the indexed provider_id column for provider-execution jobs so
+      // provider-local lane admission can count in-flight work per provider
+      // without parsing JSON payloads.
+      ...(type === 'PROVIDER_OPERATION' && typeof payload?.providerId === 'string'
+        ? { providerId: payload.providerId }
+        : {}),
     },
   })
   return job
 }
 
 export async function processDueJobs(
-  limitOrOpts: number | { limit?: number; types?: JobType[] } = 10,
+  limitOrOpts: number | { limit?: number; types?: JobType[]; laneGate?: (job: { id: string; type: string; payload: any; providerId?: string | null }) => Promise<boolean> } = 10,
 ) {
   const opts = typeof limitOrOpts === 'number' ? { limit: limitOrOpts } : limitOrOpts
   // Recover jobs stranded in PROCESSING by a worker crash (process killed — no
@@ -45,10 +51,19 @@ export async function processDueJobs(
 
   for (const job of jobs) {
     try {
-      // Atomically claim the job (PENDING → PROCESSING). If another worker already
-      // claimed it, count===0 and we skip — preventing double execution.
-      const claimed = await markProcessing(job.id)
-      if (!claimed) continue
+      // Lane-gated admission (provider-local concurrency) replaces the plain
+      // atomic claim when provided. The gate performs the PENDING → PROCESSING
+      // claim itself (atomically, distributed-safe) and returns false to leave
+      // the job PENDING and schedulable when the provider lane is full.
+      if (opts.laneGate) {
+        const admitted = await opts.laneGate(job)
+        if (!admitted) continue
+      } else {
+        // Atomically claim the job (PENDING → PROCESSING). If another worker already
+        // claimed it, count===0 and we skip — preventing double execution.
+        const claimed = await markProcessing(job.id)
+        if (!claimed) continue
+      }
       const result = await executeJob(job)
       if (result.completed) {
         await markCompleted(job.id)
@@ -70,9 +85,20 @@ export async function processDueJobs(
 async function markProcessing(jobId: string): Promise<boolean> {
   const result = await prisma.backgroundJob.updateMany({
     where: { id: jobId, status: 'PENDING' },
-    data: { status: 'PROCESSING', attempts: { increment: 1 }, lockedAt: new Date() },
+    data: claimJobData(),
   })
   return result.count === 1
+}
+
+/** The exact mutable claim payload shared by the plain claim and provider-lane
+ *  admissions (keeps the PENDING→PROCESSING transition identical everywhere). */
+export function claimJobData(): { status: 'PROCESSING'; attempts: { increment: number }; lockedAt: Date } {
+  return { status: 'PROCESSING', attempts: { increment: 1 }, lockedAt: new Date() }
+}
+
+/** Atomic PENDING → PROCESSING claim. Returns false if already claimed. */
+export async function claimJob(jobId: string): Promise<boolean> {
+  return markProcessing(jobId)
 }
 
 /** A job may not legitimately run longer than this; beyond it the worker is dead. */

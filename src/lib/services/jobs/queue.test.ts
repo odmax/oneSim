@@ -7,6 +7,7 @@ vi.mock('@/lib/prisma', () => ({
       updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       findUnique: vi.fn(),
       update: vi.fn(),
+      create: vi.fn().mockResolvedValue({ id: 'job-new' }),
     },
   },
 }))
@@ -122,5 +123,36 @@ describe('background job queue transaction safety', () => {
       where: { id: 'job-1' },
       data: { status: 'FAILED', lastError: expect.any(String) },
     })
+  })
+
+  it('enqueueJob stamps the provider_id column for PROVIDER_OPERATION payloads', async () => {
+    const { enqueueJob } = await import('./queue')
+    mockPrisma.backgroundJob.create.mockResolvedValue({ id: 'n1' })
+    await enqueueJob('PROVIDER_OPERATION' as any, { operation: 'purchase', orderId: 'o1', providerId: 'prov-a' }, new Date(), 5)
+    expect(mockPrisma.backgroundJob.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ type: 'PROVIDER_OPERATION', providerId: 'prov-a' }),
+    })
+    // Non-provider-operation jobs do not stamp a provider.
+    mockPrisma.backgroundJob.create.mockClear()
+    await enqueueJob('EMAIL_DELIVERY' as any, { to: 'x@y.io' }, new Date(), 5)
+    expect(mockPrisma.backgroundJob.create).toHaveBeenCalledWith({ data: expect.not.objectContaining({ providerId: expect.anything() }) })
+  })
+
+  it('a deferring laneGate leaves the job PENDING and unexecuted (no claim, no run)', async () => {
+    const job = { ...dueJob(), type: 'PROVIDER_OPERATION', payload: { operation: 'purchase', orderId: 'o1', providerId: 'prov-a' } }
+    mockPrisma.backgroundJob.findMany.mockResolvedValue([job])
+    mockPrisma.backgroundJob.updateMany.mockResolvedValue({ count: 0 }) // stale sweep no-op
+    const providerHandler = await import('./handlers/provider-operation')
+
+    const results = await processDueJobs({
+      types: ['PROVIDER_OPERATION'],
+      limit: 5,
+      laneGate: async () => false, // lane full → defer
+    })
+
+    expect(results).toEqual([])
+    // The claim update (PENDING → PROCESSING) must NOT run.
+    expect(mockPrisma.backgroundJob.updateMany).toHaveBeenCalledTimes(1) // only the stale sweep
+    expect((providerHandler.executeProviderOperation as any).mock.results.length).toBe(0)
   })
 })

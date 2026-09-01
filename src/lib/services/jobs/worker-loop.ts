@@ -1,5 +1,6 @@
 import type { JobType } from '@prisma/client'
 import { processDueJobs } from './queue'
+import { refreshLanedProviders, providerOperationLaneGate } from './provider-operation-lanes'
 
 /**
  * Low-latency in-process job worker.
@@ -28,7 +29,10 @@ export interface WorkerLoopTickResult {
 
 /** One worker pass: priority jobs first, then everything else. */
 export async function workerTick(): Promise<WorkerLoopTickResult> {
-  const priority = await processDueJobs({ types: PRIORITY_JOB_TYPES, limit: 5 })
+  // Refresh lane membership (TTL-cached, 0 added queries for unconfigured
+  // providers) so provider-local concurrency ceilings are enforced.
+  await refreshLanedProviders().catch(() => {})
+  const priority = await processDueJobs({ types: PRIORITY_JOB_TYPES, limit: 5, laneGate: providerOperationLaneGate() })
   const general = await processDueJobs({ limit: 10 })
   return { priorityProcessed: priority.length, generalProcessed: general.length }
 }

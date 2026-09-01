@@ -23,6 +23,7 @@
     "load:storm": "npx tsx dts/load/api-storm.ts",
     "load:ingress": "npx tsx dts/load/api-bench.ts",
     "load:drain": "npx tsx dts/load/drain-bench.ts",
+    "load:lane": "npx tsx dts/load/lane-isolation.ts",
     "load:drop-dbs": "npx tsx dts/load/drop-load-dbs.ts"
   },
   "dependencies": {

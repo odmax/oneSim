@@ -4,6 +4,11 @@ vi.mock('./queue', () => ({
   processDueJobs: vi.fn().mockResolvedValue([]),
 }))
 
+vi.mock('./provider-operation-lanes', () => ({
+  refreshLanedProviders: vi.fn().mockResolvedValue(0),
+  providerOperationLaneGate: vi.fn().mockReturnValue(async () => true),
+}))
+
 import { processDueJobs } from './queue'
 import { workerTick, startJobWorkerLoop } from './worker-loop'
 
@@ -18,7 +23,8 @@ describe('low-latency job worker loop', () => {
   it('each tick claims purchase jobs FIRST, then all other jobs (no starvation)', async () => {
     await workerTick()
 
-    expect(mockProcess).toHaveBeenNthCalledWith(1, { types: ['PROVIDER_OPERATION'], limit: 5 })
+    expect(mockProcess).toHaveBeenNthCalledWith(1, expect.objectContaining({ types: ['PROVIDER_OPERATION'], limit: 5 }))
+    expect(mockProcess).toHaveBeenNthCalledWith(1, expect.objectContaining({ laneGate: expect.any(Function) }))
     expect(mockProcess).toHaveBeenNthCalledWith(2, { limit: 10 })
   })
 

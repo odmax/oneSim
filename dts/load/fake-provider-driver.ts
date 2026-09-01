@@ -23,12 +23,15 @@ export class FakeConnector implements IProviderConnector {
   readonly name = 'FakeLoadProvider'
   private scenario: Scenario
   private token = 'fake-token'
+  /** Synthetic per-activation latency (ms). Enables lane-occupancy tests. */
+  private latencyMs: number
   /** Deterministic per-(provider,order) dispatch counter. */
   dispatchSeen = new Map<string, number>()
 
-  constructor(providerId: string, scenario: Scenario) {
+  constructor(providerId: string, scenario: Scenario, opts: { latencyMs?: number } = {}) {
     this.providerId = providerId
     this.scenario = scenario
+    this.latencyMs = opts.latencyMs ?? 0
     FAKE_INSTANCES.push(this)
   }
 
@@ -72,6 +75,7 @@ export class FakeConnector implements IProviderConnector {
     this.markDispatch(orderRef)
     const k = this.key(orderRef)
     const iccid = iccidForKey(k, this.providerId)
+    if (this.latencyMs > 0) await new Promise((r) => setTimeout(r, this.latencyMs))
 
     switch (this.scenario) {
       case 'SUCCESS_SYNC':

@@ -1,4 +1,5 @@
 import { processDueJobs } from '../../src/lib/services/jobs/queue'
+import { refreshLanedProviders, providerOperationLaneGate } from '../../src/lib/services/jobs/provider-operation-lanes'
 import { Metrics } from './metrics'
 
 export interface WorkerOptions {
@@ -25,7 +26,8 @@ async function workerMain(opts: { pollMs: number; batch: number; shouldStop: () 
   const { pollMs, batch, shouldStop, metrics } = opts
   while (!shouldStop()) {
     try {
-      const res = await processDueJobs({ types: ['PROVIDER_OPERATION' as any], limit: batch })
+      await refreshLanedProviders().catch(() => {})
+      const res = await processDueJobs({ types: ['PROVIDER_OPERATION' as any], limit: batch, laneGate: providerOperationLaneGate() })
       for (const r of res) {
         if (r.status === 'COMPLETED') metrics.jobsCompleted += 1
         else metrics.jobsFailed += 1
