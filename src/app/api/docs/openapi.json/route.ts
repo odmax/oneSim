@@ -3,17 +3,36 @@ const spec = {
   info: {
     title: 'OneSIM Africa API',
     version: '1.0.0',
-    description: 'RESTful API for ordering and managing eSIMs programmatically.\n\nAuthentication: All requests require an `x-api-key` header with your API key.\nBase URL: `https://staging.onetelecom.cloud/api/v1` or `https://m2m.onetelecom.cloud/api/v1`',
+    description:
+      'RESTful API for ordering and managing eSIMs programmatically.\n\n' +
+      'Authentication: all requests use `Authorization: Bearer <API key>`. API keys are created in the ' +
+      'Business API Keys screen; the raw value is shown only once at creation. Use one unique Idempotency-Key ' +
+      'per logical purchase.\n' +
+      'Base URL: `https://staging.onetelecom.cloud/api/v1` or `https://m2m.onetelecom.cloud/api/v1`\n\n' +
+      'Purchase model: POST /esims/order is ASYNCHRONOUS. A 200 response means your order was accepted and ' +
+      'the wallet reserved — it does NOT mean the eSIM is provisioned yet. Poll GET /orders/{orderId} and ' +
+      'GET /esims/{esimId} (or use webhooks) until the order is fulfilled and eSIM credentials are available.\n\n' +
+      'Rate limiting: OneSIM has no fabricated global ceiling. An individual business MAY be configured with an ' +
+      'explicit per-minute request limit; when such a limit is configured and reached the API returns HTTP 429 ' +
+      'with `X-RateLimit-*` headers. When no explicit limit is configured, requests are not rejected by a ' +
+      'business request ceiling. Idempotent replays are requests and therefore count toward any explicitly ' +
+      'configured business limit. Provider execution is separately and independently controlled and is not ' +
+      'governed by the business request limit.',
     contact: { name: 'OneSIM Support', email: 'support@onetelecom.cloud' },
   },
   servers: [
     { url: 'https://staging.onetelecom.cloud/api/v1', description: 'Staging' },
     { url: 'https://m2m.onetelecom.cloud/api/v1', description: 'Production' },
   ],
-  security: [{ ApiKeyAuth: [] }],
+  security: [{ BearerAuth: [] }],
   components: {
     securitySchemes: {
-      ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'x-api-key', description: 'Your business API key from the dashboard' },
+      BearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'API key',
+        description: 'Send `Authorization: Bearer <API key>`. Your business API key, shown once at creation in the Business API Keys screen.',
+      },
     },
     schemas: {
       Error: {
@@ -157,9 +176,17 @@ const spec = {
       post: {
         tags: ['Orders'],
         summary: 'Order eSIM',
-        description: 'Create a new eSIM order. Supports Idempotency-Key header to prevent duplicate orders.',
+        description:
+          'Create a new eSIM order. ASYNCHRONOUS — a 200 response means the order was ACCEPTED and the wallet ' +
+          'reserved (order.status = PROCESSING), not that the eSIM is provisioned. Poll the order/eSIM or use ' +
+          'webhooks for fulfillment.\n\n' +
+          'Use ONE UNIQUE Idempotency-Key per logical purchase. Re-sending the same key with the SAME canonical ' +
+          'purchase request (same package, quantity, travel date) deterministically replays the original order. ' +
+          'Reusing a key with a materially different request returns HTTP 409 IDEMPOTENCY_KEY_REUSED and creates ' +
+          'no second order, reserve, or dispatch. Customer/email/phone are presentation metadata and are NOT part ' +
+          'of the purchase identity.',
         parameters: [
-          { in: 'header', name: 'Idempotency-Key', schema: { type: 'string' }, description: 'Unique key for idempotency (optional)' },
+          { in: 'header', name: 'Idempotency-Key', schema: { type: 'string' }, description: 'Unique key per logical purchase (recommended). Enables deterministic replay and 409 mismatch protection.' },
         ],
         requestBody: {
           required: true,
@@ -179,16 +206,56 @@ const spec = {
                   country: { type: 'string' },
                   externalCustomerId: { type: 'string', description: 'Your internal customer ID' },
                   callbackUrl: { type: 'string', format: 'uri', description: 'Webhook URL for order events' },
+                  travelDate: { type: 'string', format: 'date', description: 'Travel/start date (YYYY-MM-DD) when the package requires it' },
                 },
               },
             },
           },
         },
         responses: {
-          '200': { description: 'Order created', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, order: { $ref: '#/components/schemas/Order' }, esims: { type: 'array', items: { $ref: '#/components/schemas/ESIM' } } } } } } },
-          '402': { description: 'Insufficient wallet balance' },
-          '422': { description: 'Validation error' },
+          '200': { description: 'Order accepted (asynchronous; status PROCESSING — not yet provisioned)', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, order: { $ref: '#/components/schemas/Order' }, esims: { type: 'array', items: { $ref: '#/components/schemas/ESIM' } } } } } } },
+          '400': { description: 'Invalid request (INVALID_JSON, MISSING_PACKAGE_ID, INVALID_QUANTITY, INVALID_TRAVEL_DATE)', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          '401': { description: 'Invalid or revoked API key', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          '402': { description: 'Insufficient wallet balance', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          '403': { description: 'Business suspended or insufficient scope', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          '404': { description: 'Package not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          '409': { description: 'Idempotency key reused for a different purchase request', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean', example: false }, error: { type: 'object', properties: { code: { type: 'string', example: 'IDEMPOTENCY_KEY_REUSED' }, message: { type: 'string', example: 'This idempotency key was already used for a different request.' } } } } } } } },
+          '429': { description: 'Explicitly configured per-business request limit reached', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          '500': { description: 'Internal error', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
         },
+      },
+    },
+    '/esims/{esimId}/refresh-qr': {
+      post: {
+        tags: ['eSIMs'],
+        summary: 'Refresh eSIM QR / activation data',
+        parameters: [
+          { in: 'header', name: 'Idempotency-Key', schema: { type: 'string' }, description: 'Optional unique key per call' },
+          { in: 'path', name: 'esimId', required: true, schema: { type: 'string' } },
+        ],
+        responses: { '200': { description: 'Refreshed QR/activation details' }, '401': { description: 'Invalid API key' }, '403': { description: 'Forbidden / scope' }, '404': { description: 'eSIM not found' } },
+      },
+    },
+    '/esims/{esimId}/refresh-status': {
+      post: {
+        tags: ['eSIMs'],
+        summary: 'Refresh eSIM status',
+        parameters: [
+          { in: 'header', name: 'Idempotency-Key', schema: { type: 'string' }, description: 'Optional unique key per call' },
+          { in: 'path', name: 'esimId', required: true, schema: { type: 'string' } },
+        ],
+        responses: { '200': { description: 'Refreshed status' }, '401': { description: 'Invalid API key' }, '403': { description: 'Forbidden / scope' }, '404': { description: 'eSIM not found' } },
+      },
+    },
+    '/esims/{esimId}/share': {
+      post: {
+        tags: ['eSIMs'],
+        summary: 'Share eSIM access',
+        parameters: [
+          { in: 'header', name: 'Idempotency-Key', schema: { type: 'string' }, description: 'Optional unique key per call' },
+          { in: 'path', name: 'esimId', required: true, schema: { type: 'string' } },
+        ],
+        responses: { '200': { description: 'Share link/reference created' }, '401': { description: 'Invalid API key' }, '403': { description: 'Forbidden / scope' }, '404': { description: 'eSIM not found' } },
       },
     },
     '/orders': {
@@ -215,27 +282,34 @@ const spec = {
         tags: ['eSIMs'],
         summary: 'Get eSIM details',
         parameters: [{ in: 'path', name: 'esimId', required: true, schema: { type: 'string' } }],
-        responses: { '200': { description: 'eSIM details with usage' }, '404': { description: 'Not found' } },
+        responses: { '200': { description: 'eSIM details (ICCID, status, package, QR/activation when available)' }, '401': { description: 'Invalid API key' }, '403': { description: 'Forbidden' }, '404': { description: 'Not found' } },
       },
     },
     '/esims/{esimId}/usage': {
       get: {
         tags: ['eSIMs'],
         summary: 'Get eSIM usage',
+        description:
+          'Usage is provider-dependent and may not be available for every eSIM. When unavailable, the API ' +
+          'returns a deterministic capability error rather than fabricated zero data. Do not interpret a ' +
+          'missing usage response as zero bytes used.',
         parameters: [{ in: 'path', name: 'esimId', required: true, schema: { type: 'string' } }],
-        responses: { '200': { description: 'Usage data with history' } },
+        responses: { '200': { description: 'Usage data with history' }, '401': { description: 'Invalid API key' }, '403': { description: 'Forbidden' }, '404': { description: 'eSIM not found' } },
       },
     },
     '/esims/{esimId}/top-up': {
       post: {
         tags: ['eSIMs'],
         summary: 'Top-up eSIM',
-        description: 'Add data and validity to an existing eSIM.',
+        description:
+          'Add data and validity to an existing eSIM. Top-up is available only for ELIGIBLE eSIMs/packages ' +
+          'and is provider-dependent; unsupported eSIMs receive a deterministic capability_not_available / ' +
+          'invalid-package error, never a generic server failure. Top-ups deduct from the business wallet.',
         parameters: [{ in: 'path', name: 'esimId', required: true, schema: { type: 'string' } }],
         requestBody: {
           content: { 'application/json': { schema: { type: 'object', required: ['packageId'], properties: { packageId: { type: 'string' }, sku: { type: 'string' }, quantity: { type: 'integer', default: 1 } } } } },
         },
-        responses: { '200': { description: 'Top-up completed' } },
+        responses: { '200': { description: 'Top-up completed' }, '400': { description: 'Invalid request' }, '401': { description: 'Invalid API key' }, '403': { description: 'Forbidden / not supported' }, '404': { description: 'eSIM not found' } },
       },
     },
     '/customers': {
