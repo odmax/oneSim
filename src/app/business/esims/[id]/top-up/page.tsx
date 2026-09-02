@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
+import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 import TopUpForm from './TopUpForm'
 
 export default async function BusinessTopUpPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
@@ -94,7 +95,7 @@ export default async function BusinessTopUpPage({ params, searchParams }: { para
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-gray-500">Status</dt>
-              <dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${esim.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{esim.status}</span></dd>
+              <dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${esim.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{getEsimStatusLabel(esim.status).label}</span></dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-gray-500">Package</dt>

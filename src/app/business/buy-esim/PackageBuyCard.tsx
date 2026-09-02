@@ -30,6 +30,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
   const router = useRouter()
   const [flowState, setFlowState] = useState<FlowState>('IDLE')
   const [quantity, setQuantity] = useState(1)
+  const [travelDate, setTravelDate] = useState('')
   const [quoteRef, setQuoteRef] = useState<string | null>(null)
   const [quotedUnitPrice, setQuotedUnitPrice] = useState<number | null>(null)
   const [quotedTotal, setQuotedTotal] = useState<number | null>(null)
@@ -43,20 +44,23 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
   const handleBuyClick = async () => {
     setErrorMsg('')
 
+    // Client-side guard: travel-date-required packages need a valid date
+    if (pkg.requiresTravelDate && !travelDate) {
+      setErrorMsg('This package requires a travel date.')
+      return
+    }
+
     if (flowState === 'IDLE') {
       // Step 1: Request quote
       setFlowState('GETTING_QUOTE')
-      console.log('[BUY_FLOW_TRACE] stage=QUOTE_REQUEST_START packageId=', pkg.id, 'quantity=', quantity)
       const result = await requestPurchaseQuote(pkg.id, quantity)
 
       if (!result.success || !result.quote) {
         setErrorMsg(result.error || 'Cannot get price')
         setFlowState('ERROR')
-        console.log('[BUY_FLOW_TRACE] stage=QUOTE_FAILED error=', result.error)
         return
       }
 
-      console.log('[BUY_FLOW_TRACE] stage=QUOTE_CREATED unitPrice=', result.quote.unitPrice, 'total=', result.quote.totalAmount, 'ref=', result.quote.reference)
       setQuoteRef(result.quote.reference)
       setQuotedUnitPrice(result.quote.unitPrice)
       setQuotedTotal(result.quote.totalAmount)
@@ -76,23 +80,20 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
       const newKey = generateIdempotencyKey()
       setIdempotencyKey(newKey)
 
-      console.log('[BUY_FLOW_TRACE] stage=PURCHASE_SUBMIT_START quoteRef=', quoteRef)
       const result = await executePurchase({
         packageId: pkg.id,
         quantity,
         quoteReference: quoteRef,
         idempotencyKey: newKey,
+        travelDate: pkg.requiresTravelDate ? travelDate : undefined,
       })
 
       if (!result.success) {
         setErrorMsg(result.message || 'Purchase failed')
         setFlowState('ERROR')
-        console.log('[BUY_FLOW_TRACE] stage=ACTION_RETURNED success=false code=', result.code)
         return
       }
 
-      console.log('[BUY_FLOW_TRACE] stage=ORDER_CREATED orderId=', result.orderId)
-      console.log('[BUY_FLOW_TRACE] stage=CLIENT_REDIRECT orderId=', result.orderId)
       router.push(`/business/orders/${result.orderId}`)
       return
     }
@@ -162,15 +163,18 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
         </div>
         {pkg.requiresTravelDate && (
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">
+            <label htmlFor={`travel-${pkg.id}`} className="block text-xs font-medium text-gray-500 mb-1">
               Travel Date <span className="text-amber-600">(required)</span>
             </label>
             <input
+              id={`travel-${pkg.id}`}
               type="date"
               min={new Date().toISOString().split('T')[0]}
+              value={travelDate}
+              onChange={(e) => setTravelDate(e.target.value)}
               className="mt-1 block w-full rounded-lg border border-gray-200 px-4 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               required
-              disabled
+              disabled={flowState !== 'IDLE' && flowState !== 'QUOTE_READY' && flowState !== 'ERROR'}
             />
           </div>
         )}

@@ -4,9 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { createBusiness } from '@/lib/actions/business'
-import CopyButton from '@/components/CopyButton'
 
-export default async function NewBusinessPage({ searchParams }: { searchParams?: { success?: string; error?: string; email?: string; password?: string } }) {
+export default async function NewBusinessPage({ searchParams }: { searchParams?: { success?: string; error?: string; email?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') { redirect('/login') }
 
@@ -23,27 +22,14 @@ export default async function NewBusinessPage({ searchParams }: { searchParams?:
         <p className="text-gray-600">Create a new business and assign a primary contact</p>
       </div>
 
-      {/* Success modal with credentials */}
-      {searchParams?.success && searchParams.email && searchParams.password && (
+      {/* Success feedback with contact email (no credentials in URL) */}
+      {searchParams?.success && searchParams.email && (
         <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 p-6">
           <h3 className="text-lg font-semibold text-emerald-800">Business Created Successfully</h3>
-          <p className="mt-1 text-sm text-emerald-700">Save these credentials. The admin will need them to login.</p>
-          <div className="mt-4 space-y-3">
-            <div className="rounded-lg border border-emerald-200 bg-white p-4">
-              <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Email</p>
-              <div className="mt-1 flex items-center justify-between">
-                <p className="font-mono text-sm text-gray-900">{searchParams.email}</p>
-                <CopyButton text={searchParams.email} label="Copy Email" />
-              </div>
-            </div>
-            <div className="rounded-lg border border-emerald-200 bg-white p-4">
-              <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Password</p>
-              <div className="mt-1 flex items-center justify-between">
-                <p className="font-mono text-sm text-gray-900">{searchParams.password}</p>
-                <CopyButton text={searchParams.password} label="Copy Password" />
-              </div>
-            </div>
-          </div>
+          <p className="mt-1 text-sm text-emerald-700">
+            Business created for <span className="font-medium">{searchParams.email}</span>. The admin can sign in with
+            the password that was entered at creation time.
+          </p>
           <div className="mt-4 flex gap-3">
             <Link href="/admin/businesses" className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Back to Businesses</Link>
             <Link href="/admin/businesses/new" className="rounded-lg border border-emerald-300 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50">Create Another</Link>

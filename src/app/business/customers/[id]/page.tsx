@@ -5,6 +5,8 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { assignESIM, sendToCustomer } from '@/lib/actions/esim'
 import CopyButton from '@/components/CopyButton'
+import { customerStatusLabel, installStatusLabel } from '@/lib/status-labels'
+import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 
 export default async function CustomerDetailPage({
   params,
@@ -129,7 +131,7 @@ export default async function CustomerDetailPage({
                     ? 'bg-green-100 text-green-800' 
                     : 'bg-red-100 text-red-800'
                 }`}>
-                  {customer.status}
+                  {customerStatusLabel(customer.status)}
                 </span>
               </dd>
             </div>
@@ -207,7 +209,7 @@ export default async function CustomerDetailPage({
                                 ? 'bg-green-100 text-green-800' 
                                 : 'bg-gray-100 text-gray-800'
                             }`}>
-                              {esim.deliveryStatus}
+                              {installStatusLabel(esim.deliveryStatus)}
                             </span>
                           </td>
                           <td className="whitespace-nowrap py-3">
@@ -216,7 +218,7 @@ export default async function CustomerDetailPage({
                               esim.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' :
                               'bg-red-100 text-red-800'
                             }`}>
-                              {esim.status}
+                              {getEsimStatusLabel(esim.status).label}
                             </span>
                           </td>
                           <td className="py-3">

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { createApiKey, revokeApiKey } from '@/lib/actions/api-keys'
+import { apiKeyStatusLabel } from '@/lib/status-labels'
 
 interface ApiKeyItem {
   id: string
@@ -18,7 +19,7 @@ function StatusBadge({ status }: { status: string }) {
       status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'
     }`}>
       <span className={`h-1.5 w-1.5 rounded-full ${status === 'ACTIVE' ? 'bg-emerald-400' : 'bg-red-400'}`} />
-      {status}
+      {apiKeyStatusLabel(status)}
     </span>
   )
 }

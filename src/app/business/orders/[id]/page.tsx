@@ -6,18 +6,7 @@ import Link from 'next/link'
 import { UsageSummary } from '@/components/admin/esims/UsageBar'
 import { refreshEsimStatusAction, refreshEsimUsageAction } from '@/lib/actions/esim-lifecycle'
 import { OrderStatusPoller } from './OrderStatusPoller'
-
-const STATUS_COLORS: Record<string, string> = {
-  CREATED: 'bg-gray-100 text-gray-700', PAYMENT_RESERVED: 'bg-blue-100 text-blue-700',
-  PENDING_PROVIDER: 'bg-amber-100 text-amber-700', PROVIDER_ACCEPTED: 'bg-cyan-100 text-cyan-700',
-  RESERVED: 'bg-purple-100 text-purple-700', FULFILLING: 'bg-indigo-100 text-indigo-700',
-  FULFILLED: 'bg-emerald-100 text-emerald-700', INSTALLING: 'bg-sky-100 text-sky-700',
-  INSTALLED: 'bg-teal-100 text-teal-700', ACTIVE: 'bg-green-100 text-green-700',
-  EXPIRED: 'bg-gray-100 text-gray-700', CANCELLED: 'bg-orange-100 text-orange-700',
-  FAILED: 'bg-red-100 text-red-700', REFUNDED: 'bg-rose-100 text-rose-700',
-  PROVIDER_RECONCILIATION: 'bg-purple-100 text-purple-800',
-  PARTIALLY_FULFILLED: 'bg-amber-100 text-amber-800',
-}
+import { orderStatusLabel, orderEventLabel } from '@/lib/status-labels'
 
 export default async function BusinessOrderDetailPage({ params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions)
@@ -50,8 +39,8 @@ export default async function BusinessOrderDetailPage({ params }: { params: { id
           <h2 className="text-2xl font-bold text-gray-900">Order #{order.id.slice(-8)}</h2>
           <p className="text-sm text-gray-500">{new Date(order.createdAt).toLocaleString()}</p>
         </div>
-        <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ${STATUS_COLORS[order.status] || 'bg-gray-100 text-gray-700'}`}>
-          {order.status}
+        <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ${orderStatusLabel(order.status).bg}`}>
+          {orderStatusLabel(order.status).label}
         </span>
       </div>
 
@@ -127,8 +116,8 @@ export default async function BusinessOrderDetailPage({ params }: { params: { id
               <div key={ev.id} className="flex gap-3 text-sm">
                 <div className="w-2 h-2 mt-1.5 rounded-full bg-gray-300 shrink-0" />
                 <div>
-                  <p className="text-xs font-medium text-gray-900">{ev.eventType}</p>
-                  <p className="text-xs text-gray-500">{ev.message || ev.newStatus || ''}</p>
+                  <p className="text-xs font-medium text-gray-900">{orderEventLabel(ev.eventType)}</p>
+                  <p className="text-xs text-gray-500">{ev.message || (ev.newStatus ? orderStatusLabel(ev.newStatus).label : '')}</p>
                   <p className="text-xs text-gray-400">{new Date(ev.createdAt).toLocaleString()}</p>
                 </div>
               </div>

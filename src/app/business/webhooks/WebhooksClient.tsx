@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { NotificationContainer, type Notification } from '@/components/ui/DismissibleNotification'
 
 const EVENT_TYPES = ['order.completed', 'order.failed', 'esim.provisioned', 'esim.activated', 'esim.expired', 'esim.suspended', 'usage.updated', 'topup.completed', 'topup.failed', 'wallet.low_balance']
 
@@ -24,6 +25,13 @@ export default function WebhooksClient({ webhooks: initial, metrics, baseUrl }: 
   const [expandedPayload, setExpandedPayload] = useState<string | null>(null)
   const [testingEndpoint, setTestingEndpoint] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{endpointId: string; success: boolean; message: string} | null>(null)
+  const [notifications, setNotifications] = useState<Notification[]>([])
+
+  const notify = (type: Notification['type'], message: string) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    setNotifications((prev) => [...prev, { id, type, message }])
+  }
+  const dismiss = (id: string) => setNotifications((prev) => prev.filter((n) => n.id !== id))
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
@@ -122,6 +130,8 @@ export default function WebhooksClient({ webhooks: initial, metrics, baseUrl }: 
         </button>
       </div>
 
+      <NotificationContainer notifications={notifications} onDismiss={dismiss} />
+
       {testResult && (
         <div className={`rounded-xl border p-4 text-sm ${testResult.success ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
           {testResult.message}
@@ -160,7 +170,7 @@ export default function WebhooksClient({ webhooks: initial, metrics, baseUrl }: 
       {showSecret && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm">
           <p className="font-medium text-amber-800">Secret shown once: <code className="rounded bg-amber-100 px-2 py-0.5 font-mono break-all">{showSecret}</code></p>
-          <button onClick={() => { navigator.clipboard.writeText(showSecret); alert('Copied!') }} className="mt-1 text-amber-600 hover:underline text-xs">Copy</button>
+          <button onClick={() => { navigator.clipboard.writeText(showSecret); notify('success', 'Secret copied!') }} className="mt-1 text-amber-600 hover:underline text-xs">Copy</button>
           <button onClick={() => setShowSecret(null)} className="ml-2 text-amber-600 hover:underline text-xs">Dismiss</button>
         </div>
       )}

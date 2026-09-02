@@ -230,7 +230,7 @@ export default function IntegrationTemplatePage() {
             </div>
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            ⚠ Provider URLs for Choice/Rakuten/AirHub production are pending from providers. Staging URLs are pre-configured.
+            ⚠ Production connectivity for some carrier partners is pending confirmation. Staging URLs are pre-configured.
           </p>
         </div>
       </section>

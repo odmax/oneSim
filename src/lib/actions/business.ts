@@ -123,7 +123,7 @@ export async function createBusiness(formData: FormData) {
     })
 
     revalidatePath('/admin/businesses')
-    redirect(`/admin/businesses/new?success=true&email=${encodeURIComponent(adminEmail)}&password=${encodeURIComponent(adminPassword)}`)
+    redirect(`/admin/businesses/new?success=true&email=${encodeURIComponent(adminEmail)}`)
   } catch (error: any) {
     // Re-throw redirect errors so Next.js handles them
     if (error?.digest?.startsWith('NEXT_REDIRECT')) throw error

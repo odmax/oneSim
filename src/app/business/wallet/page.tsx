@@ -3,16 +3,18 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { walletTxTypeLabel, formatCurrency } from '@/lib/status-labels'
 
 function TxTypeBadge({ type }: { type: string }) {
   const colors: Record<string, string> = {
     PURCHASE: 'bg-blue-50 text-blue-600',
     TOPUP: 'bg-emerald-50 text-emerald-600',
+    TOP_UP: 'bg-emerald-50 text-emerald-600',
   }
   return (
     <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[type] || 'bg-gray-50 text-gray-500'}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${type === 'TOPUP' ? 'bg-emerald-400' : 'bg-blue-400'}`} />
-      {type === 'TOPUP' ? 'Credit' : type}
+      <span className={`h-1.5 w-1.5 rounded-full ${type === 'TOPUP' || type === 'TOP_UP' ? 'bg-emerald-400' : 'bg-blue-400'}`} />
+      {walletTxTypeLabel(type)}
     </span>
   )
 }
@@ -109,7 +111,7 @@ export default async function WalletPage({
           <p className="text-xs font-medium text-blue-600 uppercase tracking-wider">Last Credit</p>
           {lastCredit ? (
             <div>
-              <p className="mt-2 text-3xl font-bold text-gray-900">$${lastCredit.amount.toString()}</p>
+              <p className="mt-2 text-3xl font-bold text-gray-900">{formatCurrency(Number(lastCredit.amount))}</p>
               <p className="mt-0.5 text-xs text-gray-500">{new Date(lastCredit.createdAt).toLocaleDateString()}</p>
             </div>
           ) : (
@@ -148,7 +150,7 @@ export default async function WalletPage({
                   <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
                     <td className="px-5 py-4 text-sm text-gray-500">{new Date(r.createdAt).toLocaleDateString()}</td>
                     <td className="px-5 py-4 text-sm font-mono text-gray-700">{r.paymentReference}</td>
-                    <td className="px-5 py-4 text-sm font-medium text-gray-900">${r.amount.toString()}</td>
+                    <td className="px-5 py-4 text-sm font-medium text-gray-900">{formatCurrency(Number(r.amount))}</td>
                     <td className="px-5 py-4"><CreditStatusBadge status={r.status} /></td>
                   </tr>
                 ))}
@@ -184,8 +186,8 @@ export default async function WalletPage({
                       <TxTypeBadge type={tx.type} />
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm font-medium">
-                      <span className={parseFloat(tx.amount.toString()) > 0 ? 'text-emerald-600' : 'text-red-600'}>
-                        {parseFloat(tx.amount.toString()) > 0 ? '+' : '-'}${Math.abs(parseFloat(tx.amount.toString())).toFixed(2)}
+                      <span className={Number(tx.amount) > 0 ? 'text-emerald-600' : 'text-red-600'}>
+                        {Number(tx.amount) > 0 ? '+' : '-'}{formatCurrency(Math.abs(Number(tx.amount)))}
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">{tx.description || '—'}</td>

@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { customerStatusLabel } from '@/lib/status-labels'
 
 export default async function BusinessCustomersPage() {
   const session = await getServerSession(authOptions)
@@ -49,8 +50,8 @@ export default async function BusinessCustomersPage() {
         </Link>
       </div>
 
-      <div className="overflow-hidden rounded-lg border bg-white shadow-sm">
-        <table className="w-full">
+      <div className="overflow-x-auto rounded-lg border bg-white shadow-sm">
+        <table className="w-full min-w-[640px]">
           <thead className="bg-gray-50">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
@@ -94,11 +95,11 @@ export default async function BusinessCustomersPage() {
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">
                   <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
-                    customer.status === 'ACTIVE' 
-                      ? 'bg-green-100 text-green-800' 
+                    customer.status === 'ACTIVE'
+                      ? 'bg-green-100 text-green-800'
                       : 'bg-red-100 text-red-800'
                   }`}>
-                    {customer.status}
+                    {customerStatusLabel(customer.status)}
                   </span>
                 </td>
                 <td className="whitespace-nowrap px-6 py-4 text-sm">
@@ -114,6 +115,18 @@ export default async function BusinessCustomersPage() {
           </tbody>
         </table>
       </div>
+      {customers.length === 0 && (
+        <div className="rounded-xl border-2 border-dashed border-gray-200 bg-white p-12 text-center">
+          <p className="text-gray-500">No customers yet.</p>
+          <p className="mt-1 text-sm text-gray-400">Add your first customer to assign eSIMs.</p>
+          <Link
+            href="/business/customers/new"
+            className="mt-4 inline-block rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700"
+          >
+            Add Customer
+          </Link>
+        </div>
+      )}
     </div>
   )
 }

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
 import { getPackageDisplayName, getPackageDataGB, getPackageValidityDays } from '@/lib/packages/snapshot-utils'
+import { installStatusLabel } from '@/lib/status-labels'
 import { UsageSummary } from '@/components/admin/esims/UsageBar'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { QrImage } from '@/components/business/QrImage'
@@ -152,7 +153,7 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
               )}
             </>
           ) : (
-            <p className="text-xs text-gray-400">{INSTALL_MESSAGES[installStatus] || `Installation status: ${installStatus}`}</p>
+            <p className="text-xs text-gray-400">{INSTALL_MESSAGES[installStatus] || installStatusLabel(installStatus)}</p>
           )}
         </div>
       </div>

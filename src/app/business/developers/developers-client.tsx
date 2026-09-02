@@ -110,6 +110,7 @@ export default function DevelopersClient({ packages, apiKeys, isAdmin, baseUrl }
   const [testError, setTestError] = useState('')
   const [testLoading, setTestLoading] = useState(false)
   const [generatedCurl, setGeneratedCurl] = useState('')
+  const [copiedUrl, setCopiedUrl] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
 
   const selectedKey = apiKeys.find(k => k.id === selectedKeyId)
@@ -248,7 +249,7 @@ export default function DevelopersClient({ packages, apiKeys, isAdmin, baseUrl }
               <p className="mt-2 text-xs text-emerald-700">Use only after account approval and live API key activation.</p>
             </div>
           </div>
-          <p className="mt-3 text-xs text-gray-400">⚠ Production provider URLs for Choice/Rakuten/AirHub are pending from providers. Use staging URLs while testing.</p>
+          <p className="mt-3 text-xs text-gray-400">⚠ Production connectivity for some carrier partners is pending confirmation. Use the staging URL while testing.</p>
         </Section>
       </div>
 
@@ -261,10 +262,10 @@ export default function DevelopersClient({ packages, apiKeys, isAdmin, baseUrl }
               <div className="mt-1 flex items-center gap-2">
                 <code className="truncate text-sm font-mono font-medium text-green-900">{baseUrl}/api/v1</code>
                 <button
-                  onClick={() => { navigator.clipboard.writeText(`${baseUrl}/api/v1`); alert('Copied!') }}
+                  onClick={() => { navigator.clipboard.writeText(`${baseUrl}/api/v1`); setCopiedUrl(true); setTimeout(() => setCopiedUrl(false), 2000) }}
                   className="shrink-0 rounded bg-green-200 px-1.5 py-0.5 text-xs text-green-800 hover:bg-green-300"
                 >
-                  Copy
+                  {copiedUrl ? 'Copied!' : 'Copy'}
                 </button>
               </div>
             </div>

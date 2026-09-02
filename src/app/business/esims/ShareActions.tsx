@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { NotificationContainer, type Notification } from '@/components/ui/DismissibleNotification'
 
 interface ShareActionsProps {
   esimId: string
@@ -17,18 +18,26 @@ export default function ShareActions({ esimId, iccid, activationCode, qrCodeUrl,
   const [open, setOpen] = useState(false)
   const [emailSending, setEmailSending] = useState(false)
   const [emailInput, setEmailInput] = useState(customerEmail || '')
+  const [notifications, setNotifications] = useState<Notification[]>([])
   const router = useRouter()
+
+  const notify = (type: Notification['type'], message: string) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    setNotifications((prev) => [...prev, { id, type, message }])
+  }
+
+  const dismiss = (id: string) => setNotifications((prev) => prev.filter((n) => n.id !== id))
 
   const copyActivationCode = async () => {
     if (activationCode) {
       await navigator.clipboard.writeText(activationCode)
-      alert('Activation code copied!')
+      notify('success', 'Activation code copied!')
     }
   }
 
   const copyIccid = async () => {
     await navigator.clipboard.writeText(iccid)
-    alert('ICCID copied!')
+    notify('success', 'ICCID copied!')
   }
 
   const copyInstallLink = async () => {
@@ -41,12 +50,12 @@ export default function ShareActions({ esimId, iccid, activationCode, qrCodeUrl,
       const data = await res.json()
       if (data.success && data.installLink) {
         await navigator.clipboard.writeText(data.installLink)
-        alert('Install link copied!')
+        notify('success', 'Install link copied!')
       } else {
-        alert('Failed to generate link')
+        notify('error', 'Failed to generate link')
       }
     } catch {
-      alert('Failed to generate link')
+      notify('error', 'Failed to generate link')
     }
   }
 
@@ -63,14 +72,14 @@ export default function ShareActions({ esimId, iccid, activationCode, qrCodeUrl,
       })
       const data = await res.json()
       if (data.success) {
-        alert('eSIM shared via email!')
+        notify('success', 'eSIM shared via email!')
         setOpen(false)
         router.refresh()
       } else {
-        alert('Failed to send email')
+        notify('error', 'Failed to send email')
       }
     } catch {
-      alert('Failed to send email')
+      notify('error', 'Failed to send email')
     } finally {
       setEmailSending(false)
     }
@@ -83,6 +92,7 @@ export default function ShareActions({ esimId, iccid, activationCode, qrCodeUrl,
 
   return (
     <div className="relative">
+      <NotificationContainer notifications={notifications} onDismiss={dismiss} />
       <button
         type="button"
         onClick={() => setOpen(!open)}

@@ -3,15 +3,16 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth/config';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import { 
-  ShoppingCart, 
-  FileText, 
-  Users, 
+import {
+  ShoppingCart,
+  FileText,
+  Users,
   Wallet,
   BarChart3,
   ArrowRight,
   Smartphone,
 } from 'lucide-react';
+import { orderStatusLabel } from '@/lib/status-labels';
 
 function StatCard({ label, value, icon: Icon, color, gradient }: { label: string; value: string; icon: any; color: string; gradient: string }) {
   return (
@@ -30,22 +31,12 @@ function StatCard({ label, value, icon: Icon, color, gradient }: { label: string
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    COMPLETED: 'bg-emerald-50 text-emerald-600',
-    PENDING_ACTIVATION: 'bg-amber-50 text-amber-600',
-    PENDING: 'bg-amber-50 text-amber-600',
-    FAILED: 'bg-red-50 text-red-600',
-  }
-  const labels: Record<string, string> = {
-    PENDING_ACTIVATION: 'Pending Activation',
-  }
+  const cfg = orderStatusLabel(status)
+  const dotColor = cfg.dot
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[status] || 'bg-gray-50 text-gray-500'}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${
-        status === 'COMPLETED' ? 'bg-emerald-400' :
-        status === 'FAILED' ? 'bg-red-400' : 'bg-amber-400'
-      }`} />
-      {labels[status] || status}
+    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${cfg.bg}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${dotColor}`} />
+      {cfg.label}
     </span>
   )
 }
@@ -99,7 +90,7 @@ export default async function BusinessDashboard() {
         <StatCard label="Wallet Balance" value={`$${walletBalance?.walletBalance.toFixed(2) || '0.00'}`} icon={Wallet} color="text-emerald-600" gradient="border-emerald-100 bg-gradient-to-br from-emerald-50 to-white" />
         <StatCard label="Active eSIMs" value={String(esimCount)} icon={Smartphone} color="text-blue-600" gradient="border-blue-100 bg-gradient-to-br from-blue-50 to-white" />
         <StatCard label="Total Orders" value={String(orderCount)} icon={FileText} color="text-purple-600" gradient="border-purple-100 bg-gradient-to-br from-purple-50 to-white" />
-        <StatCard label="Data Used" value="0 GB" icon={BarChart3} color="text-orange-600" gradient="border-orange-100 bg-gradient-to-br from-orange-50 to-white" />
+        <StatCard label="Data Used" value="—" icon={BarChart3} color="text-orange-600" gradient="border-orange-100 bg-gradient-to-br from-orange-50 to-white" />
       </div>
 
       {/* Quick Actions */}
@@ -165,7 +156,7 @@ export default async function BusinessDashboard() {
           </Link>
         </div>
         {recentOrders.length > 0 ? (
-          <div className="rounded-xl border border-gray-100 bg-white shadow-sm overflow-hidden">
+          <div className="rounded-xl border border-gray-100 bg-white shadow-sm overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-50 bg-gray-50/50">
