@@ -413,11 +413,46 @@ export class AirHubConnector implements IProviderConnector {
     return { tokenPresent, expiryPresent: !!tokenExpiry, expired, expiresSoon, tokenExpiry }
   }
 
+  /**
+   * Load a persisted unexpired token into `this.token` WITHOUT issuing any
+   * network call. This is the shared token-resolution step that every
+   * authenticated read (status/QR/wallet) relies on so a successful
+   * `ensureAuthenticated` is a guarantee that `this.token` is a usable
+   * plaintext bearer token — never an empty/null placeholder.
+   *
+   * Returns true only when, after resolving, `this.token` is non-empty.
+   */
+  private async resolvePersistedToken(): Promise<boolean> {
+    if (this.token) return true
+    const provider = await prisma.provider.findUnique({
+      where: { id: this.providerId },
+      select: { apiToken: true, config: true },
+    })
+    if (!provider?.apiToken) return false
+    try {
+      const decrypted = decryptToken(provider.apiToken) || null
+      if (decrypted) this.token = decrypted
+    } catch {
+      this.token = null
+    }
+    return !!this.token
+  }
+
+  /**
+   * Guarantee: after a successful `ensureAuthenticated`, `this.token` holds a
+   * usable plaintext AirHub bearer token. It never reports success merely
+   * because an encrypted `provider.apiToken` exists while `this.token` is empty.
+   */
   async ensureAuthenticated(): Promise<ConnectorResult<void>> {
     const state = await this.getTokenState()
-    if (state.tokenPresent && !state.expired && !state.expiresSoon) return { success: true }
+    const useFresh = state.tokenPresent && !state.expired && !state.expiresSoon
+    if (useFresh) {
+      const loaded = await this.resolvePersistedToken()
+      if (loaded) return { success: true }
+      if (this.token) return { success: true }
+    }
     const refreshed = await this.refreshTokenFromConfig()
-    if (refreshed) return { success: true }
+    if (refreshed && this.token) return { success: true }
     if (this.token) return { success: true }
     return { success: false, error: { code: 'NO_TOKEN', message: 'No token. Authenticate first.' } }
   }
@@ -1086,11 +1121,15 @@ export class AirHubConnector implements IProviderConnector {
     console.log(`[AIRHUB_STATUS] correlationId=${correlationId} endpoint=/api/ESIM/GetActivationCode orderid=${subscriptionId}`)
 
     try {
-      // READ-ONLY transport hardening for GetActivationCode. A documented
-      // success (HTTP 200) that arrives EMPTY or NON-JSON is an intermittent
-      // provider read failure (live-observed), so it is retried ONCE
-      // immediately against the SAME read endpoint. Max 2 calls per getStatus
-      // invocation. Only read-only retries — never a purchase endpoint.
+      // READ-ONLY transport hardening for GetActivationCode:
+      //  - state auth (line 1104) loads the persisted token, so a fresh
+      //    connector never sends an empty `Authorization: Bearer `.
+      //  - a documented HTTP 200 that arrives EMPTY or NON-JSON is a transient
+      //    provider read failure, retried ONCE against the same read endpoint
+      //    (max 2 read calls).
+      //  - an HTTP 401 triggers ONE auth refresh + ONE retry (max 2 status
+      //    calls total, never more than one refresh). Only read endpoints are
+      //    touched — never a purchase endpoint.
       let parsedData: any = null
       const MAX_READ_ATTEMPTS = 2
       for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
@@ -1107,10 +1146,18 @@ export class AirHubConnector implements IProviderConnector {
         const text = await response.text()
         const contentType = response.headers?.get?.('content-type') || ''
 
-        // Non-2xx: contract/auth/not-found — never retried.
+        // Non-2xx: contract/auth/not-found.
         if (!response.ok) {
           if (response.status === 404) {
             return { success: false, error: { code: 'NOT_FOUND', message: `AirHub returned HTTP 404 for order ${subscriptionId} — the order was not found` } }
+          }
+          if (response.status === 401 && attempt < MAX_READ_ATTEMPTS) {
+            // One refresh + one retry; matches the purchase path's authenticate
+            // refresh semantics. `attempt` is incremented by the loop so the
+            // refreshed token is used on iteration 2.
+            const refreshed = await this.refreshTokenFromConfig()
+            console.log(`[AIRHUB_STATUS] correlationId=${correlationId} httpStatus=401 refreshSuccess=${refreshed} attempt=${attempt}`)
+            if (refreshed && this.token) continue
           }
           const code = this.classifyStatusHttpError(response.status, {})
           const preview = text.length > 200 ? text.substring(0, 200) : text

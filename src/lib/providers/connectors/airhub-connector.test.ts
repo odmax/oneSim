@@ -1814,7 +1814,10 @@ describe('getStatus', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1)
     })
 
-    it('G. HTTP 401 auth failure → preserved as AUTH_ERROR, no retry loop', async () => {
+    it('G. HTTP 401 → ONE auth refresh attempt, refresh fails → preserved AUTH_ERROR (never infinite retry)', async () => {
+      // The mocked login POST (authenticate) also returns 401, so the single
+      // refresh fails and the original AUTH_ERROR is preserved. Exactly one
+      // refresh is attempted — never a retry loop.
       mockFetchFailure(401, { message: 'unauthorized' })
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
@@ -1822,7 +1825,30 @@ describe('getStatus', () => {
 
       expect(result.success).toBe(false)
       expect(result.error?.code).toBe('AUTH_ERROR')
-      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      // GetActivationCode read + the one login refresh attempt.
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+    })
+
+    it('H. HTTP 401 → ONE refresh, then retries successfully with the new token (max 2 status calls)', async () => {
+      // attempt 1: GetActivationCode → 401; refresh (login) → 200 ok token;
+      // attempt 2: GetActivationCode → 200 success. Never more than 2 status calls.
+      fetchSpy
+        .mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Error', text: () => Promise.resolve(JSON.stringify({ message: 'unauthorized' })), headers: { get: () => 'application/json' } })
+        .mockResolvedValueOnce({ ok: true, status: 200, statusText: 'OK', text: () => Promise.resolve(JSON.stringify({ isSuccess: true, token: 'refreshed-token-999', data: {} })), headers: { get: () => 'application/json' } })
+        .mockResolvedValueOnce({ ok: true, status: 200, statusText: 'OK', text: () => Promise.resolve(JSON.stringify({ isSuccess: true, getOrderdetails: [{ orderId: 12811381, simID: '89012345678901234567' }] })), headers: { get: () => 'application/json' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      // GetActivationCode x2 + the one login refresh = 3 fetch calls, of which
+      // exactly 2 hit the status endpoint.
+      const statusCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/api/ESIM/GetActivationCode'))
+      expect(statusCalls).toHaveLength(2)
+      // The second status call must carry the refreshed plaintext token, not empty/null/undefined.
+      const retryAuth = statusCalls[1][1].headers['Authorization']
+      expect(retryAuth).toBe('Bearer refreshed-token-999')
     })
 
     it('J. parse-failure diagnostics never reveal token, LPA/activation, simID or credentials', async () => {
@@ -1839,6 +1865,35 @@ describe('getStatus', () => {
       expect(logs).not.toContain('89012345678901333333')
       expect(logs).not.toContain('LPA:1$')
       logSpy.mockRestore()
+    })
+
+    it('ROOT-CAUSE: a fresh connector sends the DECRYPTED persisted token — never an empty/null Bearer', async () => {
+      // Regression for the production 401: getStatus builds a fresh connector
+      // (this.token = null), relies on ensureAuthenticated() which previously
+      // reported success WITHOUT decrypting provider.apiToken into this.token,
+      // then sent `Authorization: Bearer ` (empty) → AirHub HTTP 401.
+      // A fresh connector with NO injected token must resolve the persisted
+      // encrypted token and send the plaintext value.
+      mockFetchSuccess({
+        isSuccess: true,
+        getOrderdetails: [{ orderId: 12811381, simID: '89012345678901234567' }],
+      })
+
+      const connector = new AirHubConnector('airhub-1') // no token injected → this.token = null
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      const [url, opts] = fetchSpy.mock.calls[0]
+      expect(String(url)).toContain('/api/ESIM/GetActivationCode')
+      const auth = opts.headers['Authorization']
+      // makeProvider() stores apiToken 'enc:encrypted-test-token' → decrypts to 'encrypted-test-token'.
+      expect(auth).toBe('Bearer encrypted-test-token')
+      // Guard: must never be empty, 'Bearer ', 'Bearer null' or 'Bearer undefined'.
+      expect(auth).not.toMatch(/^Bearer\s*$|Bearer (null|undefined)$/)
+      // No login round-trip is issued: the persisted token is reused directly.
+      const loginCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/api/Authentication/UserLogin'))
+      expect(loginCalls).toHaveLength(0)
     })
 
     it('A/C/D. documented getOrderdetails shape: simID + activationCode → fulfillment-ready ACTIVE, activationCode forwarded', async () => {
