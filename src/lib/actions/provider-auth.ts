@@ -10,7 +10,6 @@ import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector
 import { classifyError } from '@/lib/providers/connectors/connector-interface'
 import { recordHealthEvent } from '@/lib/services/providers/health-monitor'
 import { encryptToken } from '@/lib/encryption'
-import { registry } from '@/services/providerRegistry'
 import { advanceCertificationTo, markCertificationFailed } from '@/lib/providers/certification-machine'
 
 function getJsonString(value: unknown, key: string): string | undefined {
@@ -238,7 +237,6 @@ export async function selectProviderAccount(providerId: string, formData: FormDa
     data: { userId: session.user.id, action: 'PROVIDER_ACCOUNT_SELECTED', entity: 'Provider', entityId: provider.code, details: `Account "${account.accountName}" (${account.account}) selected for "${provider.name}"` },
   })
 
-  registry.invalidate(provider.code?.toLowerCase() || '')
   revalidatePath(`/admin/providers/${providerId}`)
   return { success: true, message: `Account "${account.accountName}" selected. Token updated.` }
 }
@@ -268,7 +266,6 @@ export async function clearProviderCredentials(providerId: string) {
     data: { userId: session.user.id, action: 'PROVIDER_CREDENTIALS_CLEARED', entity: 'Provider', entityId: provider.code, details: `Credentials cleared for "${provider.name}"` },
   })
 
-  registry.invalidate(provider.code?.toLowerCase() || '')
   revalidatePath(`/admin/providers/${providerId}`)
   return { success: true, message: 'Credentials cleared successfully' }
 }

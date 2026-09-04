@@ -2,7 +2,6 @@ import { prisma } from '@/lib/prisma'
 import type { ProviderAdapter, CredentialField, ProviderCapability } from './adapter-types'
 import { GenericProtocolAdapter } from './generic-protocol-adapter'
 import { TemplateProviderAdapter } from './template-provider-adapter'
-import { registry } from '@/services/providerRegistry'
 import { buildConnectorFromProvider } from './connectors/connector-factory'
 import { decryptToken } from '@/lib/encryption'
 import type { IProviderConnector } from './connectors/connector-interface'
@@ -231,16 +230,6 @@ export async function buildAdapter(provider: {
 
   if (strategy === 'REST_CATALOG') {
     return new GenericProtocolAdapter(provider)
-  }
-
-  // Try registry by slug (provider.code as slug)
-  if (provider.code) {
-    try {
-      const regAdapter = await registry.resolve(provider.code.toLowerCase())
-      return regAdapter as unknown as ProviderAdapter
-    } catch {
-      // Not in registry, continue to generic fallback
-    }
   }
 
   // Generic fallback

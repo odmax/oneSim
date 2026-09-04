@@ -5,7 +5,6 @@ import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
-import { registry } from '@/services/providerRegistry'
 import { sendEmail } from '@/lib/email/send-email'
 import { getAppBaseUrl } from '@/lib/config/app-url'
 import { buildESIMInstallEmail } from '@/lib/email/esim-share-email'
@@ -38,10 +37,11 @@ export async function suspendESIM(esimId: string) {
   })
   if (esim) {
     try {
-      const slug = esim.purchase?.package?.providerName?.toLowerCase()
-      if (slug) {
-        const adapter = await registry.resolve(slug)
-        await adapter.deactivate(esim.iccid)
+      const providerId = esim.purchase?.package?.providerId
+      if (providerId) {
+        const { getAdapterForProvider } = await import('@/lib/providers/adapter-manager')
+        const adapter = await getAdapterForProvider(providerId)
+        if (adapter) await adapter.suspendESIM(esim.iccid)
       }
     } catch { }
   }
