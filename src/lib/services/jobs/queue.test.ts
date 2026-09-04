@@ -125,6 +125,19 @@ describe('background job queue transaction safety', () => {
     })
   })
 
+  it('enqueueJob propagates an optional idempotencyKey to the unique column for dedup', async () => {
+    const { enqueueJob } = await import('./queue')
+    mockPrisma.backgroundJob.create.mockResolvedValue({ id: 'n1' })
+    await enqueueJob('PROVIDER_OPERATION' as any, { operation: 'reconciliation', orderId: 'o1', providerId: 'prov-a' }, new Date(), 3, 'reconcile:o1')
+    expect(mockPrisma.backgroundJob.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ idempotencyKey: 'reconcile:o1', providerId: 'prov-a' }),
+    })
+    // Without a key, none is stamped.
+    mockPrisma.backgroundJob.create.mockClear()
+    await enqueueJob('PROVIDER_OPERATION' as any, { operation: 'purchase', orderId: 'o2', providerId: 'prov-a' })
+    expect(mockPrisma.backgroundJob.create).toHaveBeenCalledWith({ data: expect.not.objectContaining({ idempotencyKey: expect.anything() }) })
+  })
+
   it('enqueueJob stamps the provider_id column for PROVIDER_OPERATION payloads', async () => {
     const { enqueueJob } = await import('./queue')
     mockPrisma.backgroundJob.create.mockResolvedValue({ id: 'n1' })

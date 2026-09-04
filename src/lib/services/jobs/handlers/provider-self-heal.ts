@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { computeProviderHealth } from '@/lib/services/operations/provider-health-score'
 import { upsertProviderAlert, resolveProviderAlert } from '@/lib/services/operations/provider-alerts'
 import { isReconciliationEligible } from '@/lib/services/orders/reconciliation'
+import { hasProviderAcceptanceEvidence } from '@/lib/services/orders/provider-reference'
 
 const HEAL_LEASE_MS = 4 * 60 * 1000 // 4-minute lease
 
@@ -155,13 +156,40 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
 
     // 5. Order-level reconciliation discovery: find stranded PROVIDER_RECONCILIATION
     //    orders belonging to this provider and enqueue one order-specific
-    //    PROVIDER_OPERATION per eligible order.  Deduplication uses the
-    //    background_jobs unique idempotencyKey constraint keyed by orderId.
+    //    PROVIDER_OPERATION per eligible order.  Deduplication is enforced at
+    //    the DB level via the unique background_jobs.idempotencyKey keyed by
+    //    orderId — a duplicate discovery pass is rejected and safely skipped.
     const stuckOrders = await prisma.eSIMPurchase.findMany({
       where: { providerId: p.id, status: 'PROVIDER_RECONCILIATION' },
-      select: { id: true, status: true, retryCount: true, maxRetries: true, nextRetryAt: true },
+      select: { id: true, status: true, retryCount: true, maxRetries: true, nextRetryAt: true, providerFulfillId: true, providerReservationId: true },
     } as any).catch(() => [])
-    const eligibleOrders = stuckOrders.filter(isReconciliationEligible)
+    let eligibleOrders: any[] = []
+    if (stuckOrders.length > 0) {
+      // Orders beyond the generic retry budget stay eligible only with provider
+      // acceptance evidence (order-level reference or a provider-owned attempt
+      // reference) — the poll is read-only and never a second purchase. Recover
+      // evidence batched per provider, then let the sync predicate decide.
+      const attemptRefs = await prisma.providerAttempt.findMany({
+        where: { orderId: { in: stuckOrders.map((o: any) => o.id) }, providerId: p.id },
+        select: { orderId: true, providerId: true, providerReference: true },
+      }).catch(() => [] as any[])
+      const attemptsByOrder = new Map<string, any[]>()
+      for (const a of attemptRefs) {
+        const bucket = attemptsByOrder.get(a.orderId) || []
+        bucket.push(a)
+        attemptsByOrder.set(a.orderId, bucket)
+      }
+      eligibleOrders = stuckOrders.filter((o: any) =>
+        isReconciliationEligible({
+          status: o.status, retryCount: o.retryCount, maxRetries: o.maxRetries,
+          nextRetryAt: o.nextRetryAt ? (o.nextRetryAt instanceof Date ? o.nextRetryAt : new Date(o.nextRetryAt)) : null,
+          hasAcceptanceEvidence: hasProviderAcceptanceEvidence(
+            { id: o.id, providerId: p.id, providerFulfillId: o.providerFulfillId ?? null, providerReservationId: o.providerReservationId ?? null },
+            attemptsByOrder.get(o.id) || [],
+          ),
+        }),
+      )
+    }
     if (eligibleOrders.length > 0) {
       const { enqueueJob } = await import('../queue')
       for (const order of eligibleOrders) {
@@ -171,15 +199,11 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
             providerId: p.id,
             operation: 'reconciliation',
             orderId: order.id,
-          }, new Date(), 3)
-          await prisma.backgroundJob.updateMany({
-            where: { idempotencyKey, type: 'PROVIDER_OPERATION' as any },
-            data: { idempotencyKey },
-          } as any).catch(() => {})
+          }, new Date(), 3, idempotencyKey)
           recovered++
           await recordHealEvent(p.id, 'ORDER_RECONCILIATION_ENQUEUED', 'success')
         } catch {
-          // Duplicate (idempotencyKey constraint) — safe to skip.
+          // Duplicate (unique idempotencyKey constraint) — safe to skip.
         }
       }
     }

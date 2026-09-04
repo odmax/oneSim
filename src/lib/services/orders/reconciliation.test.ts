@@ -365,6 +365,59 @@ describe('reconcileProviderOrder', () => {
     expect(second.message).toContain('Already fulfilled')
     expect(mockFinal).toHaveBeenCalledTimes(1)
   })
+
+  it('O. evidence + reconciliation exhaustion (attempt 8+) still schedules the next retry — polling continues read-only, no tight loop (delay caps at 24h)', async () => {
+    // AirHub-shaped order with durable provider acceptance evidence.
+    setupAirHubShape([attempt({ attemptNumber: 1, status: 'PROCESSING', providerReference: '12811381' })])
+    mockPrisma.providerAttempt.count.mockResolvedValue(20) // far past the 7-attempt schedule
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PROCESSING' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    expect(result.status).toBe('PROVIDER_RECONCILIATION')
+    expect(mockRelease).not.toHaveBeenCalled()
+    // persistReconciliationRetry still runs for evidence-backed orders → nextRetryAt set with capped delay
+    expect(mockPrisma.eSIMPurchase.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ retryCount: 21, nextRetryAt: expect.any(Date) }),
+    }))
+    expect(createTimelineEvent).not.toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'REDISPATCH_ALLOWED' }))
+  })
+
+  it('P. evidence-less order at the final reconciliation attempt does NOT keep scheduling (controlled redispatch is the recovery classifier\u2019s job, never reconciliation)', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(
+      mockOrder({ providerFulfillId: null, providerReservationId: null, provider: { id: 'prov-1', type: 'CHOICE', apiBaseUrl: 'https://api.test', apiToken: 'tok', environment: 'staging', authUrl: null } }),
+    )
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
+    mockPrisma.providerAttempt.count.mockResolvedValue(7) // attemptNum = 8 → past schedule, no evidence
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PROCESSING' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    // No next-retry scheduling for an evidence-less exhausted order.
+    expect(mockPrisma.eSIMPurchase.update).not.toHaveBeenCalled()
+  })
+
+  it('Q. eventual ICCID recovery finalizes exactly once after many earlier no-ICCID polls', async () => {
+    setupAirHubShape([attempt({ attemptNumber: 1, status: 'PROCESSING', providerReference: '12811381' })])
+    mockPrisma.providerAttempt.count.mockResolvedValue(5)
+    // Provider finally returns an ICCID on this poll.
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', iccids: ['89012345678901234567'] } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(mockFinal).toHaveBeenCalledTimes(1)
+    expect(mockRelease).not.toHaveBeenCalled()
+  })
 })
 
 describe('reconciliation redispatch safety', () => {
@@ -553,23 +606,40 @@ describe('isReconciliationEligible', () => {
     expect(isReconciliationEligible({ ...base, nextRetryAt: new Date(Date.now() - 1_000) })).toBe(true)
   })
 
-  it('4. retryCount >= maxRetries → NOT eligible', () => {
+  it('4. no evidence + retryCount >= maxRetries → NOT eligible (conservative exhaustion preserved)', () => {
     expect(isReconciliationEligible({ ...base, retryCount: 3, maxRetries: 3 })).toBe(false)
     expect(isReconciliationEligible({ ...base, retryCount: 4, maxRetries: 3 })).toBe(false)
   })
 
-  it('5. terminal status → NOT eligible', () => {
+  it('5. evidence + retryCount == maxRetries → eligible (read-only polling continues, backoff respected)', () => {
+    expect(isReconciliationEligible({ ...base, retryCount: 3, maxRetries: 3, hasAcceptanceEvidence: true, nextRetryAt: null })).toBe(true)
+  })
+
+  it('5b. evidence + retryCount > maxRetries → eligible beyond the generic retry budget', () => {
+    expect(isReconciliationEligible({ ...base, retryCount: 4, maxRetries: 3, hasAcceptanceEvidence: true, nextRetryAt: null })).toBe(true)
+    expect(isReconciliationEligible({ ...base, retryCount: 9, maxRetries: 3, hasAcceptanceEvidence: true, nextRetryAt: null })).toBe(true)
+  })
+
+  it('5c. evidence + future nextRetryAt → NOT eligible (backoff bans tight-loop re-selection)', () => {
+    expect(isReconciliationEligible({ ...base, retryCount: 5, maxRetries: 3, hasAcceptanceEvidence: true, nextRetryAt: new Date(Date.now() + 60_000) })).toBe(false)
+  })
+
+  it('5d. evidence + no nextRetryAt → eligible', () => {
+    expect(isReconciliationEligible({ ...base, retryCount: 7, maxRetries: 3, hasAcceptanceEvidence: true, nextRetryAt: null })).toBe(true)
+  })
+
+  it('6. terminal status → NOT eligible even with evidence', () => {
     for (const terminal of ['FULFILLED', 'REFUNDED', 'CANCELLED', 'FAILED']) {
-      expect(isReconciliationEligible({ ...base, status: terminal })).toBe(false)
+      expect(isReconciliationEligible({ ...base, status: terminal, hasAcceptanceEvidence: true })).toBe(false)
     }
   })
 
-  it('6. non-reconciliation status → NOT eligible', () => {
+  it('7. non-reconciliation status → NOT eligible', () => {
     expect(isReconciliationEligible({ ...base, status: 'PENDING_PROVIDER' })).toBe(false)
     expect(isReconciliationEligible({ ...base, status: 'CREATED' })).toBe(false)
   })
 
-  it('13. provider-neutral: no provider-specific fields needed', () => {
+  it('13. provider-neutral: no provider-specific fields needed; acceptance is an explicit flag', () => {
     expect(isReconciliationEligible({ status: 'PROVIDER_RECONCILIATION', retryCount: 0, maxRetries: 3 })).toBe(true)
     expect(isReconciliationEligible({ status: 'PROVIDER_RECONCILIATION', retryCount: 2, maxRetries: 3 })).toBe(true)
   })

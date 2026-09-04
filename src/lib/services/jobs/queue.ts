@@ -8,6 +8,7 @@ export async function enqueueJob(
   payload: Record<string, any>,
   runAt?: Date,
   maxAttempts = 5,
+  idempotencyKey?: string,
 ) {
   const job = await prisma.backgroundJob.create({
     data: {
@@ -21,6 +22,9 @@ export async function enqueueJob(
       ...(type === 'PROVIDER_OPERATION' && typeof payload?.providerId === 'string'
         ? { providerId: payload.providerId }
         : {}),
+      // The unique background_jobs.idempotencyKey constraint turns a duplicate
+      // enqueue into a rejected create, which callers can safely skip.
+      ...(idempotencyKey ? { idempotencyKey } : {}),
     },
   })
   return job

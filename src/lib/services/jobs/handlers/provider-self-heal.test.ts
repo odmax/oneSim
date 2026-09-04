@@ -15,6 +15,7 @@ vi.mock('@/lib/prisma', () => ({
     },
     eSIM: { count: vi.fn().mockResolvedValue(0), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
     eSIMPurchase: { findMany: vi.fn().mockResolvedValue([]) },
+    providerAttempt: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }))
 
@@ -73,6 +74,7 @@ describe('provider self-heal — order-level reconciliation discovery', () => {
     return {
       id: 'order-1', status: 'PROVIDER_RECONCILIATION',
       retryCount: 0, maxRetries: 3, nextRetryAt: null,
+      providerFulfillId: null, providerReservationId: null,
       ...overrides,
     }
   }
@@ -108,11 +110,42 @@ describe('provider self-heal — order-level reconciliation discovery', () => {
     }))
   })
 
-  it('9. retryCount >= maxRetries → not endlessly re-enqueued', async () => {
+  it('9. no evidence + retryCount >= maxRetries → not endlessly re-enqueued', async () => {
     mockFindMany.mockResolvedValue([order({ retryCount: 3, maxRetries: 3 })])
     const { executeProviderSelfHeal } = await import('./provider-self-heal')
     await executeProviderSelfHeal()
     expect(mockBgCreate).not.toHaveBeenCalled()
+  })
+
+  it('9b. evidence + retryCount >= maxRetries → still enqueued (read-only polling continues beyond the generic budget)', async () => {
+    const mockAttemptFindMany = vi.mocked(prisma.providerAttempt.findMany)
+    mockFindMany.mockResolvedValue([order({ id: 'order-ev', retryCount: 3, maxRetries: 3, providerFulfillId: null, providerReservationId: null })])
+    mockAttemptFindMany.mockResolvedValue([{ orderId: 'order-ev', providerId: 'prov-1', providerReference: '12811381' }] as any)
+    const { executeProviderSelfHeal } = await import('./provider-self-heal')
+    await executeProviderSelfHeal()
+    expect(mockBgCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        payload: expect.objectContaining({ operation: 'reconciliation', orderId: 'order-ev' }),
+      }),
+    }))
+  })
+
+  it('9c. evidence + future nextRetryAt → NOT enqueued (backoff respected, no tight loop)', async () => {
+    mockFindMany.mockResolvedValue([order({ id: 'order-ev', retryCount: 5, maxRetries: 3, nextRetryAt: new Date(Date.now() + 60_000), providerFulfillId: 'ref-1' })])
+    const { executeProviderSelfHeal } = await import('./provider-self-heal')
+    await executeProviderSelfHeal()
+    expect(mockBgCreate).not.toHaveBeenCalled()
+  })
+
+  it('9d. enqueues carry a deterministic idempotencyKey `reconcile:{orderId}` so duplicate discovery passes are DB-rejected and skipped', async () => {
+    mockFindMany.mockResolvedValue([order({ id: 'order-idem', retryCount: 3, maxRetries: 3, providerFulfillId: 'ref-1' })])
+    mockBgCreate.mockRejectedValue(new Error('Unique constraint failed on idempotencyKey'))
+    const { executeProviderSelfHeal } = await import('./provider-self-heal')
+    await executeProviderSelfHeal()
+    // Enqueue attempted with the key, rejected as duplicate → safely skipped (no crash, no double dispatch).
+    expect(mockBgCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ idempotencyKey: 'reconcile:order-idem' }),
+    }))
   })
 
   it('10. terminal order status → never selected', async () => {

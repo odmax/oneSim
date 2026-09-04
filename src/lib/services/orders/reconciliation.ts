@@ -68,21 +68,36 @@ export function isRedispatchAllowed(attempt: number): boolean {
 
 const TERMINAL_STATUSES = ['FULFILLED', 'REFUNDED', 'CANCELLED', 'FAILED']
 
-/**
- * Provider-neutral predicate: should this order be automatically reconciled?
- * Used by discovery (provider-self-heal, recovery sweeper) to select eligible
- * PROVIDER_RECONCILIATION orders without duplicating selection logic.
- */
-export function isReconciliationEligible(order: {
+export interface ReconciliationEligibilityInput {
   status: string
   retryCount: number
   maxRetries: number
   nextRetryAt?: Date | null
-}): boolean {
+  /**
+   * Provider acceptance/reference evidence (order-level or a provider-owned
+   * attempt reference). Discovery recovers this BEFORE eligibility so the
+   * predicate stays provider-neutral and synchronous.
+   */
+  hasAcceptanceEvidence?: boolean
+}
+
+/**
+ * Provider-neutral predicate: should this order be automatically reconciled?
+ * Used by discovery (provider-self-heal, recovery sweeper) to select eligible
+ * PROVIDER_RECONCILIATION orders without duplicating selection logic.
+ *
+ * The generic `retryCount / maxRetries` budget is a purchase-redispatch budget
+ * and must NOT strand an accepted order. Orders carrying provider acceptance
+ * evidence stay eligible beyond it — read-only polling, wallet held, ICCID
+ * gating intact, never a second purchase — subject to nextRetryAt backoff.
+ * Evidence-less orders keep the previous conservative exhaustion: discovery
+ * stops selecting them at retryCount >= maxRetries.
+ */
+export function isReconciliationEligible(order: ReconciliationEligibilityInput): boolean {
   if (order.status !== 'PROVIDER_RECONCILIATION') return false
-  if (order.retryCount >= order.maxRetries) return false
   if (TERMINAL_STATUSES.includes(order.status)) return false
   if (order.nextRetryAt && order.nextRetryAt.getTime() > Date.now()) return false
+  if (!order.hasAcceptanceEvidence && order.retryCount >= order.maxRetries) return false
   return true
 }
 
@@ -134,15 +149,20 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
     publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.RECONCILIATION_REQUIRED }).catch(() => {})
   }
 
-  // Still pending within the retry window — keep waiting
-  if (attemptNum < REDISPATCH_AFTER_ATTEMPT) {
-    await persistReconciliationRetry(orderId, attemptNum)
-  }
-
   // Provider acceptance evidence: if the order has a durable provider reference
   // (order-level or from an attempt), reconciliation exhaustion must NEVER
   // authorize a second purchase — the existing provider transaction is real.
   const acceptanceEvidence = hasProviderAcceptanceEvidence(order, attempts)
+
+  // Schedule the next check. Evidence-backed orders keep scheduling beyond the
+  // bounded retry schedule so an accepted-but-unfulfilled order never tight-
+  // loops: the delay caps at the final 24h step and discovery only re-selects
+  // an order once nextRetryAt is due. Evidence-less orders stop being scheduled
+  // after the final attempt (their controlled-redispatch window is owned by the
+  // recovery classifier, never invented here).
+  if (attemptNum < REDISPATCH_AFTER_ATTEMPT || acceptanceEvidence) {
+    await persistReconciliationRetry(orderId, attemptNum)
+  }
 
   // Try to reconcile via provider
   const result = await tryReconcileWithProvider(order, authoritativeRef)
