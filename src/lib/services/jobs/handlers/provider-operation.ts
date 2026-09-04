@@ -3,6 +3,7 @@ import { getAdapterForType } from '@/lib/providers/adapter-manager'
 import { completeProviderOperation, failProviderOperation } from '../provider-finalizer'
 import { normalizeConnectorInstallData, type ProviderInstallData } from '@/lib/esim/installation-data'
 import { transitionOrder, createTimelineEvent } from '@/lib/services/orders/order-state-machine'
+import { reconcileProviderOrder } from '@/lib/services/orders/reconciliation'
 
 export type ActivationPollResolution =
   | 'COMPLETED'
@@ -70,6 +71,21 @@ export async function executeProviderOperation(payload: any): Promise<{ complete
   if (payload?.operation === 'purchase') {
     const { executePurchaseDispatch } = await import('./purchase-execution')
     return executePurchaseDispatch(payload)
+  }
+
+  // ── Order-specific reconciliation ────────────────────────────────────
+  // Route to the canonical `reconcileProviderOrder` engine.  This is the
+  // ONLY path that should reach it from the job framework; all other
+  // operations (activation polling, catalog sync) fall through.
+  if (payload?.operation === 'reconciliation') {
+    if (!payload.orderId) return { completed: false, error: 'Reconciliation requires orderId' }
+    const order = await prisma.eSIMPurchase.findUnique({ where: { id: payload.orderId }, select: { status: true } })
+    if (!order) return { completed: false, error: `Order ${payload.orderId} not found` }
+    if (!['PROVIDER_RECONCILIATION', 'PENDING_PROVIDER'].includes(order.status)) {
+      return { completed: true, error: `Order ${order.status} is not eligible for reconciliation` }
+    }
+    const result = await reconcileProviderOrder(payload.orderId)
+    return { completed: true, error: result.outcome === 'STILL_PENDING' || result.outcome === 'UNSUPPORTED' ? result.message : undefined }
   }
 
   const { orderId, businessId, providerId, providerRef, totalAmount } = payload

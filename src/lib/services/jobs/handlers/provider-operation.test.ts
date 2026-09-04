@@ -31,6 +31,10 @@ vi.mock('./purchase-execution', () => ({
   executePurchaseDispatch: vi.fn(),
 }))
 
+vi.mock('@/lib/services/orders/reconciliation', () => ({
+  reconcileProviderOrder: vi.fn().mockResolvedValue({ outcome: 'STILL_PENDING', message: 'Provider still processing', status: 'PROVIDER_RECONCILIATION' }),
+}))
+
 import { prisma } from '@/lib/prisma'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
 import { completeProviderOperation, failProviderOperation } from '../provider-finalizer'
@@ -41,6 +45,7 @@ import {
   reconcileActivationOrder,
   reconcileExhaustedActivationJob,
 } from './provider-operation'
+import { reconcileProviderOrder } from '@/lib/services/orders/reconciliation'
 
 const mockPrisma = vi.mocked(prisma)
 const mockAdapter = vi.mocked(getAdapterForType)
@@ -229,5 +234,72 @@ describe('reconciliation helpers', () => {
     await reconcileExhaustedActivationJob({ operation: 'purchase', orderId: 'order-1' })
     await reconcileExhaustedActivationJob({})
     expect(mockTransition).not.toHaveBeenCalled()
+  })
+})
+
+describe('reconciliation PROVIDER_OPERATION routing', () => {
+  const mockReconcile = vi.mocked(reconcileProviderOrder)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({ ...order })
+    mockPrisma.provider.findUnique.mockResolvedValue({ id: 'prov-1', name: 'P', type: 'CUSTOM', apiBaseUrl: '', apiToken: '', environment: 'staging', authUrl: '', apiBaseUrl2: undefined })
+    mockComplete.mockResolvedValue({ success: true })
+  })
+
+  it('8. reconciliation with orderId → invokes reconcileProviderOrder', async () => {
+    mockReconcile.mockResolvedValue({ outcome: 'STILL_PENDING', message: 'Provider still processing', status: 'PROVIDER_RECONCILIATION' })
+    const result = await executeProviderOperation({ operation: 'reconciliation', orderId: 'order-1', providerId: 'prov-1' })
+    expect(result.completed).toBe(true)
+    expect(mockReconcile).toHaveBeenCalledWith('order-1')
+    // Must NOT invoke activation/purchase logic
+    expect(mockComplete).not.toHaveBeenCalled()
+    expect(mockFail).not.toHaveBeenCalled()
+  })
+
+  it('9. reconciliation without orderId → fails safely, never calls purchase/activation', async () => {
+    const result = await executeProviderOperation({ operation: 'reconciliation', providerId: 'prov-1' })
+    expect(result.completed).toBe(false)
+    expect(result.error).toContain('requires orderId')
+    expect(mockReconcile).not.toHaveBeenCalled()
+    expect(mockComplete).not.toHaveBeenCalled()
+    expect(mockFail).not.toHaveBeenCalled()
+  })
+
+  it('10. STILL_PENDING result → job completes normally while canonical reconciliation persists nextRetryAt', async () => {
+    mockReconcile.mockResolvedValue({ outcome: 'STILL_PENDING', message: 'Provider still processing', status: 'PROVIDER_RECONCILIATION' })
+    const result = await executeProviderOperation({ operation: 'reconciliation', orderId: 'order-1', providerId: 'prov-1' })
+    expect(result.completed).toBe(true)
+    expect(result.error).toContain('still processing')
+  })
+
+  it('11. FOUND_SUCCESS → canonical finalization path responsible for fulfillment', async () => {
+    mockReconcile.mockResolvedValue({ outcome: 'FOUND_SUCCESS', message: 'Provider confirms success', status: 'FULFILLED', action: 'FINALIZED' })
+    const result = await executeProviderOperation({ operation: 'reconciliation', orderId: 'order-1', providerId: 'prov-1' })
+    expect(result.completed).toBe(true)
+    expect(result.error).toBeUndefined()
+  })
+
+  it('12. FOUND_FAILURE → provider reference + uncertain lookup → no redispatch', async () => {
+    mockReconcile.mockResolvedValue({ outcome: 'FOUND_FAILURE', message: 'Provider confirms failure', status: 'FAILED', providerReference: '12812188' })
+    const result = await executeProviderOperation({ operation: 'reconciliation', orderId: 'order-1', providerId: 'prov-1' })
+    expect(result.completed).toBe(true)
+    expect(result.error).toBeUndefined()
+  })
+
+  it('reconciliation order not found → fails cleanly', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(null)
+    const result = await executeProviderOperation({ operation: 'reconciliation', orderId: 'nonexistent', providerId: 'prov-1' })
+    expect(result.completed).toBe(false)
+    expect(result.error).toContain('not found')
+    expect(mockReconcile).not.toHaveBeenCalled()
+  })
+
+  it('reconciliation on a non-eligible order status → completes without invoking reconciliation', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({ id: 'order-1', status: 'FULFILLED' })
+    const result = await executeProviderOperation({ operation: 'reconciliation', orderId: 'order-1', providerId: 'prov-1' })
+    expect(result.completed).toBe(true)
+    expect(result.error).toContain('not eligible')
+    expect(mockReconcile).not.toHaveBeenCalled()
   })
 })

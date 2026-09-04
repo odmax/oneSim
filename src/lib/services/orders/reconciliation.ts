@@ -63,6 +63,30 @@ export function isRedispatchAllowed(attempt: number): boolean {
 }
 
 // ─────────────────────────────────────────────
+// Reconciliation eligibility
+// ─────────────────────────────────────────────
+
+const TERMINAL_STATUSES = ['FULFILLED', 'REFUNDED', 'CANCELLED', 'FAILED']
+
+/**
+ * Provider-neutral predicate: should this order be automatically reconciled?
+ * Used by discovery (provider-self-heal, recovery sweeper) to select eligible
+ * PROVIDER_RECONCILIATION orders without duplicating selection logic.
+ */
+export function isReconciliationEligible(order: {
+  status: string
+  retryCount: number
+  maxRetries: number
+  nextRetryAt?: Date | null
+}): boolean {
+  if (order.status !== 'PROVIDER_RECONCILIATION') return false
+  if (order.retryCount >= order.maxRetries) return false
+  if (TERMINAL_STATUSES.includes(order.status)) return false
+  if (order.nextRetryAt && order.nextRetryAt.getTime() > Date.now()) return false
+  return true
+}
+
+// ─────────────────────────────────────────────
 // Reconciliation engine
 // ─────────────────────────────────────────────
 

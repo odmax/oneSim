@@ -41,7 +41,7 @@ vi.mock('@/lib/services/orders/fulfillment', () => ({
 const { prisma } = await import('@/lib/prisma')
 const { getAdapterForType } = await import('@/lib/providers/adapter-manager')
 const { createTimelineEvent, transitionOrder, failOrder } = await import('@/lib/services/orders/order-state-machine')
-const { reconcileProviderOrder, getReconciliationDelay, isRedispatchAllowed } = await import('./reconciliation')
+const { reconcileProviderOrder, getReconciliationDelay, isRedispatchAllowed, isReconciliationEligible } = await import('./reconciliation')
 const { releaseReservedFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
 const { completeProviderFinalization } = await import('@/lib/services/orders/fulfillment')
 const { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence } = await import('./provider-reference')
@@ -535,5 +535,42 @@ describe('provider acceptance evidence', () => {
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: 'x', providerReservationId: null }, [])).toBe(true)
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [{ providerId: 'prov-OTHER', providerReference: 'other' }])).toBe(false)
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [])).toBe(false)
+  })
+})
+
+describe('isReconciliationEligible', () => {
+  const base = { status: 'PROVIDER_RECONCILIATION', retryCount: 0, maxRetries: 3 }
+
+  it('1. retryCount=0 + nextRetryAt=null → eligible', () => {
+    expect(isReconciliationEligible({ ...base, nextRetryAt: null })).toBe(true)
+  })
+
+  it('2. future nextRetryAt → NOT eligible', () => {
+    expect(isReconciliationEligible({ ...base, nextRetryAt: new Date(Date.now() + 60_000) })).toBe(false)
+  })
+
+  it('3. due nextRetryAt → eligible', () => {
+    expect(isReconciliationEligible({ ...base, nextRetryAt: new Date(Date.now() - 1_000) })).toBe(true)
+  })
+
+  it('4. retryCount >= maxRetries → NOT eligible', () => {
+    expect(isReconciliationEligible({ ...base, retryCount: 3, maxRetries: 3 })).toBe(false)
+    expect(isReconciliationEligible({ ...base, retryCount: 4, maxRetries: 3 })).toBe(false)
+  })
+
+  it('5. terminal status → NOT eligible', () => {
+    for (const terminal of ['FULFILLED', 'REFUNDED', 'CANCELLED', 'FAILED']) {
+      expect(isReconciliationEligible({ ...base, status: terminal })).toBe(false)
+    }
+  })
+
+  it('6. non-reconciliation status → NOT eligible', () => {
+    expect(isReconciliationEligible({ ...base, status: 'PENDING_PROVIDER' })).toBe(false)
+    expect(isReconciliationEligible({ ...base, status: 'CREATED' })).toBe(false)
+  })
+
+  it('13. provider-neutral: no provider-specific fields needed', () => {
+    expect(isReconciliationEligible({ status: 'PROVIDER_RECONCILIATION', retryCount: 0, maxRetries: 3 })).toBe(true)
+    expect(isReconciliationEligible({ status: 'PROVIDER_RECONCILIATION', retryCount: 2, maxRetries: 3 })).toBe(true)
   })
 })

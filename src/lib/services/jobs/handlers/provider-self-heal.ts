@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { computeProviderHealth } from '@/lib/services/operations/provider-health-score'
 import { upsertProviderAlert, resolveProviderAlert } from '@/lib/services/operations/provider-alerts'
+import { isReconciliationEligible } from '@/lib/services/orders/reconciliation'
 
 const HEAL_LEASE_MS = 4 * 60 * 1000 // 4-minute lease
 
@@ -152,16 +153,34 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
       }
     }
 
-    // 5. Reconciliation backlog enqueue
-    if (health.stuckOrders > 5) {
-      const existing = await prisma.backgroundJob.findFirst({
-        where: { type: 'PROVIDER_OPERATION' as any, status: 'PENDING' as any, payload: { path: ['providerId', 'operation'], equals: [p.id, 'reconciliation'].toString() } as any },
-      }).catch(() => null)
-      if (!existing) {
-        const { enqueueJob } = await import('../queue')
-        await enqueueJob('PROVIDER_OPERATION' as any, { providerId: p.id, operation: 'reconciliation' })
-        recovered++
-        await recordHealEvent(p.id, 'ORDER_RECONCILIATION_ENQUEUED', 'success')
+    // 5. Order-level reconciliation discovery: find stranded PROVIDER_RECONCILIATION
+    //    orders belonging to this provider and enqueue one order-specific
+    //    PROVIDER_OPERATION per eligible order.  Deduplication uses the
+    //    background_jobs unique idempotencyKey constraint keyed by orderId.
+    const stuckOrders = await prisma.eSIMPurchase.findMany({
+      where: { providerId: p.id, status: 'PROVIDER_RECONCILIATION' },
+      select: { id: true, status: true, retryCount: true, maxRetries: true, nextRetryAt: true },
+    } as any).catch(() => [])
+    const eligibleOrders = stuckOrders.filter(isReconciliationEligible)
+    if (eligibleOrders.length > 0) {
+      const { enqueueJob } = await import('../queue')
+      for (const order of eligibleOrders) {
+        const idempotencyKey = `reconcile:${order.id}`
+        try {
+          await enqueueJob('PROVIDER_OPERATION' as any, {
+            providerId: p.id,
+            operation: 'reconciliation',
+            orderId: order.id,
+          }, new Date(), 3)
+          await prisma.backgroundJob.updateMany({
+            where: { idempotencyKey, type: 'PROVIDER_OPERATION' as any },
+            data: { idempotencyKey },
+          } as any).catch(() => {})
+          recovered++
+          await recordHealEvent(p.id, 'ORDER_RECONCILIATION_ENQUEUED', 'success')
+        } catch {
+          // Duplicate (idempotencyKey constraint) — safe to skip.
+        }
       }
     }
 
