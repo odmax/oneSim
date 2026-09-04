@@ -41,7 +41,7 @@ vi.mock('@/lib/services/orders/fulfillment', () => ({
 const { prisma } = await import('@/lib/prisma')
 const { getAdapterForType } = await import('@/lib/providers/adapter-manager')
 const { createTimelineEvent, transitionOrder, failOrder } = await import('@/lib/services/orders/order-state-machine')
-const { reconcileProviderOrder, getReconciliationDelay, isRedispatchAllowed, isReconciliationEligible } = await import('./reconciliation')
+const { reconcileProviderOrder, getReconciliationDelay, isRedispatchAllowed, isReconciliationEligible, reconciliationCycleKey } = await import('./reconciliation')
 const { releaseReservedFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
 const { completeProviderFinalization } = await import('@/lib/services/orders/fulfillment')
 const { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence } = await import('./provider-reference')
@@ -642,5 +642,38 @@ describe('isReconciliationEligible', () => {
   it('13. provider-neutral: no provider-specific fields needed; acceptance is an explicit flag', () => {
     expect(isReconciliationEligible({ status: 'PROVIDER_RECONCILIATION', retryCount: 0, maxRetries: 3 })).toBe(true)
     expect(isReconciliationEligible({ status: 'PROVIDER_RECONCILIATION', retryCount: 2, maxRetries: 3 })).toBe(true)
+  })
+})
+
+describe('reconciliationCycleKey — cycle-scoped reconciliation idempotency', () => {
+  it('derives a deterministic cycle key from orderId + generation', () => {
+    expect(reconciliationCycleKey('ord', 0)).toBe('reconcile:ord:0')
+    expect(reconciliationCycleKey('ord', 1)).toBe('reconcile:ord:1')
+    expect(reconciliationCycleKey('ord', 2)).toBe('reconcile:ord:2')
+  })
+
+  it('is stable within a cycle (same order + same generation → same key), enabling DB-unique dedupe', () => {
+    expect(reconciliationCycleKey('ord', 1)).toBe(reconciliationCycleKey('ord', 1))
+    expect(reconciliationCycleKey('ord', 2)).toBe(reconciliationCycleKey('ord', 2))
+  })
+
+  it('changes when the generation advances, so the next due cycle never collides with a completed one', () => {
+    expect(reconciliationCycleKey('ord', 0)).not.toBe(reconciliationCycleKey('ord', 1))
+    expect(reconciliationCycleKey('ord', 1)).not.toBe(reconciliationCycleKey('ord', 2))
+  })
+
+  it('can never equal the legacy reconcile:{orderId} key (backward compatibility with pre-cycle rows)', () => {
+    for (let g = 0; g < 10; g++) {
+      expect(reconciliationCycleKey('ord', g)).not.toBe('reconcile:ord')
+    }
+  })
+
+  it('is per-order: identical generations of different orders never collide', () => {
+    expect(reconciliationCycleKey('ord-a', 0)).not.toBe(reconciliationCycleKey('ord-b', 0))
+  })
+
+  it('is provider-neutral: the key derives only from orderId + generation, never provider info', () => {
+    expect(reconciliationCycleKey('ord', 0)).toBe(reconciliationCycleKey('ord', 0))
+    expect(reconciliationCycleKey('ord', 0)).not.toContain('prov')
   })
 })

@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { computeProviderHealth } from '@/lib/services/operations/provider-health-score'
 import { upsertProviderAlert, resolveProviderAlert } from '@/lib/services/operations/provider-alerts'
-import { isReconciliationEligible } from '@/lib/services/orders/reconciliation'
+import { isReconciliationEligible, reconciliationCycleKey } from '@/lib/services/orders/reconciliation'
 import { hasProviderAcceptanceEvidence } from '@/lib/services/orders/provider-reference'
 
 const HEAL_LEASE_MS = 4 * 60 * 1000 // 4-minute lease
@@ -157,13 +157,17 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
     // 5. Order-level reconciliation discovery: find stranded PROVIDER_RECONCILIATION
     //    orders belonging to this provider and enqueue one order-specific
     //    PROVIDER_OPERATION per eligible order.  Deduplication is enforced at
-    //    the DB level via the unique background_jobs.idempotencyKey keyed by
-    //    orderId — a duplicate discovery pass is rejected and safely skipped.
+    //    the DB level via the unique background_jobs.idempotencyKey, scoped to
+    //    the order's CURRENT reconciliation CYCLE (attempt-generation): duplicate
+    //    discovery of the same cycle is rejected and safely skipped, while the
+    //    next due cycle derives a new key and can enqueue after the previous
+    //    cycle's job COMPLETED and permanently retired its key.
     const stuckOrders = await prisma.eSIMPurchase.findMany({
       where: { providerId: p.id, status: 'PROVIDER_RECONCILIATION' },
       select: { id: true, status: true, retryCount: true, maxRetries: true, nextRetryAt: true, providerFulfillId: true, providerReservationId: true },
     } as any).catch(() => [])
     let eligibleOrders: any[] = []
+    let generationByOrder: Map<string, number> = new Map()
     if (stuckOrders.length > 0) {
       // Orders beyond the generic retry budget stay eligible only with provider
       // acceptance evidence (order-level reference or a provider-owned attempt
@@ -189,11 +193,29 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
           ),
         }),
       )
+      // Cycle generation per order = number of completed reconciliation passes
+      // (persisted source=RECONCILIATION attempts). groupBy returns a row only
+      // for orders with at least one such attempt; orders with none fall back
+      // to generation 0 below.
+      const reconAttemptCounts = await prisma.providerAttempt.groupBy({
+        by: ['orderId'],
+        where: {
+          orderId: { in: eligibleOrders.map((o: any) => o.id) },
+          source: 'RECONCILIATION',
+          status: { not: 'PENDING' },
+        },
+        _count: { _all: true },
+      }).catch(() => [])
+      generationByOrder = new Map<string, number>()
+      for (const row of reconAttemptCounts as any[]) {
+        generationByOrder.set(row.orderId, row._count._all)
+      }
     }
     if (eligibleOrders.length > 0) {
       const { enqueueJob } = await import('../queue')
       for (const order of eligibleOrders) {
-        const idempotencyKey = `reconcile:${order.id}`
+        const generation = generationByOrder.get(order.id) ?? 0
+        const idempotencyKey = reconciliationCycleKey(order.id, generation)
         try {
           await enqueueJob('PROVIDER_OPERATION' as any, {
             providerId: p.id,

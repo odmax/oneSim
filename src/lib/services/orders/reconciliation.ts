@@ -63,6 +63,38 @@ export function isRedispatchAllowed(attempt: number): boolean {
 }
 
 // ─────────────────────────────────────────────
+// Reconciliation cycle identity
+// ─────────────────────────────────────────────
+
+/**
+ * Deterministic idempotency key for one reconciliation CYCLE of an order.
+ *
+ * `generation` is the count of persisted `source: 'RECONCILIATION'` attempts —
+ * i.e. the number of completed polling passes. That counter is authoritative
+ * and race-safe because `reconcileProviderOrder` writes the attempt row only
+ * AFTER a pass finishes (each pass persists exactly one), so:
+ *
+ *  - Same cycle: repeated self-heal discovery scans over un-advanced state see
+ *    the same generation → same key → the unique
+ *    `background_jobs.idempotencyKey` (a PENDING/PROCESSING/COMPLETED row) DB-
+ *    rejects every duplicate and exactly one job exists per cycle.
+ *  - Next cycle: the completed pass advanced the generation, so the next due
+ *    poll derives a DIFFERENT key and can enqueue even though the previous
+ *    COMPLETED job permanently owns its key — a completed cycle can never
+ *    strand the order.
+ *
+ * A raw timestamp/random suffix is intentionally NOT used: it would defeat the
+ * same-cycle DB dedupe and let concurrent scans enqueue duplicate pollers.
+ *
+ * The key can never equal the legacy `reconcile:{orderId}` format, so
+ * COMPLETED rows written before cycle-scoping existed stay untouched and
+ * cannot block future cycles.
+ */
+export function reconciliationCycleKey(orderId: string, generation: number): string {
+  return `reconcile:${orderId}:${generation}`
+}
+
+// ─────────────────────────────────────────────
 // Reconciliation eligibility
 // ─────────────────────────────────────────────
 
