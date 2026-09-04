@@ -8,7 +8,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
 # Staging specific config
-APP_NAME="onesim-staging"
+APP_NAME="onesim-test"
 PORT="${PORT:-3001}"
 ENV_FILE=".env"
 
@@ -19,7 +19,7 @@ fi
 
 # 1. Pull latest
 echo "[1/8] Pulling latest code..."
-git pull origin main
+git pull origin staging
 
 # 2. Install dependencies
 echo "[2/8] Installing dependencies..."
@@ -27,7 +27,9 @@ npm install
 
 # 3. Apply migrations
 echo "[3/8] Applying database migrations..."
-NODE_ENV=production npx prisma migrate deploy 2>&1 || echo "  (no new migrations)"
+source "$(dirname "$0")/lib/db-identity-guard.sh"
+require_db_identity "onesim_staging"
+npx prisma migrate deploy
 
 # 4. Generate Prisma client
 echo "[4/8] Generating Prisma client..."

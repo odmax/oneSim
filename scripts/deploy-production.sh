@@ -36,7 +36,9 @@ npm install --production
 
 # 3. Migrate
 echo "[3/8] Applying database migrations..."
-NODE_ENV=production npx prisma migrate deploy 2>&1 || echo "  (no new migrations)"
+source "$(dirname "$0")/lib/db-identity-guard.sh"
+require_db_identity "onesim_production"
+npx prisma migrate deploy
 
 # 4. Generate client
 echo "[4/8] Generating Prisma client..."
