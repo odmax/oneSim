@@ -177,6 +177,7 @@ export class TelnaConnector implements IProviderConnector {
     resume: false,
     balance: true, // getWallet
     inventory: true, // GET /sim-registries
+    catalogSync: true, // syncPlans wired
     webhooks: false,
     // Provider-side custom package/template creation (POST /v2.1/pcr/package-templates)
     // is CONTRACT-SUPPORTED (implemented + correctly mapped). LIVE_MUTATION_VALIDATED

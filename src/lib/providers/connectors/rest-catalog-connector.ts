@@ -346,7 +346,7 @@ export class RestCatalogConnector implements IProviderConnector {
   }
 
   /** Base connectors declare no internal capabilities; subclasses override. */
-  capabilities: ConnectorCapabilities = { ...DEFAULT_CONNECTOR_CAPABILITIES }
+  capabilities: ConnectorCapabilities = { ...DEFAULT_CONNECTOR_CAPABILITIES, catalogSync: true }
 
   /** Base connectors use the generic runtime-auth contract; subclasses override. */
   authProfile: ConnectorAuthProfile = { mode: 'CUSTOM', requiresRuntimeAuthentication: true, canVerifyCredentials: false, supportsRefresh: false }

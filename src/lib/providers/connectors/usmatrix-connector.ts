@@ -106,6 +106,7 @@ export class UsMatrixConnector implements IProviderConnector {
     resume: true, // PUT /esims/unsuspend (eSIM-level) — wired
     balance: false, // no wallet/balance endpoint documented
     inventory: true, // GET /esims
+    catalogSync: true, // syncPlans wired to parametric retail catalog
     webhooks: false, // no webhook surface in this client API
   }
 

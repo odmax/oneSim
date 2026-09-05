@@ -24,6 +24,7 @@ export interface ProviderCapabilityProfile {
     supportsUsageSync: boolean
     supportsTopUp: boolean
     supportedCustomPackageCreation: boolean
+    supportedCatalogSync: boolean
     enabledCapabilities: string[]
   }
   exposure: {
@@ -55,6 +56,7 @@ const CAP_TO_DB: Record<keyof ConnectorCapabilities, { db: keyof ProviderCapabil
   resume: { db: 'supportsESIM' },
   balance: { db: 'supportsESIM' },
   inventory: { db: 'supportsESIM' },
+  catalogSync: { db: 'supportedCatalogSync' },
   webhooks: { db: 'supportsESIM' },
   customPackageCreation: { db: 'supportedCustomPackageCreation' },
 }
@@ -102,6 +104,8 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
     // customPackageCreation has no DB column — reflect the connector's runtime
     // declaration only (implementation + correct semantics must both exist).
     supportedCustomPackageCreation: caps.customPackageCreation === true,
+    // catalogSync likewise has no legacy DB column — connector runtime truth.
+    supportedCatalogSync: caps.catalogSync === true,
     enabledCapabilities: (provider?.enabledCapabilities as string[]) || [],
   }
 
@@ -144,6 +148,7 @@ export async function getProviderCapabilityProfile(providerId: string): Promise<
     resume: { portal: statusPortal, api: statusApi },
     balance: { portal: statusPortal, api: statusApi },
     inventory: { portal: statusPortal, api: statusApi },
+    catalogSync: { portal: statusPortal, api: statusApi },
     webhooks: { portal: statusPortal, api: statusApi },
     customPackageCreation: { portal: statusPortal, api: statusApi },
   }

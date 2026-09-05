@@ -22,6 +22,7 @@ import { getProviderAuthStatus } from '@/lib/actions/provider-auth'
 import { getRecentHealthLogs, type HealthEvent } from '@/lib/services/providers/health-monitor'
 import { getProviderCapabilityState } from '@/lib/providers/capability-state'
 import { getProviderCapabilities, CAPABILITY_LABELS, CAPABILITY_COLORS, providerSupports } from '@/lib/providers/capabilities/index'
+import { providerSupportsConnectorCapability } from '@/lib/providers/capability-state'
 import { ProviderActionButton, ActionForm } from '@/components/admin/providers/ActionButtons'
 import { MappingValidator } from '@/components/admin/providers/MappingValidator'
 import { TestPurchasePanel } from '@/components/admin/providers/TestPurchasePanel'
@@ -88,6 +89,15 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
 
   // Canonical capability state — connector is the implementation truth.
   const capabilityState = await getProviderCapabilityState(provider.id).catch(() => null)
+
+  // Sync Plans gate: connector truth wins over a stale explicit provider-record
+  // array, so an existing iBASIS record that predates CATALOG_SYNC still shows
+  // Sync Plans (no DB migration / operator re-save needed). See
+  // providerSupportsConnectorCapability. Falls back to the canonical capability
+  // state when available, else the helper directly.
+  const catalogSyncSupported = capabilityState
+    ? capabilityState.byKey.CATALOG_SYNC?.implementationState === 'SUPPORTED'
+    : await providerSupportsConnectorCapability(provider, 'CATALOG_SYNC').catch(() => false)
 
   // Provider-neutral auth profile (drives Save & Verify vs Save & Authenticate).
   let authMode: string | null = null
@@ -330,10 +340,10 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
                       </span>
                       {state.portalExposed && <span className="text-[10px] text-gray-400">Portal</span>}
                       {state.apiExposed && <span className="text-[10px] text-gray-400">API</span>}
-                      {state.capability === 'CUSTOM_PACKAGE_CREATION' && state.implementationState === 'SUPPORTED' && (
-                        <form action={toggleProviderCapabilityEnabled} title={state.enabled ? 'Disabling blocks provider-side creation immediately' : 'Enabling permits future authorized provider-side custom-package creation (it does not call the provider now)'}>
+                      {(state.capability === 'CUSTOM_PACKAGE_CREATION' || state.capability === 'CATALOG_SYNC') && state.implementationState === 'SUPPORTED' && (
+                        <form action={toggleProviderCapabilityEnabled} title={state.enabled ? 'Disabling blocks this provider capability for this account' : 'Enabling permits this provider capability (it does not call the provider now)'}>
                           <input type="hidden" name="providerId" value={provider.id} />
-                          <input type="hidden" name="capability" value="CUSTOM_PACKAGE_CREATION" />
+                          <input type="hidden" name="capability" value={state.capability} />
                           <input type="hidden" name="enabled" value={String(!state.enabled)} />
                           <button type="submit" className={`ml-1 rounded px-2 py-0.5 text-[10px] font-medium hover:opacity-80 ${state.enabled ? 'bg-red-100 text-red-700' : 'bg-cyan-100 text-cyan-700'}`}>
                             {state.enabled ? 'Disable' : 'Enable'}
@@ -511,7 +521,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
       {/* Annual markup warning — removed; pricing is manual per product */}
 
       {/* Sync Plans Section */}
-      {providerSupports(provider, 'CATALOG_SYNC') ? (
+      {catalogSyncSupported ? (
       <div className="mb-6 rounded-lg border bg-white p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
           <div>

@@ -259,6 +259,14 @@ export interface ConnectorCapabilities {
   resume: boolean
   balance: boolean
   inventory: boolean
+  /**
+   * Provider-side retail catalog retrieval (syncPlans) implementation truth.
+   * true = the connector is wired to fetch/normalize the provider's plan list;
+   * false/absent = no catalog retrieval surface. Backward-compatible (absent
+   * means NOT supported). Never derived from the existence of a documentation
+   * URL — only from a working syncPlans implementation.
+   */
+  catalogSync?: boolean | 'UNKNOWN'
   webhooks: boolean
   /** Provider-side custom offering/template creation (createCustomPackage).
    *  Optional: absent/undefined means NOT supported (backward-compatible for
@@ -277,6 +285,7 @@ export const DEFAULT_CONNECTOR_CAPABILITIES: ConnectorCapabilities = {
   resume: false,
   balance: false,
   inventory: false,
+  catalogSync: false,
   webhooks: false,
   customPackageCreation: false,
 }

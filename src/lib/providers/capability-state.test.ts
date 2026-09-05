@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { connectorValueToImplementation, resolveRegistryImplementation } from './capability-state'
+import { connectorValueToImplementation, resolveRegistryImplementation, resolveEnabledCapabilities, providerSupportsConnectorCapability } from './capability-state'
 
 const { mockProviderFindUnique, mockBuildConnector, mockExposePortal, mockExposeApi } = vi.hoisted(() => ({
   mockProviderFindUnique: vi.fn(),
@@ -374,6 +374,117 @@ describe('CUSTOM_PACKAGE_CREATION registry entry', () => {
     const r = await getProviderCapabilityState('p-1')
     expect(r!.byKey.CUSTOM_PACKAGE_CREATION.implementationState).toBe('NOT_SUPPORTED')
     expect(r!.byKey.CUSTOM_PACKAGE_CREATION.enabled).toBe(false)
+  })
+})
+
+describe('CATALOG_SYNC registry entry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockExposePortal.mockResolvedValue(true)
+    mockExposeApi.mockResolvedValue(true)
+  })
+
+  it('is SUPPORTED + enabled when the connector advertises catalogSync and defaults allow it', async () => {
+    mockProviderFindUnique.mockResolvedValue({ id: 'usm-1', code: 'USMATRIX', enabledCapabilities: null })
+    mockBuildConnector.mockResolvedValue({
+      constructor: { name: 'UsMatrixConnector' },
+      capabilities: { ...usmConnector().capabilities, catalogSync: true },
+    })
+    const r = await getProviderCapabilityState('usm-1')
+    expect(r!.byKey.CATALOG_SYNC.implementationState).toBe('SUPPORTED')
+    expect(r!.byKey.CATALOG_SYNC.enabled).toBe(true)
+  })
+
+  it('is NOT_SUPPORTED/disabled when the connector does not advertise catalogSync (matches customPackageCreation semantics)', async () => {
+    mockProviderFindUnique.mockResolvedValue({ id: 'usm-1', code: 'USMATRIX', enabledCapabilities: null })
+    mockBuildConnector.mockResolvedValue(usmConnector())
+    const r = await getProviderCapabilityState('usm-1')
+    expect(r!.byKey.CATALOG_SYNC.implementationState).toBe('NOT_SUPPORTED')
+    expect(r!.byKey.CATALOG_SYNC.enabled).toBe(false)
+  })
+
+  it('an explicit enable is never reflected when the connector does not support catalogSync', async () => {
+    mockProviderFindUnique.mockResolvedValue({ id: 'usm-1', code: 'USMATRIX', enabledCapabilities: ['CATALOG_SYNC'] })
+    mockBuildConnector.mockResolvedValue(usmConnector())
+    const r = await getProviderCapabilityState('usm-1')
+    expect(r!.byKey.CATALOG_SYNC.implementationState).toBe('NOT_SUPPORTED')
+    expect(r!.byKey.CATALOG_SYNC.enabled).toBe(false)
+  })
+})
+
+describe('resolveEnabledCapabilities — CATALOG_SYNC legacy-array compatibility + map overlay', () => {
+  it('a legacy NON-EMPTY explicit array omitting CATALOG_SYNC keeps it enabled via documented defaults (predates token)', () => {
+    const caps = resolveEnabledCapabilities(['AUTH', 'INVENTORY', 'PLAN_SYNC'], 'USMATRIX')
+    expect(caps).toContain('CATALOG_SYNC')
+    // Other explicit keys are preserved exactly.
+    expect(caps).toEqual(expect.arrayContaining(['AUTH', 'INVENTORY', 'PLAN_SYNC']))
+  })
+
+  it('an explicit empty array remains a hard disable for CATALOG_SYNC (never re-expanded)', () => {
+    expect(resolveEnabledCapabilities([], 'USMATRIX')).not.toContain('CATALOG_SYNC')
+  })
+
+  it('a MAP entry { CATALOG_SYNC: { enabled:false } } is an explicit disable that survives defaults', () => {
+    expect(resolveEnabledCapabilities({ CATALOG_SYNC: { enabled: false } }, 'USMATRIX')).not.toContain('CATALOG_SYNC')
+    // Other documented defaults remain.
+    expect(resolveEnabledCapabilities({ CATALOG_SYNC: { enabled: false } }, 'USMATRIX')).toContain('PURCHASE')
+  })
+
+  it('a MAP entry { CATALOG_SYNC: { enabled:true } } forces it on even when defaults omit it', () => {
+    expect(resolveEnabledCapabilities({ CATALOG_SYNC: { enabled: true } }, 'TELNA_FLEX')).toEqual(expect.arrayContaining(['CATALOG_SYNC']))
+  })
+
+  it('non-catalog capability arrays keep exact semantics (no legacy re-expansion)', () => {
+    const caps = resolveEnabledCapabilities(['AUTH', 'PLAN_SYNC'], 'USMATRIX')
+    expect(caps).toEqual(expect.arrayContaining(['AUTH', 'PLAN_SYNC']))
+    expect(caps).not.toContain('BALANCE')
+  })
+})
+
+describe('providerSupportsConnectorCapability — canonical plan-sync gate (connector truth wins)', () => {
+  const LEGACY_ARRAY = ['AUTH', 'INVENTORY', 'ESIM', 'PLAN_SYNC', 'PURCHASE', 'STATUS', 'SUSPEND', 'RESUME']
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockExposePortal.mockResolvedValue(true)
+    mockExposeApi.mockResolvedValue(true)
+  })
+
+  it('legacy record (array omits CATALOG_SYNC) + catalogSync:true connector ⇒ gate passes — no DB change / re-save needed', async () => {
+    mockBuildConnector.mockResolvedValue({
+      constructor: { name: 'IbasisConnector' },
+      capabilities: { ...usmConnector().capabilities, catalogSync: true },
+    })
+    const rec = { id: 'p1', code: 'USMATRIX', enabledCapabilities: LEGACY_ARRAY }
+    expect(await providerSupportsConnectorCapability(rec as never, 'CATALOG_SYNC')).toBe(true)
+  })
+
+  it('connector declaring catalogSync:false blocks even when the record contains CATALOG_SYNC (case 6)', async () => {
+    mockBuildConnector.mockResolvedValue(usmConnector()) // no catalogSync → default false
+    const rec = { id: 'p1', code: 'USMATRIX', enabledCapabilities: ['AUTH', 'CATALOG_SYNC'] }
+    expect(await providerSupportsConnectorCapability(rec as never, 'CATALOG_SYNC')).toBe(false)
+  })
+
+  it('explicit [] hard-disable is honored even when the connector supports catalogSync', async () => {
+    mockBuildConnector.mockResolvedValue({
+      constructor: { name: 'IbasisConnector' },
+      capabilities: { ...usmConnector().capabilities, catalogSync: true },
+    })
+    const rec = { id: 'p1', code: 'USMATRIX', enabledCapabilities: [] }
+    expect(await providerSupportsConnectorCapability(rec as never, 'CATALOG_SYNC')).toBe(false)
+  })
+
+  it('connector build failure falls back to the record-driven legacy gate (no behavior change)', async () => {
+    mockBuildConnector.mockRejectedValue(new Error('unbuildable'))
+    const rec = { id: 'p1', code: 'USMATRIX', enabledCapabilities: ['AUTH', 'CATALOG_SYNC'] }
+    expect(await providerSupportsConnectorCapability(rec as never, 'CATALOG_SYNC')).toBe(true)
+  })
+
+  it('a capability with no connector mapping falls back to the legacy record gate', async () => {
+    // PLAN_SYNC is a legacy-only token with no CAPABILITY_REGISTRY connectorKey →
+    // resolved purely by the record-driven gate.
+    const rec = { id: 'p1', code: 'USMATRIX', enabledCapabilities: ['PLAN_SYNC'] }
+    expect(await providerSupportsConnectorCapability(rec as never, 'PLAN_SYNC')).toBe(true)
   })
 })
 

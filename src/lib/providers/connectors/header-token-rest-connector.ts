@@ -54,6 +54,7 @@ export class HeaderTokenRestConnector extends RestCatalogConnector {
     resume: false,
     balance: false,
     inventory: true,
+    catalogSync: true,
     webhooks: false,
   }
 

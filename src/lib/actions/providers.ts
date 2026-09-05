@@ -166,9 +166,9 @@ export async function createProvider(formData: FormData) {
       supportsUsageSync,
       supportsWebhookPush,
       supportsSuspendResume,
-      // iBASIS default capabilities
+      // iBASIS default capabilities (aligned with DEFAULT_PROVIDER_CAPABILITIES['IBASIS'])
       enabledCapabilities: resolvedStrategy === 'IBASIS'
-        ? ['AUTH', 'INVENTORY', 'ESIM', 'PLAN_SYNC', 'PURCHASE', 'STATUS', 'SUSPEND', 'RESUME']
+        ? ['AUTH', 'INVENTORY', 'ESIM', 'CATALOG_SYNC', 'PLAN_SYNC', 'PURCHASE', 'STATUS', 'SUSPEND', 'RESUME', 'WEBHOOKS']
         : undefined,
       providerTemplateId: providerTemplateId || null,
       endpointMappings: isTemplate ? parsedEndpointMappings : (endpointMappingsRaw ? tryParseJson(endpointMappingsRaw) : undefined),

@@ -200,6 +200,7 @@ export class TelnaSeamlessConnector implements IProviderConnector {
     resume: true,
     balance: false,
     inventory: true,
+    catalogSync: true,
     webhooks: false,
   }
 

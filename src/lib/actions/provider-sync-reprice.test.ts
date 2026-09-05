@@ -31,6 +31,9 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 vi.mock('next/navigation', () => ({ redirect: vi.fn() }))
 vi.mock('@/lib/prisma', () => ({ prisma: mockPrisma }))
 vi.mock('@/lib/providers/capabilities/registry', () => ({ providerSupports: vi.fn(() => true) }))
+vi.mock('@/lib/providers/capability-state', () => ({
+  providerSupportsConnectorCapability: vi.fn().mockResolvedValue(true),
+}))
 vi.mock('@/lib/catalog-pipeline', () => ({
   startPipelineRun: vi.fn().mockResolvedValue('run-1'),
   recordStageFromCounts: vi.fn(),

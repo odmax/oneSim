@@ -63,7 +63,7 @@ async function main() {
       INVENTORY_LIST: 'GET /api/v1/inventory/sims',
       PLAN_LIST: 'GET /api/v1/plans',
     },
-    enabledCapabilities: ['AUTH', 'INVENTORY', 'ESIM', 'PLAN_SYNC', 'PURCHASE', 'STATUS', 'SUSPEND', 'RESUME'],
+    enabledCapabilities: ['AUTH', 'INVENTORY', 'ESIM', 'CATALOG_SYNC', 'PLAN_SYNC', 'PURCHASE', 'STATUS', 'SUSPEND', 'RESUME', 'WEBHOOKS'],
     supportsESIM: true,
     supportsSuspendResume: true,
   }

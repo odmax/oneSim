@@ -85,6 +85,7 @@ export class StandardProviderConnector implements IProviderConnector {
       resume: !!this.config.resumePath,
       balance: false,
       inventory: !!this.config.planListPath,
+      catalogSync: !!this.config.planListPath,
       webhooks: false,
     }
   }

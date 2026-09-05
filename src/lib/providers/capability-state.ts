@@ -4,6 +4,19 @@ import { DEFAULT_CONNECTOR_CAPABILITIES, type ConnectorCapabilities } from '@/li
 import { ProviderCapability } from '@/lib/providers/capabilities/types'
 import { DEFAULT_PROVIDER_CAPABILITIES } from '@/lib/providers/capabilities/defaults'
 import { isCapabilityExposedToPortal, isCapabilityExposedToApi } from '@/lib/providers/capabilities/exposure'
+import { providerSupports } from '@/lib/providers/capabilities/registry'
+
+/** Minimal shape a gate needs from a provider record. */
+export type GateProviderLike = {
+  id: string
+  code?: string | null
+  enabledCapabilities?: unknown
+}
+
+/** Minimal connector surface with a declared capability map (implementation truth). */
+export interface GateConnectorLike {
+  capabilities?: Partial<ConnectorCapabilities>
+}
 
 export type CapabilityImplementation = 'SUPPORTED' | 'NOT_IMPLEMENTED' | 'NOT_SUPPORTED' | 'UNKNOWN'
 export type CapabilitySource = 'CONNECTOR' | 'TEMPLATE' | 'DEFAULT' | 'PROVIDER_OVERRIDE'
@@ -60,6 +73,7 @@ export const CAPABILITY_REGISTRY: Array<{
   { key: 'TOP_UP', label: 'Top-Up', category: 'Lifecycle', connectorKey: 'topUp' },
   { key: 'BALANCE', label: 'Balance', category: 'Billing', connectorKey: 'balance' },
   { key: 'INVENTORY', label: 'Inventory', category: 'Catalog', connectorKey: 'inventory' },
+  { key: 'CATALOG_SYNC', label: 'Catalog Sync', category: 'Catalog', connectorKey: 'catalogSync' },
   { key: 'WEBHOOKS', label: 'Webhooks', category: 'Integration', connectorKey: 'webhooks' },
   { key: 'CUSTOM_PACKAGE_CREATION', label: 'Custom Package Creation', category: 'Catalog', connectorKey: 'customPackageCreation' },
 ]
@@ -107,18 +121,51 @@ export function resolveRegistryImplementation(
  * Resolve a provider's effective enabled-capability list with NULL/EMPTY
  * distinction (see §4 guardrail):
  *   - null / undefined  → "not configured" → use DEFAULT_PROVIDER_CAPABILITIES[code].
- *   - a PRESENT array (including []) → "explicitly configured" → used EXACTLY.
- * An explicit empty array therefore means "no capabilities enabled" and must
- * never be re-expanded to the defaults — this is what lets an operator reliably
- * disable a default capability.
- * A non-array value (malformed JSON) degrades to the defaults conservatively.
+ *   - a PRESENT array (including []) → "explicitly configured" → used EXACTLY,
+ *     with ONE legacy carve-out: CATALOG_SYNC is a canonical connector capability
+ *     that legacy provider arrays (provisioned before the token existed) never
+ *     mention. Such non-empty arrays that omit CATALOG_SYNC are treated as
+ *     predating the token — when the documented defaults include it, it stays
+ *     enabled. An explicit empty array remains a hard disable for everything.
+ *   - a MAP overlay → the canonical writer's per-key form
+ *     (e.g. `{ CATALOG_SYNC: { enabled: false } }`): keys with `enabled:true` or
+ *     string values are forced on, keys with `enabled:false` are forced off,
+ *     everything else falls back to the documented defaults. This is the ONLY way
+ *     an operator can reliably disable a default-enabled capability like
+ *     CATALOG_SYNC (an array can neither express it nor survive legacy re-expansion).
+ * An explicit empty array must never be re-expanded to the defaults — this is
+ * what lets an operator reliably disable a default capability.
+ * A non-array, non-map value (malformed JSON) degrades to the defaults conservatively.
  */
 export function resolveEnabledCapabilities(raw: unknown, providerCode: string): string[] {
+  const defaults = (DEFAULT_PROVIDER_CAPABILITIES[providerCode] || []) as unknown as string[]
   if (raw === null || raw === undefined) {
-    return (DEFAULT_PROVIDER_CAPABILITIES[providerCode] || []) as unknown as string[]
+    return defaults
   }
-  if (Array.isArray(raw)) return raw.map(String)
-  return (DEFAULT_PROVIDER_CAPABILITIES[providerCode] || []) as unknown as string[]
+  if (Array.isArray(raw)) {
+    const caps = raw.map(String)
+    // Legacy CATALOG_SYNC compatibility: a NON-EMPTY explicit array that predates
+    // the token (omits CATALOG_SYNC) must not silently disable canonical catalog
+    // sync when the documented defaults include it. Connector truth then decides.
+    if (caps.length > 0 && !caps.includes('CATALOG_SYNC') && defaults.includes('CATALOG_SYNC')) {
+      caps.push('CATALOG_SYNC')
+    }
+    return caps
+  }
+  if (raw && typeof raw === 'object') {
+    // MAP overlay: per-key explicit enable/disable over the documented defaults.
+    const result = new Set<string>(defaults)
+    for (const [key, value] of Object.entries(raw)) {
+      if (value && typeof value === 'object') {
+        if ((value as { enabled?: boolean }).enabled) result.add(key)
+        else result.delete(key)
+      } else if (typeof value === 'string') {
+        result.add(value)
+      }
+    }
+    return Array.from(result)
+  }
+  return defaults
 }
 
 /**
@@ -184,6 +231,66 @@ export async function getProviderCapabilityState(providerId: string): Promise<Pr
   states.sort((a, b) => (CATEGORY_ORDER[a.category] ?? 9) - (CATEGORY_ORDER[b.category] ?? 9) || a.label.localeCompare(b.label))
 
   return { providerId, connectorClass, states, byKey }
+}
+
+/**
+ * Canonical support gate for a connector-backed capability (e.g. CATALOG_SYNC).
+ *
+ * This is the source of truth for the "Sync Plans" UI + action gates. Unlike the
+ * purely record-driven `providerSupports`, it lets the resolved connector's
+ * capability declaration win over a stale explicit provider capability array
+ * (e.g. a legacy iBASIS record provisioned with PLAN_SYNC but no CATALOG_SYNC),
+ * so no DB migration or operator re-save is required for connector truth to apply.
+ *
+ * Rules (provider-neutral — never branches on provider.code):
+ *   - Look the capability up in the canonical registry. If it has no connector
+ *     mapping, fall back to the legacy record-driven `providerSupports`.
+ *   - Resolve the provider's connector over the passed-in record; when the record
+ *     cannot build a connector (missing config / unknown strategy), fall back to
+ *     `providerSupports` so behavior is unchanged for connectors that must not
+ *     under-declare their capabilities.
+ *   - Genuine support requires BOTH connector implementation truth
+ *     (`SUPPORTED`) AND the provider record allowing the capability
+ *     (resolved via `resolveEnabledCapabilities`, honoring the explicit-array
+ *     contract — an explicit [] is a hard disable).
+ *
+ * Takes the already-fetched provider record so callers avoid a redundant read.
+ */
+export async function providerSupportsConnectorCapability(
+  provider: GateProviderLike | null | undefined,
+  entryKey: string,
+): Promise<boolean> {
+  if (!provider) return false
+  const entry = CAPABILITY_REGISTRY.find(e => e.key === entryKey)
+  // Capability is not connector-driven — fall back to legacy record semantics.
+  if (!entry) return providerSupports(provider as never, entryKey as never)
+
+  // Long-circuit when the record does not allow the capability at all, honoring
+  // the explicit-array contract (an explicit [] disables the default capability).
+  const providerCode = provider.code || ''
+  const effectiveCaps = resolveEnabledCapabilities(provider.enabledCapabilities, providerCode)
+  if (!effectiveCaps.includes(entryKey)) return false
+
+  const connector = await buildConnectorFromProvider(provider.id).catch(() => null)
+  const caps: ConnectorCapabilities = connector?.capabilities
+    ? { ...DEFAULT_CONNECTOR_CAPABILITIES, ...connector.capabilities }
+    : { ...DEFAULT_CONNECTOR_CAPABILITIES }
+  const impl = resolveRegistryImplementation(entry, caps)
+  // Connector truth wins. A connector that fails to build falls back to legacy
+  // record semantics (providerSupports) so behavior is unchanged there.
+  if (impl === 'SUPPORTED') return true
+  if (connector) return false
+  return providerSupports(provider as never, entryKey as never)
+}
+
+/** Async-friendly alias so the record is fetched by id when a provider object is not already in hand. */
+export async function providerSupportsConnectorCapabilityById(
+  providerId: string,
+  entryKey: string,
+): Promise<boolean> {
+  const provider = await prisma.provider.findUnique({ where: { id: providerId } })
+  if (!provider) return false
+  return providerSupportsConnectorCapability(provider, entryKey)
 }
 
 export interface CustomPackageCreationReadiness {

@@ -80,13 +80,40 @@ export async function setProviderCapabilityEnabled(
     }
   }
 
-  // Compute the new EXPLICIT list (never re-silently lose an explicit state to defaults).
-  let next: string[]
+  // Compute the new EXPLICIT enable/disable state.
+  // ENABLING keeps the array representation (append the token), or updates an
+  // existing map overlay. DISABLING CATALOG_SYNC (or updating an existing
+  // overlay) writes the canonical MAP form — an array-removal can neither
+  // express "explicitly off for a default-enabled capability" nor survive the
+  // legacy-array compatibility. All other capability disables keep the exact
+  // array-removal semantics so non-iBASIS providers are completely unchanged.
+  let next: any
+  const raw = provider.enabledCapabilities
+  const isMapState = raw !== null && raw !== undefined && typeof raw === 'object' && !Array.isArray(raw)
   if (enabled) {
-    const base = currentExplicit ?? resolveEnabledCapabilities(provider.enabledCapabilities, providerCode)
-    next = Array.from(new Set([...base, capability]))
+    if (isMapState) {
+      next = { ...(raw as Record<string, unknown>), [capability]: { enabled: true } }
+    } else {
+      const base = currentExplicit && Array.isArray(currentExplicit)
+        ? (currentExplicit as unknown[]).map(String)
+        : resolveEnabledCapabilities(provider.enabledCapabilities, providerCode)
+      next = Array.from(new Set([...base, capability]))
+    }
+  } else if (capability === 'CATALOG_SYNC' || isMapState) {
+    const overlay: Record<string, unknown> = {}
+    if (isMapState) {
+      Object.assign(overlay, raw as Record<string, unknown>)
+    } else if (Array.isArray(raw)) {
+      for (const c of (raw as unknown[]).map(String)) overlay[c] = { enabled: true }
+    } else {
+      for (const c of resolveEnabledCapabilities(null, providerCode)) overlay[c] = { enabled: true }
+    }
+    overlay[capability] = { enabled: false }
+    next = overlay
   } else {
-    const base = currentExplicit ?? resolveEnabledCapabilities(provider.enabledCapabilities, providerCode)
+    const base = currentExplicit && Array.isArray(currentExplicit)
+      ? (currentExplicit as unknown[]).map(String)
+      : resolveEnabledCapabilities(provider.enabledCapabilities, providerCode)
     next = base.filter(c => c !== capability)
   }
 

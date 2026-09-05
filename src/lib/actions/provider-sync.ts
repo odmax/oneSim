@@ -44,9 +44,12 @@ export async function syncProviderPlans(providerId: string) {
   const syncStartTime = Date.now()
   console.log(`[DB_PROVIDER_CONFIG] code=${provider.code} configKeys=${Object.keys((provider.config as any) || {}).join(',')} partnerCode=${(provider.config as any)?.partnerCode} providerMode=${(provider.config as any)?.providerMode}`)
 
-  // Capability guard
-  const { providerSupports } = await import('@/lib/providers/capabilities/registry')
-  if (!providerSupports(provider, 'CATALOG_SYNC')) {
+  // Capability guard — connector truth wins. A legacy provider record whose
+  // explicit capability array predates CATALOG_SYNC must NOT block sync when the
+  // resolved connector genuinely implements it. See
+  // providerSupportsConnectorCapability (uses the already-fetched provider row).
+  const { providerSupportsConnectorCapability } = await import('@/lib/providers/capability-state')
+  if (!(await providerSupportsConnectorCapability(provider, 'CATALOG_SYNC'))) {
     return { error: 'This provider does not support Catalog Sync.' }
   }
 

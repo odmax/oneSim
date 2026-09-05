@@ -50,6 +50,7 @@ export class TelnaFlexConnector implements IProviderConnector {
     resume: false,
     balance: false,
     inventory: false,
+    catalogSync: true,
     webhooks: false,
   }
 

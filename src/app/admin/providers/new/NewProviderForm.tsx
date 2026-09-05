@@ -116,7 +116,7 @@ const BUILTIN_TEMPLATES: Record<string, BuiltInTemplate> = {
       environment: 'staging',
       name: 'iBASIS',
       code: 'IBASIS',
-      capabilities: ['AUTH','INVENTORY','PLAN_SYNC','PURCHASE','STATUS','SUSPEND','RESUME'],
+      capabilities: ['AUTH','INVENTORY','ESIM','CATALOG_SYNC','PLAN_SYNC','PURCHASE','STATUS','SUSPEND','RESUME','WEBHOOKS'],
     },
   },
   usmatrix: {

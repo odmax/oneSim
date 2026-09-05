@@ -1254,6 +1254,7 @@ export class UrlTokenConnector extends RestCatalogConnector {
     resume: true,
     balance: true,
     inventory: false,
+    catalogSync: true,
     webhooks: false,
     // Choice POST /account/v03_09/create_bundle_template is documented and the
     // connector implements createCustomPackage() → createBundleTemplate().

@@ -1067,6 +1067,7 @@ export class IbasisConnector implements IProviderConnector {
     resume: true,
     balance: false, // no wallet concept in the documented contract
     inventory: true, // GET /inventory/sims
+    catalogSync: true, // GET /plans + GET /plans/{id} retail catalog retrieval (syncPlans)
     webhooks: true, // iBASIS notification normalizer is wired in provider-webhook-processor
   }
 

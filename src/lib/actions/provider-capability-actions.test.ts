@@ -184,4 +184,69 @@ describe('setProviderCapabilityEnabled', () => {
     const r = await setProviderCapabilityEnabled('x-9', 'CUSTOM_PACKAGE_CREATION', true)
     expect(r.success).toBe(true)
   })
+
+  it('enabling CATALOG_SYNC on a legacy IBASIS record is already effectively enabled — NO DB write or re-save needed (connector truth + legacy compat)', async () => {
+    // The actual repro: IBASIS was provisioned with an explicit enabledCapabilities
+    // array containing legacy PLAN_SYNC but no CATALOG_SYNC. Post-fix, the legacy
+    // compatibility in resolveEnabledCapabilities treats the omission as predating
+    // the token: the documented defaults (which include CATALOG_SYNC) keep it
+    // enabled, so toggling is idempotent and nothing is persisted.
+    mockPrisma.provider.findUnique.mockResolvedValue(telnaProvider({
+      code: 'IBASIS',
+      enabledCapabilities: ['AUTH', 'INVENTORY', 'ESIM', 'PLAN_SYNC', 'PURCHASE', 'STATUS', 'SUSPEND', 'RESUME'],
+    }))
+    const r = await setProviderCapabilityEnabled('telna-1', 'CATALOG_SYNC', true)
+    expect(r).toEqual({ success: true, capability: 'CATALOG_SYNC', previousEnabled: true, newEnabled: true, changed: false })
+    expect(mockPrisma.provider.update).not.toHaveBeenCalled()
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled()
+  })
+
+  it('disabling CATALOG_SYNC on a null record persists a MAP overlay (arrays cannot express "off" for a default capability)', async () => {
+    // null → defaults (IBASIS includes CATALOG_SYNC) → currently effectively enabled.
+    mockPrisma.provider.findUnique.mockResolvedValue(telnaProvider({ code: 'IBASIS', enabledCapabilities: null }))
+    const r = await setProviderCapabilityEnabled('telna-1', 'CATALOG_SYNC', false)
+    expect(r).toEqual({ success: true, capability: 'CATALOG_SYNC', previousEnabled: true, newEnabled: false, changed: true })
+    const arg = (prisma.provider.update as any).mock.calls[0][0]
+    expect(arg.data.enabledCapabilities).toMatchObject({ CATALOG_SYNC: { enabled: false } })
+  })
+
+  it('disabling CATALOG_SYNC on a legacy IBASIS array pins the existing keys + flips CATALOG_SYNC off (map overlay survives re-expansion)', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(telnaProvider({ code: 'IBASIS', enabledCapabilities: ['AUTH', 'PLAN_SYNC'] }))
+    const r = await setProviderCapabilityEnabled('telna-1', 'CATALOG_SYNC', false)
+    expect(r.changed).toBe(true)
+    const arg = (prisma.provider.update as any).mock.calls[0][0]
+    const m = arg.data.enabledCapabilities as Record<string, any>
+    expect(m.CATALOG_SYNC).toEqual({ enabled: false })
+    expect(m.AUTH).toEqual({ enabled: true })
+    expect(m.PLAN_SYNC).toEqual({ enabled: true })
+  })
+
+  it('re-enabling after a map disable flips the overlay CATALOG_SYNC back on', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(telnaProvider({
+      code: 'IBASIS',
+      enabledCapabilities: { CATALOG_SYNC: { enabled: false }, AUTH: { enabled: true } },
+    }))
+    mockProviderState.mockResolvedValue({ byKey: { CATALOG_SYNC: { implementationState: 'SUPPORTED' } } })
+    const r = await setProviderCapabilityEnabled('telna-1', 'CATALOG_SYNC', true)
+    expect(r.previousEnabled).toBe(false)
+    expect(r.changed).toBe(true)
+    const arg = (prisma.provider.update as any).mock.calls[0][0]
+    expect(arg.data.enabledCapabilities.CATALOG_SYNC).toEqual({ enabled: true })
+  })
+
+  it('rejects enabling CATALOG_SYNC when no capability state exists (guard = registry absence)', async () => {
+    // With an explicit [] (hard disable) the capability is off; the enable guard then
+    // probes getProviderCapabilityState. This documents the exact pre-fix failure:
+    // with no CAPABILITY_REGISTRY row for CATALOG_SYNC, byKey looked up undefined
+    // and the guard rejected the enable.
+    mockPrisma.provider.findUnique.mockResolvedValue(telnaProvider({
+      code: 'IBASIS',
+      enabledCapabilities: [],
+    }))
+    mockProviderState.mockResolvedValue({ byKey: {} })
+    const r = await setProviderCapabilityEnabled('telna-1', 'CATALOG_SYNC', true)
+    expect(r.success).toBe(false)
+    expect((r as any).error).toContain('does not support')
+    expect(mockPrisma.provider.update).not.toHaveBeenCalled()
+  })
 })

@@ -1378,6 +1378,7 @@ private logStatusReadDiagnostic(correlationId: string, httpStatus: number, conte
     resume: false,
     balance: true,
     inventory: true,
+    catalogSync: true, // syncPlans wired to retail catalog retrieval
     webhooks: false,
   }
 
