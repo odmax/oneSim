@@ -82,3 +82,22 @@ export async function releaseProviderIccidClaim(params: {
     await prisma.eSIM.delete({ where: { id: claim.id } }).catch(() => {})
   }
 }
+
+/**
+ * Release every unfinalized PROCESSING claim bound to a purchase — used after a
+ * provider-CONFIRMED failure (reconciliation FOUND_FAILURE) so ICCIDs held
+ * through an ambiguous outcome return to inventory exactly once the existing
+ * provider transaction is provably dead. Ownership-safe: only rows still in the
+ * non-final claim state (status PROCESSING, no provider binding, no activation)
+ * are deleted; finalized/provider-bound eSIMs are never touched.
+ */
+export async function releaseOrderClaimedIccids(purchaseId: string): Promise<void> {
+  if (!purchaseId) return
+  const claims = await prisma.eSIM.findMany({
+    where: { purchaseId, status: 'PROCESSING', providerActivationId: '', activatedAt: null },
+    select: { iccid: true },
+  }).catch(() => [])
+  for (const claim of claims as { iccid: string }[]) {
+    await releaseProviderIccidClaim({ purchaseId, iccid: claim.iccid }).catch(() => {})
+  }
+}

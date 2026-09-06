@@ -6,7 +6,7 @@ vi.mock('@/lib/prisma', () => ({
     providerAttempt: { count: vi.fn(), create: vi.fn(), findMany: vi.fn(), aggregate: vi.fn().mockResolvedValue({ _max: { attemptNumber: null } }) },
     provider: { findUnique: vi.fn() },
     walletTransaction: { findFirst: vi.fn() },
-    eSIM: { create: vi.fn(), findMany: vi.fn(), count: vi.fn() },
+    eSIM: { create: vi.fn(), findMany: vi.fn().mockResolvedValue([]), count: vi.fn() },
     eSIMPackage: { findUnique: vi.fn() },
     auditLog: { create: vi.fn() },
     $transaction: vi.fn(),
@@ -335,7 +335,7 @@ describe('reconcileProviderOrder', () => {
     } as any)
 
     await reconcileProviderOrder('order-1')
-    expect(mockRelease).toHaveBeenCalledWith('order-1', 'biz-1', 10)
+    expect(mockRelease).toHaveBeenCalledWith('order-1', 'biz-1', 10, { confirmedFailure: true })
   })
 
   it('8. duplicate reconciliation is idempotent (FULFILLED early return)', async () => {
@@ -588,6 +588,38 @@ describe('provider acceptance evidence', () => {
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: 'x', providerReservationId: null }, [])).toBe(true)
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [{ providerId: 'prov-OTHER', providerReference: 'other' }])).toBe(false)
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [])).toBe(false)
+  })
+
+  it('is true for an owning-provider AMBIGUOUS attempt with NO provider reference (redispatch-blocked)', () => {
+    // Regression: AirHub NO_ICCIDS / Telna timeout attempts carry no providerReference,
+    // but the provider may have committed — the attempt itself is acceptance evidence.
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'AMBIGUOUS', source: 'PURCHASE' },
+    ])).toBe(true)
+  })
+
+  it('is true for an owning-provider PROCESSING/STARTED attempt (in-flight purchase)', () => {
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'PROCESSING', source: 'PURCHASE' },
+    ])).toBe(true)
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'STARTED', source: 'PURCHASE' },
+    ])).toBe(true)
+  })
+
+  it('is FALSE for a definitively-FAILED owning-provider attempt (provable non-commitment → redispatch safe)', () => {
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'FAILED', source: 'PURCHASE' },
+    ])).toBe(false)
+  })
+
+  it('is FALSE for SKIPPED/CANCELLED owning-provider attempts', () => {
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'SKIPPED', source: 'PURCHASE' },
+    ])).toBe(false)
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'CANCELLED', source: 'PURCHASE' },
+    ])).toBe(false)
   })
 })
 

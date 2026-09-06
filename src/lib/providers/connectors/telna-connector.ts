@@ -584,9 +584,22 @@ export class TelnaConnector implements IProviderConnector {
       const result = await this.createPackage(body)
 
       if (!result.success || !result.data?.pkg) {
-        // Telna failed → neutral ownership-safe release of this purchase's claim.
-        await releaseProviderIccidClaim({ purchaseId: orderId, iccid })
+        // Telna failed. Only PROVABLY pre-commit rejections release the
+        // ownership-safe claim (the request never became a billable mutation):
+        // HTTP 4xx (authentication/validation/not-found/rate-limit) and local
+        // config/host guards. Every other failure — timeout, network error,
+        // unparseable response, 5xx, unknown — MAY have committed the package
+        // at Telna, so the claim is HELD and the outcome is owned by
+        // reconciliation: the same ICCID must never be sold to a second
+        // purchase while the existing transaction is unresolved.
         claimError = result.error?.code || 'PACKAGE_CREATE_FAILED'
+        const claimErrCode = String(claimError).toUpperCase()
+        const provablyPreCommit =
+          (claimErrCode.startsWith('HTTP_') && /^\d\d\d$/.test(claimErrCode.replace('HTTP_', '')) && claimErrCode.replace('HTTP_', '').startsWith('4')) ||
+          ['NOT_CONFIGURED', 'HOST_MISMATCH', 'UNVERIFIED_ENDPOINT'].includes(claimErrCode)
+        if (provablyPreCommit) {
+          await releaseProviderIccidClaim({ purchaseId: orderId, iccid })
+        }
         return { success: false, error: result.error || { code: 'PACKAGE_CREATE_FAILED', message: 'Telna package creation failed' } }
       }
 

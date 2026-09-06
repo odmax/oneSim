@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/lib/prisma', () => ({
   prisma: {
-    eSIM: { create: vi.fn(), findUnique: vi.fn(), delete: vi.fn() },
+    eSIM: { create: vi.fn(), findUnique: vi.fn(), findMany: vi.fn(), delete: vi.fn() },
   },
 }))
 
 import { prisma } from '@/lib/prisma'
-import { claimProviderIccid, releaseProviderIccidClaim } from './esim-inventory-claim'
+import { claimProviderIccid, releaseProviderIccidClaim, releaseOrderClaimedIccids } from './esim-inventory-claim'
 
 const mockPrisma = vi.mocked(prisma)
 
@@ -74,5 +74,28 @@ describe('releaseProviderIccidClaim (ownership-safe)', () => {
   it('missing purchaseId is a no-op', async () => {
     await releaseProviderIccidClaim({ purchaseId: '', iccid: 'X' })
     expect(mockPrisma.eSIM.findUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('releaseOrderClaimedIccids (post-confirmed-failure cleanup)', () => {
+  it('releases every unfinalized PROCESSING claim bound to the order', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([{ iccid: 'A-ICCID' }, { iccid: 'B-ICCID' }] as any)
+    mockPrisma.eSIM.findUnique.mockResolvedValue({ id: 'c1', purchaseId: 'order-1', status: 'PROCESSING', providerActivationId: '', activatedAt: null } as any)
+    await releaseOrderClaimedIccids('order-1')
+    expect(mockPrisma.eSIM.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ purchaseId: 'order-1', status: 'PROCESSING', providerActivationId: '', activatedAt: null }),
+    }))
+    expect(mockPrisma.eSIM.delete).toHaveBeenCalledTimes(2)
+  })
+
+  it('empty claim set is a no-op', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([])
+    await releaseOrderClaimedIccids('order-1')
+    expect(mockPrisma.eSIM.delete).not.toHaveBeenCalled()
+  })
+
+  it('missing purchaseId is a no-op', async () => {
+    await releaseOrderClaimedIccids('')
+    expect(mockPrisma.eSIM.findMany).not.toHaveBeenCalled()
   })
 })

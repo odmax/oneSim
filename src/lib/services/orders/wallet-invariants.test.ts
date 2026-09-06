@@ -12,6 +12,7 @@ const mockDb = vi.hoisted(() => ({
     updateMany: vi.fn(),
   },
   eSIMPurchase: { findUnique: vi.fn() },
+  providerAttempt: { findFirst: vi.fn() },
 }))
 
 vi.mock('@/lib/prisma', () => ({
@@ -47,7 +48,8 @@ beforeEach(() => {
   business.update.mockResolvedValue({})
   walletTransaction.create.mockResolvedValue({})
   walletTransaction.findMany.mockResolvedValue([])
-  eSIMPurchase.findUnique.mockResolvedValue({ id: 'order-1', providerFulfillId: null, providerReservationId: null })
+  eSIMPurchase.findUnique.mockResolvedValue({ id: 'order-1', providerId: null, providerFulfillId: null, providerReservationId: null })
+  prisma.providerAttempt.findFirst.mockResolvedValue(null)
 })
 
 describe('wallet invariants', () => {

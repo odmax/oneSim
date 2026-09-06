@@ -59,8 +59,12 @@ export function resolveAuthoritativeProviderReference(
 
 /**
  * True when durable provider ACCEPTANCE/reference evidence exists for the
- * order: order-level fulfillment/reservation evidence, or a provider-owned
- * reference persisted on an attempt of the order's provider.
+ * order: order-level fulfillment/reservation evidence, a provider-owned
+ * reference persisted on an attempt of the order's provider, OR any
+ * owning-provider attempt in a possibly-committed state — i.e. any attempt
+ * that is NOT a provable non-commitment (definitive FAILED, CANCELLED, or
+ * SKIPPED). A timeout/ambiguous outcome or an in-flight/succeeded PURCHASE
+ * attempt means the provider may already have accepted/charged the order.
  */
 export function hasProviderAcceptanceEvidence(
   order: ProviderReferenceOrderLike,
@@ -68,9 +72,12 @@ export function hasProviderAcceptanceEvidence(
 ): boolean {
   if (order.providerFulfillId || order.providerReservationId) return true
   const owner = order.providerId
-  return (attempts || []).some(
-    (a) => !!owner && a.providerId === owner && !!a.providerReference && String(a.providerReference).trim() !== '',
-  )
+  return (attempts || []).some((a) => {
+    if (!owner || a.providerId !== owner) return false
+    if (a.providerReference && String(a.providerReference).trim() !== '') return true
+    const status = String(a.status || '').toUpperCase()
+    return !['FAILED', 'CANCELLED', 'SKIPPED'].includes(status)
+  })
 }
 
 const ATTEMPT_REFERENCE_SELECT = {

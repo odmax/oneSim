@@ -2342,7 +2342,7 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     expect(JSON.parse(post![1].body as string).sim).toBe('CC2')
   })
 
-  it('5. provider POST failure triggers releaseProviderIccidClaim with same purchaseId+iccid', async () => {
+  it('5. provider POST ambiguous failure (HTTP 500) HELDS the ICCID claim for reconciliation', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(json({ data: { id: 42 } }))
       .mockResolvedValueOnce(json({ data: [{ iccid: 'FAIL-ICCID', status: 'PRE_SERVICE' }], total: 1 }))
@@ -2354,6 +2354,22 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
     expect(r.success).toBe(false)
     expect(r.error?.code).toBe('HTTP_500')
+    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
+    expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
+  })
+
+  it('5b. provider POST definitive rejection (HTTP 400) RELEASES the ICCID claim', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 42 } }))
+      .mockResolvedValueOnce(json({ data: [{ iccid: 'FAIL-ICCID', status: 'PRE_SERVICE' }], total: 1 }))
+      .mockResolvedValueOnce(json({}, 400))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+    mockReleaseProviderIccidClaim.mockResolvedValue(undefined as any)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('HTTP_400')
     expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
     expect(mockReleaseProviderIccidClaim).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
   })
@@ -2591,7 +2607,7 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
     expect(post).toHaveLength(1)
   })
 
-  it('provider POST failure triggers releaseProviderIccidClaim with same purchaseId+iccid', async () => {
+  it('provider POST ambiguous failure (HTTP 500) HELDS the ICCID claim for reconciliation', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(templateJson())
       .mockResolvedValueOnce(simRegJson('FAIL-ICCID'))
@@ -2604,6 +2620,23 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
     const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
     expect(r.success).toBe(false)
     expect(r.error?.code).toBe('HTTP_500')
+    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
+    expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
+  })
+
+  it('provider POST definitive rejection (HTTP 400) RELEASES the ICCID claim', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(templateJson())
+      .mockResolvedValueOnce(simRegJson('FAIL-ICCID'))
+      .mockResolvedValueOnce(json({}, 400))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+    mockReleaseProviderIccidClaim.mockResolvedValue(undefined as any)
+
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('HTTP_400')
     expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
     expect(mockReleaseProviderIccidClaim).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
   })

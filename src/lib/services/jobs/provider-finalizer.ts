@@ -73,7 +73,9 @@ export async function failProviderOperation(params: {
     return { success: false, error: 'Provider already fulfilled — manual reconciliation required', blockedByFulfillment: true }
   }
 
-  const releaseResult = await releaseReservedFunds(orderId, businessId || order.businessId, totalAmount || Number(order.totalAmount))
+  // The provider has explicitly reported a terminal failure (polled
+  // FAILED/REJECTED/CANCELLED/EXPIRED) — release is provably safe.
+  const releaseResult = await releaseReservedFunds(orderId, businessId || order.businessId, totalAmount || Number(order.totalAmount), { confirmedFailure: true })
   if (!releaseResult.success && !releaseResult.blocked) {
     return { success: false, error: releaseResult.error }
   }

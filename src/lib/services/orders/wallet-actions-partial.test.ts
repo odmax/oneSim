@@ -4,6 +4,8 @@ vi.mock('@/lib/prisma', () => ({
   prisma: {
     walletTransaction: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn().mockResolvedValue({}) },
     business: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    eSIMPurchase: { findUnique: vi.fn() },
+    providerAttempt: { findFirst: vi.fn() },
   },
 }))
 
@@ -43,6 +45,10 @@ const txMock = {
   if (Array.isArray(arg)) return Promise.all(arg.map((op: any) => Promise.resolve(op)))
   return arg(txMock)
 })
+
+// New provider-owned release gate defaults: order not provider-owned, no live attempts.
+mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({ id: 'order-1', providerId: null, providerFulfillId: null, providerReservationId: null })
+mockPrisma.providerAttempt.findFirst.mockResolvedValue(null)
 
 function mockReserve(amount = -50) {
   mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) =>

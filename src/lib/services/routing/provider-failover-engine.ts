@@ -30,18 +30,52 @@ export function classifyProviderOutcome(error: { code?: string; message?: string
   const msg = (error.message || '').toLowerCase()
   const causeCode = String(error.details?.causeCode || '').toUpperCase()
 
-  const ambiguousCodes = ['TIMEOUT', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'ERR_SOCKET_CLOSED']
+  const ambiguousCodes = ['TIMEOUT', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'ERR_SOCKET_CLOSED', 'ECONNABORTED']
   if (ambiguousCodes.includes(code) || ambiguousCodes.includes(causeCode)) return 'AMBIGUOUS_PROVIDER_OUTCOME'
   if (code.includes('TIMEOUT')) return 'AMBIGUOUS_PROVIDER_OUTCOME'
-  if (/(timeout|timed out|socket hang up|connection reset|econnreset|etimedout|read econnreset|socket closed)/.test(msg)) return 'AMBIGUOUS_PROVIDER_OUTCOME'
+  if (/(timeout|timed out|socket hang up|connection reset|econnreset|etimedout|read econnreset|socket closed|econnaborted)/.test(msg)) return 'AMBIGUOUS_PROVIDER_OUTCOME'
 
   const preDispatchCodes = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH', 'DNS', 'UND_ERR_CONNECT_TIMEOUT']
   if (preDispatchCodes.includes(code) || preDispatchCodes.includes(causeCode)) return 'RETRYABLE_PRE_DISPATCH'
   if (/(connection refused|econnrefused|dns|enotfound|getaddrinfo|eai_again)/.test(msg)) return 'RETRYABLE_PRE_DISPATCH'
 
-  if (error.details?.retryable === true) return 'RETRYABLE_PRE_DISPATCH'
+  // Post-dispatch transport / unknown-response outcomes are AMBIGUOUS — the
+  // billable mutation may have reached the provider. This is the INVERTED
+  // default: never retry/fail-over/release unless the failure is provably
+  // pre-dispatch (details.preDispatch/ECONNREFUSED/DNS) or the provider
+  // explicitly rejected the request.
+  const transportCodes = [
+    'NETWORK_ERROR', 'PROVIDER_ERROR', 'PROVIDER_UNAVAILABLE', 'PROVIDER_TIMEOUT',
+    'CONNECTION_ERROR', 'FETCH_ERROR', 'REQUEST_FAILED', 'NON_JSON_RESPONSE',
+    'INVALID_JSON', 'EMPTY_RESPONSE', 'GATEWAY_TIMEOUT', 'BAD_GATEWAY',
+    'SERVICE_UNAVAILABLE', 'HTTP_500', 'HTTP_502', 'HTTP_503', 'HTTP_504',
+  ]
+  if (transportCodes.includes(code) || transportCodes.includes(causeCode)) return 'AMBIGUOUS_PROVIDER_OUTCOME'
+  if (/^(HTTP_)?5\d\d$/.test(code)) return 'AMBIGUOUS_PROVIDER_OUTCOME'
+  if (/(bad gateway|gateway timeout|internal server error|service unavailable)/.test(msg)) return 'AMBIGUOUS_PROVIDER_OUTCOME'
 
-  return 'DEFINITIVE_FAILURE'
+  // Explicit rate-limit / throttling — provably received and refused before
+  // commit. Safe to retry/fail-over (never ambiguous), so rate-limited providers
+  // stay in the failover path instead of routing to reconciliation.
+  const rateLimitCodes = ['RATE_LIMITED', 'RATE_LIMIT_EXCEEDED', 'THROTTLED', 'TOO_MANY_REQUESTS']
+  if (rateLimitCodes.includes(code) || rateLimitCodes.includes(causeCode)) return 'RETRYABLE_PRE_DISPATCH'
+  if (/(rate limit|rate limited|too many requests|throttled)/.test(msg)) return 'RETRYABLE_PRE_DISPATCH'
+
+  // Explicit provider rejection — provably received and refused before commit.
+  const definitiveCodes = [
+    'AUTH_ERROR', 'AUTH_FAILED', 'INVALID_CREDENTIALS', 'UNAUTHORIZED', 'FORBIDDEN',
+    'INVALID_REQUEST', 'VALIDATION_FAILED', 'INVALID_INPUT', 'INVALID_PACKAGE',
+    'INVALID_ICCID', 'INVALID_PLAN', 'PROVIDER_CONFIG', 'CONFIG_INVALID',
+    'PROVIDER_FAILED', 'INSUFFICIENT_BALANCE', 'INSUFFICIENT_FUNDS', 'OUT_OF_STOCK',
+    'NO_ICCIDS', 'DUPLICATE', 'DUPLICATE_ORDER', 'ALREADY_EXISTS',
+    'NOT_SUPPORTED', 'UNSUPPORTED', 'NOT_FOUND',
+  ]
+  if (definitiveCodes.includes(code)) return 'DEFINITIVE_FAILURE'
+  if (/^(HTTP_)?4\d\d$/.test(code)) return 'DEFINITIVE_FAILURE'
+
+  // Inverted default: any unrecognized error after a mutating dispatch is
+  // treated as potentially-committed → AMBIGUOUS, never a blind release/retry.
+  return 'AMBIGUOUS_PROVIDER_OUTCOME'
 }
 
 export interface FailoverAttempt {
@@ -225,16 +259,37 @@ export function classifyFailoverEligibility(input: FailoverCheckInput): Failover
   if (isActiveReconciliation) return 'RECONCILIATION_REQUIRED'
   if (hasPendingProviderAttempt) return 'RECONCILIATION_REQUIRED'
 
-  // Uncertain transport errors → reconcile, don't fail over
-  const uncertainCodes = ['TIMEOUT', 'NETWORK_ERROR', 'GATEWAY_TIMEOUT', 'SERVICE_UNAVAILABLE', 'ECONNRESET', 'ETIMEDOUT', 'PROVIDER_UNAVAILABLE', 'RATE_LIMITED', 'MAINTENANCE']
-  const uncertainPatterns = ['timeout', 'connection reset', 'socket hang up', '503', '502', '504', 'connection refused']
+  // Uncertain transport errors → reconcile, don't fail over. Post-dispatch
+  // transport/unknown outcomes are NEVER fail-over candidates (inverted default).
+  const uncertainCodes = [
+    'TIMEOUT', 'NETWORK_ERROR', 'PROVIDER_ERROR', 'GATEWAY_TIMEOUT', 'SERVICE_UNAVAILABLE',
+    'ECONNRESET', 'ETIMEDOUT', 'PROVIDER_UNAVAILABLE', 'PROVIDER_TIMEOUT', 'RATE_LIMITED',
+    'MAINTENANCE', 'NON_JSON_RESPONSE', 'INVALID_JSON', 'EMPTY_RESPONSE',
+    'CONNECTION_ERROR', 'FETCH_ERROR', 'REQUEST_FAILED', 'BAD_GATEWAY',
+    'HTTP_500', 'HTTP_502', 'HTTP_503', 'HTTP_504',
+  ]
+  const uncertainPatterns = ['timeout', 'connection reset', 'socket hang up', '503', '502', '504', 'connection refused', 'network error', 'bad gateway', 'internal server error', 'service unavailable']
 
   if (providerError) {
     const code = (providerError.code || '').toUpperCase()
     const msg = (providerError.message || '').toLowerCase()
-    if (uncertainCodes.includes(code) || uncertainPatterns.some(p => msg.includes(p))) {
+    if (uncertainCodes.includes(code) || /^(HTTP_)?5\d\d$/.test(code) || uncertainPatterns.some(p => msg.includes(p))) {
       return 'RECONCILIATION_REQUIRED'
     }
+    // Explicit provider rejection — provably refused before any commit → failover
+    // is safe. Anything unrecognized is treated conservatively (reconcile).
+    const definitiveCodes = [
+      'AUTH_ERROR', 'AUTH_FAILED', 'INVALID_CREDENTIALS', 'UNAUTHORIZED', 'FORBIDDEN',
+      'INVALID_REQUEST', 'VALIDATION_FAILED', 'INVALID_INPUT', 'INVALID_PACKAGE',
+      'INVALID_ICCID', 'INVALID_PLAN', 'PROVIDER_CONFIG', 'CONFIG_INVALID',
+      'PROVIDER_FAILED', 'INSUFFICIENT_BALANCE', 'INSUFFICIENT_FUNDS', 'OUT_OF_STOCK',
+      'DUPLICATE', 'DUPLICATE_ORDER', 'ALREADY_EXISTS', 'NOT_SUPPORTED', 'UNSUPPORTED',
+      'NOT_FOUND', 'PACKAGE_UNAVAILABLE', 'PROVIDER_PACKAGE_MISMATCH',
+    ]
+    if (definitiveCodes.includes(code) || /^(HTTP_)?4\d\d$/.test(code)) {
+      return 'FAILOVER_ALLOWED'
+    }
+    return 'RECONCILIATION_REQUIRED'
   }
 
   // Definite safe failures → allow failover

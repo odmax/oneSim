@@ -73,6 +73,50 @@ describe('classifyProviderOutcome', () => {
     expect(classifyProviderOutcome(null)).toBe('DEFINITIVE_FAILURE')
     expect(classifyProviderOutcome(undefined)).toBe('DEFINITIVE_FAILURE')
   })
+
+  it('bare NETWORK_ERROR is AMBIGUOUS (post-dispatch transport — inverted default)', () => {
+    expect(classifyProviderOutcome({ code: 'NETWORK_ERROR', message: 'fetch failed' })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+  })
+
+  it('NETWORK_ERROR with details.retryable=true (AirHub repurchase vector) is AMBIGUOUS, never RETRYABLE', () => {
+    // Regression: AirHub returned NETWORK_ERROR + details.retryable=true with no
+    // preDispatch/causeCode proof. Before the fix this classified as
+    // RETRYABLE_PRE_DISPATCH → cross-provider failover → duplicate purchase.
+    expect(classifyProviderOutcome({ code: 'NETWORK_ERROR', message: 'fetch failed', details: { retryable: true } })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+  })
+
+  it('non-JSON 2xx response is AMBIGUOUS (provider may have committed)', () => {
+    expect(classifyProviderOutcome({ code: 'NON_JSON_RESPONSE', message: 'malformed JSON (status 200)' })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+  })
+
+  it('HTTP 5xx is AMBIGUOUS', () => {
+    expect(classifyProviderOutcome({ code: 'HTTP_502', message: 'Bad gateway' })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+    expect(classifyProviderOutcome({ code: 'HTTP_504', message: 'Gateway timeout' })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+  })
+
+  it('thrown PROVIDER_ERROR (unknown post-dispatch state) is AMBIGUOUS', () => {
+    expect(classifyProviderOutcome({ code: 'PROVIDER_ERROR', message: 'Something threw after POST' })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+  })
+
+  it('unrecognized error codes default to AMBIGUOUS (inverted default)', () => {
+    expect(classifyProviderOutcome({ code: 'MYSTERY_CODE', message: 'unexpected' })).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
+  })
+
+  it('HTTP 4xx explicit rejection stays DEFINITIVE_FAILURE', () => {
+    expect(classifyProviderOutcome({ code: 'HTTP_400', message: 'Bad request' })).toBe('DEFINITIVE_FAILURE')
+    expect(classifyProviderOutcome({ code: 'HTTP_403', message: 'Forbidden' })).toBe('DEFINITIVE_FAILURE')
+  })
+
+  it('INVALID_PACKAGE explicit rejection stays DEFINITIVE_FAILURE', () => {
+    expect(classifyProviderOutcome({ code: 'INVALID_PACKAGE', message: 'Invalid package' })).toBe('DEFINITIVE_FAILURE')
+  })
+
+  it('RATE_LIMITED / throttling is a provable provider decline → RETRYABLE_PRE_DISPATCH (failover path, never ambiguous)', () => {
+    expect(classifyProviderOutcome({ code: 'RATE_LIMITED', message: 'Too many requests', details: { retryable: true } })).toBe('RETRYABLE_PRE_DISPATCH')
+    expect(classifyProviderOutcome({ code: 'THROTTLED', message: 'slow down' })).toBe('RETRYABLE_PRE_DISPATCH')
+    expect(classifyProviderOutcome({ code: 'HTTP_429', message: 'Rate limited' })).toBe('RETRYABLE_PRE_DISPATCH')
+    expect(classifyProviderOutcome({ code: 'X', message: 'got rate limited, retry later' })).toBe('RETRYABLE_PRE_DISPATCH')
+  })
 })
 
 describe('classifyFailoverEligibility', () => {
@@ -80,6 +124,27 @@ describe('classifyFailoverEligibility', () => {
     expect(classifyFailoverEligibility(checkInput({
       providerError: { code: 'INSUFFICIENT_BALANCE' },
     }))).toBe('FAILOVER_ALLOWED')
+  })
+
+  it('5b. bare NETWORK_ERROR blocks failover (post-dispatch transport — inverted default)', () => {
+    expect(classifyFailoverEligibility(checkInput({
+      providerError: { code: 'NETWORK_ERROR', message: 'fetch failed' },
+    }))).toBe('RECONCILIATION_REQUIRED')
+  })
+
+  it('5c. HTTP 502 / non-JSON response blocks failover', () => {
+    expect(classifyFailoverEligibility(checkInput({
+      providerError: { code: 'HTTP_502', message: 'Bad gateway' },
+    }))).toBe('RECONCILIATION_REQUIRED')
+    expect(classifyFailoverEligibility(checkInput({
+      providerError: { code: 'NON_JSON_RESPONSE', message: 'malformed JSON (200)' },
+    }))).toBe('RECONCILIATION_REQUIRED')
+  })
+
+  it('5d. unrecognized error codes default to RECONCILIATION_REQUIRED (inverted default)', () => {
+    expect(classifyFailoverEligibility(checkInput({
+      providerError: { code: 'MYSTERY_CODE', message: 'unexpected' },
+    }))).toBe('RECONCILIATION_REQUIRED')
   })
 
   it('6. provider unavailable is uncertain → reconcile not failover', () => {

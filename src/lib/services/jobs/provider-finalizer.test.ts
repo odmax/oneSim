@@ -126,7 +126,7 @@ describe('provider-finalizer', () => {
       const result = await failProviderOperation({ orderId: ORDER_ID, businessId: 'b1', providerId: 'p-1', providerRef: PROVIDER_REF, totalAmount: 5, reason: 'ACTIVATION_FAILED' })
 
       expect(result.success).toBe(true)
-      expect(mockRelease).toHaveBeenCalledWith(ORDER_ID, 'b1', 5)
+      expect(mockRelease).toHaveBeenCalledWith(ORDER_ID, 'b1', 5, { confirmedFailure: true })
       expect(mockFailOrder).toHaveBeenCalledWith(ORDER_ID, 'ACTIVATION_FAILED')
     })
 

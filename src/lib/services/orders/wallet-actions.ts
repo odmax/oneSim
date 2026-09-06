@@ -249,6 +249,18 @@ export function captureReservedFundsUpToInTx(client: any, orderId: string, busin
 }
 
 /**
+ * Release options for reserved purchase funds.
+ * - `confirmedFailure`: the provider has verified the failure (reconciliation
+ *   FOUND_FAILURE, or a poll terminal status) — release is provably safe.
+ * - `adminOverride`: an explicit INTERNAL_ADMIN human decision to cancel/refund
+ *   regardless of provider-owned evidence.
+ */
+export interface ReleaseFundsOptions {
+  confirmedFailure?: boolean
+  adminOverride?: boolean
+}
+
+/**
  * Release reserved purchase funds (on provider rejection/failure).
  * Refunds the reserved amount back to wallet balance.
  *
@@ -257,8 +269,12 @@ export function captureReservedFundsUpToInTx(client: any, orderId: string, busin
  * - Does NOT release if WALLET_REFUND exists
  * - Does NOT release if WALLET_RELEASE already exists (idempotent)
  * - Does NOT release if provider fulfillment evidence exists on the order
+ * - Does NOT release when provider-owned evidence exists (an owning-provider
+ *   attempt that may have committed: STARTED/PROCESSING/SUCCEEDED/AMBIGUOUS)
+ *   unless the failure is provider-CONFIRMED or an explicit admin decision —
+ *   an unreconciled billable transaction must never be released as if dead.
  */
-export async function releaseReservedFunds(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; blocked?: boolean }> {
+export async function releaseReservedFunds(orderId: string, businessId: string, amount: number, opts: ReleaseFundsOptions = {}): Promise<{ success: boolean; error?: string; blocked?: boolean; blockReason?: string }> {
   try {
     const released = await prisma.walletTransaction.findFirst({
       where: { orderId, type: 'WALLET_RELEASE' },
@@ -277,10 +293,23 @@ export async function releaseReservedFunds(orderId: string, businessId: string, 
 
     const order = await prisma.eSIMPurchase.findUnique({
       where: { id: orderId },
-      select: { providerFulfillId: true, providerReservationId: true },
+      select: { providerId: true, providerFulfillId: true, providerReservationId: true },
     })
     if (order?.providerFulfillId || order?.providerReservationId) {
-      return { success: false, error: 'Provider fulfillment evidence exists — manual reconciliation required before release', blocked: true }
+      return { success: false, error: 'Provider fulfillment evidence exists — manual reconciliation required before release', blocked: true, blockReason: 'PROVIDER_OWNED' }
+    }
+
+    // Provider-owned defense-in-depth gate: an owning-provider attempt in any
+    // possibly-committed state blocks an automatic release (reconcile first).
+    const override = opts.confirmedFailure === true || opts.adminOverride === true
+    if (!override && order?.providerId) {
+      const live = await prisma.providerAttempt.findFirst({
+        where: { orderId, providerId: order.providerId, status: { in: ['STARTED', 'PROCESSING', 'SUCCEEDED', 'AMBIGUOUS'] } },
+        select: { id: true },
+      })
+      if (live) {
+        return { success: false, error: 'Provider-owned evidence exists — reconcile the order before releasing funds', blocked: true, blockReason: 'PROVIDER_OWNED' }
+      }
     }
 
     const reserve = await prisma.walletTransaction.findFirst({
@@ -309,9 +338,28 @@ export async function releaseReservedFunds(orderId: string, businessId: string, 
  * Release reserved purchase funds up to a cumulative total — partial-fulfillment aware.
  * Never releases more than `reserved − captured − alreadyReleased`, so the sum of
  * (captured + released) can never exceed the reservation. Idempotent per target.
+ *
+ * Applies the same provider-owned defense-in-depth gate as `releaseReservedFunds`.
  */
-export async function releaseReservedFundsUpTo(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; released?: number }> {
+export async function releaseReservedFundsUpTo(orderId: string, businessId: string, amount: number, opts: ReleaseFundsOptions = {}): Promise<{ success: boolean; error?: string; released?: number; blocked?: boolean; blockReason?: string }> {
   try {
+    const order = await prisma.eSIMPurchase.findUnique({
+      where: { id: orderId },
+      select: { providerId: true, providerFulfillId: true, providerReservationId: true },
+    })
+    if (order?.providerFulfillId || order?.providerReservationId) {
+      return { success: false, error: 'Provider fulfillment evidence exists — manual reconciliation required before release', blocked: true, blockReason: 'PROVIDER_OWNED', released: 0 }
+    }
+    const override = opts.confirmedFailure === true || opts.adminOverride === true
+    if (!override && order?.providerId) {
+      const live = await prisma.providerAttempt.findFirst({
+        where: { orderId, providerId: order.providerId, status: { in: ['STARTED', 'PROCESSING', 'SUCCEEDED', 'AMBIGUOUS'] } },
+        select: { id: true },
+      })
+      if (live) {
+        return { success: false, error: 'Provider-owned evidence exists — reconcile the order before releasing funds', blocked: true, blockReason: 'PROVIDER_OWNED', released: 0 }
+      }
+    }
     return await releaseUpToCore(prisma, { orderId }, businessId, amount)
   } catch (e: any) {
     return { success: false, error: e.message || 'Release failed' }

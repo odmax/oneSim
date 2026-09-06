@@ -51,9 +51,10 @@ export async function cancelOrder(orderId: string) {
     throw new Error(`Cannot cancel order in ${order.status} state`)
   }
 
-  // Release reserved funds
+  // Release reserved funds. Explicit INTERNAL_ADMIN decision to cancel a
+  // possibly provider-owned order — recorded as an admin override.
   const amount = Number(order.totalAmount)
-  await releaseReservedFunds(orderId, order.businessId, amount)
+  await releaseReservedFunds(orderId, order.businessId, amount, { adminOverride: true })
 
   const result = await transitionOrder(orderId, 'CANCELLED')
   if (!result.success) throw new Error(result.error)
@@ -86,8 +87,8 @@ export async function refundOrder(orderId: string) {
   const amount = Number(order.totalAmount)
   const result = await refundCapturedFunds(orderId, order.businessId, amount)
   if (!result.success) {
-    // If no capture found, try release instead
-    await releaseReservedFunds(orderId, order.businessId, amount)
+    // If no capture found, try release instead (admin decision → explicit override)
+    await releaseReservedFunds(orderId, order.businessId, amount, { adminOverride: true })
   }
 
   await transitionOrder(orderId, 'REFUNDED')

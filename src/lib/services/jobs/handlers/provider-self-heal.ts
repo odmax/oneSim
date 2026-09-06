@@ -175,7 +175,7 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
       // evidence batched per provider, then let the sync predicate decide.
       const attemptRefs = await prisma.providerAttempt.findMany({
         where: { orderId: { in: stuckOrders.map((o: any) => o.id) }, providerId: p.id },
-        select: { orderId: true, providerId: true, providerReference: true },
+        select: { orderId: true, providerId: true, providerReference: true, status: true, source: true },
       }).catch(() => [] as any[])
       const attemptsByOrder = new Map<string, any[]>()
       for (const a of attemptRefs) {
