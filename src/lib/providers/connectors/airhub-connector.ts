@@ -901,199 +901,198 @@ export class AirHubConnector implements IProviderConnector {
     // Sanitized pre-flight diagnostics — never logs the token, password, or payload values.
     console.log(`[AIRHUB_PURCHASE_REQUEST] correlationId=${correlationId} endpoint=/api/ESIM/PurhaseSim bodyKeys=${Object.keys(payload).join(',')} partnerCodeType=${typeof payload.partnerCode} planCodeType=${typeof payload.planCode} travelDatePresent=${'travelDate' in payload} uniqueOrderIdPresent=${'unique_order_id' in payload} authorizationPresent=${!!this.token}`)
 
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 30000)
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        })
-        clearTimeout(timeout)
+    // Exactly ONE PurhaseSim per dispatch. The token is resolved and, when
+    // needed, refreshed BEFORE the mutation (getTokenState/authenticate above).
+    // AirHub does not prove idempotency for unique_order_id, so after the POST
+    // is sent, any 401/auth/transport/timeout/5xx/uncertain response must never
+    // cause a second PurhaseSim in this invocation: the outcome is ambiguous
+    // and provider-owned — the engine routes to reconciliation and the wallet
+    // stays reserved.
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 30000)
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      })
+      clearTimeout(timeout)
 
-        const text = await response.text()
-        const contentType = response.headers?.get?.('content-type') || ''
-        const durationMs = Date.now() - startMs
+      const text = await response.text()
+      const contentType = response.headers?.get?.('content-type') || ''
+      const durationMs = Date.now() - startMs
 
-        // Handle 401 (rejected/expired purchase token) before attempting JSON
-        // parsing — AirHub frequently returns a non-JSON body on 401.
-        if (response.status === 401) {
-          const hadToken = !!this.token
-          let safeKeys: string[] = []
-          try {
-            const parsed = JSON.parse(text)
-            if (parsed && typeof parsed === 'object') safeKeys = Object.keys(parsed)
-          } catch { /* non-JSON — safeKeys stays empty */ }
-          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=401 contentType=${contentType} endpoint=/api/ESIM/PurhaseSim topKeys=${safeKeys.join(',')} durationMs=${durationMs}`)
-
-          if (attempt === 1) {
-            const refreshed = await this.refreshTokenFromConfig()
-            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} reason=401 refreshSuccess=${refreshed}`)
-            if (refreshed) continue
-          }
-
-          return {
-            success: false,
-            error: {
-              code: 'AIRHUB_AUTH_UNAUTHORIZED',
-              message: hadToken
-                ? 'AirHub purchase rejected the token (HTTP 401) and reauthentication failed'
-                : 'AirHub purchase requires authentication (HTTP 401)',
-              details: { authStage: hadToken ? 'purchase_token_rejected' : 'login_required', retryable: false, providerStatus: 401 },
-            },
-          }
-        }
-
-        let data: any
-        try { data = JSON.parse(text) } catch {
-          if (response.status === 400) {
-            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=400 contentType=${contentType} durationMs=${durationMs} error=NON_JSON_VALIDATION`)
-            return { success: false, error: { code: 'VALIDATION_ERROR', message: 'AirHub validation failed: the request was rejected (HTTP 400) with a non-JSON response.', details: { retryable: false, providerStatus: 400 } } }
-          }
-          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} contentType=${contentType} durationMs=${durationMs} error=NON_JSON`)
-          return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: `AirHub returned non-JSON response (HTTP ${response.status})` } }
-        }
-
-        const dataKeys = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
-        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess} durationMs=${durationMs} topKeys=${Object.keys(data).join(',')} dataKeys=${dataKeys.join(',')}`)
-
-        // Guarded full-response diagnostics (off by default). No business logic.
-        logBalanceDiagnostics('purchase', { httpStatus: response.status, data, partnerCode, token: this.token })
-
-        // HTTP 400 — ASP.NET ModelState validation. Surface the failing fields
-        // instead of dumping the raw RFC 7231 body.
-        if (response.status === 400) {
-          const parsed = this.parsePurchaseValidationError(data)
-          const fieldEntries = Object.entries(parsed.fields)
-          console.log(`[AIRHUB_PURCHASE_VALIDATION] fields=${fieldEntries.map(([f]) => f).join(',')} messages=${fieldEntries.map(([, msgs]) => msgs.join(', ')).join(' | ')}`)
-          return {
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: parsed.message,
-              details: { retryable: false, providerStatus: 400, fields: parsed.fields },
-            },
-          }
-        }
-
-        if (!response.ok) {
-          const code = this.classifyHttpError(response.status, data)
-          return { success: false, error: { code, message: `AirHub returned HTTP ${response.status}: ${data.message || text.substring(0, 200)}`, details: { retryable: response.status >= 500, providerStatus: response.status } } }
-        }
-
-        if (data.isSuccess === false) {
-          const code = this.classifyProviderError(data)
-          return { success: false, error: { code: this.classifyProviderError(data), message: `AirHub rejected purchase: ${data.message || 'isSuccess=false'}`, details: { retryable: false, providerStatus: response.status } } }
-        }
-
-        const d = data.data || data
-        const iccids = this.extractIccids(d, params.quantity)
-        const simId = d.simID || d.simId || d.sim_id || d.data?.simID || d.data?.simId || undefined
-        const orderId = d.orderId || d.order_id || d.orderid || d.orderID || d.OrderID || d.transactionId || d.id || data.orderId || data.order_id || data.orderid || simId || ''
-
-        if (!iccids.length) {
-          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} warning=NO_ICCIDS orderId=${orderId} dataKeys=${Object.keys(d).join(',')}`)
-          const pendingStatus = this.detectPendingStatus(d)
-          if (pendingStatus) {
-            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} pendingStatus=${pendingStatus}`)
-            return { success: true, data: { activationId: orderId, iccids: [], status: pendingStatus } }
-          }
-
-          // AirHub confirmed the purchase (HTTP 200 + isSuccess=true) but returned
-          // no usable ICCID/status. Only an EXPLICIT provider failure status makes
-          // this a definitive failure. Otherwise the upstream mutation may have
-          // completed, so flag AMBIGUOUS + upstreamConfirmed: marking a definitive
-          // failure here could release the wallet for a purchase the provider has
-          // already charged. Any discovered order/sim reference is carried in the
-          // details so reconciliation can locate the asset — never re-purchase.
-          const explicitFailure = this.detectExplicitFailure(d)
-          if (explicitFailure) {
-            return { success: false, error: { code: 'NO_ICCIDS', message: explicitFailure, details: { retryable: false, providerStatus: response.status } } }
-          }
-          return {
-            success: false,
-            error: {
-              code: 'NO_ICCIDS',
-              message: 'AirHub confirmed success but returned no usable ICCID — the outcome is ambiguous and requires reconciliation',
-              details: {
-                retryable: false,
-                providerStatus: response.status,
-                ambiguous: true,
-                upstreamConfirmed: true,
-                ...(orderId ? { providerOrderId: orderId } : {}),
-                ...(simId ? { simId } : {}),
-              },
-            },
-          }
-        }
-
-        const activationCode = d.activationCode || d.data?.activationCode || d.lpa || d.data?.lpa || d.lpaProfile || undefined
-        const qrCodeUrl = d.qrCodeUrl || d.qr_code_url || d.data?.qrCodeUrl || d.data?.qr_code_url || undefined
-        const matchingId = d.matchingId || d.matching_id || d.data?.matchingId || undefined
-        const smdpAddress = d.smdpAddress || d.smdp_address || d.data?.smdpAddress || undefined
-        const imsis = d.imsis || (d.imsi ? [d.imsi] : undefined)
-        const activationCodes = activationCode ? [activationCode] : d.activationCodes || undefined
-
-        // Purchase completion never implies the eSIM is network-active.
-        const status = this.normalizePurchaseStatus(d)
-        const rawMetadata: Record<string, any> = {
-          orderId,
-          ...(simId ? { simId } : {}),
-          ...(activationCode ? { activationCode } : {}),
-          ...(d.apn ? { apn: d.apn } : {}),
-          ...(d.message ? { message: d.message } : {}),
-        }
-
-        if (!qrCodeUrl) {
-          try {
-            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR iccid=${maskIdentifier(iccids[0])}`)
-            const qrResult = await this.getQRCode(iccids[0])
-            if (qrResult.success && qrResult.data?.qrCodeUrl) {
-              console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR success=true`)
-              return {
-                success: true,
-                data: {
-                  activationId: orderId, iccids, imsis: imsis as string[] | undefined,
-                  activationCodes, qrCodeUrl: qrResult.data.qrCodeUrl, matchingId, smdpAddress,
-                  iccidOrSimId: simId || iccids[0], rawMetadata, status,
-                },
-              }
-            }
-            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR success=false reason=${qrResult.error?.code || 'unknown'}`)
-          } catch (qrErr: any) {
-            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR error=${qrErr.message?.substring(0, 100)}`)
-          }
-        }
-
-        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} result=SUCCESS orderId=${orderId} iccidCount=${iccids.length} status=${status} durationMs=${durationMs}`)
+      // Handle 401 (rejected/expired purchase token) before attempting JSON
+      // parsing — AirHub frequently returns a non-JSON body on 401. No refresh
+      // or re-POST here: the mutation request was already sent.
+      if (response.status === 401) {
+        const hadToken = !!this.token
+        let safeKeys: string[] = []
+        try {
+          const parsed = JSON.parse(text)
+          if (parsed && typeof parsed === 'object') safeKeys = Object.keys(parsed)
+        } catch { /* non-JSON — safeKeys stays empty */ }
+        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=401 contentType=${contentType} endpoint=/api/ESIM/PurhaseSim topKeys=${safeKeys.join(',')} durationMs=${durationMs} outcome=AMBIGUOUS_SINGLE_POST`)
 
         return {
-          success: true,
-          data: {
-            activationId: orderId, iccids, imsis: imsis as string[] | undefined,
-            activationCodes, qrCodeUrl, matchingId, smdpAddress,
-            iccidOrSimId: simId || iccids[0], rawMetadata, status,
+          success: false,
+          error: {
+            code: 'AIRHUB_AUTH_UNAUTHORIZED',
+            message: hadToken
+              ? 'AirHub purchase returned HTTP 401 after dispatch — the mutation may have occurred upstream; reconciliation is required'
+              : 'AirHub purchase requires authentication (HTTP 401)',
+            details: { authStage: hadToken ? 'purchase_token_rejected' : 'login_required', retryable: false, providerStatus: 401, ambiguous: true, uniqueOrderId },
           },
         }
-      } catch (e: any) {
-        const durationMs = Date.now() - startMs
-        if (e.name === 'AbortError') {
-          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} error=TIMEOUT durationMs=${durationMs}`)
-          return { success: false, error: { code: 'TIMEOUT', message: `AirHub activation timed out after ${durationMs}ms`, details: { retryable: true, providerStatus: undefined } } }
-        }
-        const causeCode = e?.cause?.code || ''
-        let msg: string, code: string
-        if (causeCode === 'ENOTFOUND') { code = 'NETWORK_ERROR'; msg = 'AirHub host not found (DNS failure)' }
-        else if (causeCode === 'ECONNREFUSED') { code = 'NETWORK_ERROR'; msg = 'AirHub refused the connection' }
-        else if (causeCode?.includes('TLS') || causeCode?.includes('CERT')) { code = 'NETWORK_ERROR'; msg = 'TLS connection to AirHub failed' }
-        else { code = 'NETWORK_ERROR'; msg = `AirHub activation error: ${e.message?.substring(0, 200)}` }
-        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} error=${code} message=${msg.substring(0, 200)} durationMs=${durationMs}`)
-        return { success: false, error: { code, message: msg, details: { retryable: true } } }
       }
+
+      let data: any
+      try { data = JSON.parse(text) } catch {
+        if (response.status === 400) {
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=400 contentType=${contentType} durationMs=${durationMs} error=NON_JSON_VALIDATION`)
+          return { success: false, error: { code: 'VALIDATION_ERROR', message: 'AirHub validation failed: the request was rejected (HTTP 400) with a non-JSON response.', details: { retryable: false, providerStatus: 400 } } }
+        }
+        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} contentType=${contentType} durationMs=${durationMs} error=NON_JSON`)
+        return { success: false, error: { code: 'PROVIDER_RESPONSE_INVALID', message: `AirHub returned non-JSON response (HTTP ${response.status})` } }
+      }
+
+      const dataKeys = data.data && typeof data.data === 'object' ? Object.keys(data.data) : []
+      console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} httpStatus=${response.status} isSuccess=${data.isSuccess} durationMs=${durationMs} topKeys=${Object.keys(data).join(',')} dataKeys=${dataKeys.join(',')}`)
+
+      // Guarded full-response diagnostics (off by default). No business logic.
+      logBalanceDiagnostics('purchase', { httpStatus: response.status, data, partnerCode, token: this.token })
+
+      // HTTP 400 — ASP.NET ModelState validation. Surface the failing fields
+      // instead of dumping the raw RFC 7231 body.
+      if (response.status === 400) {
+        const parsed = this.parsePurchaseValidationError(data)
+        const fieldEntries = Object.entries(parsed.fields)
+        console.log(`[AIRHUB_PURCHASE_VALIDATION] fields=${fieldEntries.map(([f]) => f).join(',')} messages=${fieldEntries.map(([, msgs]) => msgs.join(', ')).join(' | ')}`)
+        return {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: parsed.message,
+            details: { retryable: false, providerStatus: 400, fields: parsed.fields },
+          },
+        }
+      }
+
+      if (!response.ok) {
+        const code = this.classifyHttpError(response.status, data)
+        return { success: false, error: { code, message: `AirHub returned HTTP ${response.status}: ${data.message || text.substring(0, 200)}`, details: { retryable: response.status >= 500, providerStatus: response.status, ambiguous: response.status >= 500, uniqueOrderId } } }
+      }
+
+      if (data.isSuccess === false) {
+        return { success: false, error: { code: this.classifyProviderError(data), message: `AirHub rejected purchase: ${data.message || 'isSuccess=false'}`, details: { retryable: false, providerStatus: response.status } } }
+      }
+
+      const d = data.data || data
+      const iccids = this.extractIccids(d, params.quantity)
+      const simId = d.simID || d.simId || d.sim_id || d.data?.simID || d.data?.simId || undefined
+      const orderId = d.orderId || d.order_id || d.orderid || d.orderID || d.OrderID || d.transactionId || d.id || data.orderId || data.order_id || data.orderid || simId || ''
+
+      if (!iccids.length) {
+        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} warning=NO_ICCIDS orderId=${orderId} dataKeys=${Object.keys(d).join(',')}`)
+        const pendingStatus = this.detectPendingStatus(d)
+        if (pendingStatus) {
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} pendingStatus=${pendingStatus}`)
+          return { success: true, data: { activationId: orderId, iccids: [], status: pendingStatus } }
+        }
+
+        // AirHub confirmed the purchase (HTTP 200 + isSuccess=true) but returned
+        // no usable ICCID/status. Only an EXPLICIT provider failure status makes
+        // this a definitive failure. Otherwise the upstream mutation may have
+        // completed, so flag AMBIGUOUS + upstreamConfirmed: marking a definitive
+        // failure here could release the wallet for a purchase the provider has
+        // already charged. Any discovered order/sim reference is carried in the
+        // details so reconciliation can locate the asset — never re-purchase.
+        const explicitFailure = this.detectExplicitFailure(d)
+        if (explicitFailure) {
+          return { success: false, error: { code: 'NO_ICCIDS', message: explicitFailure, details: { retryable: false, providerStatus: response.status } } }
+        }
+        return {
+          success: false,
+          error: {
+            code: 'NO_ICCIDS',
+            message: 'AirHub confirmed success but returned no usable ICCID — the outcome is ambiguous and requires reconciliation',
+            details: {
+              retryable: false,
+              providerStatus: response.status,
+              ambiguous: true,
+              upstreamConfirmed: true,
+              uniqueOrderId,
+              ...(orderId ? { providerOrderId: orderId } : {}),
+              ...(simId ? { simId } : {}),
+            },
+          },
+        }
+      }
+
+      const activationCode = d.activationCode || d.data?.activationCode || d.lpa || d.data?.lpa || d.lpaProfile || undefined
+      const qrCodeUrl = d.qrCodeUrl || d.qr_code_url || d.data?.qrCodeUrl || d.data?.qr_code_url || undefined
+      const matchingId = d.matchingId || d.matching_id || d.data?.matchingId || undefined
+      const smdpAddress = d.smdpAddress || d.smdp_address || d.data?.smdpAddress || undefined
+      const imsis = d.imsis || (d.imsi ? [d.imsi] : undefined)
+      const activationCodes = activationCode ? [activationCode] : d.activationCodes || undefined
+
+      // Purchase completion never implies the eSIM is network-active.
+      const status = this.normalizePurchaseStatus(d)
+      const rawMetadata: Record<string, any> = {
+        orderId,
+        ...(simId ? { simId } : {}),
+        ...(activationCode ? { activationCode } : {}),
+        ...(d.apn ? { apn: d.apn } : {}),
+        ...(d.message ? { message: d.message } : {}),
+      }
+
+      if (!qrCodeUrl) {
+        try {
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR iccid=${maskIdentifier(iccids[0])}`)
+          const qrResult = await this.getQRCode(iccids[0])
+          if (qrResult.success && qrResult.data?.qrCodeUrl) {
+            console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR success=true`)
+            return {
+              success: true,
+              data: {
+                activationId: orderId, iccids, imsis: imsis as string[] | undefined,
+                activationCodes, qrCodeUrl: qrResult.data.qrCodeUrl, matchingId, smdpAddress,
+                iccidOrSimId: simId || iccids[0], rawMetadata, status,
+              },
+            }
+          }
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR success=false reason=${qrResult.error?.code || 'unknown'}`)
+        } catch (qrErr: any) {
+          console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} step=FETCH_QR error=${qrErr.message?.substring(0, 100)}`)
+        }
+      }
+
+      console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} result=SUCCESS orderId=${orderId} iccidCount=${iccids.length} status=${status} durationMs=${durationMs}`)
+
+      return {
+        success: true,
+        data: {
+          activationId: orderId, iccids, imsis: imsis as string[] | undefined,
+          activationCodes, qrCodeUrl, matchingId, smdpAddress,
+          iccidOrSimId: simId || iccids[0], rawMetadata, status,
+        },
+      }
+    } catch (e: any) {
+      const durationMs = Date.now() - startMs
+      if (e.name === 'AbortError') {
+        console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} error=TIMEOUT durationMs=${durationMs}`)
+        return { success: false, error: { code: 'TIMEOUT', message: `AirHub activation timed out after ${durationMs}ms`, details: { retryable: true, providerStatus: undefined, ambiguous: true, uniqueOrderId } } }
+      }
+      const causeCode = e?.cause?.code || ''
+      let msg: string, code: string
+      if (causeCode === 'ENOTFOUND') { code = 'NETWORK_ERROR'; msg = 'AirHub host not found (DNS failure)' }
+      else if (causeCode === 'ECONNREFUSED') { code = 'NETWORK_ERROR'; msg = 'AirHub refused the connection' }
+      else if (causeCode?.includes('TLS') || causeCode?.includes('CERT')) { code = 'NETWORK_ERROR'; msg = 'TLS connection to AirHub failed' }
+      else { code = 'NETWORK_ERROR'; msg = `AirHub activation error: ${e.message?.substring(0, 200)}` }
+      console.log(`[AIRHUB_PURCHASE] correlationId=${correlationId} error=${code} message=${msg.substring(0, 200)} durationMs=${durationMs}`)
+      return { success: false, error: { code, message: msg, details: { retryable: true, ambiguous: true, uniqueOrderId } } }
     }
-    return { success: false, error: { code: 'RETRIES_EXHAUSTED', message: 'AirHub activation exhausted retries' } }
   }
 
   async getStatus(subscriptionId: string): Promise<ConnectorResult<StatusResult>> {

@@ -53,6 +53,7 @@ interface ClassificationInput {
     retryClassification?: string | null
     errorCode?: string | null
     providerReference?: string | null
+    dispatchStartedAt?: Date | null
   }>
   providerPollingSupported: boolean
 }
@@ -228,7 +229,7 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
   const providerAttempts = await prisma.providerAttempt.findMany({
     where: { orderId },
     orderBy: { attemptNumber: 'desc' },
-    select: { id: true, providerId: true, status: true, source: true, retryClassification: true, errorCode: true, providerReference: true, startedAt: true },
+    select: { id: true, providerId: true, status: true, source: true, retryClassification: true, errorCode: true, providerReference: true, startedAt: true, dispatchStartedAt: true },
   })
 
   // Provider polling support check
@@ -441,6 +442,17 @@ async function redispatchProvider(order: any): Promise<{ success: boolean; statu
       },
     })
     await prisma.eSIMPurchase.update({ where: { id: order.id }, data: { providerId: order.providerId } }).catch(() => {})
+
+    // V2: persist DISPATCH_STARTED before crossing the provider mutation
+    // boundary (HTTP). Same marker contract as executeProviderAttempt — a crash
+    // AFTER this commit leaves STARTED + dispatchStartedAt set ⇒
+    // DISPATCH_MAY_HAVE_OCCURRED (AMBIGUOUS, never redispatch on its absent
+    // reference); a STARTED attempt with dispatchStartedAt NULL written by
+    // marker-first code is PRE_DISPATCH_CLAIM_ONLY (provably pre-dispatch).
+    await prisma.providerAttempt.update({
+      where: { id: attempt.id },
+      data: { dispatchStartedAt: new Date() },
+    })
 
     const result = await adapter.activateESIM({ planId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: order.businessId, orderId: order.id } as any)
     const latencyMs = Date.now() - attempt.startedAt.getTime()

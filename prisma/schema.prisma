@@ -1204,6 +1204,7 @@ model ProviderAttempt {
   startedAt           DateTime  @default(now())
   completedAt         DateTime?
   latencyMs           Int?
+  dispatchStartedAt   DateTime?
   providerReference   String?
   errorCode           String?
   errorMessage        String?
@@ -1213,6 +1214,7 @@ model ProviderAttempt {
   @@index([providerId])
   @@index([status])
   @@index([startedAt])
+  @@unique([orderId, attemptNumber])
   @@map("provider_attempts")
 }
 

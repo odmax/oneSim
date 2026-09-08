@@ -320,12 +320,8 @@ describe('AirHubConnector', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1)
     })
 
-    it('returns AIRHUB_AUTH_UNAUTHORIZED on purchase 401 with failed refresh', async () => {
+it('returns ambiguous AIRHUB_AUTH_UNAUTHORIZED on purchase 401 — exactly ONE PurhaseSim, no re-POST', async () => {
       mockFetchFailure(401, { message: 'Unauthorized' })
-
-      mockPrisma.provider.findUnique.mockResolvedValue(
-        makeProvider({ config: { partnerCode: 200652387 } })
-      )
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.activateESIM(ACTIVATE_PARAMS)
@@ -334,17 +330,18 @@ describe('AirHubConnector', () => {
       expect(result.error?.code).toBe('AIRHUB_AUTH_UNAUTHORIZED')
       expect(result.error?.message).toContain('401')
       expect(result.error?.details?.authStage).toBe('purchase_token_rejected')
+      expect(result.error?.details?.ambiguous).toBe(true)
+      expect(result.error?.details?.retryable).toBe(false)
+      expect(result.error?.details?.uniqueOrderId).toBe('order-123')
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(fetchSpy.mock.calls[0][0]).toContain('/api/ESIM/PurhaseSim')
     })
 
-    it('returns AIRHUB_AUTH_UNAUTHORIZED on purchase 401 with non-JSON body', async () => {
+    it('returns ambiguous AIRHUB_AUTH_UNAUTHORIZED on purchase 401 with non-JSON body — single POST', async () => {
       fetchSpy.mockResolvedValue({
         ok: false, status: 401, text: () => Promise.resolve('<html>Unauthorized</html>'),
         headers: { get: () => 'text/html' },
       })
-
-      mockPrisma.provider.findUnique.mockResolvedValue(
-        makeProvider({ config: { partnerCode: 200652387 } })
-      )
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.activateESIM(ACTIVATE_PARAMS)
@@ -352,49 +349,105 @@ describe('AirHubConnector', () => {
       expect(result.success).toBe(false)
       expect(result.error?.code).toBe('AIRHUB_AUTH_UNAUTHORIZED')
       expect(result.error?.message).toContain('401')
+      expect(result.error?.details?.ambiguous).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(fetchSpy.mock.calls[0][0]).toContain('/api/ESIM/PurhaseSim')
     })
 
-    it('retries after 401 when refresh succeeds', async () => {
-      const authBody = {
-        isSuccess: true,
-        token: 'refreshed-token-abcdef',
-        partnerCode: 200652387,
-      }
-      const purchaseBody = {
-        isSuccess: true,
-        data: {
-          orderId: 'AH-RETRY',
-          iccids: ['8901234567890666666'],
-          qrCodeUrl: 'https://qr.airhub.com/retry',
-          status: 'ACTIVATED',
-        },
-      }
-
+    it('never re-POSTs PurhaseSim after a 401 even when a token refresh WOULD succeed', async () => {
+      // Historical behaviour: on purchase 401 the connector refreshed the token
+      // and re-issued PurhaseSim. AirHub does not prove idempotency for
+      // unique_order_id, so a single dispatch must perform at most ONE
+      // PurhaseSim: a 401 after dispatch is ambiguous and provider-owned
+      // (reconciliation resolves the outcome — never a connector retry).
+      const authBody = { isSuccess: true, token: 'refreshed-token-abcdef', partnerCode: 200652387 }
       fetchSpy
-        .mockResolvedValueOnce({
-          ok: false, status: 401, text: () => Promise.resolve(JSON.stringify({ message: 'Unauthorized' })),
-          headers: { get: () => 'application/json' },
-        })
-        .mockResolvedValueOnce({
-          ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(authBody)),
-          headers: { get: () => 'application/json' },
-        })
-        .mockResolvedValueOnce({
-          ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(purchaseBody)),
-          headers: { get: () => 'application/json' },
-        })
-
-      mockPrisma.provider.findUnique
-        .mockResolvedValueOnce(makeProvider())
-        .mockResolvedValueOnce(makeProvider())
-        .mockResolvedValueOnce(makeProvider())
+        .mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Error', text: () => Promise.resolve(JSON.stringify({ message: 'Unauthorized' })), headers: { get: () => 'application/json' } })
+        .mockResolvedValueOnce({ ok: true, status: 200, statusText: 'OK', text: () => Promise.resolve(JSON.stringify(authBody)), headers: { get: () => 'application/json' } })
+        .mockResolvedValueOnce({ ok: true, status: 200, statusText: 'OK', text: () => Promise.resolve(JSON.stringify({ isSuccess: true, data: { orderId: 'AH-X', iccids: ['8901234567890666666'], status: 'ACTIVATED' } })), headers: { get: () => 'application/json' } })
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.activateESIM(ACTIVATE_PARAMS)
 
-      expect(result.success).toBe(true)
-      expect(result.data?.iccids).toEqual(['8901234567890666666'])
-      expect(fetchSpy).toHaveBeenCalledTimes(3)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AIRHUB_AUTH_UNAUTHORIZED')
+      expect(result.error?.details?.ambiguous).toBe(true)
+      // Even with a working refresh and a queued re-POST, only the single
+      // purchase request may be issued.
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(fetchSpy.mock.calls[0][0]).toContain('/api/ESIM/PurhaseSim')
+      expect(fetchSpy.mock.calls[0][1].headers['Authorization']).toBe('Bearer test-token')
+    })
+
+    describe('purchase mutation count invariant — at most 1 PurhaseSim per dispatch', () => {
+      it('timeout (AbortError) → exactly 1 PurhaseSim, ambiguous outcome', async () => {
+        fetchSpy.mockImplementation(() => {
+          const err = new DOMException('The operation was aborted', 'AbortError')
+          return Promise.reject(err)
+        })
+
+        const connector = new AirHubConnector('airhub-1', 'test-token')
+        const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('TIMEOUT')
+        expect(result.error?.details?.ambiguous).toBe(true)
+        expect(fetchSpy).toHaveBeenCalledTimes(1)
+        expect(fetchSpy.mock.calls[0][0]).toContain('/api/ESIM/PurhaseSim')
+      })
+
+      it('connection reset (ECONNRESET) → exactly 1 PurhaseSim, ambiguous outcome', async () => {
+        mockFetchNetworkError('ECONNRESET')
+
+        const connector = new AirHubConnector('airhub-1', 'test-token')
+        const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('NETWORK_ERROR')
+        expect(result.error?.details?.ambiguous).toBe(true)
+        expect(fetchSpy).toHaveBeenCalledTimes(1)
+        expect(fetchSpy.mock.calls[0][0]).toContain('/api/ESIM/PurhaseSim')
+      })
+
+      it('HTTP 500 → exactly 1 PurhaseSim, ambiguous outcome', async () => {
+        mockFetchFailure(500, { message: 'Internal server error' })
+
+        const connector = new AirHubConnector('airhub-1', 'test-token')
+        const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('PROVIDER_UNAVAILABLE')
+        expect(result.error?.details?.ambiguous).toBe(true)
+        expect(fetchSpy).toHaveBeenCalledTimes(1)
+        expect(fetchSpy.mock.calls[0][0]).toContain('/api/ESIM/PurhaseSim')
+      })
+
+      it('malformed response (200 non-JSON) → exactly 1 PurhaseSim, ambiguous outcome', async () => {
+        fetchSpy.mockResolvedValue({
+          ok: true, status: 200, text: () => Promise.resolve('<html><body>Error</body></html>'),
+          headers: { get: () => 'text/html' },
+        })
+
+        const connector = new AirHubConnector('airhub-1', 'test-token')
+        const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('PROVIDER_RESPONSE_INVALID')
+        expect(fetchSpy).toHaveBeenCalledTimes(1)
+        expect(fetchSpy.mock.calls[0][0]).toContain('/api/ESIM/PurhaseSim')
+      })
+
+      it('explicit provider rejection (isSuccess=false) → exactly 1 PurhaseSim', async () => {
+        mockFetchSuccess({ isSuccess: false, message: 'Plan package not found for given SKU' })
+
+        const connector = new AirHubConnector('airhub-1', 'test-token')
+        const result = await connector.activateESIM(ACTIVATE_PARAMS)
+
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('INVALID_PACKAGE')
+        expect(fetchSpy).toHaveBeenCalledTimes(1)
+        expect(fetchSpy.mock.calls[0][0]).toContain('/api/ESIM/PurhaseSim')
+      })
     })
 
     it('authenticates before the first purchase call when no token exists and sends the fresh token directly', async () => {

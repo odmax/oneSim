@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('@/lib/prisma', () => ({
   prisma: {
@@ -44,7 +44,7 @@ const { createTimelineEvent, transitionOrder, failOrder } = await import('@/lib/
 const { reconcileProviderOrder, getReconciliationDelay, isRedispatchAllowed, isReconciliationEligible, reconciliationCycleKey } = await import('./reconciliation')
 const { releaseReservedFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
 const { completeProviderFinalization } = await import('@/lib/services/orders/fulfillment')
-const { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence } = await import('./provider-reference')
+const { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, LEGACY_STARTED_CUTOVER_ENV, resolveLegacyStartedCutover } = await import('./provider-reference')
 
 const mockPrisma = vi.mocked(prisma)
 const mockAdapter = vi.mocked(getAdapterForType)
@@ -583,6 +583,15 @@ describe('timeline events', () => {
 })
 
 describe('provider acceptance evidence', () => {
+  const originalCutover = process.env[LEGACY_STARTED_CUTOVER_ENV]
+  beforeEach(() => {
+    process.env[LEGACY_STARTED_CUTOVER_ENV] = '2026-09-08T00:00:00Z'
+  })
+  afterEach(() => {
+    if (originalCutover === undefined) delete process.env[LEGACY_STARTED_CUTOVER_ENV]
+    else process.env[LEGACY_STARTED_CUTOVER_ENV] = originalCutover
+  })
+
   it('is true when order-level or matching attempt reference evidence exists', () => {
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [{ providerId: 'prov-1', providerReference: '12811381' }])).toBe(true)
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: 'x', providerReservationId: null }, [])).toBe(true)
@@ -598,12 +607,63 @@ describe('provider acceptance evidence', () => {
     ])).toBe(true)
   })
 
-  it('is true for an owning-provider PROCESSING/STARTED attempt (in-flight purchase)', () => {
+  it('is true for an owning-provider PROCESSING attempt and STARTED-with-dispatchStartedAt (in-flight purchase)', () => {
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
       { providerId: 'prov-1', providerReference: null, status: 'PROCESSING', source: 'PURCHASE' },
     ])).toBe(true)
+    // STARTED with dispatchStartedAt set — the mutation boundary may have been
+    // crossed (http may have left OneSIM) → acceptance evidence.
     expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
-      { providerId: 'prov-1', providerReference: null, status: 'STARTED', source: 'PURCHASE' },
+      { providerId: 'prov-1', providerReference: null, status: 'STARTED', source: 'PURCHASE', dispatchStartedAt: new Date('2026-09-08T00:00:00Z') },
+    ])).toBe(true)
+  })
+
+  it('is FALSE for an owning-provider STARTED attempt whose dispatchStartedAt is NULL (provably pre-dispatch → redispatch safe)', () => {
+    // V2 regression: a bare STARTED row with no dispatch marker never crossed the
+    // provider mutation boundary — absence of providerReference is NOT evidence
+    // of a possible purchase. Recovery may resume/redispatch (new attempt).
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'STARTED', source: 'PURCHASE', dispatchStartedAt: null },
+    ])).toBe(false)
+  })
+
+  it('is TRUE for a LEGACY STARTED attempt with NULL dispatchStartedAt created before the marker-code cutover (may have crossed the boundary under old code)', () => {
+    // V2 legacy regression: rows written BEFORE the marker-first code deployed
+    // never had a dispatchStartedAt column — a bare STARTED row may have crossed
+    // the provider HTTP boundary before the process died. It must stay AMBIGUOUS
+    // (reconciliation), NEVER be treated as provably pre-dispatch.
+    const legacyCutover = resolveLegacyStartedCutover() as Date
+    const preCutover = new Date(legacyCutover.getTime() - 86_400_000)
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'STARTED', source: 'PURCHASE', dispatchStartedAt: null, startedAt: preCutover },
+    ])).toBe(true)
+  })
+
+  it('is FALSE for a POST-cutover STARTED attempt with NULL dispatchStartedAt and startedAt at/after the cutover (provably pre-dispatch → redispatch safe)', () => {
+    // Marker-first code always stamps dispatchStartedAt before the mutating HTTP,
+    // so a STARTED row with a NULL marker whose lifecycle began at/after the
+    // cutover provably never crossed the boundary.
+    const legacyCutover = resolveLegacyStartedCutover() as Date
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'STARTED', source: 'PURCHASE', dispatchStartedAt: null, startedAt: new Date(legacyCutover.getTime() + 86_400_000) },
+    ])).toBe(false)
+  })
+
+  it('is TRUE for a bare STARTED attempt when LEGACY_STARTED_CUTOVER config is MISSING (fail conservative: never assume a legacy row is pre-dispatch)', () => {
+    delete process.env[LEGACY_STARTED_CUTOVER_ENV]
+    // No cutover => the row's era cannot be proven; redispatch is forbidden.
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'STARTED', source: 'PURCHASE', dispatchStartedAt: null },
+    ])).toBe(true)
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'STARTED', source: 'PURCHASE', dispatchStartedAt: null, startedAt: new Date('2025-01-01T00:00:00Z') },
+    ])).toBe(true)
+  })
+
+  it('is TRUE for a bare STARTED attempt when LEGACY_STARTED_CUTOVER config is INVALID (fail conservative)', () => {
+    process.env[LEGACY_STARTED_CUTOVER_ENV] = 'not-a-valid-date'
+    expect(hasProviderAcceptanceEvidence({ id: 'o', providerId: 'prov-1', providerFulfillId: null, providerReservationId: null }, [
+      { providerId: 'prov-1', providerReference: null, status: 'STARTED', source: 'PURCHASE', dispatchStartedAt: null },
     ])).toBe(true)
   })
 

@@ -433,6 +433,26 @@ describe('UrlTokenConnector', () => {
 
       vi.unstubAllGlobals()
     })
+
+    it('makes exactly ONE add-bundle POST across the whole dispatch', async () => {
+      const c = makeConnectorWithChoiceFieldMappings()
+      const mockFetch = vi.fn().mockResolvedValue(okJson({
+        data: { imsis: [{ iccid: '89012345678901234567', imsi: '310410123456789', activation_code: 'LPA:1$smdp$CODE123' }] },
+        transaction_id: 'txn-count',
+        status: 'completed',
+      }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await c.activateESIM(choiceParams)
+      expect(result.success).toBe(true)
+
+      // The billable mutation (POST add_bundle_using_template_from_pool) is sent
+      // exactly once; a second POST would risk a duplicate bundle grant.
+      const posts = mockFetch.mock.calls.filter(call => String(call[0]).includes('/add_bundle_using_template_from_pool/') && (call[1] as any).method === 'POST')
+      expect(posts).toHaveLength(1)
+
+      vi.unstubAllGlobals()
+    })
   })
 
   describe('activateESIM — mutation timeout policy', () => {
@@ -475,6 +495,19 @@ describe('UrlTokenConnector', () => {
       expect(result.success).toBe(false)
       expect(result.error?.code).toBe('TIMEOUT')
       expect(result.error?.details?.ambiguous).toBe(true)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      vi.unstubAllGlobals()
+    })
+
+    it('ECONNRESET → NETWORK_ERROR ambiguous, exactly ONE add-bundle POST (never re-POSTs)', async () => {
+      const c = choiceConnector()
+      const mockFetch = vi.fn().mockRejectedValue(Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' }))
+      vi.stubGlobal('fetch', mockFetch)
+      const result = await c.activateESIM(choiceParams)
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('NETWORK_ERROR')
+      expect(result.error?.details?.ambiguous).toBe(true)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
       vi.unstubAllGlobals()
     })
   })

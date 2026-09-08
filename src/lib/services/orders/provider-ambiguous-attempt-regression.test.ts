@@ -118,8 +118,11 @@ describe('executeProviderAttempt: ambiguous provider outcomes (real classifier)'
       const result = await executeProviderAttempt(attemptInput())
 
       expect(result).toMatchObject({ success: false, status: 'AMBIGUOUS', errorCode: 'AMBIGUOUS_PROVIDER_OUTCOME' })
-      const updateCall = mockAttemptUpdate.mock.calls[0]?.[0] as { data?: any }
-      expect(updateCall).toMatchObject({
+      const updateCalls = mockAttemptUpdate.mock.calls.map((c: any[]) => c[0])
+      // V2: first update stamps the dispatch marker BEFORE the HTTP boundary;
+      // the terminal AMBIGUOUS update is the second call.
+      expect((updateCalls[0]?.data as any)?.dispatchStartedAt).toBeInstanceOf(Date)
+      expect(updateCalls[1]).toMatchObject({
         where: { id: 'attempt-1' },
         data: {
           status: 'AMBIGUOUS',
@@ -186,6 +189,38 @@ describe('executeProviderAttempt: ambiguous provider outcomes (real classifier)'
       const result = await executeProviderAttempt(attemptInput('prov-usmatrix', 'USMatrix'))
 
       expect(result).toMatchObject({ success: false, status: 'AMBIGUOUS', errorCode: 'AMBIGUOUS_PROVIDER_OUTCOME' })
+      expect(mockActivate).toHaveBeenCalledTimes(1)
+      expect(mockComplete).not.toHaveBeenCalled()
+      expect(mockCreateJob).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('AirHub', () => {
+    it('purchase 401 after dispatch (airhub-connector.ts:938-947 shape) → AMBIGUOUS, single dispatch, NO cross-provider failover', async () => {
+      mockPrisma.provider.findUnique.mockResolvedValue({ id: 'prov-airhub', type: 'airhub', apiBaseUrl: 'https://api.airhubapp.com', apiToken: 'tkn', environment: 'sandbox', authUrl: null, status: 'ACTIVE' })
+      mockActivate.mockResolvedValue({
+        success: false,
+        error: {
+          code: 'AIRHUB_AUTH_UNAUTHORIZED',
+          message: 'AirHub purchase returned HTTP 401 after dispatch — the mutation may have occurred upstream; reconciliation is required',
+          details: { authStage: 'purchase_token_rejected', retryable: false, providerStatus: 401, ambiguous: true, uniqueOrderId: 'order-1' },
+        },
+      })
+
+      const result = await executeProviderAttempt(attemptInput('prov-airhub', 'AirHub'))
+
+      // The 401-after-mutation outcome must route to reconciliation — NEVER to
+      // cross-provider failover (RETRYABLE_PRE_DISPATCH) nor to a definitive
+      // failure that would release the wallet / allow re-purchase.
+      expect(result).toMatchObject({ success: false, status: 'AMBIGUOUS', errorCode: 'AMBIGUOUS_PROVIDER_OUTCOME' })
+      const updateCalls = mockAttemptUpdate.mock.calls.map((c: any[]) => c[0])
+      // V2: first update stamps the dispatch marker BEFORE the HTTP boundary;
+      // the terminal AMBIGUOUS update is the second call.
+      expect((updateCalls[0]?.data as any)?.dispatchStartedAt).toBeInstanceOf(Date)
+      expect(updateCalls[1]).toMatchObject({
+        where: { id: 'attempt-1' },
+        data: expect.objectContaining({ status: 'AMBIGUOUS', retryClassification: 'NON_RETRYABLE', errorCode: 'AIRHUB_AUTH_UNAUTHORIZED' }),
+      })
       expect(mockActivate).toHaveBeenCalledTimes(1)
       expect(mockComplete).not.toHaveBeenCalled()
       expect(mockCreateJob).not.toHaveBeenCalled()

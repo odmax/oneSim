@@ -139,6 +139,22 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
   // Dispatch
   try {
     console.log(`[TRAVEL_DATE_TRACE] stage=DISPATCH travelDate=${travelDate || 'undefined'} provider=${providerName} orderId=${orderId}`)
+
+    // V2: persist the DISPATCH_STARTED marker BEFORE crossing the provider
+    // mutation boundary (HTTP). A crash AFTER this commit but BEFORE a terminal
+    // update leaves a STARTED attempt with dispatchStartedAt set —
+    // DISPATCH_MAY_HAVE_OCCURRED ⇒ AMBIGUOUS/reconciliation, never redispatch
+    // merely on its absent providerReference. A STARTED attempt with
+    // dispatchStartedAt NULL and created at/after the marker-code cutover is
+    // PRE_DISPATCH_CLAIM_ONLY — it provably never crossed the boundary (safe
+    // resume). All guards above (order check, policy, provider-package
+    // ownership, validatePurchase) return before HTTP, so they remain safe
+    // pre-dispatch points.
+    await prisma.providerAttempt.update({
+      where: { id: attempt.id },
+      data: { dispatchStartedAt: new Date() },
+    })
+
     const result = await adapter.activateESIM({ planId: effectivePlanId, quantity, subscriber, activationType: 'ACTIVATE_NOW', externalId: businessId, orderId, ...(travelDate ? { travelDate } : {}) } as any)
     const latencyMs = Date.now() - startedAt.getTime()
 

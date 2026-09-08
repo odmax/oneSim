@@ -1137,7 +1137,59 @@ describe('IbasisConnector Phase 4 — purchase & provisioning', () => {
       const createArg = mockPrisma.eSIM.create.mock.calls[0][0]
       expect(createArg.data.activationCode).toBe(ACT_CODE)
       expect(createArg.data.qrCodeUrl).toBeNull()
-      expect(createArg.data.iccid).toBe(ICCID)
+expect(createArg.data.iccid).toBe(ICCID)
+    })
+
+    describe('purchase mutation count invariant — exactly one billable activation POST per dispatch', () => {
+      // The only billable provider mutation is createSubscription (POST
+      // /api/v1/subscriptions/activations). Regardless of outcome (success,
+      // ambiguous failure, definite rejection) at most one is ever sent — a
+      // second POST would risk a duplicate billable activation.
+      const countBillableActivationPosts = () =>
+        fetchSpy.mock.calls.filter(c => String(c[0]).includes('/subscriptions/activations') && (c[1] as any).method === 'POST').length
+
+      it('successful purchase → exactly 1 activation POST', async () => {
+        fetchSpy
+          .mockResolvedValueOnce(mockFetchSuccess(inventoryResp, 200))
+          .mockResolvedValueOnce(mockFetchSuccess(subscriberResp, 201))
+          .mockResolvedValueOnce(mockFetchSuccess(subscriptionResp, 201))
+        const result = await connector.activateESIM(baseParams)
+        expect(result.success).toBe(true)
+        expect(countBillableActivationPosts()).toBe(1)
+      })
+
+      it('ambiguous network failure on the activation POST → exactly 1 POST, SIM flagged for reconciliation', async () => {
+        fetchSpy
+          .mockResolvedValueOnce(mockFetchSuccess(inventoryResp, 200))
+          .mockResolvedValueOnce(mockFetchSuccess(subscriberResp, 201))
+          .mockRejectedValueOnce(new Error('fetch failed connection refused'))
+        const result = await connector.activateESIM(baseParams)
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('NETWORK_ERROR')
+        expect(countBillableActivationPosts()).toBe(1)
+        expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledWith({ where: { purchaseId: 'order-1', iccid: ICCID }, data: { providerStatus: 'RECONCILIATION_REQUIRED' } })
+        expect(mockPrisma.eSIM.deleteMany).not.toHaveBeenCalled()
+      })
+
+      it('definite rejection (HTTP 422) on the activation POST → exactly 1 POST, reservation released', async () => {
+        fetchSpy
+          .mockResolvedValueOnce(mockFetchSuccess(inventoryResp, 200))
+          .mockResolvedValueOnce(mockFetchSuccess(subscriberResp, 201))
+          .mockResolvedValueOnce(mockFetchSuccess({ detail: 'invalid plan' }, 422))
+        const result = await connector.activateESIM(baseParams)
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('VALIDATION_ERROR')
+        expect(countBillableActivationPosts()).toBe(1)
+        expect(mockPrisma.eSIM.deleteMany).toHaveBeenCalledWith({ where: { purchaseId: 'order-1', iccid: ICCID } })
+      })
+
+      it('no inventory → 0 activation POSTs (mutation never reached)', async () => {
+        fetchSpy.mockResolvedValue(mockFetchSuccess({ count: 0, next: null, previous: null, results: [] }, 200))
+        const result = await connector.activateESIM(baseParams)
+        expect(result.success).toBe(false)
+        expect(result.error?.code).toBe('NO_AVAILABLE_SIMS')
+        expect(countBillableActivationPosts()).toBe(0)
+      })
     })
   })
 

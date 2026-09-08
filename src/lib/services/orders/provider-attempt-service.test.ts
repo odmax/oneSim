@@ -278,7 +278,11 @@ describe('executeProviderAttempt — cross-provider plan-binding ownership guard
     expect(result.success).toBe(false)
     expect(result.status).toBe('AMBIGUOUS')
     expect(result.errorCode).toBe('AMBIGUOUS_PROVIDER_OUTCOME')
-    const updateCall = mockPrisma.providerAttempt.update.mock.calls[0][0] as any
+    const updateCalls = mockPrisma.providerAttempt.update.mock.calls.map((c: any[]) => c[0])
+    // V2: the dispatch marker is persisted BEFORE the HTTP boundary — the first
+    // update stamps dispatchStartedAt; the terminal AMBIGUOUS update follows.
+    expect((updateCalls[0]?.data as any)?.dispatchStartedAt).toBeInstanceOf(Date)
+    const updateCall = updateCalls[1]
     expect(updateCall.data.status).toBe('AMBIGUOUS')
     expect(updateCall.data.retryClassification).toBe('NON_RETRYABLE')
     expect(updateCall.data.metadata).toMatchObject({ ambiguous: true, reconciliationRequired: true })
@@ -303,7 +307,9 @@ describe('executeProviderAttempt — cross-provider plan-binding ownership guard
     const result = await executeProviderAttempt(baseInput())
 
     expect(result.status).toBe('AMBIGUOUS')
-    const updateCall = mockPrisma.providerAttempt.update.mock.calls[0][0] as any
+    const updateCalls = mockPrisma.providerAttempt.update.mock.calls.map((c: any[]) => c[0])
+    expect((updateCalls[0]?.data as any)?.dispatchStartedAt).toBeInstanceOf(Date)
+    const updateCall = updateCalls[1]
     expect(updateCall.data.status).toBe('AMBIGUOUS')
     expect(updateCall.data.providerReference).toBe('AH-ORDER-7')
     expect(updateCall.data.metadata).toMatchObject({

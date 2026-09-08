@@ -196,36 +196,20 @@ export async function reserveWalletFunds(orderId: string, businessId: string, am
  * Capture reserved funds for a purchase (confirm the charge after provider success).
  * Creates a CAPTURE entry. Only allowed if RESERVE exists.
  * Idempotent — returns success if already captured.
+ *
+ * V2: delegates to the cumulative, transaction-wrapped capture core. The
+ * existing-captures sum and the new CAPTURE insert run inside ONE $transaction
+ * (all statements read/write the same committed state), and the delta is
+ * computed from the re-read existing captures — so a REPLAY of the same
+ * confirmed fulfillment (same amount) computes Δ = 0 and is a no-op. Captures
+ * stay multi-row (NO capture unique index) to support partial fulfillment;
+ * exclusion of CONCURRENT duplicate finalizations of the same fulfillment unit
+ * is the engine layer's order-level exactly-once guarantee, not this
+ * transaction (default READ COMMITTED isolation does not serialize two
+ * read-0/insert-1 races on its own).
  */
 export async function captureReservedFunds(orderId: string, businessId: string, amount: number): Promise<{ success: boolean; error?: string; alreadyCaptured?: boolean }> {
-  try {
-    const existing = await prisma.walletTransaction.findFirst({
-      where: { orderId, type: 'WALLET_RESERVE' },
-    })
-    if (!existing) return { success: false, error: 'No reservation found. Reserve wallet funds first.' }
-
-    const captured = await prisma.walletTransaction.findFirst({
-      where: { orderId, type: 'WALLET_CAPTURE' },
-    })
-    if (captured) return { success: true, alreadyCaptured: true }
-
-    const [priorRelease, priorRefund] = await Promise.all([
-      prisma.walletTransaction.findFirst({ where: { orderId, type: 'WALLET_RELEASE' } }),
-      prisma.walletTransaction.findFirst({ where: { orderId, type: 'WALLET_REFUND' } }),
-    ])
-    if (priorRelease || priorRefund) {
-      return { success: false, error: 'Funds were already released/refunded for this order — manual reconciliation required before capture' }
-    }
-
-    await prisma.walletTransaction.create({
-      data: { businessId, orderId, amount, type: 'WALLET_CAPTURE', description: `Captured ${amount} for order ${orderId}` },
-    })
-
-    await createTimelineEvent(orderId, { eventType: 'WALLET_CAPTURED', message: `Wallet captured: ${amount}` })
-    return { success: true }
-  } catch (e: any) {
-    return { success: false, error: e.message || 'Capture failed' }
-  }
+  return captureReservedFundsUpTo(orderId, businessId, amount)
 }
 
 /**

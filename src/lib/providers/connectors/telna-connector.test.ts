@@ -2622,6 +2622,28 @@ describe('Telna Phase 1C/1D — atomic ICCID claim via neutral service', () => {
     expect(r.error?.code).toBe('HTTP_500')
     expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'FAIL-ICCID' })
     expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
+    // Exactly one billable POST /v2.1/pcr/packages for the whole dispatch.
+    const posts = fetchSpy.mock.calls.filter(x => String(x[0]).includes('/v2.1/pcr/packages') && x[1].method === 'POST')
+    expect(posts).toHaveLength(1)
+  })
+
+  it('provider POST ambiguous timeout (AbortError) HELDS the ICCID claim — exactly one POST', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(templateJson())
+      .mockResolvedValueOnce(simRegJson('TIMEOUT-ICCID'))
+      .mockRejectedValueOnce(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+    mockReleaseProviderIccidClaim.mockResolvedValue(undefined as any)
+
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '42', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-1' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('TIMEOUT')
+    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-1', iccid: 'TIMEOUT-ICCID' })
+    expect(mockReleaseProviderIccidClaim).not.toHaveBeenCalled()
+    const posts = fetchSpy.mock.calls.filter(x => String(x[0]).includes('/v2.1/pcr/packages') && x[1].method === 'POST')
+    expect(posts).toHaveLength(1)
   })
 
   it('provider POST definitive rejection (HTTP 400) RELEASES the ICCID claim', async () => {
