@@ -1214,7 +1214,10 @@ model ProviderAttempt {
   @@index([providerId])
   @@index([status])
   @@index([startedAt])
-  @@unique([orderId, attemptNumber])
+  // Attempt numbering is scoped PER SOURCE (PURCHASE and RECONCILIATION keep
+  // independent per-order sequences — legitimate PURCHASE#N and RECONCILIATION#N
+  // coexist). Uniqueness within a source+number is the dispatch-ownership guard.
+  @@unique([orderId, source, attemptNumber])
   @@map("provider_attempts")
 }
 
