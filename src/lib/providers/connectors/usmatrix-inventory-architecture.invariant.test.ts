@@ -289,7 +289,7 @@ describe('US-Matrix — GET /esims read contract (allocated required, limit/offs
   })
 
   it('paginates with limit/offset ONLY (never page/perPage)', () => {
-    const listFn = connector.slice(connector.indexOf('async listEsims('), connector.indexOf('async lookupInstallationData('))
+    const listFn = connector.slice(connector.indexOf('async listEsims('), connector.indexOf('async findCompatiblePackagesForEsims('))
     expect(listFn).toContain('buildEsimsQueryParams(query, limit, offset)')
     expect(listFn).toContain('const limit = Math.min(')
     expect(listFn).toContain('const offset =')
@@ -311,5 +311,53 @@ describe('US-Matrix — GET /esims read contract (allocated required, limit/offs
     expect(lookupFn).toContain('for (const allocated of [false, true])')
     expect(lookupFn).toContain('AMBIGUOUS_IDENTITY')
     expect(lookupFn).not.toMatch(/activateESIM|assignPackage|add-esims/)
+  })
+})
+
+describe('US-Matrix — find-packages is read-only discovery, never coupled to purchase', () => {
+  const connector = readConnector()
+  const endpoints = readEndpoints()
+  const orchestrator = readOrchestrator()
+
+  it('findCompatiblePackagesForEsims exists and POSTs to esimFindPackages only', () => {
+    expect(connector).toContain('async findCompatiblePackagesForEsims(')
+    expect(connector).toContain("this.request('esimFindPackages', { method: 'POST', body, query })")
+  })
+
+  it('find-packages treats 204 as authoritative empty success', () => {
+    const fn = connector.slice(connector.indexOf('async findCompatiblePackagesForEsims('), connector.indexOf('async lookupInstallationData('))
+    expect(fn).toContain('result.status === 204')
+    expect(fn).toContain('items: [], total: 0')
+  })
+
+  it('find-packages never calls add-esims / assign-package / activateESIM / wallets / orders', () => {
+    const fn = connector.slice(connector.indexOf('async findCompatiblePackagesForEsims('), connector.indexOf('async lookupInstallationData('))
+    expect(fn).not.toMatch(/this\.request\('esimAddEsims'/)
+    expect(fn).not.toMatch(/this\.request\('esimAssignPackage'/)
+    expect(fn).not.toMatch(/activateESIM/)
+    expect(fn).not.toMatch(/captureReservedFunds|releaseReservedFunds/)
+    expect(fn).not.toMatch(/prisma\.eSIMPurchase|prisma\.walletTransaction/)
+  })
+
+  it('find-packages is body/query-only discovery (no automatic mutation retry loop)', () => {
+    const fn = connector.slice(connector.indexOf('async findCompatiblePackagesForEsims('), connector.indexOf('async lookupInstallationData('))
+    expect(fn).toMatch(/method: 'POST'/)
+    expect(fn).not.toMatch(/for\s*\(.*retry|while\s*\(/)
+  })
+
+  it('canonical purchase flow remains availability-count -> assign-package (find-packages NOT in activateESIM)', () => {
+    const activateBody = connector.slice(connector.indexOf('async activateESIM('), connector.indexOf('async validatePurchase('))
+    expect(activateBody).toContain('esimAssignPackage')
+    expect(activateBody).not.toContain('findCompatiblePackagesForEsims')
+    expect(activateBody).not.toMatch(/esimFindPackages/)
+    // PurchaseOrchestrator never references find-packages either.
+    expect(orchestrator).not.toMatch(/findCompatiblePackagesForEsims|esimFindPackages|find-packages/)
+  })
+
+  it('FindPackagesForEsimsRequestDTO is typed exactly { esims: string[] }', () => {
+    const dtoStart = endpoints.indexOf('interface FindPackagesForEsimsRequestDTO')
+    const dto = endpoints.slice(dtoStart, dtoStart + 200)
+    expect(dto).toContain('esims: string[]')
+    expect(dto).not.toMatch(/client|vendor|planId|orderId/)
   })
 })

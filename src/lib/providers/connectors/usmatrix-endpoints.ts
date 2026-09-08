@@ -225,6 +225,61 @@ export const DEFAULT_ESIMS_PAGE_SIZE = 100
 export const MAX_ESIMS_PAGE_SIZE = 200
 
 /**
+ * POST /api/v1/esims/find-packages request body — documented
+ * FindPackagesForEsimsRequestDTO. `esims` is the REQUIRED array of provider
+ * eSIM UUIDs to find compatible packages for. NEVER a local OneSIM id.
+ */
+export interface FindPackagesForEsimsRequestDTO {
+  esims: string[]
+}
+
+/**
+ * POST /api/v1/esims/find-packages query parameters. Only the documented
+ * query params are supported; the method is a READ-ONLY discovery operation
+ * (POST transport only). Pagination uses page/perPage per the provider
+ * contract, with a conservative bounded maximum applied before transport.
+ */
+export interface FindPackagesForEsimsQuery {
+  /** Optional search filter. */
+  search?: string
+  /** Page number (1-based; bounded). */
+  page?: number
+  /** Items per page (bounded conservatively; provider allows up to 10000 but OneSIM caps). */
+  perPage?: number
+  /** Optional order-by field. */
+  orderBy?: string
+  /** Optional sort direction (default asc). */
+  orderDirection?: 'asc' | 'desc'
+  /** Filter packages by end year (YYYY). */
+  end?: string
+}
+
+/** Conservative page size bounds for POST /esims/find-packages. */
+export const DEFAULT_FIND_PACKAGES_PAGE_SIZE = 25
+export const MAX_FIND_PACKAGES_PAGE_SIZE = 100
+
+/** Conservative maximum provider eSIM UUIDs accepted per find-packages request. */
+export const MAX_FIND_PACKAGES_ESIM_IDS = 20
+
+/**
+ * POST /api/v1/esims/find-packages response envelope. The provider Swagger
+ * example is structurally unusual (a top-level array wrapping a single
+ * `{ data, meta }` object, with `data` entries potentially null). The parser
+ * is conservative: it tolerates the documented paginated envelope and a bare
+ * array, and treats HTTP 204 as an authoritative empty success. It DOES NOT
+ * invent a strict per-item DTO beyond the existing UsMatrixPackage.
+ */
+export interface FindPackagesForEsimsEnvelope {
+  data?: UsMatrixPackage[] | null
+  meta?: {
+    itemsPerPage?: number
+    totalItems?: number
+    currentPage?: number
+    totalPages?: number
+  }
+}
+
+/**
  * POST /api/v1/esims/assign-package request — documented AssignPackageRequestDTO.
  * `package` (required) is the US-Matrix package UUID; `client` (optional) is the
  * client UUID for whitelisted backend integrations. NEVER a local OneSIM id.

@@ -1991,3 +1991,298 @@ describe('US-Matrix add-esims mutation (assignPackagesToEsims — explicit inven
     expect(mockPrisma.provider.findUnique).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('US-Matrix find-packages (POST /api/v1/esims/find-packages — read-only discovery)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+    mockPrisma.provider.update.mockResolvedValue({})
+  })
+
+  it('posts exactly { esims: [...] } to the find-packages path with documented query params', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ data: [{ id: 'pkg-1', name: 'Global 5GB' }], meta: { totalItems: 1 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({
+      esimIds: ['c74ddb5b-f70a-45b0-8be5-59df1e79457e'],
+      search: 'nigeria', page: 1, perPage: 25, orderBy: 'name', orderDirection: 'asc', end: '2026',
+    })
+    expect(r.success).toBe(true)
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/api/v1/esims/find-packages')
+    expect(init.method).toBe('POST')
+    const body = JSON.parse(init.body)
+    expect(body).toEqual({ esims: ['c74ddb5b-f70a-45b0-8be5-59df1e79457e'] })
+    expect(Object.keys(body).sort()).toEqual(['esims'])
+    expect(String(url)).toContain('search=nigeria')
+    expect(String(url)).toContain('page=1')
+    expect(String(url)).toContain('perPage=25')
+    expect(String(url)).toContain('orderBy=name')
+    expect(String(url)).toContain('orderDirection=asc')
+    expect(String(url)).toContain('end=2026')
+    // Bearer auth from stored token.
+    expect(init.headers.Authorization).toBe(`Bearer ${RAW_TOKEN}`)
+  })
+
+  it('never sends a OneSIM local id upstream (provider eSIM UUIDs only)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ data: [], meta: { totalItems: 0 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'], page: 1 })
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    await connector.findCompatiblePackagesForEsims({ esimIds: ['e2'], page: 1 }) // extra call
+    const body2 = JSON.parse(fetchSpy.mock.calls[1][1].body)
+    expect(String(JSON.stringify(body))).not.toMatch(/purchaseId|businessId|orderId|esimId_\d+/)
+    expect(String(JSON.stringify(body2))).toContain('e2')
+  })
+
+  it('deduplicates repeated eSIM UUIDs before transport', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ data: [], meta: { totalItems: 0 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['a', 'b', 'a', 'c'] })
+    expect(r.success).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    expect(body.esims).toEqual(['a', 'b', 'c'])
+  })
+
+  it('rejects empty eSIM list BEFORE transport (no HTTP)', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: [] })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_REQUEST')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('trims blank IDs and keeps non-empty ones (single request)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ data: [], meta: { totalItems: 0 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['  ', '', 'a', ' b '] })
+    expect(r.success).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body)
+    expect(body.esims).toEqual(['a', 'b'])
+  })
+
+  it('all-blank eSIM list → INVALID_REQUEST BEFORE transport (no HTTP)', async () => {
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['  ', '', '   '] })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_REQUEST')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('bounded request size — over MAX_FIND_PACKAGES_ESIM_IDS refused BEFORE transport', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => `esim-${i}`)
+    const fetchSpy = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: many })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('ESIM_LIMIT_EXCEEDED')
+    expect(r.error?.details?.maxEsims).toBe(20)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('parses a 200 paginated-envelope response (data + meta.totalItems)', async () => {
+    const payload = { data: [{ id: 'p-1', name: 'Africa 10GB' }, { id: 'p-2', name: 'Global 5GB' }], meta: { itemsPerPage: 25, totalItems: 150, currentPage: 1, totalPages: 6 } }
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(payload))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(true)
+    expect(r.data?.items?.length).toBe(2)
+    expect(r.data?.total).toBe(150)
+  })
+
+  it('parses the unusual Swagger wrapped-envelope shape [{ data, meta }] filtering null entries', async () => {
+    const payload = [{ data: [null, { id: 'p-1', name: 'Africa 10GB' }], meta: { itemsPerPage: 25, totalItems: 150, currentPage: 1, totalPages: 6 } }]
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(payload))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(true)
+    // Null placeholders never emitted as packages.
+    expect(r.data?.items?.length).toBe(1)
+    expect(r.data?.items?.[0]?.id).toBe('p-1')
+    expect(r.data?.total).toBe(150)
+  })
+
+  it('treats a bare array 200 as the item list', async () => {
+    const payload = [{ id: 'p-1', name: 'Africa 10GB' }, { id: 'p-2', name: 'Global 5GB' }]
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(payload))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(true)
+    expect(r.data?.items?.length).toBe(2)
+    expect(r.data?.total).toBe(2)
+  })
+
+  it('204 → authoritative empty success (items=[], total=0)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(null, 204))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(true)
+    expect(r.data).toEqual({ items: [], total: 0 })
+  })
+
+  it('malformed 200 → INVALID_RESPONSE (NOT empty inventory)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ foo: 'bar' }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_RESPONSE')
+  })
+
+  it.each([
+    ['bare [null]', JSON.stringify([null])],
+    ['[{ foo: "bar" }]', JSON.stringify([{ foo: 'bar' }])],
+    ['{ data: null }', JSON.stringify({ data: null })],
+    ['{ data: {} }', JSON.stringify({ data: {} })],
+    ['{ items: [] }', JSON.stringify({ items: [] })],
+    ['null body', JSON.stringify(null)],
+    ['empty string body', JSON.stringify('')],
+    ['zero body', JSON.stringify(0)],
+  ])('200 malformed shape %s → INVALID_RESPONSE (fail-closed, never empty success)', async (_label, json) => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(JSON.parse(json)))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_RESPONSE')
+  })
+
+  const VALID_PACKAGE = { id: 'p-1', name: 'Africa 10GB' }
+
+  it.each([
+    ['[{ id: "" }]', JSON.stringify([{ id: '' }])],
+    ['[{ id: "   " }]', JSON.stringify([{ id: '   ' }])],
+    ['[null, validPackage]', JSON.stringify([null, VALID_PACKAGE])],
+    ['[validPackage, null]', JSON.stringify([VALID_PACKAGE, null])],
+    ['[{}, null]', JSON.stringify([{}, null])],
+  ])('200 bare array %s → INVALID_RESPONSE (blank-id / mixed-null fail closed)', async (_label, json) => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(JSON.parse(json)))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_RESPONSE')
+  })
+
+  it('explicitly empty bare array 200 → empty success (documented empty case)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(true)
+    expect(r.data).toEqual({ items: [], total: 0 })
+  })
+
+  it('200 envelope { data: [null], meta } with null placeholder → empty success via documented envelope', async () => {
+    const payload = { data: [null], meta: { itemsPerPage: 25, totalItems: 150, currentPage: 1, totalPages: 6 } }
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(payload))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(true)
+    expect(r.data?.items?.length).toBe(0)
+    expect(r.data?.total).toBe(150)
+  })
+
+  it('200 envelope with a non-package object inside data → INVALID_RESPONSE (fail-closed)', async () => {
+    const payload = { data: [{ foo: 'bar' }], meta: { totalItems: 1 } }
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(payload))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_RESPONSE')
+  })
+
+  it('400/401/403 propagate safely (no retry, single request)', async () => {
+    for (const status of [400, 401, 403]) {
+      vi.clearAllMocks()
+      mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+      const fetchSpy = vi.fn().mockResolvedValue(okJson({}, status))
+      vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+      const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+      const r = await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+      expect(r.success).toBe(false)
+      expect(r.error?.code).toBe(`HTTP_${status}`)
+      expect(fetchSpy).toHaveBeenCalledTimes(1) // no retry
+    }
+  })
+
+  it('never calls add-esims / assign-package / activateESIM and never mutates', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ data: [], meta: { totalItems: 0 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    await connector.findCompatiblePackagesForEsims({ esimIds: ['esim-uuid-1'] })
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('/esims/find-packages')
+    expect(url).not.toContain('/add-esims')
+    expect(url).not.toContain('/assign-package')
+    // Read-only: no wallet/order/eSIM writes.
+    expect(mockPrisma.provider.update).not.toHaveBeenCalled()
+  })
+})
+
+describe('US-Matrix GET /esims HTTP 204 handling (endpoint-specific empty success)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+    mockPrisma.provider.update.mockResolvedValue({})
+  })
+
+  it('204 → success items=[] total=0 (allocated=false, hasPackage=true)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(null, 204))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.listEsims({ allocated: false, hasPackage: true, limit: 200, offset: 0 })
+    expect(r.success).toBe(true)
+    expect(r.data).toEqual({ items: [], total: 0 })
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('allocated=false')
+    expect(url).toContain('hasPackage=true')
+  })
+
+  it('204 → success items=[] total=0 (allocated=true, hasPackage=false)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson(null, 204))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.listEsims({ allocated: true, hasPackage: false, limit: 200, offset: 0 })
+    expect(r.success).toBe(true)
+    expect(r.data).toEqual({ items: [], total: 0 })
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('allocated=true')
+    expect(url).toContain('hasPackage=false')
+  })
+
+  it('200 empty array remains empty success (total=0)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.listEsims({ allocated: false, limit: 200, offset: 0 })
+    expect(r.success).toBe(true)
+    expect(r.data).toEqual({ items: [], total: 0 })
+  })
+
+  it('malformed 200 remains INVALID_RESPONSE (204 handled separately)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ foo: 'bar' }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.listEsims({ allocated: false, limit: 200, offset: 0 })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_RESPONSE')
+  })
+})

@@ -37,7 +37,7 @@
  */
 import { prisma } from '@/lib/prisma'
 import { decryptToken, encryptToken } from '@/lib/encryption'
-import { usMatrixEndpointPath, buildUsMatrixUrl, normalizeUsMatrixBaseUrl, type UsMatrixEndpoint, type UsMatrixPaginated, type UsMatrixPackage, type UsMatrixEsim, type UsMatrixEsimsQuery, type UsMatrixSigninRequest, type UsMatrixSigninResponse, type AssignPackageRequestDTO, type AssignPackageResponseDTO, type AddEsimInPackagesRequestDTO, type AddEsimInPackagesResponseEnvelope, type GetPackageUsageRequestDTO, type GetPackageUsageResponseDTO, type RateGroupDTO, type SuspendEsimRequestDTO, type UnsuspendEsimRequestDTO, type RemoveEsimFromPackageRequestDTO, type AvailabilityCountRequestDTO, type CountryDTO, type ListCountriesResponseDTO, type GetEsimInfoRequestDTO, type GetEsimInfoResponseDTO, type ActivationProfileDTO, type ProfileLogDTO, type NetworkEventLogDTO, type LocationLogsRequestDTO, type MobileDetailPackageEsimDTO, type UsMatrixPackageInventoryStatus, type PackageInventoryStatusResult, DEFAULT_MAX_ADD_ESIMS_ASSOCIATIONS, ABSOLUTE_MAX_ADD_ESIMS_ASSOCIATIONS, DEFAULT_ESIMS_PAGE_SIZE, MAX_ESIMS_PAGE_SIZE } from './usmatrix-endpoints'
+import { usMatrixEndpointPath, buildUsMatrixUrl, normalizeUsMatrixBaseUrl, type UsMatrixEndpoint, type UsMatrixPaginated, type UsMatrixPackage, type UsMatrixEsim, type UsMatrixEsimsQuery, type UsMatrixSigninRequest, type UsMatrixSigninResponse, type AssignPackageRequestDTO, type AssignPackageResponseDTO, type AddEsimInPackagesRequestDTO, type AddEsimInPackagesResponseEnvelope, type FindPackagesForEsimsRequestDTO, type FindPackagesForEsimsQuery, type FindPackagesForEsimsEnvelope, type GetPackageUsageRequestDTO, type GetPackageUsageResponseDTO, type RateGroupDTO, type SuspendEsimRequestDTO, type UnsuspendEsimRequestDTO, type RemoveEsimFromPackageRequestDTO, type AvailabilityCountRequestDTO, type CountryDTO, type ListCountriesResponseDTO, type GetEsimInfoRequestDTO, type GetEsimInfoResponseDTO, type ActivationProfileDTO, type ProfileLogDTO, type NetworkEventLogDTO, type LocationLogsRequestDTO, type MobileDetailPackageEsimDTO, type UsMatrixPackageInventoryStatus, type PackageInventoryStatusResult, DEFAULT_MAX_ADD_ESIMS_ASSOCIATIONS, ABSOLUTE_MAX_ADD_ESIMS_ASSOCIATIONS, DEFAULT_ESIMS_PAGE_SIZE, MAX_ESIMS_PAGE_SIZE, DEFAULT_FIND_PACKAGES_PAGE_SIZE, MAX_FIND_PACKAGES_PAGE_SIZE, MAX_FIND_PACKAGES_ESIM_IDS } from './usmatrix-endpoints'
 import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput, DiagnosticInfo, StatusLookupEsim, StatusLookupIdentifier, AssignPackagesToEsimsInput, AssignPackagesToEsimsResult } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
@@ -487,6 +487,14 @@ export class UsMatrixConnector implements IProviderConnector {
     })
     if (!result.success) return { success: false, error: result.error }
 
+    // Provider HTTP 204 on GET /esims means an authoritative EMPTY match set
+    // (e.g. allocated=false & hasPackage=true, or allocated=true & hasPackage=false).
+    // This is endpoint/method-specific — do NOT treat every USMatrix 204 as
+    // fulfillment success. Scoped here: this method is GET /esims only.
+    if (result.status === 204) {
+      return { success: true, data: { items: [], total: 0 } }
+    }
+
     const raw = result.data as any
 
     // Conservative envelope parsing. Documented shape is a paginated list;
@@ -515,6 +523,150 @@ export class UsMatrixConnector implements IProviderConnector {
     }
 
     return { success: true, data: { items, total: total ?? items.length } }
+  }
+
+  /**
+   * READ-ONLY compatibility discovery: POST /api/v1/esims/find-packages.
+   * "Find compatible packages for eSIMs" — the POST transport is discovery only;
+   * it NEVER mutates, NEVER calls add-esims/assign-package/activateESIM, and
+   * NEVER touches orders or wallets.
+   *
+   * Validation before transport:
+   *  - at least one provider eSIM UUID required,
+   *  - malformed/empty IDs rejected before HTTP,
+   *  - duplicates deduplicated (first-seen order),
+   *  - bounded maximum eSIM UUIDs per request (MAX_FIND_PACKAGES_ESIM_IDS).
+   *
+   * Request: only documented query params + body `{ esims: [...] }`.
+   * Responses:
+   *  - 204 → authoritative empty success (success=true, items=[], total=0),
+   *  - 200 → conservative paginated-envelope parse (never malformed-200 as empty),
+   *  - 400/401/403 → propagated safely.
+   * NO automatic retry (this is a POST; read-only semantics but a 401/timeout/
+   * 5xx is surfaced, never blindly re-POSTed).
+   */
+  async findCompatiblePackagesForEsims(
+    input: { esimIds: string[] } & FindPackagesForEsimsQuery,
+  ): Promise<ConnectorResult<{ items: UsMatrixPackage[]; total: number }>> {
+    const config = await this.loadConfig()
+    if (!config) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not found' } }
+    if (!config.token) return { success: false, error: { code: 'NO_TOKEN', message: 'Not authenticated — run Save & Authenticate first' } }
+
+    // Normalize + require at least one non-empty eSIM UUID.
+    const uniqueEsims: string[] = []
+    const seen = new Set<string>()
+    for (const raw of input.esimIds || []) {
+      const id = String(raw).trim()
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      uniqueEsims.push(id)
+    }
+    if (uniqueEsims.length === 0) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'At least one non-empty provider eSIM UUID is required' } }
+    }
+    if (uniqueEsims.length > MAX_FIND_PACKAGES_ESIM_IDS) {
+      return {
+        success: false,
+        error: {
+          code: 'ESIM_LIMIT_EXCEEDED',
+          message: `find-packages accepts at most ${MAX_FIND_PACKAGES_ESIM_IDS} eSIM UUIDs per request (got ${uniqueEsims.length})`,
+          details: { esimCount: uniqueEsims.length, maxEsims: MAX_FIND_PACKAGES_ESIM_IDS },
+        },
+      }
+    }
+
+    // Conservative page/perPage bounds.
+    const page = Number.isFinite(input.page) && input.page! > 0 ? Math.floor(input.page!) : 1
+    const perPage = Math.min(
+      Number.isFinite(input.perPage) && input.perPage! > 0 ? Math.floor(input.perPage!) : DEFAULT_FIND_PACKAGES_PAGE_SIZE,
+      MAX_FIND_PACKAGES_PAGE_SIZE,
+    )
+
+    const query: Record<string, string | number | undefined> = { page, perPage }
+    if (input.search) query.search = input.search
+    if (input.orderBy) query.orderBy = input.orderBy
+    if (input.orderDirection) query.orderDirection = input.orderDirection
+    if (input.end) query.end = input.end
+
+    const body: FindPackagesForEsimsRequestDTO = { esims: uniqueEsims }
+    const result = await this.request('esimFindPackages', { method: 'POST', body, query })
+
+    if (!result.success) {
+      // Propagate safely (400/401/403/5xx/timeout). Discovery-only → never retry.
+      return { success: false, error: result.error }
+    }
+
+    // 204 = authoritative empty success.
+    if (result.status === 204) {
+      return { success: true, data: { items: [], total: 0 } }
+    }
+
+    // Conservative 200 parse. The provider Swagger example wraps the paginated
+    // envelope in a top-level array (`[{ data: [...], meta: {...} }]`), where
+    // `data` entries may be null placeholders. Tolerate:
+    //   A) wrapped envelope  -> [{ data, meta }]
+    //   B) bare envelope     -> { data, meta }
+    //   C) bare item array   -> [package, ...]  (EVERY element must be a
+    //      package-shaped object; nulls / non-package objects are rejected)
+    //
+    // Null entries inside a DOCUMENTED envelope (A/B) are tolerated as
+    // placeholders and dropped. A bare array is only a valid empty success when
+    // it is an explicitly empty array ([]). A bare `[null]` or `[{ foo }]` is an
+    // UNDOCUMENTED/INVALID shape and fails closed (INVALID_RESPONSE) — null
+    // filtering must never turn an invalid provider response into valid empty
+    // inventory. Malformed 200 is NEVER treated as empty legitimate inventory.
+    const isPackageLike = (x: unknown): x is UsMatrixPackage => !!x && typeof x === 'object'
+      && typeof (x as any).id === 'string' && String((x as any).id).trim() !== ''
+
+    // Envelope data list: accepts null placeholders (dropped) but REJECTS any
+    // non-null, non-package-shaped entry.
+    const parseEnvelopeData = (data: unknown[] | null | undefined): UsMatrixPackage[] | null => {
+      const arr = data || []
+      if (!Array.isArray(arr)) return null
+      const items: UsMatrixPackage[] = []
+      for (const entry of arr) {
+        if (entry == null) continue // documented null placeholder
+        if (!isPackageLike(entry)) return null // non-package object → fail closed
+        items.push(entry)
+      }
+      return items
+    }
+
+    const raw = result.data as any
+    let parsedItems: UsMatrixPackage[] | null = null
+    let parsedTotal: number | undefined
+
+    if (Array.isArray(raw)) {
+      const first = raw[0]
+      const isWrappedEnvelope = raw.length === 1 && !!first && typeof first === 'object'
+        && Array.isArray((first as any).data) && !!((first as any).meta) && typeof (first as any).meta === 'object'
+      if (isWrappedEnvelope) {
+        const env = first as FindPackagesForEsimsEnvelope
+        parsedItems = parseEnvelopeData(env.data)
+        const t = Number(env.meta?.totalItems)
+        parsedTotal = Number.isFinite(t) && t >= 0 ? t : (parsedItems?.length ?? 0)
+      } else if (raw.length === 0) {
+        parsedItems = []
+        parsedTotal = 0
+      } else {
+        // Bare item array — EVERY element must be a package-shaped object.
+        const allPackageLike = raw.every((x: unknown) => isPackageLike(x))
+        if (allPackageLike) {
+          parsedItems = raw as UsMatrixPackage[]
+          parsedTotal = parsedItems.length
+        }
+      }
+    } else if (raw && typeof raw === 'object' && Array.isArray((raw as any).data)) {
+      const env = raw as FindPackagesForEsimsEnvelope
+      parsedItems = parseEnvelopeData(env.data)
+      const t = Number(env.meta?.totalItems)
+      parsedTotal = Number.isFinite(t) && t >= 0 ? t : (parsedItems?.length ?? 0)
+    }
+
+    if (parsedItems === null) {
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'find-packages returned an unrecognized response shape' } }
+    }
+    return { success: true, data: { items: parsedItems, total: parsedTotal ?? parsedItems.length } }
   }
 
   /**
