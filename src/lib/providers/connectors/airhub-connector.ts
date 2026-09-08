@@ -1104,23 +1104,25 @@ export class AirHubConnector implements IProviderConnector {
     if (!tokenResult.success) return { success: false, error: tokenResult.error }
 
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
-    // The documented AirHub order-detail read is POST /api/ESIM/GetActivationCode,
-    // keyed by the purchase-returned AirHub `orderid` (array). There is NO
-    // /api/ESIM/OrderDetails endpoint (it returns HTTP 404). The identifier must
-    // be the provider-owned order reference — never a local OneSIM id and never
-    // an ICCID (this endpoint does not accept ICCIDs).
-    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/GetActivationCode`
+    // The documented AirHub EXISTING-ORDER recovery read is
+    // POST /api/ESIM/GetOrderDetail with `{ partnerCode, flag: 1 }`: it returns
+    // the latest 300 order records (flag=1; fromDate/toDate are NOT required in
+    // this mode). The identifier must be the provider-owned order reference —
+    // never a local OneSIM id and never an ICCID (this endpoint returns a
+    // recent-order collection; the requested reference is matched exactly).
+    const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/GetOrderDetail`
     const cfg = (provider.config as any) || {}
     const partnerCode = normalizePartnerCode(cfg.partnerCode)
     if (partnerCode === null) {
       return { success: false, error: { code: 'AIRHUB_PARTNER_CODE_MISSING', message: 'AirHub partnerCode is not configured. Authenticate to derive and persist it from the login response.' } }
     }
-    const body = { partnerCode: Number(partnerCode), orderid: [String(subscriptionId)] }
+    // flag=1 → latest 300 orders; fromDate/toDate are only mandatory for flag=2.
+    const body = { partnerCode: Number(partnerCode), flag: 1 }
 
-    console.log(`[AIRHUB_STATUS] correlationId=${correlationId} endpoint=/api/ESIM/GetActivationCode orderid=${subscriptionId}`)
+    console.log(`[AIRHUB_STATUS] correlationId=${correlationId} endpoint=/api/ESIM/GetOrderDetail flag=1 orderRef=${subscriptionId}`)
 
     try {
-      // READ-ONLY transport hardening for GetActivationCode:
+      // READ-ONLY transport hardening for GetOrderDetail:
       //  - state auth (line 1104) loads the persisted token, so a fresh
       //    connector never sends an empty `Authorization: Bearer `.
       //  - a documented HTTP 200 that arrives EMPTY or NON-JSON is a transient
@@ -1128,7 +1130,8 @@ export class AirHubConnector implements IProviderConnector {
       //    (max 2 read calls).
       //  - an HTTP 401 triggers ONE auth refresh + ONE retry (max 2 status
       //    calls total, never more than one refresh). Only read endpoints are
-      //    touched — never a purchase endpoint.
+      //    touched — never a purchase endpoint. This read-only retry policy
+      //    MUST NOT affect PurhaseSim.
       let parsedData: any = null
       const MAX_READ_ATTEMPTS = 2
       for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
@@ -1205,23 +1208,43 @@ export class AirHubConnector implements IProviderConnector {
         }
       }
 
-      // Normalize the documented GetActivationCode shape: rows live under
+      // Normalize the documented GetOrderDetail shape: rows live under
       // `getOrderdetails: [...]`, each with orderId + simID + activationCode.
-      // The requested provider order reference is matched deterministically
-      // (never blindly trusting rows[0] when multiple orders are returned).
-      const extraction = this.extractGetActivationCodeRow(data, String(subscriptionId))
+      // The requested provider order reference is matched deterministically by
+      // exact orderId equality (never blindly trusting rows[0] when multiple
+      // orders are returned, never falling back to another order).
+      const extraction = this.extractGetOrderDetailRow(data, String(subscriptionId))
       if (extraction.state === 'NOT_FOUND') {
-        return { success: false, error: { code: 'NOT_FOUND', message: `AirHub returned no activation record for order ${subscriptionId}` } }
+        return { success: false, error: { code: 'NOT_FOUND', message: `AirHub returned no order-detail record for order ${subscriptionId}` } }
+      }
+      if (extraction.state === 'MULTIPLE') {
+        // Conflicting duplicate order rows (distinct non-empty simID/ICCID
+        // identities for the SAME requested orderId): fail safe — never
+        // finalize one arbitrarily. Reconciliation keeps the wallet held.
+        return {
+          success: false,
+          error: {
+            code: 'AMBIGUOUS_ORDER_IDENTITY',
+            message: `AirHub returned conflicting identities for order ${subscriptionId}`,
+            details: { retryable: false, providerStatus: 200 },
+          },
+        }
       }
       const row: any = extraction.row || {}
       const rawStatus = row.status || row.orderStatus || data.status || data.orderStatus || ''
 
-      // Fulfillment evidence: AirHub uses simID for the provisioned SIM id and
-      // activationCode for the LPA activation payload. simID is normalized into
-      // the canonical iccid/iccids identifier.
+      // Fulfillment evidence: AirHub confirmed that `simID` IS the actual ICCID
+      // of the eSIM, and activationCode is the LPA activation payload. simID is
+      // normalized into the canonical iccid/iccids identifier.
       const simValue = row.simID ?? row.simId ?? row.sim_id ?? row.iccid ?? row.iccidNumber
       const iccids: string[] = simValue != null && String(simValue).trim() !== '' ? [String(simValue)] : this.extractIccids(row, 0)
+
+      // Malformed/whitespace simID must NEVER fabricate an ICCID. Only a
+      // non-empty trimmed simID is fulfillment identity. When simID is present
+      // but activationCode is absent, ICCID identity still suffices for
+      // fulfillment (installation data may arrive later).
       const activationCode = row.activationCode || row.activation_code || undefined
+      const hasSimIdentity = iccids.length > 0 && iccids.every((i) => String(i).trim() !== '')
 
       // IMPORTANT SEMANTICS: OneSIM fulfillment is ICCID-backed. Fulfillment is
       // only considered READY once a real SIM/ICCID identity exists:
@@ -1229,10 +1252,11 @@ export class AirHubConnector implements IProviderConnector {
       //   - activationCode present but simID/ICCID absent → NOT fulfillment-ready
       //     (installation data alone cannot create an eSIM record); activationCode
       //     is still forwarded as diagnostic install evidence for later use, but
-      //     status must NOT become ACTIVE.
-      // `isActive=false` describes network activity of an already-DELIVERED eSIM;
-      // it never blocks fulfillment and is kept only as diagnostic metadata.
-      const fulfilled = iccids.length > 0
+      //     status must NOT become ACTIVE. Never create an eSIM from
+      //     activationCode alone.
+      // `isActive=false` describes device network activity of an already-DELIVERED
+      // eSIM; it never blocks provisioning finalization when simID exists.
+      const fulfilled = hasSimIdentity
       const status = this.normalizeStatusValue(rawStatus, fulfilled)
 
       const install = {
@@ -1294,35 +1318,40 @@ private logStatusReadDiagnostic(correlationId: string, httpStatus: number, conte
 }
 
 /**
- * Extract the order row from a documented GetActivationCode response.
-   *
-   * Canonical shape (live-verified): `{ isSuccess, message, getOrderdetails: [] }`
-   * where each row carries `orderId` + `simID`/`activationCode`. The requested
-   * provider order reference is matched against `row.orderId`/`row.orderid`
-   * deterministically so multiple returned rows never mis-target another order.
-   * Legacy shapes (`data.data` array/object, or a bare object) are still
-   * supported leniently (first row) for backward compatibility.
-   *
-   * Returns:
-   *   FOUND       — a row matching the requested reference (or a legacy row)
-   *   EMPTY       — getOrderdetails is present but empty → no fulfillment
-   *   NOT_FOUND   — getOrderdetails has rows but none match the requested order
-   */
-  private extractGetActivationCodeRow(envelope: any, providerRef: string): { row: any | null; state: 'FOUND' | 'EMPTY' | 'NOT_FOUND' } {
-    if (Array.isArray(envelope?.getOrderdetails)) {
-      const rows = envelope.getOrderdetails as any[]
-      if (rows.length === 0) return { row: null, state: 'EMPTY' }
-      const match = rows.find((r) => r && String(r.orderId ?? r.orderid ?? '') === String(providerRef))
-      if (!match) return { row: null, state: 'NOT_FOUND' }
-      return { row: match, state: 'FOUND' }
-    }
+ * Extract the order row from a documented GetOrderDetail response.
+ *
+ * Canonical shape (live-verified): `{ isSuccess, message, getOrderdetails: [] }`
+ * where each row carries `orderId` + `simID`/`activationCode`. The requested
+ * provider order reference is matched against `row.orderId`/`row.orderid` by
+ * EXACT string-normalized equality — a multi-row collection is never
+ * mis-targeted and rows[0] is never trusted merely because rows exist.
+ *
+ * Returns:
+ *   FOUND       — exactly one row matches the requested reference
+ *   MULTIPLE    — >1 row matches AND they carry DISTINCT non-empty
+ *                 simID/ICCID identities → ambiguous, never finalize
+ *   EMPTY       — order collection is present but empty → no fulfillment
+ *   NOT_FOUND   — rows exist but none match the requested order
+ */
+private extractGetOrderDetailRow(envelope: any, providerRef: string): { row: any | null; state: 'FOUND' | 'MULTIPLE' | 'EMPTY' | 'NOT_FOUND' } {
+  const requested = String(providerRef).trim()
+  const rows = Array.isArray(envelope?.getOrderdetails) ? envelope.getOrderdetails as any[]
+    : Array.isArray(envelope?.data) ? envelope.data as any[]
+    : []
+  if (rows.length === 0) return { row: null, state: 'EMPTY' }
 
-    const legacyArray = Array.isArray(envelope?.data) ? envelope.data : Array.isArray(envelope) ? envelope : []
-    if (legacyArray.length > 0) return { row: legacyArray[0], state: 'FOUND' }
-    const single = envelope?.data && typeof envelope.data === 'object' ? envelope.data : envelope
-    if (single && typeof single === 'object' && !Array.isArray(single)) return { row: single, state: 'FOUND' }
-    return { row: null, state: 'EMPTY' }
-  }
+  const matches = rows.filter((r) => r && String(r.orderId ?? r.orderid ?? '').trim() === requested)
+  if (matches.length === 0) return { row: null, state: 'NOT_FOUND' }
+
+  // Duplicate matching rows with a single consistent (or absent) identity may
+  // normalize; conflicting non-empty identities must fail safe.
+  const identities = matches
+    .map((m) => String(m.simID ?? m.simId ?? m.sim_id ?? m.iccid ?? m.iccidNumber ?? '').trim())
+    .filter(Boolean)
+  if (new Set(identities).size > 1) return { row: null, state: 'MULTIPLE' }
+
+  return { row: matches[0], state: 'FOUND' }
+}
 
   /** Maps a raw AirHub status string (or detected fulfillment) into the canonical lifecycle value. */
   private normalizeStatusValue(raw: unknown, fulfilled: boolean): string {
@@ -1356,10 +1385,10 @@ private logStatusReadDiagnostic(correlationId: string, httpStatus: number, conte
   }
 
   /**
-   * AirHub GetActivationCode is keyed by the purchase-returned AirHub order id
-   * (orderid), so the status lookup must use the provider-owned reference —
-   * never a local OneSIM id and never an ICCID. Returns null when no order
-   * reference exists so the caller skips.
+   * AirHub GetOrderDetail (flag=1) recovers an EXISTING order by its
+   * purchase-returned AirHub order id, so the status lookup must use the
+   * provider-owned order reference — never a local OneSIM id and never an
+   * ICCID. Returns null when no order reference exists so the caller skips.
    */
   resolveStatusLookup(esim: StatusLookupEsim): string | null {
     return esim.providerSubscriptionId || esim.providerActivationId || null

@@ -1613,10 +1613,10 @@ describe('syncPlans travel-date metadata', () => {
   })
 
 describe('getStatus', () => {
-    it('queries the documented GetActivationCode endpoint keyed by provider orderid', async () => {
+    it('queries the documented GetOrderDetail endpoint (flag=1) keyed by exact provider order reference', async () => {
       mockFetchSuccess({
         isSuccess: true,
-        data: { status: 'ACTIVATED', iccid: '8901234567890123456' },
+        getOrderdetails: [{ orderId: 'AH-789', simID: '8901234567890123456' }],
       })
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
@@ -1624,19 +1624,21 @@ describe('getStatus', () => {
 
       expect(result.success).toBe(true)
       const [url, opts] = fetchSpy.mock.calls[0]
-      expect(url).toContain('/api/ESIM/GetActivationCode')
-      expect(url).not.toContain('OrderDetails')
+      expect(url).toContain('/api/ESIM/GetOrderDetail')
+      expect(String(url)).not.toContain('GetActivationCode')
       const body = JSON.parse(opts.body)
       expect(body.partnerCode).toBe(200652387)
-      expect(body.orderid).toEqual(['AH-789'])
-      expect(body.orderId).toBeUndefined()
-      expect(body.iccid).toBeUndefined()
+      expect(body.flag).toBe(1)
+      // flag=1 → latest 300 orders: fromDate/toDate are NOT sent.
+      expect(body.fromDate).toBeUndefined()
+      expect(body.toDate).toBeUndefined()
+      expect(body.orderid).toBeUndefined()
     })
 
     it('returns ACTIVE status for an activated order with ICCID normalized', async () => {
       mockFetchSuccess({
         isSuccess: true,
-        data: { status: 'ACTIVATED', iccid: '8901234567890123456' },
+        getOrderdetails: [{ orderId: 'AH-789', status: 'ACTIVATED', simID: '8901234567890123456' }],
       })
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
@@ -1651,7 +1653,7 @@ describe('getStatus', () => {
     it('normalizes a completed order with simID into canonical ACTIVE + ICCID', async () => {
       mockFetchSuccess({
         isSuccess: true,
-        data: { simID: '8912345678901222222', activationCode: 'LPA:1$smdp.example.com$CODE', message: 'success' },
+        getOrderdetails: [{ orderId: 12811381, simID: '8912345678901222222', activationCode: 'LPA:1$smdp.example.com$CODE' }],
       })
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
@@ -1667,7 +1669,7 @@ describe('getStatus', () => {
     it('returns PROCESSING status while queued', async () => {
       mockFetchSuccess({
         isSuccess: true,
-        data: { status: 'QUEUED' },
+        getOrderdetails: [{ orderId: 'AH-PEND', status: 'QUEUED' }],
       })
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
@@ -1678,7 +1680,7 @@ describe('getStatus', () => {
     })
 
     it('returns PENDING when no status and no fulfillment evidence', async () => {
-      mockFetchSuccess({ isSuccess: true, data: { message: 'processing' } })
+      mockFetchSuccess({ isSuccess: true, getOrderdetails: [{ orderId: 'AH-PEND', apn: 'internet' }] })
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.getStatus('AH-PEND')
@@ -1688,7 +1690,7 @@ describe('getStatus', () => {
     })
 
     it('reports explicit FAILED status without inventing PENDING', async () => {
-      mockFetchSuccess({ isSuccess: true, data: { status: 'FAILED', message: 'order failed' } })
+      mockFetchSuccess({ isSuccess: true, getOrderdetails: [{ orderId: 'AH-BAD', status: 'FAILED', message: 'order failed' }] })
 
       const connector = new AirHubConnector('airhub-1', 'test-token')
       const result = await connector.getStatus('AH-BAD')
@@ -1883,8 +1885,8 @@ describe('getStatus', () => {
     })
 
     it('H. HTTP 401 → ONE refresh, then retries successfully with the new token (max 2 status calls)', async () => {
-      // attempt 1: GetActivationCode → 401; refresh (login) → 200 ok token;
-      // attempt 2: GetActivationCode → 200 success. Never more than 2 status calls.
+      // attempt 1: GetOrderDetail → 401; refresh (login) → 200 ok token;
+      // attempt 2: GetOrderDetail → 200 success. Never more than 2 status calls.
       fetchSpy
         .mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Error', text: () => Promise.resolve(JSON.stringify({ message: 'unauthorized' })), headers: { get: () => 'application/json' } })
         .mockResolvedValueOnce({ ok: true, status: 200, statusText: 'OK', text: () => Promise.resolve(JSON.stringify({ isSuccess: true, token: 'refreshed-token-999', data: {} })), headers: { get: () => 'application/json' } })
@@ -1895,9 +1897,9 @@ describe('getStatus', () => {
 
       expect(result.success).toBe(true)
       expect(result.data?.status).toBe('ACTIVE')
-      // GetActivationCode x2 + the one login refresh = 3 fetch calls, of which
+      // GetOrderDetail x2 + the one login refresh = 3 fetch calls, of which
       // exactly 2 hit the status endpoint.
-      const statusCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/api/ESIM/GetActivationCode'))
+      const statusCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/api/ESIM/GetOrderDetail'))
       expect(statusCalls).toHaveLength(2)
       // The second status call must carry the refreshed plaintext token, not empty/null/undefined.
       const retryAuth = statusCalls[1][1].headers['Authorization']
@@ -1938,7 +1940,7 @@ describe('getStatus', () => {
       expect(result.success).toBe(true)
       expect(result.data?.status).toBe('ACTIVE')
       const [url, opts] = fetchSpy.mock.calls[0]
-      expect(String(url)).toContain('/api/ESIM/GetActivationCode')
+      expect(String(url)).toContain('/api/ESIM/GetOrderDetail')
       const auth = opts.headers['Authorization']
       // makeProvider() stores apiToken 'enc:encrypted-test-token' → decrypts to 'encrypted-test-token'.
       expect(auth).toBe('Bearer encrypted-test-token')
@@ -2097,6 +2099,132 @@ describe('getStatus', () => {
       expect(logs).not.toContain('89012345678901333333')
       expect(logs).not.toContain('test-token')
       logSpy.mockRestore()
+    })
+
+    it('reconciliation-read surface (getStatus) issues ONLY GetOrderDetail — NEVER PurhaseSim', async () => {
+      mockFetchSuccess({ isSuccess: true, message: 'Successfull', getOrderdetails: [{ orderId: 12811381, simID: '89012345678901234567' }] })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      // Every fetch in this read must hit GetOrderDetail, never PurhaseSim.
+      expect(fetchSpy).toHaveBeenCalled()
+      for (const call of fetchSpy.mock.calls) {
+        const u = String(call[0])
+        expect(u).toContain('/api/ESIM/GetOrderDetail')
+        expect(u).not.toContain('/PurhaseSim')
+      }
+    })
+
+    it('exact matching works for numeric orderId when the requested reference is a string', async () => {
+      mockFetchSuccess({
+        isSuccess: true, message: 'Successfull',
+        getOrderdetails: [
+          { orderId: 12812600, simID: '89999999999999999999' },
+          { orderId: 12812601, simID: '89012345678901234567', activationCode: 'LPA:1$smdp.example.com$CODE' },
+        ],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12812601')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['89012345678901234567'])
+      expect(result.data?.rawMetadata?.providerOrderId).toBe('12812601')
+    })
+
+    it('exact matching works for string orderId', async () => {
+      mockFetchSuccess({
+        isSuccess: true, message: 'Successfull',
+        getOrderdetails: [
+          { orderId: 'AH-999', simID: '89999999999999999999' },
+          { orderId: ' AH-789 ', simID: '89012345678901234567' },
+        ],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('AH-789')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['89012345678901234567'])
+    })
+
+    it('MULTIPLE: conflicting duplicate rows for the same order → AMBIGUOUS_ORDER_IDENTITY (never finalize)', async () => {
+      mockFetchSuccess({
+        isSuccess: true, message: 'Successfull',
+        getOrderdetails: [
+          { orderId: 12811381, simID: '89012345678901111111' },
+          { orderId: 12811381, simID: '89012345678902222222' },
+        ],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AMBIGUOUS_ORDER_IDENTITY')
+    })
+
+    it('MULTIPLE: duplicate rows with identical simID normalize as a single FOUND', async () => {
+      mockFetchSuccess({
+        isSuccess: true, message: 'Successfull',
+        getOrderdetails: [
+          { orderId: 12811381, simID: '89012345678901234567' },
+          { orderId: 12811381, simID: '89012345678901234567' },
+        ],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.iccids).toEqual(['89012345678901234567'])
+    })
+
+    it('malformed/whitespace simID never fabricates an ICCID (PENDING, no iccids)', async () => {
+      mockFetchSuccess({
+        isSuccess: true, message: 'Successfull',
+        getOrderdetails: [{ orderId: 12811381, simID: '   ', apn: 'internet' }],
+      })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('PENDING')
+      expect(result.data?.iccids).toBeUndefined()
+      expect(result.data?.iccid).toBeUndefined()
+    })
+
+    it('empty order list → PENDING (no fulfillment, never another order)', async () => {
+      mockFetchSuccess({ isSuccess: true, message: 'Successfull', getOrderdetails: [] })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('PENDING')
+      expect(result.data?.iccids).toBeUndefined()
+    })
+
+    it('getStatus 401 bounded retry: still 401 on second attempt → AUTH_ERROR, exactly 2 status calls, no loop', async () => {
+      // status#1: GetOrderDetail → 401; refresh (login) → 200 token;
+      // status#2: GetOrderDetail → 401 again (attempt === MAX) → bounded failure.
+      fetchSpy
+        .mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Error', text: () => Promise.resolve(JSON.stringify({ message: 'unauthorized' })), headers: { get: () => 'application/json' } })
+        .mockResolvedValueOnce({ ok: true, status: 200, statusText: 'OK', text: () => Promise.resolve(JSON.stringify({ isSuccess: true, token: 'refreshed-token-999', data: {} })), headers: { get: () => 'application/json' } })
+        .mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Error', text: () => Promise.resolve(JSON.stringify({ message: 'still unauthorized' })), headers: { get: () => 'application/json' } })
+
+      const connector = new AirHubConnector('airhub-1', 'test-token')
+      const result = await connector.getStatus('12811381')
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('AUTH_ERROR')
+      // Exactly 2 status reads (the login refresh is a separate auth call).
+      const statusCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/api/ESIM/GetOrderDetail'))
+      expect(statusCalls).toHaveLength(2)
     })
   })
 
