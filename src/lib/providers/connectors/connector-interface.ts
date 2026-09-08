@@ -671,6 +671,28 @@ export interface IProviderConnector {
    * inconclusive).
    */
   reconcileAmbiguousPurchase?(input: AmbiguousPurchaseReconcileInput): Promise<ConnectorResult<AmbiguousPurchaseReconcileResult>>
+  /**
+   * Provider-neutral EXPLICIT inventory-management capability: assign one or
+   * more provider package UUIDs to one or more provider eSIM UUIDs (the
+   * provider's inventory-side association endpoint, e.g. US-Matrix
+   * POST /esims/add-esims).
+   *
+   * Semantics and caller obligations:
+   *  - It creates eSIM↔package ASSOCIATIONS; it is NOT the customer purchase
+   *    path and MUST NOT be used for a customer checkout (that stays
+   *    activateESIM).
+   *  - The Cartesian association count (unique esims × unique packages) is
+   *    computed before transport and returned; connectors REFUSE operations
+   *    above their conservative ceiling unless an explicit bounded override
+   *    (`maxAssociations`) is supplied.
+   *  - Mutation safety mirrors P0: exactly one HTTP mutation, no automatic
+   *    retry on timeout/network/5xx, no mutation replay after a post-dispatch
+   *    401; ambiguous transport outcomes are surfaced with
+   *    error.details.ambiguous === true.
+   *  - It never touches wallets/orders and is never called from activateESIM.
+   * Optional — absent where the provider has no inventory-side association.
+   */
+  assignPackagesToEsims?(input: AssignPackagesToEsimsInput): Promise<ConnectorResult<AssignPackagesToEsimsResult>>
 }
 
 /** Input for a provider-neutral ambiguous-purchase reconciliation. */
@@ -690,6 +712,51 @@ export interface AmbiguousPurchaseReconcileResult {
   imsi?: string
   reason?: 'unique-match' | 'no-match' | 'multiple-matches' | 'inconclusive'
   evidence?: Record<string, unknown>
+}
+
+/**
+ * Input for an explicit provider inventory-side association operation
+ * (e.g. US-Matrix POST /esims/add-esims). Provider UUIDs only — never a local
+ * OneSIM id. The provider creates a CARTESIAN product: every eSIM is associated
+ * with every package.
+ *
+ * `maxAssociations` is a BEARING operator override (safe upper bound = unique
+ * esims × unique packages). When absent, the connector applies its configured
+ * conservative ceiling and refuses above it. This is OneSIM-side protection —
+ * it is NOT a claim that the provider documents a maximum.
+ */
+export interface AssignPackagesToEsimsInput {
+  /** Provider eSIM UUIDs to associate (deduped, non-empty required). */
+  esimIds: string[]
+  /** Provider package UUIDs to associate (deduped, non-empty required). */
+  packageIds: string[]
+  /** Optional provider client UUID for permission scoping. */
+  clientId?: string
+  /** Optional explicit operator ceiling on the Cartesian association count. */
+  maxAssociations?: number
+}
+
+/**
+ * Result of an explicit inventory-side association operation.
+ *
+ * `providerAccepted` is true only when the provider accepted the request
+ * (HTTP 2xx). It does NOT prove asynchronous vendor fulfillment. The response
+ * schema is undocumented for the US-Matrix add-esims endpoint, so
+ * `providerBody` is an opaque envelope.
+ */
+export interface AssignPackagesToEsimsResult {
+  /** The deduplicated, validated eSIM UUIDs actually sent. */
+  esimIds: string[]
+  /** The deduplicated, validated package UUIDs actually sent. */
+  packageIds: string[]
+  /** The Cartesian association count created/queued (unique esims × unique packages). */
+  associationCount: number
+  /** True only when the provider accepted the request (HTTP 2xx). */
+  providerAccepted: boolean
+  /** HTTP status that produced the acceptance (200/201/202/204…). */
+  providerStatus?: number | null
+  /** Opaque provider response envelope (schema undocumented). */
+  providerBody?: unknown
 }
 
 /**

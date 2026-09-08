@@ -176,6 +176,55 @@ export interface UsMatrixEsim {
 }
 
 /**
+ * GET /api/v1/esims query contract — documented Swagger filters.
+ *
+ * `allocated` is REQUIRED by the live provider (HTTP 400 without it):
+ * "Show assigned/unassigned eSIMs". The two boolean values are intentionally
+ * NOT mapped to OneSIM semantics (this code makes no claim that `true` means
+ * "assigned" versus "unassigned"); callers pass the exact value they want and
+ * `false` is preserved (never dropped through truthiness checks).
+ *
+ * `ids` is documented as "Filter by specific eSIM IDs"; it is serialized as a
+ * single deterministic comma-joined query parameter (ids=a,b,c) matching the
+ * documented multi-value filter representation.
+ *
+ * Pagination is `limit` + `offset` (NOT page/perPage).
+ * `allocated` must be an explicit boolean; absence is rejected before transport.
+ */
+export interface UsMatrixEsimsQuery {
+  /** REQUIRED. The exact boolean filter value to send (false preserved). */
+  allocated: boolean
+  /** Filter by vendor profile. */
+  profile?: string
+  /** Filter by specific eSIM IDs (comma-joined, deterministic). */
+  ids?: string[]
+  /** Filter by package assignment status. */
+  hasPackage?: boolean
+  /** Search by ICCID. */
+  iccid?: string
+  /** Filter by client name. */
+  client?: string
+  /** Filter by activation date. */
+  activationDate?: string
+  /** Filter by last update date. */
+  updatedAt?: string
+  /** Filter by eSIM status. */
+  status?: string
+  /** Filter by data limit. */
+  dataLimit?: number
+  /** Filter by package name. */
+  packageName?: string
+  /** Pagination limit (bounded conservatively before transport). */
+  limit?: number
+  /** Pagination offset. */
+  offset?: number
+}
+
+/** Default and maximum page size for GET /esims (bound limit conservatively). */
+export const DEFAULT_ESIMS_PAGE_SIZE = 100
+export const MAX_ESIMS_PAGE_SIZE = 200
+
+/**
  * POST /api/v1/esims/assign-package request — documented AssignPackageRequestDTO.
  * `package` (required) is the US-Matrix package UUID; `client` (optional) is the
  * client UUID for whitelisted backend integrations. NEVER a local OneSIM id.
@@ -198,6 +247,64 @@ export interface AssignPackageResponseDTO {
   qrcodeString: string | null
   profile: string | null
 }
+
+/**
+ * POST /api/v1/esims/add-esims request — documented AddEsimInPackagesRequestDTO.
+ *
+ * The provider explicitly documents a CARTESIAN PRODUCT: every eSIM in
+ * `esims` is associated with every package in `packages`
+ * (unique esims × unique packages associations).
+ *
+ * `esims`   : REQUIRED array of eSIM UUIDs to assign packages to.
+ *             All eSIMs must be active and accessible by the authenticated user.
+ * `packages`: REQUIRED array of package UUIDs to assign to the eSIMs. All
+ *             packages must be within their validity period (start to end dates).
+ * `client`  : OPTIONAL client UUID for additional permission validation; the
+ *             provider verifies the eSIMs belong to this client.
+ *
+ * NEVER a local OneSIM id. Do NOT add undocumented fields.
+ */
+export interface AddEsimInPackagesRequestDTO {
+  esims: string[]
+  packages: string[]
+  client?: string
+}
+
+/**
+ * Conservative envelope for POST /api/v1/esims/add-esims.
+ *
+ * The provider has NOT supplied an exact response schema for add-esims.
+ * Per the integration contract, we do NOT fabricate a strict response DTO.
+ * This type is a defensive provider-envelope parser: HTTP 2xx means the
+ * association request was ACCEPTED (associations created / queued), NOT proof
+ * that any asynchronous vendor dispatch completed. Unknown fields are ignored;
+ * success is never inferred from arbitrary JSON contents.
+ */
+export interface AddEsimInPackagesResponseEnvelope {
+  success?: boolean
+  errmsg?: string
+  data?: unknown
+  [key: string]: unknown
+}
+
+/**
+ * OneSIM-side conservative ceiling for a single add-esims operation, expressed
+ * as the Cartesian association count (unique esims × unique packages).
+ * This is OPERATOR PROTECTION, not a provider-documented maximum. The admin
+ * layer must require explicit confirmation (echo of the count) for operations
+ * above the default; the connector refuses to dispatch above the enforced
+ * ceiling unless a caller explicitly raises it via a bounded override.
+ */
+export const DEFAULT_MAX_ADD_ESIMS_ASSOCIATIONS = 25
+
+/**
+ * Absolute OneSIM-side hard cap for a single add-esims operation. Changes the
+ * default ceiling alone can only be lifted by an explicit per-call override up
+ * to — never beyond — this absolute safe bound. This is OneSIM operator
+ * protection (a silently-huge Cartesian product must never run), NOT a claim
+ * that USMatrix documents any maximum.
+ */
+export const ABSOLUTE_MAX_ADD_ESIMS_ASSOCIATIONS = 200
 
 /**
  * POST /api/v1/packages/usage request — documented GetPackageUsageRequestDTO.
@@ -270,6 +377,37 @@ export interface AvailabilityCountRequestDTO {
 /** POST /api/v1/esims/availability-count response — { counts: { [packageId]: number } }. */
 export interface AvailabilityCountResponseDTO {
   counts: Record<string, number>
+}
+
+/**
+ * Canonical US-Matrix package inventory status (read-only, derived from the
+ * authoritative availability-count read endpoint). Provider-generic — every
+ * US-Matrix package uses the same status vocabulary; NO package/country/plan
+ * is special-cased.
+ *
+ *  - AVAILABLE    : the availability endpoint returned an authoritative count > 0
+ *  - OUT_OF_STOCK : the availability endpoint returned an authoritative count === 0
+ *  - UNKNOWN      : the availability endpoint failed / timed out / returned a
+ *                   malformed response — NEVER converted to OUT_OF_STOCK (a
+ *                   provider/API error must not fabricate zero inventory).
+ *
+ * `PREPARING` / `ERROR` are reserved for a future administrative inventory
+ * preparation operation; they are NOT derivable from the current documented
+ * read-only endpoints and are therefore never produced by the connector.
+ */
+export type UsMatrixPackageInventoryStatus = 'AVAILABLE' | 'OUT_OF_STOCK' | 'UNKNOWN'
+
+/** Result of a read-only per-package inventory status look (US-Matrix). */
+export interface PackageInventoryStatusResult {
+  /** US-Matrix provider package UUID (never a local OneSIM id). */
+  packageId: string
+  status: UsMatrixPackageInventoryStatus
+  /** Authoritative assignable eSIM count when the endpoint returned one. */
+  count?: number
+  /** UNKNOWN reason (endpoint failure / timeout / malformed response). */
+  reason?: string
+  /** ISO timestamp of the read (the check is instantaneous). */
+  checkedAt: string
 }
 
 /** CountryDTO (GET /api/v1/countries). */

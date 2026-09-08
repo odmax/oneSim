@@ -111,6 +111,13 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
       if (!r.success) return { success: false, error: r.error }
       return { success: true, data: r.data }
     },
+    assignPackagesToEsims: connector.assignPackagesToEsims
+      ? async (input) => {
+          const r = await connector.assignPackagesToEsims!(input)
+          if (!r.success) return { success: false, error: r.error }
+          return { success: true, data: r.data }
+        }
+      : undefined,
     handleWebhook: async () => ({ success: true, data: { handled: true, action: 'acknowledged' } }),
   }
 }

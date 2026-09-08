@@ -199,4 +199,10 @@ export interface ProviderAdapter {
 
   handleWebhook(payload: WebhookPayload): Promise<ProviderResult<{ handled: boolean; action?: string }>>
   topUpESIM(params: TopUpESIMParams): Promise<ProviderResult<TopUpESIMResult>>
+  /**
+   * Optional provider-neutral EXPLICIT inventory-management association.
+   * Never the customer purchase path; never touches wallets/orders; exactly one
+   * mutation per call; ambiguous transport outcomes surfaced conservatively.
+   */
+  assignPackagesToEsims?(input: import('./connectors/connector-interface').AssignPackagesToEsimsInput): Promise<ProviderResult<import('./connectors/connector-interface').AssignPackagesToEsimsResult>>
 }

@@ -37,8 +37,8 @@
  */
 import { prisma } from '@/lib/prisma'
 import { decryptToken, encryptToken } from '@/lib/encryption'
-import { usMatrixEndpointPath, buildUsMatrixUrl, normalizeUsMatrixBaseUrl, type UsMatrixEndpoint, type UsMatrixPaginated, type UsMatrixPackage, type UsMatrixEsim, type UsMatrixSigninRequest, type UsMatrixSigninResponse, type AssignPackageRequestDTO, type AssignPackageResponseDTO, type GetPackageUsageRequestDTO, type GetPackageUsageResponseDTO, type RateGroupDTO, type SuspendEsimRequestDTO, type UnsuspendEsimRequestDTO, type RemoveEsimFromPackageRequestDTO, type AvailabilityCountRequestDTO, type CountryDTO, type ListCountriesResponseDTO, type GetEsimInfoRequestDTO, type GetEsimInfoResponseDTO, type ActivationProfileDTO, type ProfileLogDTO, type NetworkEventLogDTO, type LocationLogsRequestDTO, type MobileDetailPackageEsimDTO } from './usmatrix-endpoints'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput, DiagnosticInfo, StatusLookupEsim, StatusLookupIdentifier } from './connector-interface'
+import { usMatrixEndpointPath, buildUsMatrixUrl, normalizeUsMatrixBaseUrl, type UsMatrixEndpoint, type UsMatrixPaginated, type UsMatrixPackage, type UsMatrixEsim, type UsMatrixEsimsQuery, type UsMatrixSigninRequest, type UsMatrixSigninResponse, type AssignPackageRequestDTO, type AssignPackageResponseDTO, type AddEsimInPackagesRequestDTO, type AddEsimInPackagesResponseEnvelope, type GetPackageUsageRequestDTO, type GetPackageUsageResponseDTO, type RateGroupDTO, type SuspendEsimRequestDTO, type UnsuspendEsimRequestDTO, type RemoveEsimFromPackageRequestDTO, type AvailabilityCountRequestDTO, type CountryDTO, type ListCountriesResponseDTO, type GetEsimInfoRequestDTO, type GetEsimInfoResponseDTO, type ActivationProfileDTO, type ProfileLogDTO, type NetworkEventLogDTO, type LocationLogsRequestDTO, type MobileDetailPackageEsimDTO, type UsMatrixPackageInventoryStatus, type PackageInventoryStatusResult, DEFAULT_MAX_ADD_ESIMS_ASSOCIATIONS, ABSOLUTE_MAX_ADD_ESIMS_ASSOCIATIONS, DEFAULT_ESIMS_PAGE_SIZE, MAX_ESIMS_PAGE_SIZE } from './usmatrix-endpoints'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, InstallationLookupInput, InstallationLookupResult, ConnectorInstallDataOutput, DiagnosticInfo, StatusLookupEsim, StatusLookupIdentifier, AssignPackagesToEsimsInput, AssignPackagesToEsimsResult } from './connector-interface'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 interface UsMatrixConfig {
@@ -47,6 +47,8 @@ interface UsMatrixConfig {
   timeoutMs: number
   /** Optional US-Matrix client UUID for whitelisted backend integrations. */
   clientId?: string | null
+  /** Operator ceiling for a single add-esims operation (Cartesian association count). */
+  maxAddEsimsAssociations: number
 }
 
 function maskToken(token: string): string {
@@ -75,6 +77,51 @@ export function extractMatchingId(value: string | null | undefined): string | nu
   return candidate ? candidate : null
 }
 
+/**
+ * Build the normalized add-esims association PLAN from raw eSIM/package lists.
+ * Pure and side-effect free.
+ *
+ * - trims and drops blank entries,
+ * - preserves first-seen order,
+ * - deduplicates repeated eSIM UUIDs,
+ * - deduplicates repeated package UUIDs,
+ * - computes the Cartesian association count (unique esims × unique packages).
+ *
+ * A non-empty plan has `associationCount === esimIds.length * packageIds.length`.
+ * Returns `null` when either list is empty after normalization (invalid before
+ * transport). Previews (admin confirmation) and the mutation share this helper,
+ * so the count the operator confirms is exactly the count USMatrix will create.
+ */
+export function buildAddEsimsAssociationPlan(
+  esimIds: string[] | null | undefined,
+  packageIds: string[] | null | undefined,
+): { esimIds: string[]; packageIds: string[]; associationCount: number } | null {
+  const uniqueEsims: string[] = []
+  const seenEsims = new Set<string>()
+  for (const raw of esimIds || []) {
+    const id = String(raw).trim()
+    if (!id || seenEsims.has(id)) continue
+    seenEsims.add(id)
+    uniqueEsims.push(id)
+  }
+
+  const uniquePackages: string[] = []
+  const seenPackages = new Set<string>()
+  for (const raw of packageIds || []) {
+    const id = String(raw).trim()
+    if (!id || seenPackages.has(id)) continue
+    seenPackages.add(id)
+    uniquePackages.push(id)
+  }
+
+  if (uniqueEsims.length === 0 || uniquePackages.length === 0) return null
+  return {
+    esimIds: uniqueEsims,
+    packageIds: uniquePackages,
+    associationCount: uniqueEsims.length * uniquePackages.length,
+  }
+}
+
 function redactForDiagnostics(data: unknown, maxLen = 300): string | null {
   if (data == null) return null
   try {
@@ -82,6 +129,29 @@ function redactForDiagnostics(data: unknown, maxLen = 300): string | null {
   } catch {
     return String(data).substring(0, maxLen)
   }
+}
+
+/**
+ * Strict conservative availability-count parser shared by the purchase
+ * preflight and the public availability surfaces.
+ *
+ * ACCEPTS:
+ *  - a finite number >= 0 (0 is a legitimate authoritative zero),
+ *  - a non-empty numeric string (e.g. "0", "7").
+ * REJECTS (returns null):
+ *  - missing/null/undefined,
+ *  - NaN, +/-Infinity,
+ *  - negative numbers,
+ *  - non-numeric strings ("lots", ""),
+ *  - any other type.
+ * A rejected count MUST be treated as a malformed response — never fabricated
+ * as zero.
+ */
+function parseAvailabilityCount(raw: unknown): { ok: true; count: number } | { ok: false } {
+  if (raw == null) return { ok: false }
+  const count = typeof raw === 'number' ? raw : (typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN)
+  if (!Number.isFinite(count) || count < 0) return { ok: false }
+  return { ok: true, count }
 }
 
 export class UsMatrixConnector implements IProviderConnector {
@@ -129,6 +199,9 @@ export class UsMatrixConnector implements IProviderConnector {
       token: token || null,
       timeoutMs: Number(cfg.requestTimeoutMs) || 15000,
       clientId: typeof cfg.clientId === 'string' && cfg.clientId ? cfg.clientId : null,
+      maxAddEsimsAssociations: Number.isFinite(Number(cfg.maxAddEsimsAssociations)) && Number(cfg.maxAddEsimsAssociations) > 0
+        ? Math.floor(Number(cfg.maxAddEsimsAssociations))
+        : DEFAULT_MAX_ADD_ESIMS_ASSOCIATIONS,
     }
   }
 
@@ -358,42 +431,166 @@ export class UsMatrixConnector implements IProviderConnector {
 
   // ── eSIM inventory (read-only) ─────────────────────────────────────────
 
-  /** GET /api/v1/esims?iccid=… — EsimDTO carries install fields. */
-  async listEsims(query: { iccid?: string; status?: string; page?: number; perPage?: number } = {}): Promise<ConnectorResult<{ items: UsMatrixEsim[]; total: number }>> {
-    const result = await this.request('esims', {
-      query: {
-        page: query.page || 1,
-        perPage: query.perPage || 100,
-        ...(query.iccid ? { iccid: query.iccid } : {}),
-        ...(query.status ? { status: query.status } : {}),
-      },
-    })
-    if (!result.success) return { success: false, error: result.error }
-    const page = result.data as UsMatrixPaginated<UsMatrixEsim> | null
-    const items = Array.isArray(page?.data) ? page.data : (Array.isArray(result.data) ? result.data : [])
-    return {
-      success: true,
-      data: { items, total: page?.meta?.totalItems ?? items.length },
+  /**
+   * Serialize a validated GET /esims query into transport query params.
+   * `allocated` is REQUIRED (preserved exactly, including `false`). Pagination
+   * uses `limit`/`offset` only — never `page`/`perPage`. `ids` becomes a
+   * deterministic comma-joined value. `false` booleans are preserved (the
+   * transport URLSearchParams builder only drops undefined/null/empty strings).
+   * `limit`/`offset` are the ALREADY-BOUNDED values (caller clamps them).
+   */
+  private buildEsimsQueryParams(query: UsMatrixEsimsQuery, limit: number, offset: number): Record<string, string | number | boolean | undefined> {
+    const params: Record<string, string | number | boolean | undefined> = {
+      allocated: query.allocated,
+      limit,
+      offset,
     }
+    if (query.profile) params.profile = query.profile
+    if (query.ids && query.ids.length > 0) {
+      // Deterministic single-param serialization: ids=a,b,c (deduped, order-first-seen).
+      const seen = new Set<string>()
+      const joined: string[] = []
+      for (const id of query.ids) {
+        const clean = String(id).trim()
+        if (clean && !seen.has(clean)) { seen.add(clean); joined.push(clean) }
+      }
+      if (joined.length > 0) params.ids = joined.join(',')
+    }
+    if (query.hasPackage !== undefined) params.hasPackage = query.hasPackage
+    if (query.iccid) params.iccid = query.iccid
+    if (query.client) params.client = query.client
+    if (query.activationDate) params.activationDate = query.activationDate
+    if (query.updatedAt) params.updatedAt = query.updatedAt
+    if (query.status) params.status = query.status
+    if (query.dataLimit !== undefined) params.dataLimit = query.dataLimit
+    if (query.packageName) params.packageName = query.packageName
+    return params
   }
 
-  /** Historical installation recovery via documented EsimDTO install fields. */
+  /** GET /api/v1/esims?allocated=…&limit=…&offset=… — EsimDTO carries install fields. */
+  async listEsims(query: UsMatrixEsimsQuery = {} as UsMatrixEsimsQuery): Promise<ConnectorResult<{ items: UsMatrixEsim[]; total: number }>> {
+    // `allocated` is required by the live provider (HTTP 400 without it).
+    // Refuse to transport without an explicit boolean — a missing/undefined
+    // value must NOT silently become a request.
+    if (typeof query.allocated !== 'boolean') {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'GET /esims requires an explicit `allocated` boolean filter' } }
+    }
+
+    const limit = Math.min(
+      Number.isFinite(query.limit) && query.limit! > 0 ? Math.floor(query.limit!) : DEFAULT_ESIMS_PAGE_SIZE,
+      MAX_ESIMS_PAGE_SIZE,
+    )
+    const offset = Number.isFinite(query.offset) && query.offset! > 0 ? Math.floor(query.offset!) : 0
+
+    const result = await this.request('esims', {
+      query: this.buildEsimsQueryParams(query, limit, offset),
+    })
+    if (!result.success) return { success: false, error: result.error }
+
+    const raw = result.data as any
+
+    // Conservative envelope parsing. Documented shape is a paginated list;
+    // tolerate `{ data: [...] }`, `{ data: [...], total: n }`, `{ items: [...] }`
+    // and a bare array — but NEVER treat a malformed non-envelope success as an
+    // empty legitimate inventory result.
+    let items: UsMatrixEsim[] | null = null
+    let total: number | undefined
+    if (Array.isArray(raw)) {
+      items = raw
+      total = items.length
+    } else if (raw && typeof raw === 'object') {
+      const dataArr: unknown = (raw as any).data
+      const itemsArr: unknown = (raw as any).items
+      if (Array.isArray(dataArr) || Array.isArray(itemsArr)) {
+        items = (Array.isArray(dataArr) ? dataArr : itemsArr) as UsMatrixEsim[]
+        const metaTotal: unknown = (raw as any).meta?.totalItems
+        const directTotal: unknown = (raw as any).total
+        const n = Number(directTotal ?? metaTotal ?? items.length)
+        total = Number.isFinite(n) && n >= 0 ? n : items.length
+      }
+    }
+
+    if (items === null) {
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'GET /esims returned an unrecognized response shape' } }
+    }
+
+    return { success: true, data: { items, total: total ?? items.length } }
+  }
+
+  /**
+   * Historical installation recovery via documented EsimDTO install fields.
+   *
+   * GET /esims requires an explicit `allocated` boolean, but for a historical
+   * read we do NOT know which side the target eSIM is on. This performs a
+   * BOUNDED deterministic search across BOTH allocated=false and allocated=true
+   * (read-only), stopping when the exact ICCID is found:
+   *  - exact ICCID match only (never silently selects an unrelated eSIM),
+   *  - matches deduped by eSIM id,
+   *  - if both sides produce DISTINCT matches for the same ICCID → AMBIGUOUS
+   *    (fail safely, never pick one), surfaced as PERMANENT_FAILURE,
+   *  - a first-side provider failure does NOT create a false "not found" when
+   *    the second side is a safe/successful read,
+   *  - never mutates.
+   */
   async lookupInstallationData(input: InstallationLookupInput): Promise<InstallationLookupResult> {
     if (!input.iccid) {
       return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'IDENTIFIER_MISSING', diagnostics: { methodUsed: 'esims', identifierType: 'none' } }
     }
-    const result = await this.listEsims({ iccid: input.iccid })
-    if (!result.success || !result.data) {
-      if (result.error?.code === 'HTTP_401' || result.error?.code === 'HTTP_403') {
-        return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'PROVIDER_AUTH_FAILED', diagnostics: { methodUsed: 'esims', identifierType: 'iccid' } }
+    const iccid = String(input.iccid)
+
+    const matches: UsMatrixEsim[] = []
+    const seen = new Set<string>()
+    let sawAuthError = false
+    let sawTransportError = false
+    let lastErrorCode: string | undefined
+
+    // Deterministic bounded dual-side read. Read-only; never mutates.
+    for (const allocated of [false, true]) {
+      const result = await this.listEsims({ allocated, iccid, limit: MAX_ESIMS_PAGE_SIZE, offset: 0 })
+      if (!result.success || !result.data) {
+        const code = result.error?.code || ''
+        if (code === 'HTTP_401' || code === 'HTTP_403') sawAuthError = true
+        else if (code === 'TIMEOUT' || code === 'NETWORK_ERROR' || code === 'HTTP_404' || code === 'INVALID_RESPONSE') sawTransportError = true
+        else lastErrorCode = code
+        continue
       }
-      return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: result.error?.code === 'HTTP_404' ? 'PROVIDER_HTTP_ERROR' : (result.error?.code || 'PROVIDER_TIMEOUT'), diagnostics: { methodUsed: 'esims', identifierType: 'iccid' } }
+      for (const sim of result.data.items || []) {
+        // Exact ICCID match only.
+        if (String(sim.iccid) !== iccid) continue
+        if (seen.has(sim.id)) continue
+        seen.add(sim.id)
+        matches.push(sim)
+      }
     }
 
-    const sim = (result.data.items || []).find((s) => s.iccid === input.iccid)
-    if (!sim) {
+    if (matches.length === 0) {
+      if (sawAuthError) {
+        return { success: false, state: 'PERMANENT_FAILURE', errorCode: 'PROVIDER_AUTH_FAILED', diagnostics: { methodUsed: 'esims', identifierType: 'iccid' } }
+      }
+      if (sawTransportError) {
+        return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'PROVIDER_TIMEOUT', diagnostics: { methodUsed: 'esims', identifierType: 'iccid' } }
+      }
       return { success: false, state: 'NOT_AVAILABLE_YET', errorCode: 'NO_INSTALL_DATA', diagnostics: { methodUsed: 'esims', identifierType: 'iccid', note: 'No matching eSIM in inventory (GET /api/v1/esims).' } }
     }
+
+    // Ambiguous duplicate identity: the same ICCID resolves on BOTH allocated
+    // sides to a distinct eSIM id. Fail safely (PERMANENT_FAILURE terminal —
+    // refresh-qr skips further retries) — never silently select one.
+    if (matches.length > 1) {
+      return {
+        success: false,
+        state: 'PERMANENT_FAILURE',
+        errorCode: 'AMBIGUOUS_IDENTITY',
+        diagnostics: {
+          methodUsed: 'esims', identifierType: 'iccid', httpMethod: 'GET', endpointName: 'esims',
+          responseKeys: Object.keys(matches[0]),
+          note: `Ambiguous identity: ICCID matched ${matches.length} distinct eSIM ids across allocated sides`,
+        },
+      }
+    }
+
+    // Exactly one unique match — safe to use.
+    const sim = matches[0]
 
     // EsimDTO (documented): smDpAddress / activationCode / qrcodeString (LPA).
     const data: ConnectorInstallDataOutput = {
@@ -564,12 +761,165 @@ export class UsMatrixConnector implements IProviderConnector {
       ...(clientId ? { query: { clientId } } : {}),
     })
     if (!result.success) return { success: false, error: result.error }
-    const count = Number((result.data as { count?: number })?.count) || 0
-    return { success: true, data: count }
+
+    // Conservative count parsing — shared strict parser matches checkPackageAvailability.
+    // A count of 0 is a legitimate authoritative zero; a missing/NaN/negative/
+    // infinite/malformed/non-numeric count is a FAILURE (NOT fabricated as zero).
+    const parsed = parseAvailabilityCount((result.data as { count?: unknown } | null)?.count)
+    if (!parsed.ok) {
+      return { success: false, error: { code: 'MALFORMED_AVAILABILITY_RESPONSE', message: 'Availability-count returned a malformed count value' } }
+    }
+    return { success: true, data: parsed.count }
   }
 
   /**
-   * Read-only pre-purchase inventory preflight for a provider package UUID.
+   * Read-only per-package inventory status — the provider-generic inventory
+   * surface that works for EVERY US-Matrix package (provider package UUID).
+   *
+   * Semantics (canonical, never package/country/plan special-cased):
+   *  - AVAILABLE    ← authoritative count > 0
+   *  - OUT_OF_STOCK ← authoritative count === 0
+   *  - UNKNOWN      ← availability endpoint failed / timed out / malformed —
+   *                   NEVER converted to OUT_OF_STOCK (provider/API errors must
+   *                   not fabricate zero inventory).
+   *
+   * Purely read-only: GET /esims/availability-count/{packageId} only. This is
+   * inventory ADMINISTRATION reporting, NOT customer purchase — it never calls
+   * assign-package, never calls add-esims, never mutates, and never touches a
+   * wallet. Assignment remains the single canonical purchase mutation in
+   * activateESIM (guarded by this same availability read).
+   */
+  async getPackageInventoryStatus(packageId: string): Promise<ConnectorResult<PackageInventoryStatusResult>> {
+    if (!packageId) return { success: false, error: { code: 'INVALID_REQUEST', message: 'packageId (provider package UUID) is required' } }
+    const availability = await this.checkPackageAvailability(String(packageId))
+    if (!availability.ok) {
+      return {
+        success: true,
+        data: { packageId: String(packageId), status: 'UNKNOWN', reason: availability.reason, checkedAt: new Date().toISOString() },
+      }
+    }
+    const count = availability.count ?? 0
+    const status: UsMatrixPackageInventoryStatus = count > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK'
+    return {
+      success: true,
+      data: { packageId: String(packageId), status, count, checkedAt: new Date().toISOString() },
+    }
+  }
+
+  /**
+   * Explicit US-Matrix INVENTORY-MANAGEMENT capability: assign packages to
+   * specific eSIM UUIDs via POST /api/v1/esims/add-esims.
+   *
+   * This is an ADMINISTRATION operation — it is NOT the customer purchase path.
+   * It never appears in activateESIM (which stays availability-count →
+   * assign-package) and never touches a wallet or order.
+   *
+   * Mutation safety (add-esims idempotency is NOT documented, so we mirror the
+   * P0 provider-mutation philosophy):
+   *  - exactly ONE HTTP POST per explicit operation,
+   *  - NO automatic retry on timeout / network failure / 5xx,
+   *  - NO mutation replay after a post-dispatch 401,
+   *  - ambiguous transport outcomes are surfaced as AMBIGUOUS with
+   *    error.details.ambiguous === true (the operator must use read-only
+   *    evidence before deciding what happened),
+   *  - the Cartesian association count is computed BEFORE transport and refuses
+   *    to silently execute huge operations (operator ceiling).
+   *
+   * The response schema is NOT documented by the provider; the transport result
+   * is parsed defensively as an opaque envelope. HTTP 2xx means ACCEPTED (the
+   * associations were created/queued), never proof of asynchronous vendor
+   * fulfillment.
+   */
+  async assignPackagesToEsims(input: AssignPackagesToEsimsInput): Promise<ConnectorResult<AssignPackagesToEsimsResult>> {
+    const config = await this.loadConfig()
+    if (!config) return { success: false, error: { code: 'NOT_CONFIGURED', message: 'Provider not found' } }
+    if (!config.token) return { success: false, error: { code: 'NO_TOKEN', message: 'Not authenticated — run Save & Authenticate first' } }
+
+    const plan = buildAddEsimsAssociationPlan(input.esimIds, input.packageIds)
+    if (!plan) {
+      return { success: false, error: { code: 'INVALID_REQUEST', message: 'Both a non-empty eSIM UUID list and a non-empty package UUID list are required' } }
+    }
+
+    // Operator conservation ceiling — refuse a silently-huge Cartesian product.
+    // The default ceiling (config or built-in) applies unless the caller raises
+    // it with an explicit bounded per-call override, which itself is capped by
+    // the absolute OneSIM safety bound.
+    const configuredCeiling = Number.isFinite(config.maxAddEsimsAssociations) && config.maxAddEsimsAssociations > 0
+      ? Math.floor(config.maxAddEsimsAssociations)
+      : DEFAULT_MAX_ADD_ESIMS_ASSOCIATIONS
+    const requestedCeiling = Number.isFinite(input.maxAssociations) && input.maxAssociations! > 0
+      ? Math.floor(input.maxAssociations!)
+      : configuredCeiling
+    const ceiling = Math.min(requestedCeiling, ABSOLUTE_MAX_ADD_ESIMS_ASSOCIATIONS)
+    if (plan.associationCount > ceiling) {
+      return {
+        success: false,
+        error: {
+          code: 'ASSOCIATION_LIMIT_EXCEEDED',
+          message: `add-esims would create ${plan.associationCount} associations (ceiling ${ceiling}) — explicit confirmation required`,
+          details: {
+            esimIds: plan.esimIds,
+            packageIds: plan.packageIds,
+            esimCount: plan.esimIds.length,
+            packageCount: plan.packageIds.length,
+            associationCount: plan.associationCount,
+            ceiling,
+          },
+        },
+      }
+    }
+
+    const body: AddEsimInPackagesRequestDTO = {
+      esims: plan.esimIds,
+      packages: plan.packageIds,
+    }
+    const clientId = input.clientId || config.clientId || undefined
+    if (clientId) body.client = String(clientId)
+
+    const result = await this.request('esimAddEsims', { method: 'POST', body })
+
+    if (!result.success) {
+      const code = result.error?.code || 'UNKNOWN'
+      // Conservative classification mirroring P0 provider mutation safety:
+      // transport uncertainty (timeout/network) and 5xx after dispatch and a
+      // post-dispatch 401 are all NON-RETRYABLE / ambiguous — never replayed.
+      const ambiguous = code === 'TIMEOUT' || code === 'NETWORK_ERROR' || code === 'HTTP_401' || /^HTTP_5/.test(code)
+      return {
+        success: false,
+        error: {
+          code: ambiguous ? 'ADD_ESIMS_AMBIGUOUS' : code,
+          message: result.error?.message || 'add-esims request failed',
+          details: {
+            ambiguous,
+            mutationMayHaveLeft: ambiguous,
+            esimCount: plan.esimIds.length,
+            packageCount: plan.packageIds.length,
+            associationCount: plan.associationCount,
+            causeCode: code,
+          },
+        },
+      }
+    }
+
+    // HTTP 2xx = accepted. Response schema undocumented → opaque envelope only.
+    const envelope = result.data as AddEsimInPackagesResponseEnvelope | null
+    return {
+      success: true,
+      data: {
+        esimIds: plan.esimIds,
+        packageIds: plan.packageIds,
+        associationCount: plan.associationCount,
+        providerAccepted: true,
+        providerStatus: result.status ?? null,
+        providerBody: envelope ?? null,
+      },
+    }
+  }
+
+  /**
+   * Read-only inventory read shared by the purchase preflight (activateESIM)
+   * AND the generic per-package inventory status (getPackageInventoryStatus).
+   * Provider-generic — keyed by any US-Matrix provider package UUID.
    *
    * Returns:
    *  - `{ ok: true, count }` when the documented availability endpoint
@@ -588,12 +938,11 @@ export class UsMatrixConnector implements IProviderConnector {
     if (!result.success) {
       return { ok: false, reason: result.error?.code || 'AVAILABILITY_CHECK_FAILED' }
     }
-    const raw = result.data as { count?: unknown } | null
-    const count = Number(raw?.count)
-    if (!Number.isFinite(count) || count < 0) {
+    const parsed = parseAvailabilityCount((result.data as { count?: unknown } | null)?.count)
+    if (!parsed.ok) {
       return { ok: false, reason: 'MALFORMED_AVAILABILITY_RESPONSE' }
     }
-    return { ok: true, count }
+    return { ok: true, count: parsed.count }
   }
 
   /** GET /api/v1/countries — documented read-only coverage list. */
