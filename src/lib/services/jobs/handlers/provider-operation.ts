@@ -88,6 +88,14 @@ export async function executeProviderOperation(payload: any): Promise<{ complete
     return { completed: true, error: result.outcome === 'STILL_PENDING' || result.outcome === 'UNSUPPORTED' ? result.message : undefined }
   }
 
+  // ── Canonical stranded-order recovery ───────────────────────────────────
+  // Enqueued by discoverStrandedOrders (PROVIDER_SELF_HEAL tick / manual
+  // route). Reuses the P0-constrained recoverOrder classifier as executor.
+  if (payload?.operation === 'recovery') {
+    const { executeOrderRecovery } = await import('@/lib/services/orders/order-recovery-dispatcher')
+    return executeOrderRecovery(payload)
+  }
+
   const { orderId, businessId, providerId, providerRef, totalAmount } = payload
   if (!orderId) return { completed: false, error: 'Missing orderId' }
 

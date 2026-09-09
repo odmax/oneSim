@@ -1,8 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { computeProviderHealth } from '@/lib/services/operations/provider-health-score'
 import { upsertProviderAlert, resolveProviderAlert } from '@/lib/services/operations/provider-alerts'
-import { isReconciliationEligible, reconciliationCycleKey } from '@/lib/services/orders/reconciliation'
-import { hasProviderAcceptanceEvidence } from '@/lib/services/orders/provider-reference'
 
 const HEAL_LEASE_MS = 4 * 60 * 1000 // 4-minute lease
 
@@ -61,6 +59,13 @@ async function safeProbe(p: any): Promise<{ success: boolean; errorCode?: string
 }
 
 export async function executeProviderSelfHeal(): Promise<{ completed: boolean; result?: any; error?: string }> {
+  // Canonical stranded-order recovery: enqueue one PROVIDER_OPERATION
+  // `operation: 'recovery'` per eligible PENDING_PROVIDER / PROVIDER_RECONCILIATION
+  // order. Runs independent of provider-health anyway — an order stranded under
+  // an archived/unreachable provider must still be recovered.
+  const { discoverStrandedOrders } = await import('@/lib/services/orders/order-recovery-dispatcher')
+  const recovery = await discoverStrandedOrders({ source: 'PROVIDER_SELF_HEAL' }).catch((e: any) => ({ error: e?.message || 'discovery failed' }))
+
   const providers = await prisma.provider.findMany({ where: { status: { not: 'ARCHIVED' } } })
   let healthEvaluated = 0; let recovered = 0; let skipped = 0
   const alerts: string[] = []
@@ -154,82 +159,6 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
       }
     }
 
-    // 5. Order-level reconciliation discovery: find stranded PROVIDER_RECONCILIATION
-    //    orders belonging to this provider and enqueue one order-specific
-    //    PROVIDER_OPERATION per eligible order.  Deduplication is enforced at
-    //    the DB level via the unique background_jobs.idempotencyKey, scoped to
-    //    the order's CURRENT reconciliation CYCLE (attempt-generation): duplicate
-    //    discovery of the same cycle is rejected and safely skipped, while the
-    //    next due cycle derives a new key and can enqueue after the previous
-    //    cycle's job COMPLETED and permanently retired its key.
-    const stuckOrders = await prisma.eSIMPurchase.findMany({
-      where: { providerId: p.id, status: 'PROVIDER_RECONCILIATION' },
-      select: { id: true, status: true, retryCount: true, maxRetries: true, nextRetryAt: true, providerFulfillId: true, providerReservationId: true },
-    } as any).catch(() => [])
-    let eligibleOrders: any[] = []
-    let generationByOrder: Map<string, number> = new Map()
-    if (stuckOrders.length > 0) {
-      // Orders beyond the generic retry budget stay eligible only with provider
-      // acceptance evidence (order-level reference or a provider-owned attempt
-      // reference) — the poll is read-only and never a second purchase. Recover
-      // evidence batched per provider, then let the sync predicate decide.
-      const attemptRefs = await prisma.providerAttempt.findMany({
-        where: { orderId: { in: stuckOrders.map((o: any) => o.id) }, providerId: p.id },
-        select: { orderId: true, providerId: true, providerReference: true, status: true, source: true },
-      }).catch(() => [] as any[])
-      const attemptsByOrder = new Map<string, any[]>()
-      for (const a of attemptRefs) {
-        const bucket = attemptsByOrder.get(a.orderId) || []
-        bucket.push(a)
-        attemptsByOrder.set(a.orderId, bucket)
-      }
-      eligibleOrders = stuckOrders.filter((o: any) =>
-        isReconciliationEligible({
-          status: o.status, retryCount: o.retryCount, maxRetries: o.maxRetries,
-          nextRetryAt: o.nextRetryAt ? (o.nextRetryAt instanceof Date ? o.nextRetryAt : new Date(o.nextRetryAt)) : null,
-          hasAcceptanceEvidence: hasProviderAcceptanceEvidence(
-            { id: o.id, providerId: p.id, providerFulfillId: o.providerFulfillId ?? null, providerReservationId: o.providerReservationId ?? null },
-            attemptsByOrder.get(o.id) || [],
-          ),
-        }),
-      )
-      // Cycle generation per order = number of completed reconciliation passes
-      // (persisted source=RECONCILIATION attempts). groupBy returns a row only
-      // for orders with at least one such attempt; orders with none fall back
-      // to generation 0 below.
-      const reconAttemptCounts = await prisma.providerAttempt.groupBy({
-        by: ['orderId'],
-        where: {
-          orderId: { in: eligibleOrders.map((o: any) => o.id) },
-          source: 'RECONCILIATION',
-          status: { not: 'PENDING' },
-        },
-        _count: { _all: true },
-      }).catch(() => [])
-      generationByOrder = new Map<string, number>()
-      for (const row of reconAttemptCounts as any[]) {
-        generationByOrder.set(row.orderId, row._count._all)
-      }
-    }
-    if (eligibleOrders.length > 0) {
-      const { enqueueJob } = await import('../queue')
-      for (const order of eligibleOrders) {
-        const generation = generationByOrder.get(order.id) ?? 0
-        const idempotencyKey = reconciliationCycleKey(order.id, generation)
-        try {
-          await enqueueJob('PROVIDER_OPERATION' as any, {
-            providerId: p.id,
-            operation: 'reconciliation',
-            orderId: order.id,
-          }, new Date(), 3, idempotencyKey)
-          recovered++
-          await recordHealEvent(p.id, 'ORDER_RECONCILIATION_ENQUEUED', 'success')
-        } catch {
-          // Duplicate (unique idempotencyKey constraint) — safe to skip.
-        }
-      }
-    }
-
     // 6. Sync failure spike detection
     const syncFails1h = await prisma.eSIM.count({
       where: {
@@ -259,5 +188,5 @@ export async function executeProviderSelfHeal(): Promise<{ completed: boolean; r
   }
 
   console.log(`[PROVIDER_SELF_HEAL] evaluated=${healthEvaluated} recovered=${recovered} skipped=${skipped}`)
-  return { completed: true, result: { healthEvaluated, recovered, skipped, alerts } }
+  return { completed: true, result: { healthEvaluated, recovered, skipped, alerts, recovery } }
 }

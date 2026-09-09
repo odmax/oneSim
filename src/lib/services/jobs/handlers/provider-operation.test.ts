@@ -35,6 +35,10 @@ vi.mock('@/lib/services/orders/reconciliation', () => ({
   reconcileProviderOrder: vi.fn().mockResolvedValue({ outcome: 'STILL_PENDING', message: 'Provider still processing', status: 'PROVIDER_RECONCILIATION' }),
 }))
 
+vi.mock('@/lib/services/orders/order-recovery-dispatcher', () => ({
+  executeOrderRecovery: vi.fn().mockResolvedValue({ completed: true }),
+}))
+
 import { prisma } from '@/lib/prisma'
 import { getAdapterForType } from '@/lib/providers/adapter-manager'
 import { completeProviderOperation, failProviderOperation } from '../provider-finalizer'
@@ -46,6 +50,7 @@ import {
   reconcileExhaustedActivationJob,
 } from './provider-operation'
 import { reconcileProviderOrder } from '@/lib/services/orders/reconciliation'
+import { executeOrderRecovery } from '@/lib/services/orders/order-recovery-dispatcher'
 
 const mockPrisma = vi.mocked(prisma)
 const mockAdapter = vi.mocked(getAdapterForType)
@@ -277,6 +282,7 @@ describe('reconciliation helpers', () => {
 
 describe('reconciliation PROVIDER_OPERATION routing', () => {
   const mockReconcile = vi.mocked(reconcileProviderOrder)
+  const mockRecovery = vi.mocked(executeOrderRecovery)
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -339,5 +345,26 @@ describe('reconciliation PROVIDER_OPERATION routing', () => {
     expect(result.completed).toBe(true)
     expect(result.error).toContain('not eligible')
     expect(mockReconcile).not.toHaveBeenCalled()
+  })
+})
+
+describe('recovery PROVIDER_OPERATION routing', () => {
+  const mockRecovery = vi.mocked(executeOrderRecovery)
+
+  it('routes operation:"recovery" to the canonical executeOrderRecovery (never purchase/activation)', async () => {
+    mockRecovery.mockResolvedValue({ completed: true } as any)
+    const payload = { operation: 'recovery', orderId: 'order-1', providerId: 'prov-1' }
+    const result = await executeProviderOperation(payload)
+    expect(mockRecovery).toHaveBeenCalledWith(payload)
+    expect(result.completed).toBe(true)
+    expect(mockComplete).not.toHaveBeenCalled()
+    expect(mockFail).not.toHaveBeenCalled()
+  })
+
+  it('propagates executeOrderRecovery infra errors (completed:false → queue retry)', async () => {
+    mockRecovery.mockResolvedValue({ completed: false, error: 'DB connection lost' } as any)
+    const result = await executeProviderOperation({ operation: 'recovery', orderId: 'order-1' })
+    expect(result.completed).toBe(false)
+    expect(result.error).toContain('DB connection lost')
   })
 })

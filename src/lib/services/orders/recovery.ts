@@ -80,7 +80,13 @@ export function classifyOrderRecovery(input: ClassificationInput): RecoveryClass
   }
 
   if (order.retryCount >= order.maxRetries) {
-    return { action: 'NOT_RETRYABLE', reason: `Max retries reached (${order.retryCount}/${order.maxRetries})` }
+    // Evidence-backed continuation past the generic retry budget: when the
+    // provider has handed out acceptance/reference evidence, recovery may keep
+    // polling/reconciling the SAME owned transaction read-only — it never
+    // authorizes a second purchase. Without evidence, the budget is terminal.
+    if (!hasProviderAcceptanceEvidence(order, providerAttempts)) {
+      return { action: 'NOT_RETRYABLE', reason: `Max retries reached (${order.retryCount}/${order.maxRetries})` }
+    }
   }
 
   // Provider fulfillment evidence exists → resume local finalization
@@ -203,7 +209,7 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
     where: { id: orderId },
     include: {
       esims: { select: { id: true, iccid: true, status: true } },
-      provider: { select: { id: true, code: true, type: true, supportsUsage: true, supportsSuspendResume: true } },
+      provider: { select: { id: true, code: true, type: true, name: true, supportsUsage: true, supportsSuspendResume: true } },
       business: { select: { id: true, walletBalance: true, status: true } },
     },
   })
@@ -272,8 +278,33 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
       await createTimelineEvent(orderId, { eventType: 'PROVIDER_POLL_STARTED', message: 'Polling provider status' })
       const pollingResult = await pollProviderForOrder(order)
       if (pollingResult.fulfilled) {
-        await createTimelineEvent(orderId, { eventType: 'PROVIDER_REDISPATCH_SUCCEEDED', message: 'Provider polled — fulfilled' })
-        return { success: true, action: 'POLL_PROVIDER', status: pollingResult.status, retryCount: order.retryCount, message: 'Provider fulfillment confirmed via polling' }
+        // Authoritative success: persist the ICCIDs and capture the reserved
+        // wallet BEFORE reporting fulfillment — a polled success that never
+        // finalizes leaves the order stuck at PENDING_PROVIDER forever with the
+        // wallet held and the eSIM unpersisted.
+        const { completeProviderFinalization } = await import('./fulfillment')
+        const finalResult = await completeProviderFinalization({
+          orderId: order.id,
+          businessId: order.businessId,
+          providerId: order.providerId || '',
+          providerRef: pollingResult.providerRef || order.providerFulfillId || '',
+          providerName: (order as any).provider?.name || '',
+          totalAmount: Number(order.totalAmount),
+          providerResult: {
+            iccids: pollingResult.iccids || [],
+            providerFulfillId: pollingResult.providerRef || order.providerFulfillId || undefined,
+            providerStatus: 'ACTIVE',
+          },
+          userId: order.userId,
+        })
+        if (finalResult.success) {
+          await persistRecoverySuccess(orderId, order.retryCount)
+          await createTimelineEvent(orderId, { eventType: 'PROVIDER_POLL_FINALIZED', message: 'Provider polled — fulfillment finalized and captured' })
+          return { success: true, action: 'POLL_PROVIDER', status: finalResult.orderStatus, retryCount: order.retryCount, message: 'Provider fulfillment confirmed via polling — finalized and captured' }
+        }
+        await persistRecoveryFailure(orderId, order.retryCount, finalResult.error || 'Finalization after poll failed')
+        await createTimelineEvent(orderId, { eventType: 'PROVIDER_POLL_FINALIZATION_FAILED', message: finalResult.error || 'Finalization after poll failed' })
+        return { success: false, action: 'POLL_PROVIDER', status: order.status, retryCount: order.retryCount + 1, nextRetryAt: computeNextRetryAt(order.retryCount + 1), message: finalResult.error || 'Finalization after poll failed' }
       }
       if (pollingResult.stillProcessing) {
         await persistRecoveryRetry(orderId, order.retryCount, 'Provider still processing')
@@ -335,7 +366,7 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
 // Polling + Redispatch helpers
 // ─────────────────────────────────────────────
 
-async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; stillProcessing: boolean; status: string; error?: string }> {
+async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; stillProcessing: boolean; status: string; error?: string; iccids?: string[]; providerRef?: string }> {
   try {
     if (!order.providerId) return { fulfilled: false, stillProcessing: false, status: order.status, error: 'No provider linked' }
     const provider = await prisma.provider.findUnique({ where: { id: order.providerId } })
@@ -361,11 +392,15 @@ async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; s
     const status = result.data?.status || ''
     // A poll may only report fulfilled when a real eSIM/ICCID identity exists —
     // an ACTIVE status with no ICCID must stay pending (finalization is ICCID-backed).
-    const hasIdentity = Boolean(result.data?.iccid) || (Array.isArray(result.data?.iccids) && result.data.iccids.length > 0)
+    const iccids = [
+      ...((result.data?.iccids as string[]) || []),
+      ...(result.data?.iccid ? [String(result.data.iccid)] : []),
+    ].filter((v: any) => v != null && String(v).trim() !== '').map(String)
+    const hasIdentity = iccids.length > 0
     const isTerminal = hasIdentity && ['ACTIVE', 'FULFILLED', 'COMPLETED', 'INSTALLED'].includes(status.toUpperCase())
     const isPending = ['PENDING', 'PROCESSING', 'PENDING_ACTIVATION', 'RESERVED', 'QUEUED'].includes(status.toUpperCase())
 
-    if (isTerminal) return { fulfilled: true, status: 'FULFILLED', stillProcessing: false }
+    if (isTerminal) return { fulfilled: true, status: 'FULFILLED', stillProcessing: false, iccids, providerRef: ref }
     if (isPending) return { fulfilled: false, status: order.status, stillProcessing: true }
 
     return { fulfilled: false, stillProcessing: false, status: order.status, error: hasIdentity ? `Unknown polling status: ${status}` : `No ICCID identity yet (status: ${status})` }
