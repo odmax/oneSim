@@ -916,7 +916,19 @@ export interface TelnaV2PackageTemplate {
   latest_available_date?: string
   time_allowance?: number
   status?: string
-  inventory?: Array<{ id?: number | string; name?: string }>
+  /**
+   * Template-to-inventory association. The live package-template DETAIL response
+   * has NO `inventory` property (observed keys: activation_time_allowance,
+   * activation_type, created_date, data_usage_allowance, earliest_activation_date,
+   * earliest_available_date, id, latest_available_date, modified_date, name, notes,
+   * sms_usage_allowance, status, supported_countries, time_allowance,
+   * voice_usage_allowance). When present in other representations it may be a
+   * NUMERIC inventory id (matching TelnaCreatePackageTemplateRequest.inventory:
+   * string|number) or a legacy array of { id, name }. Absent inventory is NOT
+   * evidence of "no inventory" — purchase must fall back to an unconstrained
+   * SIM registry selection.
+   */
+  inventory?: number | string | Array<{ id?: number | string; name?: string }>
   apn?: string
   [key: string]: unknown
 }
@@ -971,12 +983,51 @@ export interface TelnaV2Package {
   [key: string]: unknown
 }
 
-/** Documented SIM registry entry (v2). */
+/**
+ * Live-proven SIM registry entry (v2).
+ *
+ * The real GET /v2.1/inventory/sim-registries contract observed in staging uses
+ * these LIVE keys (all 10 observed rows had identical field signatures):
+ *
+ *   company: number
+ *   created_date: number
+ *   group: number            (numeric group id)
+ *   iccid: string
+ *   imsis: array
+ *   inventory: number        (numeric inventory id)
+ *   mapped_imsi: number
+ *   modified_date: number
+ *   sim_status: "in-service" (canonical SIM lifecycle state)
+ *   sim_type: string
+ *   sim_variance: string
+ *
+ * The previous assumption that the SIM state lives on `status` and that
+ * inventory/group are OBJECTS ({ id, name }) is NOT the live contract. This type
+ * represents the real payload while retaining a tolerant `status` compatibility
+ * fallback and object-form inventory/group for backward compatibility where the
+ * canonical extractor reads either shape.
+ */
 export interface TelnaV2SimRegistry {
   iccid?: string
+  /** Canonical live SIM lifecycle state (e.g. "pre-service", "in-service"). */
+  sim_status?: string
+  /**
+   * Legacy compatibility field ONLY. On the live contract the SIM lifecycle
+   * state is `sim_status`, not `status`. Retained so callers that still read
+   * `status` keep working against older/alternate representations, but the
+   * canonical extractor prefers `sim_status` first.
+   */
   status?: 'WAITING_FOR_ASSIGNMENT' | 'PRE_SERVICE' | 'IN_SERVICE' | 'TERMINATED' | string
-  inventory?: { id?: number | string; name?: string }
-  group?: { id?: number | string; name?: string }
+  /** Numeric inventory id (live contract) OR legacy object { id, name }. */
+  inventory?: number | string | { id?: number | string; name?: string }
+  /** Numeric group id (live contract) OR legacy object { id, name }. */
+  group?: number | string | { id?: number | string; name?: string }
+  imsis?: Array<string | number>
+  sim_type?: string
+  sim_variance?: string
+  company?: number
+  group_id?: number
+  inventory_id?: number
   [key: string]: unknown
 }
 

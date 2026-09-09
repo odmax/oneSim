@@ -37,7 +37,7 @@ vi.mock('@/lib/providers/capability-state', () => ({
 
 import type { Provider } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { TelnaConnector, normalizeTelnaState, normalizeTelnaTimeAllowance } from './telna-connector'
+import { TelnaConnector, normalizeTelnaState, normalizeTelnaTimeAllowance, getTelnaSimState, getTelnaRefId, getTelnaInventoryId, getTelnaGroupId } from './telna-connector'
 import { resolveConnectorType, createConnector } from './connector-factory'
 import { encryptToken, decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
@@ -3438,5 +3438,210 @@ describe('Telna V2.1 � remaining standard endpoints + custom package creation 
     expect(c.capabilities?.balance).toBe(true)
     // Wallet 403 → WAITING_VENDOR_ENTITLEMENT, implemented; not touched this task.
     expect(c.capabilities?.balance).toBe(true)
+  })
+})
+
+describe('Telna V2.1 live sim-registry contract (sim_status + numeric inventory/group)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+    vi.mocked(prisma.eSIM.findMany).mockResolvedValue([])
+    mockClaimProviderIccid.mockReset()
+    mockReleaseProviderIccidClaim.mockReset()
+  })
+
+  function json(data: unknown, status = 200) {
+    return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
+  }
+
+  // ---- canonical state extractor (requirements 3 & 9A/B/C) ----------------
+  it('A. live-shape SIM: sim_status:pre-service -> PRE_SERVICE (canonical) and is purchase-eligible', () => {
+    const sim = { iccid: 'S1', sim_status: 'pre-service', inventory: 50343, group: 1113778 }
+    expect(getTelnaSimState(sim)).toBe('PRE_SERVICE')
+    // Numeric live ids parse correctly (requirement 9D).
+    expect(getTelnaInventoryId(sim)).toBe(50343)
+    expect(getTelnaGroupId(sim)).toBe(1113778)
+  })
+
+  it('B. sim_status:in-service -> IN_SERVICE and MUST NOT be purchase-eligible', () => {
+    const sim = { iccid: 'S2', sim_status: 'in-service', inventory: 50343, group: 1113778 }
+    expect(getTelnaSimState(sim)).toBe('IN_SERVICE')
+  })
+
+  it('C. legacy `status` fallback still works when sim_status absent', () => {
+    const sim = { iccid: 'S3', status: 'PRE_SERVICE', inventory: { id: 9, name: 'Inv' }, group: { id: 4, name: 'G' } }
+    expect(getTelnaSimState(sim)).toBe('PRE_SERVICE')
+    // Object-form ids parse via the tolerant helpers (requirement 9D).
+    expect(getTelnaInventoryId(sim)).toBe(9)
+    expect(getTelnaGroupId(sim)).toBe(4)
+  })
+
+  it('C2. sim_status takes precedence over status when both present', () => {
+    expect(getTelnaSimState({ iccid: 'X', sim_status: 'in-service', status: 'PRE_SERVICE' })).toBe('IN_SERVICE')
+  })
+
+  it('D. mixed numeric/object/string inventory & group ids parse correctly', () => {
+    expect(getTelnaInventoryId({ inventory: 50343 })).toBe(50343)
+    expect(getTelnaInventoryId({ inventory: '50343' })).toBe('50343')
+    expect(getTelnaInventoryId({ inventory: { id: 7 } })).toBe(7)
+    expect(getTelnaInventoryId({ inventory_id: 99 })).toBe(99)
+    expect(getTelnaGroupId({ group: 1113778 })).toBe(1113778)
+    expect(getTelnaGroupId({ group: { id: '8' } })).toBe('8')
+    expect(getTelnaGroupId({ group_id: 5 })).toBe(5)
+    // absent / blank -> undefined (never fabricated)
+    expect(getTelnaInventoryId({})).toBeUndefined()
+    expect(getTelnaInventoryId({ inventory: null })).toBeUndefined()
+    expect(getTelnaGroupId({ group: undefined })).toBeUndefined()
+    expect(getTelnaRefId({ id: '   ' })).toBeUndefined()
+  })
+
+  // ---- activateESIM with the EXACT live-shaped registry payload ----------
+  // The live /sim-registries list uses `sims` named envelope with sim_status
+  // and NUMERIC inventory/group. These regression tests drive activateESIM
+  // through that shape.
+
+  it('purchase succeeds against a live-shape PRE_SERVICE SIM (sim_status, numeric ids), exactly one POST', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 21573272, name: 'Telna Test - 1GB - Global - 7 Days', status: 'Active' } })) // template detail (NO inventory field)
+      .mockResolvedValueOnce(json({
+        total: 1, offset: 0, count: 1,
+        sims: [{
+          iccid: 'SYN-ICCID-0001',
+          sim_status: 'pre-service',
+          inventory: 50343,
+          group: 1113778,
+          sim_type: 'eUICC',
+          sim_variance: 'dev',
+          company: 9,
+          created_date: 1750000000000,
+          modified_date: 1750000000000,
+          imsis: [],
+          mapped_imsi: 0,
+        }],
+      }))
+      .mockResolvedValueOnce(json({ data: { id: 'pkg-INST-1', sim: 'SYN-ICCID-0001', status: 'NOT_ACTIVE' } })) // POST /v2.1/pcr/packages
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid.mockResolvedValue({ ok: true })
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '21573272', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-live' })
+    expect(r.success).toBe(true)
+    expect(r.data?.iccidOrSimId).toBe('SYN-ICCID-0001')
+    // Exactly one POST to /v2.1/pcr/packages, and it was on the claimed ICCID.
+    const posts = fetchSpy.mock.calls.filter(x => String(x[0]).includes('/v2.1/pcr/packages') && x[1].method === 'POST')
+    expect(posts).toHaveLength(1)
+    expect(String(posts[0][0])).toBe('https://developer-api.telna.com/v2.1/pcr/packages')
+    expect(JSON.parse(posts[0][1].body as string).sim).toBe('SYN-ICCID-0001')
+    expect(JSON.parse(posts[0][1].body as string).package_template).toBe(21573272)
+    expect(mockClaimProviderIccid).toHaveBeenCalledWith({ purchaseId: 'order-live', iccid: 'SYN-ICCID-0001' })
+  })
+
+  it('template with NO inventory field does not crash and does not fabricate an inventory id', () => {
+    // getV2PackageTemplate on a live detail (no inventory key) must tolerate it.
+    const fetchSpy = vi.fn().mockResolvedValue(json({
+      data: {
+        activation_time_allowance: 86400, activation_type: 'MANUAL',
+        data_usage_allowance: 1073741824, earliest_activation_date: null,
+        earliest_available_date: null, id: 21573272,
+        latest_available_date: null, modified_date: 1750000000000,
+        name: 'Telna Test', notes: null, sms_usage_allowance: 0, status: 'Active',
+        supported_countries: [],
+      },
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const fn = async () => {
+      const r = await c.getV2PackageTemplate(21573272)
+      expect(r.success).toBe(true)
+      expect((r.data as any)?.template?.inventory).toBeUndefined()
+    }
+    return fn().then(() => {
+      // No inventory id is ever derived from the missing field.
+      expect(JSON.stringify(fetchSpy.mock.calls)).not.toContain('inventory')
+    })
+  })
+
+  it('F. no eligible SIM (live sim_status in-service) -> OUT_OF_STOCK, no claim, no package POST', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 21573272, name: 'T', status: 'Active' } })) // template detail
+      .mockResolvedValueOnce(json({
+        total: 1, offset: 0, count: 1,
+        sims: [{ iccid: 'SYN-ICCID-0002', sim_status: 'in-service', inventory: 50343, group: 1113778 }],
+      }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '21573272', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-2' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('OUT_OF_STOCK')
+    expect(mockClaimProviderIccid).not.toHaveBeenCalled()
+    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/v2.1/pcr/packages')
+  })
+
+  it('F2. WAITING_FOR_ASSIGNMENT (legacy status) remains ineligible without authoritative evidence', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 21573272, name: 'T', status: 'Active' } }))
+      .mockResolvedValueOnce(json({
+        total: 1, offset: 0, count: 1,
+        sims: [{ iccid: 'SYN-ICCID-0003', sim_status: 'WAITING_FOR_ASSIGNMENT' }],
+      }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '21573272', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-3' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('OUT_OF_STOCK')
+    expect(mockClaimProviderIccid).not.toHaveBeenCalled()
+    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('/v2.1/pcr/packages')
+  })
+
+  it('G. eligible path performs exactly one package-assignment mutation after claim', async () => {
+    // Multiple PRE_SERVICE candidates with one claim collision.
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 21573272, name: 'T', status: 'Active' } }))
+      .mockResolvedValueOnce(json({
+        total: 2, offset: 0, count: 2,
+        sims: [
+          { iccid: 'SYN-ICCID-0004', sim_status: 'pre-service', inventory: 50343, group: 1113778 },
+          { iccid: 'SYN-ICCID-0005', sim_status: 'pre-service', inventory: 50343, group: 1113778 },
+        ],
+      }))
+      .mockResolvedValueOnce(json({ data: { id: 'pkg-INST-2', sim: 'SYN-ICCID-0005', status: 'NOT_ACTIVE' } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    mockClaimProviderIccid
+      .mockResolvedValueOnce({ ok: false, reason: 'CLAIM_LOST' })
+      .mockResolvedValueOnce({ ok: true })
+    const c = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await c.activateESIM({ planId: '21573272', quantity: 1, subscriber: { email: 'a@b.com' }, orderId: 'order-4' })
+    expect(r.success).toBe(true)
+    expect(r.data?.iccidOrSimId).toBe('SYN-ICCID-0005')
+    expect(mockClaimProviderIccid).toHaveBeenCalledTimes(2)
+    const posts = fetchSpy.mock.calls.filter(x => String(x[0]).includes('/v2.1/pcr/packages') && x[1].method === 'POST')
+    expect(posts).toHaveLength(1)
+    expect(JSON.parse(posts[0][1].body as string).sim).toBe('SYN-ICCID-0005')
+  })
+
+  it('getStatus reads live sim_status (in-service -> ACTIVE with networkAttached evidence)', async () => {
+    const STATUS_ICCID = 'SYN-ICCID-0006'
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { iccid: STATUS_ICCID, sim_status: 'in-service', inventory: 50343, group: 1113778 } }))
+      .mockResolvedValueOnce(json({ data: { iccid: STATUS_ICCID, state: null } }))
+      .mockResolvedValueOnce(json({ data: { total: 0, offset: 0, count: 0, packages: [] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(STATUS_ICCID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('ACTIVE')
+    expect(result.data?.evidence).toMatchObject({ networkAttached: true, reason: 'sim-in-service' })
+  })
+
+  it('getStatus reads live sim_status (pre-service -> PENDING_ACTIVATION)', async () => {
+    const STATUS_ICCID = 'SYN-ICCID-0007'
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { iccid: STATUS_ICCID, sim_status: 'pre-service', inventory: 50343, group: 1113778 } }))
+      .mockResolvedValueOnce(json({ data: { iccid: STATUS_ICCID, state: 'RELEASED' } }))
+      .mockResolvedValueOnce(json({ data: { total: 0, offset: 0, count: 0, packages: [] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(STATUS_ICCID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('PENDING_ACTIVATION')
   })
 })

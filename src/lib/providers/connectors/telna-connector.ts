@@ -92,6 +92,64 @@ export function normalizeTelnaState(value: string | null | undefined): string {
 }
 
 /**
+ * Provider-local canonical Telna SIM lifecycle state extractor.
+ *
+ * The live GET /v2.1/inventory/sim-registries contract carries the SIM state on
+ * `sim_status` (e.g. "pre-service" / "in-service"), NOT `status`. This helper
+ * prefers the live canonical `sim_status` and uses `status` only as a
+ * compatibility fallback for older/alternate representations. The return value
+ * is normalized through normalizeTelnaState ('' when neither field is present).
+ */
+export function getTelnaSimState(sim: TelnaV2SimRegistry | Record<string, unknown> | null | undefined): string {
+  if (!sim || typeof sim !== 'object') return ''
+  const s = sim as Record<string, unknown>
+  const simStatus = typeof s.sim_status === 'string' && s.sim_status.trim() !== '' ? s.sim_status : undefined
+  if (simStatus !== undefined) return normalizeTelnaState(simStatus)
+  const status = typeof s.status === 'string' && s.status.trim() !== '' ? s.status : undefined
+  if (status !== undefined) return normalizeTelnaState(status)
+  return ''
+}
+
+/**
+ * Provider-local numeric id extraction for a Telna `inventory` or `group`
+ * reference. Live rows carry these as NUMERIC ids (e.g. `inventory: 50343`,
+ * `group: 1113778`); legacy object form { id, name } is also tolerated.
+ * Returns undefined when absent/unparseable — never fabricates an id.
+ */
+export function getTelnaRefId(ref: number | string | { id?: number | string; name?: string } | null | undefined): number | string | undefined {
+  if (ref == null) return undefined
+  if (typeof ref === 'number' || typeof ref === 'string') {
+    const str = String(ref).trim()
+    return str === '' ? undefined : ref
+  }
+  if (typeof ref === 'object') {
+    const raw = ref.id
+    if (raw == null) return undefined
+    const str = String(raw).trim()
+    return str === '' ? undefined : raw
+  }
+  return undefined
+}
+
+/** Extract the inventory id from a live/legacy SIM registry row. */
+export function getTelnaInventoryId(sim: TelnaV2SimRegistry | Record<string, unknown> | null | undefined): number | string | undefined {
+  if (!sim || typeof sim !== 'object') return undefined
+  const s = sim as Record<string, unknown>
+  if (s.inventory != null) return getTelnaRefId(s.inventory as never)
+  if (s.inventory_id != null) return getTelnaRefId(s.inventory_id as never)
+  return undefined
+}
+
+/** Extract the group id from a live/legacy SIM registry row. */
+export function getTelnaGroupId(sim: TelnaV2SimRegistry | Record<string, unknown> | null | undefined): number | string | undefined {
+  if (!sim || typeof sim !== 'object') return undefined
+  const s = sim as Record<string, unknown>
+  if (s.group != null) return getTelnaRefId(s.group as never)
+  if (s.group_id != null) return getTelnaRefId(s.group_id as never)
+  return undefined
+}
+
+/**
  * Provider-local time_allowance → validityDays.
  *
  * The real V2.1 template contract uses an OBJECT form:
@@ -540,12 +598,25 @@ export class TelnaConnector implements IProviderConnector {
 
     // Determine the template's inventory (a template is tied to an inventory;
     // only SIMs in that inventory can use it). Read-only, best-effort.
+    //
+    // IMPORTANT: the live package-template DETAIL response has NO `inventory`
+    // property — so a missing inventory here is NOT evidence that the template
+    // has no inventory. Selection simply falls back to the unfiltered SIM
+    // registry GET when no inventory id can be derived. When a template DOES
+    // carry an inventory reference it may be a numeric/string id (live create
+    // contract uses `inventory: string | number`) or a legacy array of
+    // { id, name } — both are handled via a tolerant id extraction.
     let templateInventoryId: number | string | undefined
     try {
       const tpl = await this.getV2PackageTemplate(templateId)
-      if (tpl.success && tpl.data?.template?.inventory && Array.isArray(tpl.data.template.inventory)) {
-        const first = tpl.data.template.inventory[0]
-        if (first?.id != null) templateInventoryId = Number(first.id) || String(first.id)
+      if (tpl.success && tpl.data?.template) {
+        const inv = tpl.data.template.inventory
+        if (Array.isArray(inv)) {
+          const first = inv[0]
+          if (first?.id != null) templateInventoryId = Number(first.id) || String(first.id)
+        } else {
+          templateInventoryId = getTelnaRefId(inv as never)
+        }
       }
     } catch { /* fall through to unconstrained selection */ }
 
@@ -645,6 +716,10 @@ export class TelnaConnector implements IProviderConnector {
    * SIMs are candidates; IN_SERVICE / TERMINATED / WAITING_FOR_ASSIGNMENT are
    * never selected, and ICCIDs already bound to an existing OneSIM eSIM are
    * excluded. Returns [] → OUT_OF_STOCK.
+   *
+   * The canonical SIM state is read via getTelnaSimState (live `sim_status`
+   * preferred, `status` compatibility fallback) — not `s.status` directly,
+   * since the live contract reports the lifecycle state under `sim_status`.
    */
   private async listEligibleIccids(inventoryId?: number | string): Promise<string[]> {
     const result = await this.listV2SimRegistries(
@@ -653,7 +728,7 @@ export class TelnaConnector implements IProviderConnector {
     if (!result.success || !result.data) return []
     const sims = result.data.items || []
     const candidates = sims
-      .filter(s => s?.iccid && normalizeTelnaState(s.iccid).trim() !== '' && normalizeTelnaState(s.status) === 'PRE_SERVICE')
+      .filter(s => s?.iccid && normalizeTelnaState(s.iccid).trim() !== '' && getTelnaSimState(s) === 'PRE_SERVICE')
       .map(s => String(s.iccid))
     if (candidates.length === 0) return []
 
@@ -679,8 +754,8 @@ export class TelnaConnector implements IProviderConnector {
 
     // 1) SIM registry (best-effort — availability of /sim-registries is live-proven).
     const reg = await this.getV2SimRegistry(iccid)
-    if (reg.success && reg.data?.sim?.status) {
-      simStatus = normalizeTelnaState(reg.data.sim.status)
+    if (reg.success && reg.data?.sim) {
+      simStatus = getTelnaSimState(reg.data.sim)
     }
 
     // 2) eUICC profile (best-effort — conveys install/enable evidence, not network usage).
