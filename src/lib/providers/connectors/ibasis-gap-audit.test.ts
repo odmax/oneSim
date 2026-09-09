@@ -27,8 +27,12 @@ describe('iBASIS completion — capability audit', () => {
     expect(DEFAULT_PROVIDER_CAPABILITIES['IBASIS']).toContain(ProviderCapability.INVENTORY)
   })
 
-  it('6. iBASIS has PLAN_SYNC capability', () => {
-    expect(DEFAULT_PROVIDER_CAPABILITIES['IBASIS']).toContain(ProviderCapability.PLAN_SYNC)
+  it('6. iBASIS has CATALOG_SYNC capability (connector truth) and NOT the legacy PLAN_SYNC token', () => {
+    // The connector implements catalog sync via syncPlans (CATALOG_SYNC). There
+    // is no separate plan-sync connector capability; PLAN_SYNC was a legacy
+    // default that mismatched connector truth and is therefore removed.
+    expect(DEFAULT_PROVIDER_CAPABILITIES['IBASIS']).toContain(ProviderCapability.CATALOG_SYNC)
+    expect(DEFAULT_PROVIDER_CAPABILITIES['IBASIS']).not.toContain(ProviderCapability.PLAN_SYNC)
   })
 
   it('7. iBASIS has SUSPEND capability (now implemented)', () => {
@@ -57,8 +61,18 @@ describe('iBASIS connector — Phase 2 stubs confirmed', () => {
     expect(true).toBe(true)
   })
 
-  it('13. getQRCode returns NOT_IMPLEMENTED', () => {
-    expect(true).toBe(true)
+  it('13. getQRCode is IMPLEMENTED (returns stored activation code — never a fabricated QR/SMDP-only/matchingId-only)', () => {
+    const src = fs.readFileSync('src/lib/providers/connectors/ibasis-connector.ts', 'utf8')
+    // The connector implements getQRCode by recovering stored install data/activation
+    // code (no QR URL endpoint exists). It never invents SM-DP+/matchingId/QR URL
+    // on its own — SM-DP+ is only returned together with a matching id.
+    expect(src).toContain('async getQRCode(iccid: string)')
+    expect(src).toContain('activationCode: esim.activationCode')
+    expect(src).toContain('iBASIS does not support delayed QR retrieval')
+    // Extract the method body only (up to `async topUpESIM`).
+    const body = src.slice(src.indexOf('async getQRCode('), src.indexOf('async topUpESIM('))
+    expect(body).not.toContain('qr_code_url')
+    expect(body).not.toContain('qrCodeUrl')
   })
 
   it('14. topUpESIM returns NOT_IMPLEMENTED', () => {

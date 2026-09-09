@@ -1,5 +1,15 @@
 'use server'
 
+// ⚠️ DEPRECATED / NON-RUNTIME — DO NOT WIRE THIS INTO THE CANONICAL PURCHASE.
+// ===========================================================================
+// This file is a legacy admin SIM-inventory sync surface for iBASIS. It is a
+// local-only sync (read-only inventory fetch + local eSIM/provider writes); it
+// is NOT an input to the canonical OneSIM purchase lifecycle and NEVER performs
+// a provider purchase mutation. Repo-wide it has zero runtime imports (only its
+// own test). DO NOT import functions from here into purchase/reconciliation/
+// recovery; those paths use the connector + shared services only.
+// ===========================================================================
+
 import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'

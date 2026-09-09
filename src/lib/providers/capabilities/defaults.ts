@@ -103,7 +103,6 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
     ProviderCapability.INVENTORY,
     ProviderCapability.ESIM,
     ProviderCapability.CATALOG_SYNC,
-    ProviderCapability.PLAN_SYNC,
     ProviderCapability.PURCHASE,
     ProviderCapability.STATUS,
     ProviderCapability.SUSPEND,

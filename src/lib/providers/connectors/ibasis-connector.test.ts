@@ -825,11 +825,11 @@ describe('IbasisConnector Phase 3 — subscriptions', () => {
     expect(result.data?.subscriberId).toBe('42')
   })
 
-  it('getActivationStatus polls the activation endpoint and returns the subscription id once complete', async () => {
+it('getActivationStatus polls the activation endpoint and returns the subscription id once complete', async () => {
     fetchSpy.mockResolvedValue(mockFetchSuccess({ status: 'completed', subscription_id: 'sub-7' }, 200))
     const result = await connector.getActivationStatus('act-1')
     expect(result.success).toBe(true)
-    expect(result.data?.status).toBe('READY_TO_INSTALL')
+    expect(result.data?.status).toBe('COMPLETED')
     expect(result.data?.providerSubscriptionId).toBe('sub-7')
     expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/v1/subscriptions/activations/act-1')
   })

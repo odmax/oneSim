@@ -125,11 +125,49 @@ describe('executeProviderOperation — activation polling', () => {
     }))
   })
 
-  it('ACTIVE without any fulfillment evidence → reconciliation, never completes', async () => {
+  it('ACTIVE without ICCID → reconciliation, never completes', async () => {
     setupAdapter({ success: true, data: { status: 'ACTIVE' } })
     const result = await executeProviderOperation(BASE)
     expect(result.completed).toBe(true)
-    expect(result.error).toMatch(/ACTIVE.*evidence/i)
+    expect(result.error).toMatch(/ACTIVE.*ICCID/i)
+    expect(mockComplete).not.toHaveBeenCalled()
+    expect(mockTransition).toHaveBeenCalledWith('order-1', 'PROVIDER_RECONCILIATION', expect.anything())
+  })
+
+  it('ACTIVE + activationCode only (no ICCID) → reconciliation, activationCode alone never finalizes', async () => {
+    setupAdapter({ success: true, data: { status: 'ACTIVE', activationCode: 'FKE: 0$CUST-111$555' } })
+    const result = await executeProviderOperation(BASE)
+    expect(result.completed).toBe(true)
+    expect(result.error).toMatch(/ACTIVE.*ICCID/i)
+    expect(mockComplete).not.toHaveBeenCalled()
+    expect(mockTransition).toHaveBeenCalledWith('order-1', 'PROVIDER_RECONCILIATION', expect.anything())
+  })
+
+  it('COMPLETED + ICCID → completeProviderOperation (iBASIS completed finalizes canonically)', async () => {
+    setupAdapter({ success: true, data: { status: 'COMPLETED', iccids: ['89012345678901234567'] } })
+    const result = await executeProviderOperation(BASE)
+    expect(result.completed).toBe(true)
+    expect(mockComplete).toHaveBeenCalledWith(expect.objectContaining({
+      orderId: 'order-1', providerRef: 'ref-1', iccids: ['89012345678901234567'],
+    }))
+    expect(mockFail).not.toHaveBeenCalled()
+    expect(mockTransition).not.toHaveBeenCalled()
+  })
+
+  it('COMPLETED without ICCID → reconciliation, never completes', async () => {
+    setupAdapter({ success: true, data: { status: 'COMPLETED' } })
+    const result = await executeProviderOperation(BASE)
+    expect(result.completed).toBe(true)
+    expect(result.error).toMatch(/COMPLETED.*ICCID/i)
+    expect(mockComplete).not.toHaveBeenCalled()
+    expect(mockTransition).toHaveBeenCalledWith('order-1', 'PROVIDER_RECONCILIATION', expect.anything())
+  })
+
+  it('COMPLETED + activationCode only (no ICCID) → reconciliation, never finalizes', async () => {
+    setupAdapter({ success: true, data: { status: 'COMPLETED', activationCode: 'FKE: 0$CUST-111$555' } })
+    const result = await executeProviderOperation(BASE)
+    expect(result.completed).toBe(true)
+    expect(result.error).toMatch(/COMPLETED.*ICCID/i)
     expect(mockComplete).not.toHaveBeenCalled()
     expect(mockTransition).toHaveBeenCalledWith('order-1', 'PROVIDER_RECONCILIATION', expect.anything())
   })

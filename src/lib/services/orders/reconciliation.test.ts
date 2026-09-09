@@ -269,6 +269,59 @@ describe('reconcileProviderOrder', () => {
     expect(mockRelease).not.toHaveBeenCalled()
   })
 
+  it('9b. iBASIS completed + ICCID → FOUND_SUCCESS finalizes canonically (canonical path, no new purchase)', async () => {
+    setupAirHubShape([attempt({ attemptNumber: 1, status: 'PROCESSING', providerReference: 'act-ibasis-1' })])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'COMPLETED', iccids: ['89012345678901234567'], providerSubscriptionId: 'sub-1' },
+      }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(mockFinal).toHaveBeenCalledTimes(1)
+    expect(mockFinal).toHaveBeenCalledWith(expect.objectContaining({
+      providerResult: expect.objectContaining({ iccids: ['89012345678901234567'] }),
+    }))
+    expect(mockRelease).not.toHaveBeenCalled()
+    // No second provider purchase: the adapter exposes only getActivationStatus.
+    expect((mockAdapter.mock.results[0].value as any).activateESIM).toBeUndefined()
+  })
+
+  it('9c. iBASIS completed WITHOUT ICCID → KEEP_WAITING, finalizer NOT called, wallet held', async () => {
+    setupAirHubShape([attempt({ attemptNumber: 1, status: 'PROCESSING', providerReference: 'act-ibasis-2' })])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'COMPLETED', providerSubscriptionId: 'sub-2' } }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    expect(mockFinal).not.toHaveBeenCalled()
+    expect(mockRelease).not.toHaveBeenCalled()
+    expect(mockTransition).toHaveBeenCalledWith('order-1', 'PROVIDER_RECONCILIATION')
+  })
+
+  it('9d. iBASIS completed + activationCode only (no ICCID) → NOT fulfilled, wallet held', async () => {
+    setupAirHubShape([attempt({ attemptNumber: 1, status: 'PROCESSING', providerReference: 'act-ibasis-3' })])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'COMPLETED', activationCode: 'FKE: 0$CUST-111$555' },
+      }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-1')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    expect(mockFinal).not.toHaveBeenCalled()
+    expect(mockRelease).not.toHaveBeenCalled()
+  })
+
   it('10. provider acceptance evidence + activationCode-only response keeps redispatch blocked even after reconciliation exhaustion', async () => {
     setupAirHubShape([attempt({ attemptNumber: 1, status: 'PROCESSING', providerReference: '12811381' })])
     mockPrisma.providerAttempt.count.mockResolvedValue(7) // exhaustion threshold reached

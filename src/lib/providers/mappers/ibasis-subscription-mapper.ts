@@ -4,7 +4,14 @@
  * Normalizes raw iBASIS subscription payloads (GET /api/v1/subscriptions/{id},
  * GET /api/v1/subscriptions/activations/{id}) into the app-level lifecycle:
  *
- *   PENDING, PROVISIONING, READY_TO_INSTALL, ACTIVE, SUSPENDED, EXPIRED, FAILED, CANCELLED
+ *   PENDING, PROVISIONING, COMPLETED, ACTIVE, SUSPENDED, EXPIRED, FAILED, CANCELLED
+ *
+ * iBASIS activation `completed` maps to the canonical `COMPLETED` status — a
+ * terminal-success value the shared reconciliation/finalization engine already
+ * treats as authoritative fulfillment evidence (ICCID-gated). `READY_TO_INSTALL`
+ * is intentionally NOT produced by this mapper: it is not a canonical success in
+ * the shared engine, and no other OneSIM provider emits it, so declaring it
+ * globally successful would be unsafe.
  *
  * All provider-specific status strings stay inside this module.
  */
@@ -12,7 +19,7 @@
 export const SUBSCRIPTION_LIFECYCLE = [
   'PENDING',
   'PROVISIONING',
-  'READY_TO_INSTALL',
+  'COMPLETED',
   'ACTIVE',
   'SUSPENDED',
   'EXPIRED',
@@ -37,7 +44,7 @@ const IBASIS_STATUS_MAP: Record<string, SubscriptionLifecycleStatus> = {
   activation_pending: 'PENDING',
   processing: 'PROVISIONING',
   reserved: 'PROVISIONING',
-  completed: 'READY_TO_INSTALL',
+  completed: 'COMPLETED',
   active: 'ACTIVE',
   suspended: 'SUSPENDED',
   deactivated: 'EXPIRED',

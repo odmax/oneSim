@@ -17,7 +17,7 @@ describe('normalizeSubscriptionStatus', () => {
     expect(normalizeSubscriptionStatus('activation_pending')).toBe('PENDING')
     expect(normalizeSubscriptionStatus('processing')).toBe('PROVISIONING')
     expect(normalizeSubscriptionStatus('reserved')).toBe('PROVISIONING')
-    expect(normalizeSubscriptionStatus('completed')).toBe('READY_TO_INSTALL')
+    expect(normalizeSubscriptionStatus('completed')).toBe('COMPLETED')
     expect(normalizeSubscriptionStatus('active')).toBe('ACTIVE')
     expect(normalizeSubscriptionStatus('suspended')).toBe('SUSPENDED')
     expect(normalizeSubscriptionStatus('deactivated')).toBe('EXPIRED')
@@ -26,6 +26,15 @@ describe('normalizeSubscriptionStatus', () => {
     expect(normalizeSubscriptionStatus('failed')).toBe('FAILED')
     expect(normalizeSubscriptionStatus('canceled')).toBe('CANCELLED')
     expect(normalizeSubscriptionStatus('cancelled')).toBe('CANCELLED')
+  })
+
+  it('maps completed to the canonical COMPLETED status (valid for reconciliation FOUND_SUCCESS)', () => {
+    // iBASIS activation `completed` is authoritative fulfillment when an ICCID
+    // is present; COMPLETED is a canonical success the reconciliation engine
+    // already treats as FOUND_SUCCESS. It must never be READY_TO_INSTALL, which
+    // the shared engine does NOT recognize as success.
+    expect(normalizeSubscriptionStatus('completed')).toBe('COMPLETED')
+    expect(normalizeSubscriptionStatus('completed')).not.toBe('READY_TO_INSTALL')
   })
 
   it('is case-insensitive and tolerant of whitespace', () => {
@@ -121,8 +130,31 @@ describe('mapIbasisActivationStatus', () => {
   it('normalizes activation status and captures subscription id when complete', () => {
     const mapped = mapIbasisActivationStatus({ status: 'completed', subscription_id: 'sub-9' }, 'act-1')
     expect(mapped!.activationId).toBe('act-1')
-    expect(mapped!.status).toBe('READY_TO_INSTALL')
+    expect(mapped!.status).toBe('COMPLETED')
     expect(mapped!.providerSubscriptionId).toBe('sub-9')
+  })
+
+  it('completed + ICCID device is canonical fulfillment evidence (ICCID-required for finalization)', () => {
+    const mapped = mapIbasisActivationStatus({
+      status: 'completed',
+      subscription_id: 'sub-9',
+      devices: [{ device: '89975111967191511974', type: 'iccid' }],
+    }, 'act-1')
+    expect(mapped!.status).toBe('COMPLETED')
+    expect(mapped!.iccids).toEqual(['89975111967191511974'])
+  })
+
+  it('completed without an ICCID device carries NO iccids (cannot finalize)', () => {
+    const mapped = mapIbasisActivationStatus({ status: 'completed', subscription_id: 'sub-9' }, 'act-1')
+    expect(mapped!.status).toBe('COMPLETED')
+    expect(mapped!.iccids).toEqual([])
+  })
+
+  it('activation-code-only is never treated as fulfillment identity (iccids is the gate)', () => {
+    const mapped = mapIbasisActivationStatus({ status: 'completed', subscription_id: 'sub-9', activation_code: 'FKE: 0$CUST-111$555' }, 'act-1')
+    expect(mapped!.status).toBe('COMPLETED')
+    // activation_code is NOT surfaced in the mapped identity — only iccids.
+    expect(mapped!.iccids).toEqual([])
   })
 
   it('returns null subscription id while still processing', () => {

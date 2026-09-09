@@ -1,5 +1,15 @@
 'use server'
 
+// ⚠️ DEPRECATED / NON-RUNTIME — DO NOT WIRE THIS INTO THE CANONICAL PURCHASE.
+// ===========================================================================
+// This file is a legacy admin subscriber-sync surface for iBASIS. It is NOT an
+// input to the canonical OneSIM purchase lifecycle: `activateESIM` creates the
+// iBASIS subscriber itself (via the connector) as part of the purchase dispatch,
+// and the shared orchestration never imports this file. Repo-wide it has zero
+// runtime imports (only its own test). DO NOT import functions from here into
+// purchase/reconciliation/recovery.
+// ===========================================================================
+
 import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'

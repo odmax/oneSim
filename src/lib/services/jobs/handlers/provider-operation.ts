@@ -135,10 +135,15 @@ export async function executeProviderOperation(payload: any): Promise<{ complete
       installData = normalizeConnectorInstallData(lookup.data)
 
       // Terminal success — finalize idempotently (single eSIM, single capture).
-      if (providerStatus === 'ACTIVE' || providerStatus === 'ACTIVATED') {
-        if (providerIccids.length === 0 && !installData.activationCode) {
-          await reconcileActivationOrder(orderId, 'Provider reports ACTIVE but returned no ICCID or activation evidence — cannot finalize')
-          return { completed: true, error: 'Provider ACTIVE without fulfillment evidence — reconciliation' }
+      // `COMPLETED` is the canonical iBASIS `completed` activation status (see
+      // ibasis-subscription-mapper); ACTIVE/ACTIVATED cover other providers.
+      if (['ACTIVE', 'ACTIVATED', 'COMPLETED'].includes(providerStatus)) {
+        // Fulfillment is ICCID-backed: activationCode alone can NEVER finalize.
+        // Only authoritative ICCID identity authorizes finalization — otherwise
+        // the order goes to reconciliation (wallet held, provider owns outcome).
+        if (providerIccids.length === 0) {
+          await reconcileActivationOrder(orderId, `Provider reports ${providerStatus} but returned no ICCID identity — cannot finalize`)
+          return { completed: true, error: `Provider ${providerStatus} without ICCID — reconciliation` }
         }
         await completeProviderOperation({
           orderId, businessId: businessId || order.businessId, providerId: provider.id,
