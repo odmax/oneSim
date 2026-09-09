@@ -1,5 +1,20 @@
 'use server'
 
+// ⚠️ DEPRECATED / NON-RUNTIME — DO NOT WIRE THIS INTO THE CANONICAL PURCHASE.
+// ===========================================================================
+// This file is a legacy admin surface that calls `connector.updateSimPCRProfile`
+// (a TELNA PCR profile mutation). It is NOT an input to the canonical OneSIM
+// purchase lifecycle: `activateESIM` owns purchaser (POST /v2.1/pcr/packages)
+// and NEVER calls `assignPackageToSim` / `refreshSimPCRProfile`, and the shared
+// reconciliation/provider-attempt path never references this file (verified by
+// zero imports/consumers repo-wide and the capability-state/invariant tests).
+//
+// DO NOT import or call `assignPackageToSim` from purchase orchestration,
+// recovery, reconciliation, or any customer-facing flow. If a real admin
+// workflow is later needed, re-implement it as an explicit, entitlement-gated,
+// non-purchase operation on a PROVEN endpoint — never reuse it for fulfillment.
+// ===========================================================================
+
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'

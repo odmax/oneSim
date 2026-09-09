@@ -196,7 +196,11 @@ describe('getEsimActionAvailability — other providers', () => {
 })
 
 describe('getEsimActionAvailability — top up', () => {
-  const telna = provider({ code: 'TELNA', supportsTopUp: true })
+  // TELNA defaults do NOT declare TOP_UP (the TelnaConnector does not implement
+  // top-up — connector truth is authoritative). These tests exercise the
+  // availability logic by explicitly declaring TOP_UP on the fixture, so they
+  // no longer depend on an upstream default that would be incorrect.
+  const telna = provider({ code: 'TELNA', capabilities: ['TOP_UP'], supportsTopUp: true })
 
   it('Top Up enabled only when TOP_UP capability + supportsTopUp + non-terminal status + ICCID', () => {
     const a = getEsimActionAvailability({ provider: telna, esim: esim() })
@@ -210,7 +214,7 @@ describe('getEsimActionAvailability — top up', () => {
   })
 
   it('Top Up disabled with provider-level reason when TOP_UP declared but supportsTopUp is false', () => {
-    const telnaNoTopUp = provider({ code: 'TELNA', supportsTopUp: false })
+    const telnaNoTopUp = provider({ code: 'TELNA', capabilities: ['TOP_UP'], supportsTopUp: false })
     const a = getEsimActionAvailability({ provider: telnaNoTopUp, esim: esim() })
     expect(a.topUp).toMatchObject({ visible: true, enabled: false, reason: 'Top up is disabled for this provider.' })
   })

@@ -43,21 +43,23 @@ export const DEFAULT_PROVIDER_CAPABILITIES: Record<string, ProviderCapability[]>
   // MOCK — everything for testing
   MOCK: Object.values(ProviderCapability),
 
-  // Telna (future) — full eSIM + advanced
+  // Telna — provider-neutral documented V2.1 surface. Defaults reflect the
+  // ACTUAL TelnaConnector capability truth (connector is authoritative):
+  // purchase (POST /v2.1/pcr/packages), catalog sync (package-templates),
+  // status (sim-registries + euicc-profiles + packages), usage (package
+  // instance), inventory (sim-registries), balance (getWallet).
+  // NOT declared by the connector: top-up, webhooks, SMS, wallet, PCR-profile
+  // mutations — so they are NOT default-enabled. Custom package creation is
+  // implemented but intentionally NOT default-enabled (admin/entitlement-gated
+  // and needs explicit provider flag, matching capability-state tests).
   TELNA: [
     ProviderCapability.AUTH,
     ProviderCapability.CATALOG_SYNC,
     ProviderCapability.PURCHASE,
-    ProviderCapability.TOP_UP,
     ProviderCapability.USAGE,
     ProviderCapability.STATUS,
-    ProviderCapability.WEBHOOKS,
-    ProviderCapability.SMS_MT,
-    ProviderCapability.SMS_MO,
-    ProviderCapability.WALLET,
-    ProviderCapability.INVENTORY,
-    ProviderCapability.PCR_PROFILE,
     ProviderCapability.BALANCE,
+    ProviderCapability.INVENTORY,
   ],
 
   // Telna SeamlessOS — purchase lifecycle (usage/suspend deferred)

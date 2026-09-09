@@ -985,16 +985,20 @@ export class TelnaConnector implements IProviderConnector {
   }
 
   /**
-   * POST /packages — creates a service package on an EXISTING Telna SIM.
+   * POST /v2.1/pcr/packages — creates a service package on an EXISTING Telna SIM.
    * Documented body: { sim, package_template, time_allowance? }.
    * NEVER a local OneSIM id; only the provider-owned ICCID + template id.
+   *
+   * The dedicated `packageCreate` registry entry (mutation:true) is authoritative
+   * for this purchase mutation — the read-labelled `packages` key is never reused
+   * to POST. Exactly ONE mutating HTTP request per dispatch; no retry/replay.
    */
   async createPackage(req: TelnaCreatePackageRequest): Promise<ConnectorResult<{ pkg: TelnaV2Package }>> {
-    const result = await this.request({ method: 'POST', endpoint: 'packages', body: req })
+    const result = await this.request({ endpoint: 'packageCreate', body: req })
     if (!result.success) return { success: false, error: result.error }
     const pkg = (result.data as { data?: TelnaV2Package })?.data || (result.data as TelnaV2Package)
     if (!pkg || (pkg.id == null && pkg.sim == null)) {
-      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'POST /packages response missing id/sim' } }
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'POST /v2.1/pcr/packages response missing id/sim' } }
     }
     return { success: true, data: { pkg } }
   }

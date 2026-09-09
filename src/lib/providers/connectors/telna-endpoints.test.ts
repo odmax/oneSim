@@ -186,6 +186,21 @@ describe('Telna endpoint registry — V2.1 vendor-contract totality', () => {
     expect(tpl.entitlement).toBe('ACCOUNT_GATED')
   })
 
+  it('purchase POST is issued through packageCreate (mutation:true); packages list stays read-only', () => {
+    // The canonical TelnaConnector.createPackage mutation must use the dedicated
+    // `packageCreate` registry entry — the `packages` key is READ-only and must
+    // never be the vehicle for a purchase POST.
+    expect(TELNA_ENDPOINTS.packageCreate.mutation).toBe(true)
+    expect(TELNA_ENDPOINTS.packageCreate.method).toBe('POST')
+    expect(telnaEndpointMutation('packageCreate')).toBe(true)
+    expect(TELNA_ENDPOINTS.packageCreate.path).toBe('/v2.1/pcr/packages')
+
+    // `packages` (list) is READ-only: GET, mutation:false.
+    expect(TELNA_ENDPOINTS.packages.mutation).toBe(false)
+    expect(TELNA_ENDPOINTS.packages.method).toBe('GET')
+    expect(telnaEndpointMutation('packages')).toBe(false)
+  })
+
   it('paid add-on and excluded endpoints are correctly classified (never STANDARD)', () => {
     expect(TELNA_ENDPOINTS.openDataSessions.entitlement).toBe('PAID_ADDON')
     expect(TELNA_ENDPOINTS.openDataSessions.exposure).toBe('DISABLED')

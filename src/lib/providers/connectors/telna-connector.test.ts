@@ -2150,6 +2150,44 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     expect(body).toEqual({ sim: 'PRE-ICCID', package_template: 42 })
   })
 
+  it('createPackage POSTs through the packageCreate endpoint (PCR headers, body, single request)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { id: 'pkg-INSTANCE-1', sim: 'PRE-ICCID', status: 'NOT_ACTIVE' } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await connector.createPackage({ sim: 'PRE-ICCID', package_template: 42 })
+
+    expect(r.success).toBe(true)
+    expect(r.data?.pkg?.id).toBe('pkg-INSTANCE-1')
+    expect(fetchSpy).toHaveBeenCalledTimes(1) // exactly one mutating request
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/pcr/packages')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual({ sim: 'PRE-ICCID', package_template: 42 })
+    expect(init.headers['ApiKey']).toBe(TEST_PCR_API_KEY)
+    expect(init.headers['Authorization']).toBe(TEST_KEY_ID)
+  })
+
+  it('createPackage resolves via the packageCreate registry entry (never the read-only packages list key)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(json({ data: { id: 'pkg-INSTANCE-1', sim: 'PRE-ICCID' } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    // Registry truth: packageCreate = POST mutation; packages = GET read.
+    const { telnaEndpointMutation, telnaEndpointMethod } = await import('./telna-endpoints')
+    expect(telnaEndpointMutation('packageCreate')).toBe(true)
+    expect(telnaEndpointMutation('packages')).toBe(false)
+    expect(telnaEndpointMethod('packageCreate')).toBe('POST')
+    expect(telnaEndpointMethod('packages')).toBe('GET')
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await connector.createPackage({ sim: 'PRE-ICCID', package_template: 42 })
+    expect(r.success).toBe(true)
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(String(url)).toContain('/v2.1/pcr/packages')
+    expect(init.method).toBe('POST')
+    // Exactly one mutating POST — no second request, no retry.
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('no eligible candidate -> OUT_OF_STOCK, no claim, no POST', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(json({ data: { id: 42 } }))
