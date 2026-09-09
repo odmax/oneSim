@@ -2053,6 +2053,257 @@ describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
   })
 })
 
+describe('TelnaConnector getStatus post-purchase contract (package-instance identity, regression)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  const ICCID = '89012345678901234567'
+  const PKG_ID = '21573272'
+  function json(data: unknown, status = 200) {
+    return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': 'application/json' }), text: vi.fn().mockResolvedValue(JSON.stringify(data)) }
+  }
+  function err(status: number) { return json({ error: `http ${status}` }, status) }
+  function packageDetail(status = 'NOT_ACTIVE', sim = ICCID) { return json({ data: { id: PKG_ID, sim, status } }) }
+  function registry(status = 'PRE_SERVICE') { return json({ data: { iccid: ICCID, status } }) }
+  function profile(state?: string, withCode = false) { return withCode ? json({ data: { iccid: ICCID, state, activation_code: 'LPA:1$rsp.example.com$mid-9' } }) : json({ data: { iccid: ICCID, state: state ?? null } }) }
+  function packages(sims: unknown[]) { return json({ data: sims, total: sims.length }) }
+
+  it('1. bare numeric package id addresses GET /pcr/packages/{package_id} FIRST, then ICCID evidence via pkg.sim', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(packageDetail('NOT_ACTIVE'))
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED', true))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(PKG_ID)
+    expect(result.success).toBe(true)
+    expect(result.data?.iccid).toBe(ICCID)
+    expect(result.data?.status).toBe('COMPLETED')
+    const urls = fetchSpy.mock.calls.map(c => String(c[0]))
+    expect(urls[0]).toContain(`/v2.1/pcr/packages/${PKG_ID}`)
+    expect(urls.slice(1).every(u => !u.includes(`/v2.1/pcr/packages/${PKG_ID}`))).toBe(true)
+    expect(urls.some(u => u.includes(`/v2.1/inventory/sim-registries/${ICCID}`))).toBe(true)
+    expect(urls.some(u => u.includes(`/v2.1/esim-rsp/euicc-profiles/${ICCID}`))).toBe(true)
+  })
+
+  it('2. exact package ACTIVE + pkg.sim yields ACTIVE with iccids[] fulfillment identity', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(packageDetail('ACTIVE'))
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile(undefined))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(PKG_ID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('ACTIVE')
+    expect(result.data?.iccid).toBe(ICCID)
+    expect(result.data?.iccids).toEqual([ICCID])
+  })
+
+  it('3. exact package ACTIVE survives optional sim-registry/euicc/packages 400s (authoritative success wins)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(packageDetail('ACTIVE'))
+      .mockResolvedValueOnce(err(400))
+      .mockResolvedValueOnce(err(400))
+      .mockResolvedValueOnce(err(400))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(PKG_ID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('ACTIVE')
+    expect(result.data?.iccids).toEqual([ICCID])
+    expect(result.data?.evidence).toMatchObject({ reason: 'packages-exact-active' })
+  })
+
+  it('4. exact package NOT_ACTIVE + profile RELEASED with activation_code -> COMPLETED (deliverable in hand)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(packageDetail('NOT_ACTIVE'))
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED', true))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(PKG_ID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('COMPLETED')
+    expect(result.data?.activationCode).toBe('LPA:1$rsp.example.com$mid-9')
+    expect(result.data?.iccids).toEqual([ICCID])
+  })
+
+  it('5. profile RELEASED WITHOUT activation_code is NOT finalizable (stays PENDING_ACTIVATION)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(packageDetail('NOT_ACTIVE'))
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED'))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(PKG_ID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('PENDING_ACTIVATION')
+  })
+
+  it('6. exact package NOT_ACTIVE + no profile evidence -> PENDING_ACTIVATION (wallet held, poll retries)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(packageDetail('NOT_ACTIVE'))
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(err(400))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(PKG_ID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('PENDING_ACTIVATION')
+    expect(result.data?.iccids).toEqual([ICCID])
+  })
+
+  it('7. structured { iccid, providerSubscriptionId } prefers the exact package read', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(packageDetail('NOT_ACTIVE'))
+      .mockResolvedValueOnce(err(400))
+      .mockResolvedValueOnce(profile('RELEASED', true))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus({ iccid: ICCID, providerSubscriptionId: PKG_ID })
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('COMPLETED')
+    const urls = fetchSpy.mock.calls.map(c => String(c[0]))
+    expect(urls[0]).toContain(`/v2.1/pcr/packages/${PKG_ID}`)
+  })
+
+  it('8. exact package read failure WITHOUT any ICCID is preserved (never fabricated PENDING)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(err(404))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus('21573299')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('HTTP_404')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('9. ICCID-shaped string stays on the legacy 3-evidence ICCID path (no package read)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED'))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(ICCID)
+    expect(result.success).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    const urls = fetchSpy.mock.calls.map(c => String(c[0]))
+    expect(urls.some(u => u.includes('/v2.1/pcr/packages/'))).toBe(false)
+    expect(result.data?.iccids).toEqual([ICCID])
+  })
+
+  it('10. legacy non-digit identifier keeps the ICCID evidence path (no exact package trial)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { iccid: 'PRE-ICCID', status: 'PRE_SERVICE' } }))
+      .mockResolvedValueOnce(json({ data: { iccid: 'PRE-ICCID', state: null } }))
+      .mockResolvedValueOnce(json({ data: [], total: 0 }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus('PRE-ICCID')
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('PENDING_ACTIVATION')
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+  })
+
+  it('11. exact package TERMINATED without ICCID identity -> EXPIRED', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(packageDetail('TERMINATED', ''))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(PKG_ID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('EXPIRED')
+    expect(result.data?.iccid).toBeUndefined()
+  })
+
+  it('12. exact package TERMINATED wins over sim IN_SERVICE (authoritative terminal)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(packageDetail('TERMINATED', ICCID))
+      .mockResolvedValueOnce(registry('IN_SERVICE'))
+      .mockResolvedValueOnce(profile('ENABLED'))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(PKG_ID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('EXPIRED')
+    expect(result.data?.evidence).toMatchObject({ reason: 'telna-sim-terminated' })
+  })
+
+  it('13. ICCID path: PRE_SERVICE + profile RELEASED with activation_code -> COMPLETED', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED', true))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(ICCID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('COMPLETED')
+    expect(result.data?.activationCode).toBe('LPA:1$rsp.example.com$mid-9')
+    expect(result.data?.evidence).toMatchObject({ reason: 'euicc-released-install-ready' })
+  })
+
+  it('14. ICCID path: RELEASED without activation_code stays PENDING_ACTIVATION', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED'))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(ICCID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('PENDING_ACTIVATION')
+  })
+
+  it('15. ICCID path: DOWNLOADED with activation_code -> COMPLETED', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('DOWNLOADED', true))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(ICCID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('COMPLETED')
+  })
+
+  it('16. INSTALLED device evidence beats RELEASED-ready (install > ready-to-install)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('INSTALLED', true))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(ICCID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('INSTALLED')
+    expect(result.data?.evidence).toMatchObject({ deviceInstalled: true })
+  })
+
+  it('17. IN_SERVICE network evidence beats RELEASED-ready (network > install-ready)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(registry('IN_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED', true))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus(ICCID)
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('ACTIVE')
+    expect(result.data?.evidence).toMatchObject({ networkAttached: true })
+    expect(result.data?.iccids).toEqual([ICCID])
+  })
+})
+
 describe('canonical Telna endpoint path/URL composition', () => {
 it('buildTelnaEndpointUrl composes base + V2.1 endpoint with no double path', () => {
     const url = buildTelnaEndpointUrl('https://developer-api.telna.com', 'countries')

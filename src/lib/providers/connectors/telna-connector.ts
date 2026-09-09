@@ -738,19 +738,95 @@ export class TelnaConnector implements IProviderConnector {
   }
 
   async getStatus(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>> {
-    // Telna status is keyed by ICCID (provider-owned). Never a local OneSIM id.
-    const iccid = typeof identifier === 'string' ? identifier : (identifier as StatusLookupIdentifier)?.iccid
-    if (!iccid) {
+    // Telna status is keyed by provider-owned identifiers ONLY. Never a local
+    // OneSIM id. Two identifier forms reach getStatus:
+    //   - a bare ICCID string (status sync / resolveStatusLookup / iccid lookups);
+    //   - a bare package instance id string (activation polling & reconciliation
+    //     forward the persisted providerReference = POST /v2.1/pcr/packages
+    //     activationId = the exact created package instance (C));
+    //   - a structured StatusLookupIdentifier { iccid, providerSubscriptionId }
+    //     (usage-style exact package addressing — providerSubscriptionId wins).
+    //
+    // DISPATCH RULE: digit strings ≥18 chars are ICCID-shaped; shorter numeric
+    // strings are the numeric Telna package instance id. Any non-digit string is
+    // treated as an ICCID (legacy evidence path). MISDIRECTED identifiers are
+    // fail-safe: no error can fabricate a PENDING that releases reserved funds.
+    let iccid: string = ''
+    let packageId: string = ''
+    if (typeof identifier === 'string') {
+      const s = String(identifier).trim()
+      if (/^\d{18,23}$/.test(s)) {
+        iccid = s
+      } else if (s !== '' && /^\d+$/.test(s)) {
+        packageId = s
+      } else {
+        iccid = s
+      }
+    } else if (identifier && typeof identifier === 'object') {
+      const obj = identifier as StatusLookupIdentifier
+      iccid = (obj.iccid || '').trim()
+      packageId = (obj.providerSubscriptionId || '').trim()
+    }
+    if (!iccid && !packageId) {
       return { success: false, error: { code: 'IDENTIFIER_MISSING', message: 'ICCID is required for Telna status lookup' } }
     }
 
     // Evidence set: SIM registry (PRE_SERVICE/IN_SERVICE/TERMINATED), eUICC
-    // profile (RELEASED/DOWNLOADED/INSTALLED/ENABLED/DISABLED), and any package
+    // profile (RELEASED/DOWNLOADED/INSTALLED/ENABLED/DISABLED), and package
     // status (NOT_ACTIVE/ACTIVE/TERMINATED). All read-only, provider-owned.
     let simStatus: string | null = null
     let profileState: string | null = null
+    let profileActivationCode: string | null = null
     let packageStatus: string | null = null
+    let exactPackageStatus: string | null = null
     let expiryDate: string | undefined
+
+    // Exact package instance read (authoritative when the id is known — the POST
+    // was accepted and returned this id). GET /v2.1/pcr/packages/{package_id}
+    // addresses the purchased package directly and also yields the OWNED ICCID
+    // via pkg.sim. A failure here is tolerated as optional evidence: one
+    // best-effort 400 must never override an authoritative success elsewhere.
+    let exactReadError: { code?: string; message?: string } | null = null
+    if (packageId) {
+      try {
+        const exact = await this.getV2Package(packageId)
+        if (exact.success && exact.data?.pkg) {
+          exactPackageStatus = normalizeTelnaState(exact.data.pkg.status)
+          if (!iccid && exact.data.pkg.sim) iccid = String(exact.data.pkg.sim)
+          expiryDate = exact.data.pkg.expiry_date || expiryDate
+        } else {
+          exactReadError = exact.error || null
+        }
+      } catch { exactReadError = { code: 'NETWORK_ERROR', message: 'Package status lookup threw' } }
+    }
+
+    if (!iccid) {
+      if (exactReadError) {
+        // Exact package read failed AND no ICCID identity is derivable — the
+        // unresolved read is preserved as a failure (never fabricated into a
+        // PENDING). Upstream classification keeps the wallet held.
+        return {
+          success: false,
+          error: {
+            code: exactReadError.code || 'RESOURCE_NOT_FOUND',
+            message: exactReadError.message || 'Exact package status lookup failed',
+          },
+        }
+      }
+      // Package known but no ICCID identity derivable → report the exact
+      // package status WITHOUT an identity. The finalizers fail closed when the
+      // fulfillment identity (ICCID) is absent; activationCode is never one.
+      const status = exactPackageStatus === 'TERMINATED' ? 'EXPIRED' : exactPackageStatus === 'ACTIVE' ? 'ACTIVE' : 'PENDING_ACTIVATION'
+      return {
+        success: true,
+        data: {
+          status,
+          rawStatus: exactPackageStatus || 'UNKNOWN',
+          evidence: { reason: 'packages-exact-no-iccid' },
+          rawMetadata: { source: 'packages/{package_id}', rawStatus: exactPackageStatus || 'UNKNOWN', exactPackageStatus, simStatus: null, profileState: null, packageStatus: exactPackageStatus },
+        },
+      }
+    }
 
     // 1) SIM registry (best-effort — availability of /sim-registries is live-proven).
     const reg = await this.getV2SimRegistry(iccid)
@@ -762,6 +838,7 @@ export class TelnaConnector implements IProviderConnector {
     const prof = await this.getEuiccProfile(iccid)
     if (prof.success && prof.data?.profile?.state) {
       profileState = normalizeTelnaState(prof.data.profile.state)
+      if (prof.data.profile.activation_code) profileActivationCode = String(prof.data.profile.activation_code)
     }
 
     // 3) Package status (best-effort).
@@ -769,7 +846,7 @@ export class TelnaConnector implements IProviderConnector {
     if (pkgRes.success && Array.isArray(pkgRes.data?.items) && pkgRes.data.items.length > 0) {
       const p = pkgRes.data.items.find(x => normalizeTelnaState(x.status) !== 'TERMINATED') || pkgRes.data.items[0]
       packageStatus = normalizeTelnaState(p?.status) || null
-      expiryDate = p?.expiry_date || undefined
+      expiryDate = p?.expiry_date || expiryDate
     }
 
     // Conservative, provider-neutral normalization. Evidence is mapped into the
@@ -778,15 +855,16 @@ export class TelnaConnector implements IProviderConnector {
     //
     // Lifecycle precedence: SIM TERMINATED is STRONG terminal SIM evidence and
     // wins. A TERMINATED PACKAGE alone does NOT terminate the physical eSIM —
-    // Telna supports another package / top-up on that SIM — so it must never
-    // force EXPIRED. Package status is supplemental (expiry) only, never the
-    // authority for PROFILECOMPLETION/device lifecycle.
-    const rawStatus = profileState || simStatus || packageStatus || 'UNKNOWN'
+    // Telna supports another package / top-up on that SIM — so a termininated
+    // LISTED package must never force EXPIRED. The EXACT package read (package
+    // path, id known) IS authoritative for the purchased instance. Package list
+    // status remains supplemental (expiry) only.
+    const rawStatus = profileState || simStatus || exactPackageStatus || packageStatus || 'UNKNOWN'
     let status: string
     let evidence: StatusResult['evidence']
 
-    if (simStatus === 'TERMINATED' || profileState === 'DELETED' || profileState === 'UNAVAILABLE' || profileState === 'ERROR') {
-      // Strong terminal SIM / profile evidence.
+    if (simStatus === 'TERMINATED' || profileState === 'DELETED' || profileState === 'UNAVAILABLE' || profileState === 'ERROR' || exactPackageStatus === 'TERMINATED') {
+      // Strong terminal SIM / profile / exact-package evidence.
       status = 'EXPIRED'
       evidence = { reason: 'telna-sim-terminated' }
     } else if (simStatus === 'SUSPENDED' || profileState === 'DISABLED') {
@@ -801,6 +879,20 @@ export class TelnaConnector implements IProviderConnector {
       // Profile installed/enabled on device — device-install evidence, not network-active.
       status = 'INSTALLED'
       evidence = { deviceInstalled: true, reason: 'euicc-installed-or-enabled' }
+    } else if (exactPackageStatus === 'ACTIVE') {
+      // Authoritative provider record from the exact GET /pcr/packages/{package_id}
+      // read: the purchased package instance is ACTIVE at Telna. This is the
+      // provider-owned status of record and wins even when one optional ICCID-keyed
+      // read (sim-registry / euicc / package list) failed with a best-effort 400.
+      status = 'ACTIVE'
+      evidence = { reason: 'packages-exact-active' }
+    } else if ((profileState === 'RELEASED' || profileState === 'DOWNLOADED') && profileActivationCode) {
+      // Profile provisioned with a usable activation code = the deliverable is in
+      // hand (ready to install). The ICCID is the fulfillment identity; the
+      // activation code is delivery data forwarded to finalization, never an
+      // identity and never sufficient on its own.
+      status = 'COMPLETED'
+      evidence = { reason: 'euicc-released-install-ready' }
     } else if (simStatus === 'PRE_SERVICE' || profileState === 'RELEASED' || profileState === 'DOWNLOADED' || simStatus === 'WAITING_FOR_ASSIGNMENT') {
       // Ready / provisioned but not network-active.
       status = 'PENDING_ACTIVATION'
@@ -816,9 +908,11 @@ export class TelnaConnector implements IProviderConnector {
         status,
         rawStatus,
         iccid,
+        iccids: [iccid],
+        ...(profileActivationCode ? { activationCode: profileActivationCode } : {}),
         expiresAt: expiryDate,
         evidence,
-        rawMetadata: { source: 'sim-registry+euicc-profiles+packages', rawStatus, simStatus, profileState, packageStatus },
+        rawMetadata: { source: exactPackageStatus ? 'packages/{package_id}+sim-registry+euicc-profiles+packages' : 'sim-registry+euicc-profiles+packages', rawStatus, simStatus, profileState, packageStatus, exactPackageStatus, packageId: packageId || undefined },
       },
     }
   }
