@@ -137,12 +137,19 @@ describe('Telna reconciliation correlation contract — read-only exact C recove
   const connector = readConnector()
   const reconciliation = readReconciliation()
 
-  it('reconcileAmbiguousPurchase exists and correlates ONLY via the read-only packages list', () => {
+  it('reconcileAmbiguousPurchase correlates ONLY via the read-only packages list, bounded by exact template id (B) + local exact ICCID (A)', () => {
     const fn = connector.slice(connector.indexOf('async reconcileAmbiguousPurchase('), connector.indexOf('async getV2Package('))
-    // Exact filters: claimed ICCIDs (sim) + exact package_template when known.
     expect(fn).toContain('async reconcileAmbiguousPurchase(input: AmbiguousPurchaseReconcileInput)')
-    expect(fn).toContain('listV2Packages({ sim: iccid })')
+    // Bounded by the exact numeric package-template id (B). The unproven ICCID
+    // package-list filter (`sim`) is NEVER sent: the candidate scan is keyed by
+    // package_template_id=<B> and the ICCID match is performed locally.
+    expect(fn).toContain('const correlated = await this.reconcileByTemplate(templateId, iccids)')
     expect(fn).toContain('providerPackageInstanceId')
+    // FAIL CLOSED: no claimed ICCIDs or no valid numeric B -> inconclusive, zero provider scan.
+    expect(fn).toContain("reason: 'inconclusive'")
+    expect(fn).toContain('account-wide ICCID scan refused')
+    expect(fn).toContain('no-match')
+    expect(fn).toContain('RECONCILE_READ_FAILED')
     // READ-ONLY: never issues the creation mutation, never a POST.
     expect(fn).not.toMatch(/createPackage\(/)
     expect(fn).not.toMatch(/endpoint: 'packageCreate'/)
@@ -152,6 +159,22 @@ describe('Telna reconciliation correlation contract — read-only exact C recove
     // The sole winner may be taken ONLY after the multiple-match guard.
     expect(fn).toContain('if (carriesRealId.length > 1)')
     expect(fn).toContain('const winner = carriesRealId[0]')
+  })
+
+  it('the packages list contract NEVER admits an ICCID (`sim`) filter — source-proven query names only', () => {
+    // Guard against reintroducing the unproven GET /v2.1/pcr/packages?sim=<ICCID>
+    // filter that the live API rejects (HTTP 400). ICCID correlation must always
+    // be local; the restricted list query may only carry proven names.
+    expect(connector).not.toMatch(/listV2Packages\(\{\s*sim\b/)
+    expect(connector).not.toMatch(/query:\s*\{\s*sim\b/)
+    const fn = connector.slice(connector.indexOf('async listV2Packages('), connector.indexOf('private packageTemplateIdOf('))
+    expect(fn).toContain('package_template_id?: number | string')
+    expect(fn).toContain("query: filters")
+    expect(fn).not.toMatch(/sim\b/)
+    // The bounded correlation scan paginates with the proven names.
+    const corr = connector.slice(connector.indexOf('private async reconcileByTemplate('), connector.indexOf('async reconcileAmbiguousPurchase('))
+    expect(corr).toContain("listV2Packages({ package_template_id: planId, count: PAGE_SIZE, offset })")
+    expect(corr).toContain('const iccidSet = new Set(iccids)')
   })
 
   it('resolution rules: unique real package instance id only; zero → no-match; several → multiple-matches', () => {

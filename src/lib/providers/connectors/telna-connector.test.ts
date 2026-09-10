@@ -1880,21 +1880,21 @@ describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
   function profile(state?: string) { return state ? json({ data: { iccid: STATUS_ICCID, state } }) : json({ data: { iccid: STATUS_ICCID, state: null } }) }
   function packages(sims: unknown[]) { return json({ data: sims, total: sims.length }) }
 
-  it('getStatus reads the three documented evidence endpoints in order (sim-registry, euicc, packages)', async () => {
+  it('getStatus reads the documented evidence endpoints (sim-registry, euicc) — NEVER an ICCID-keyed package list', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(registry('PRE_SERVICE'))
       .mockResolvedValueOnce(profile('RELEASED'))
-      .mockResolvedValueOnce(packages([]))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getStatus(STATUS_ICCID)
     expect(result.success).toBe(true)
     expect(result.data?.iccid).toBe(STATUS_ICCID)
-    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
     const urls = fetchSpy.mock.calls.map(c => String(c[0]))
     expect(urls.some(u => u.includes('/v2.1/inventory/sim-registries/'))).toBe(true)
     expect(urls.some(u => u.includes('/v2.1/esim-rsp/euicc-profiles/'))).toBe(true)
-    expect(urls.some(u => u.includes('/v2.1/pcr/packages?sim='))).toBe(true)
+    // The unproven GET /pcr/packages?sim= filter is never emitted.
+    expect(urls.some(u => u.includes('/v2.1/pcr/packages?sim='))).toBe(false)
   })
 
   it('SIM IN_SERVICE -> ACTIVE with networkAttached evidence', async () => {
@@ -2186,18 +2186,18 @@ describe('TelnaConnector getStatus post-purchase contract (package-instance iden
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('9. ICCID-shaped string stays on the legacy 3-evidence ICCID path (no package read)', async () => {
+  it('9. ICCID-shaped string stays on the 2-evidence ICCID path (no package list read)', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(registry('PRE_SERVICE'))
       .mockResolvedValueOnce(profile('RELEASED'))
-      .mockResolvedValueOnce(packages([]))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getStatus(ICCID)
     expect(result.success).toBe(true)
-    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
     const urls = fetchSpy.mock.calls.map(c => String(c[0]))
     expect(urls.some(u => u.includes('/v2.1/pcr/packages/'))).toBe(false)
+    expect(urls.some(u => u.includes('/v2.1/pcr/packages?sim='))).toBe(false)
     expect(result.data?.iccids).toEqual([ICCID])
   })
 
@@ -2205,13 +2205,12 @@ describe('TelnaConnector getStatus post-purchase contract (package-instance iden
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(json({ data: { iccid: 'PRE-ICCID', status: 'PRE_SERVICE' } }))
       .mockResolvedValueOnce(json({ data: { iccid: 'PRE-ICCID', state: null } }))
-      .mockResolvedValueOnce(json({ data: [], total: 0 }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getStatus('PRE-ICCID')
     expect(result.success).toBe(true)
     expect(result.data?.status).toBe('PENDING_ACTIVATION')
-    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('11. exact package TERMINATED without ICCID identity -> EXPIRED', async () => {
@@ -2505,16 +2504,65 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/packages/EXACT')
   })
 
-  it('usage multi-package fallback: two non-TERMINATED packages -> DATA_UNAVAILABLE', async () => {
+  it('usage without exact C and without a boundable template id (B) -> DATA_UNAVAILABLE (fail closed, no scan)', async () => {
     const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(json({ data: [
-        { id: 'p1', sim: '8944501234567890123', status: 'ACTIVE', data_usage_remaining: 100 },
-        { id: 'p2', sim: '8944501234567890123', status: 'ACTIVE', data_usage_remaining: 200 },
-      ], total: 2 }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
 
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await connector.getUsage('8944501234567890123')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('DATA_UNAVAILABLE')
+    // No account-wide package hunt is ever issued.
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('usage bounded fallback: exact template id (B) + unique exact local ICCID -> usage from that package', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({
+        total: 1, offset: 0, count: 1,
+        packages: [{ id: 'PLAN-9', sim: '8944501234567890123', status: 'ACTIVE', data_usage_remaining: 1073741824, expiry_date: '2026-12-01', package_template: { id: 42, data_usage_allowance: 2147483648 } }],
+      }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await connector.getUsage({ iccid: '8944501234567890123', providerPlanId: '42' })
+    expect(r.success).toBe(true)
+    expect(r.data?.dataTotalMB).toBe(2048)
+    expect(r.data?.dataRemainingMB).toBe(1024)
+    expect(r.data?.dataUsedMB).toBe(1024)
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('/v2.1/pcr/packages')
+    expect(url).toContain('package_template_id=42')
+    expect(url).not.toContain('sim=')
+  })
+
+  it('usage bounded fallback: two valid packages match exact B + A -> DATA_UNAVAILABLE (never an arbitrary first pick)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({
+        total: 2, offset: 0, count: 2,
+        packages: [
+          { id: 'p1', sim: '8944501234567890123', status: 'ACTIVE', package_template: { id: 42 } },
+          { id: 'p2', sim: '8944501234567890123', status: 'ACTIVE', package_template: { id: 42 } },
+        ],
+      }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await connector.getUsage({ iccid: '8944501234567890123', providerPlanId: '42' })
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('DATA_UNAVAILABLE')
+  })
+
+  it('usage bounded fallback: WRONG sim in list while filtering by B -> DATA_UNAVAILABLE (local exact ICCID match required)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({
+        total: 1, offset: 0, count: 1,
+        packages: [{ id: 'p1', sim: '89011111111111111111', status: 'ACTIVE', package_template: { id: 42 } }],
+      }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await connector.getUsage({ iccid: '8944501234567890123', providerPlanId: '42' })
     expect(r.success).toBe(false)
     expect(r.error?.code).toBe('DATA_UNAVAILABLE')
   })
@@ -2760,16 +2808,14 @@ describe('Telna Phase 1B � safe OneSIM adaptation', () => {
     expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/packages/EXACT-1')
   })
 
-  it('9. multiple packages on the same ICCID without an exact id -> DATA_UNAVAILABLE', async () => {
-    const fetchSpy = vi.fn().mockResolvedValueOnce(json({ data: [
-      { id: 'p1', status: 'ACTIVE', data_usage_remaining: 100 },
-      { id: 'p2', status: 'ACTIVE', data_usage_remaining: 200 },
-    ], total: 2 }))
+  it('9. multiple packages on the same ICCID without an exact id or boundable template -> DATA_UNAVAILABLE (fail closed, no scan)', async () => {
+    const fetchSpy = vi.fn()
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
     const r = await c.getUsage('PRE-ICCID')
     expect(r.success).toBe(false)
     expect(r.error?.code).toBe('DATA_UNAVAILABLE')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   // -- Lifecycle evidence -----------------------------------------------------
@@ -3213,17 +3259,23 @@ describe('Telna Connect V2.1 � live named-envelope + state normalization', () 
     expect(r.data?.items[0].id).toBe(42)
   })
 
-  it('4. package named envelope { total, offset, count, packages } parses', async () => {
+it('4. package named envelope { total, offset, count, packages } parses with source-proven query names only', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(json({
       total: 1, offset: 0, count: 1,
       packages: [{ id: 'pkg-1', sim: '89A', status: 'ACTIVE', data_usage_remaining: 100 }],
     }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
-    const r = await c.listV2Packages({ sim: '89A' })
+    const r = await c.listV2Packages({ package_template_id: 42, count: 1, offset: 0 })
     expect(r.success).toBe(true)
     expect(r.data?.items).toHaveLength(1)
     expect(r.data?.items[0].id).toBe('pkg-1')
+    // The unproven ICCID filter is NEVER part of the package-list query contract.
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('package_template_id=42')
+    expect(url).toContain('count=1')
+    expect(url).toContain('offset=0')
+    expect(url).not.toContain('sim=')
   })
 
   it('5. normalizeTelnaState: PRE-SERVICE -> PRE_SERVICE, IN-SERVICE -> IN_SERVICE', () => {
@@ -3973,7 +4025,7 @@ describe('Telna reconcileAmbiguousPurchase — read-only exact package correlati
     } as any)
   }
 
-  it('2. exact ICCID + exact package_template match resolves with the provider package instance id (C)', async () => {
+  it('2. exact ICCID + exact template id (B) -> resolves via package_template_id=42 with the provider package instance id (C)', async () => {
     const fetchSpy = vi.fn().mockResolvedValueOnce(json({
       total: 1, offset: 0, count: 1,
       packages: [{ id: 9001, sim: A_ICCID, status: 'NOT_ACTIVE', package_template: { id: 42, name: 'Africa 10GB' } }],
@@ -3984,10 +4036,14 @@ describe('Telna reconcileAmbiguousPurchase — read-only exact package correlati
     expect(r.data?.reason).toBe('unique-match')
     expect(r.data?.iccid).toBe(A_ICCID)
     expect((r.data?.evidence as any)?.providerPackageInstanceId).toBe('9001')
-    expect((r.data?.evidence as any)?.source).toBe('packages-list-sim-exact')
+    expect((r.data?.evidence as any)?.source).toBe('packages-template-correlation')
     const url = String(fetchSpy.mock.calls[0][0])
     expect(url).toContain('/v2.1/pcr/packages')
-    expect(url).toContain(`sim=${A_ICCID}`)
+    expect(url).toContain('package_template_id=42')
+    expect(url).toContain('count=')
+    expect(url).toContain('offset=0')
+    // The unproven ICCID package-list filter is NEVER emitted.
+    expect(url).not.toContain('sim=')
     expect(fetchSpy.mock.calls[0][1]?.method ?? 'GET').toBe('GET')
   })
 
@@ -4058,12 +4114,72 @@ describe('Telna reconcileAmbiguousPurchase — read-only exact package correlati
     }
   })
 
-  it('no claimed ICCID input → inconclusive (never a blind account-wide match)', async () => {
+  it('9. paginated candidate scan walks additional pages until the returned total is bounded', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({
+        total: 3, offset: 0, count: 200,
+        packages: [{ id: 9001, sim: '89011111111111111111', status: 'ACTIVE', package_template: { id: 42 } }],
+      }))
+      .mockResolvedValueOnce(json({
+        total: 3, offset: 200, count: 200,
+        packages: [{ id: 9002, sim: A_ICCID, status: 'NOT_ACTIVE', package_template: { id: 42 } }],
+      }))
+    const r = await runReconcile(fetchSpy)
+    expect(r.data?.resolved).toBe(true)
+    expect(r.data?.reason).toBe('unique-match')
+    expect((r.data?.evidence as any)?.providerPackageInstanceId).toBe('9002')
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    const urls = fetchSpy.mock.calls.map(c => String(c[0]))
+    expect(urls[0]).toContain('offset=0')
+    expect(urls[1]).toContain('offset=200')
+    expect(urls.every(u => !u.includes('sim='))).toBe(true)
+  })
+
+  it('10. reconcile with NO template id (B) → inconclusive and zero provider requests (no account-wide hunt)', async () => {
+    const fetchSpy = vi.fn()
+    const r = await runReconcile(fetchSpy, { planId: '' })
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('inconclusive')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('11. reconcile with NON-NUMERIC template id (B) → inconclusive and zero provider requests (fail closed)', async () => {
+    const fetchSpy = vi.fn()
+    const r = await runReconcile(fetchSpy, { planId: 'not-a-number' })
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('inconclusive')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('12. provider read failure (HTTP 500) → success=false RECONCILE_READ_FAILED, never a POST', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({ error: 'boom' }, 500))
+    const r = await runReconcile(fetchSpy)
+    expect(r.success).toBe(false)
+    expect((r.error as any)?.code).toBe('RECONCILE_READ_FAILED')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect((fetchSpy.mock.calls[0][1]?.method ?? 'GET').toUpperCase()).not.toBe('POST')
+  })
+
+  it('13. no claimed ICCID input → inconclusive (never a blind account-wide match)', async () => {
     const fetchSpy = vi.fn()
     const r = await runReconcile(fetchSpy, { iccids: [] })
     expect(r.data?.resolved).toBe(false)
     expect(r.data?.reason).toBe('inconclusive')
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('4b. server returns candidates outside the requested template (B) → defensive local reject (no-match)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({
+      total: 2, offset: 0, count: 2,
+      packages: [
+        { id: 9001, sim: A_ICCID, status: 'ACTIVE', package_template: { id: 99 } },
+        { id: 9002, sim: A_ICCID, status: 'ACTIVE', package_template_id: 7 },
+      ],
+    }))
+    const r = await runReconcile(fetchSpy)
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('no-match')
+    expect((r.data?.evidence as any)?.matchedCount).toBe(0)
   })
 
   it('primitive numeric package_template representation is tolerated', async () => {
