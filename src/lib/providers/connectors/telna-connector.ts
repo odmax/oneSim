@@ -82,6 +82,19 @@ export function unwrapTelnaDetail(body: unknown, namedKey?: string): unknown {
 }
 
 /**
+ * Minimal provider-local fail-closed guard for a Telna detail object: a
+ * meaningful detail is a non-null, non-array object that carries the SIM
+ * identity (`iccid` string). Never a primitive, never a bare `{ data: null }`
+ * / `{}` envelope, never an array — so `getSimPCRProfile` & friends never
+ * report success with a meaningless wrapper object.
+ */
+export function telnaDetailWithIccid(value: unknown): value is Record<string, unknown> {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false
+  const iccid = (value as Record<string, unknown>).iccid
+  return typeof iccid === 'string' && iccid.trim() !== ''
+}
+
+/**
  * Telna enum/state normalization: trim, uppercase, and replace spaces/hyphens
  * with underscore. E.g. "PRE-SERVICE" → "PRE_SERVICE", "IN-SERVICE" →
  * "IN_SERVICE", "De-activated" → "DE_ACTIVATED". Provider-local.
@@ -1695,12 +1708,12 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'simRegistry', pathParams: { iccid } })
     const duration = Date.now() - start
-    const sim = result.success && result.data ? (result.data as { data: TelnaSimRegistry }).data : null
+    const sim = result.success && result.data ? unwrapTelnaDetail(result.data, 'sim') : null
     console.log(`[TELNA_SIM_REGISTRY_DETAIL] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
-    if (!result.success || !sim) {
+    if (!result.success || !telnaDetailWithIccid(sim)) {
       return { success: false, error: { code: result.error?.code || 'DISCOVERY_FAILED', message: result.error?.message || 'SIM registry entry not found' } }
     }
-    return { success: true, data: { sim } }
+    return { success: true, data: { sim: sim as unknown as TelnaSimRegistry } }
   }
 
   // ── PCR Profile (Telna Phase 4) ────────────────────────────────────────
@@ -1709,24 +1722,28 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'simPCRProfile', pathParams: { iccid } })
     const duration = Date.now() - start
-    const profile = result.success && result.data ? (result.data as { data: TelnaPCRProfile }).data : null
+    // Detail envelope is normalized through the provider-local unwrapTelnaDetail
+    // contract (same as getEuiccProfile): { data: { data } } → { data } → bare →
+    // named { profile }. Fail closed unless a meaningful PCR profile carrying the
+    // SIM identity (iccid) was extracted — never success with a wrapper/primitive.
+    const profile = result.success && result.data ? unwrapTelnaDetail(result.data, 'profile') : null
     console.log(`[TELNA_PCR_PROFILE] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
-    if (!result.success || !profile) {
+    if (!result.success || !telnaDetailWithIccid(profile)) {
       return { success: false, error: { code: result.error?.code || 'PCR_FAILED', message: result.error?.message || 'PCR profile not found' } }
     }
-    return { success: true, data: { profile } }
+    return { success: true, data: { profile: profile as unknown as TelnaPCRProfile } }
   }
 
   async updateSimPCRProfile(iccid: string, update: TelnaPCRProfileUpdate): Promise<ConnectorResult<{ profile: TelnaPCRProfile }>> {
     const start = Date.now()
     const result = await this.request({ method: 'PUT', endpoint: 'simPCRProfile', pathParams: { iccid }, body: update })
     const duration = Date.now() - start
-    const profile = result.success && result.data ? (result.data as { data: TelnaPCRProfile }).data : null
+    const profile = result.success && result.data ? unwrapTelnaDetail(result.data, 'profile') : null
     console.log(`[TELNA_PACKAGE_ASSIGN] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
-    if (!result.success || !profile) {
+    if (!result.success || !telnaDetailWithIccid(profile)) {
       return { success: false, error: { code: result.error?.code || 'PCR_FAILED', message: result.error?.message || 'PCR profile update failed' } }
     }
-    return { success: true, data: { profile } }
+    return { success: true, data: { profile: profile as unknown as TelnaPCRProfile } }
   }
 
   // ── Usage Analytics (Telna Phase 5) ────────────────────────────────────
@@ -1735,12 +1752,12 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'simUsage', pathParams: { iccid } })
     const duration = Date.now() - start
-    const usage = result.success && result.data ? (result.data as { data: TelnaUsage }).data : null
+    const usage = result.success && result.data ? unwrapTelnaDetail(result.data, 'usage') : null
     console.log(`[TELNA_USAGE] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
-    if (!result.success || !usage) {
+    if (!result.success || !telnaDetailWithIccid(usage)) {
       return { success: false, error: { code: result.error?.code || 'USAGE_FAILED', message: result.error?.message || 'Usage data not found' } }
     }
-    return { success: true, data: { usage } }
+    return { success: true, data: { usage: usage as unknown as TelnaUsage } }
   }
 
   async listSimSessions(iccid: string, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaSession[]; total: number }>> {
@@ -1760,12 +1777,12 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'simBalances', pathParams: { iccid } })
     const duration = Date.now() - start
-    const balance = result.success && result.data ? (result.data as { data: TelnaBalance }).data : null
+    const balance = result.success && result.data ? unwrapTelnaDetail(result.data, 'balance') : null
     console.log(`[TELNA_BALANCE] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
-    if (!result.success || !balance) {
+    if (!result.success || !telnaDetailWithIccid(balance)) {
       return { success: false, error: { code: result.error?.code || 'BALANCE_FAILED', message: result.error?.message || 'Balance data not found' } }
     }
-    return { success: true, data: { balance } }
+    return { success: true, data: { balance: balance as unknown as TelnaBalance } }
   }
 
   async listWallets(count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaWallet[]; total: number }>> {
