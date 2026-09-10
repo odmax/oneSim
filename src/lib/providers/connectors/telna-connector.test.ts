@@ -37,7 +37,7 @@ vi.mock('@/lib/providers/capability-state', () => ({
 
 import type { Provider } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { TelnaConnector, normalizeTelnaState, normalizeTelnaTimeAllowance, getTelnaSimState, getTelnaRefId, getTelnaInventoryId, getTelnaGroupId } from './telna-connector'
+import { TelnaConnector, normalizeTelnaState, normalizeTelnaTimeAllowance, getTelnaSimState, getTelnaRefId, getTelnaInventoryId, getTelnaGroupId, unwrapTelnaDetail, telnaDetailWithIccid } from './telna-connector'
 import { resolveConnectorType, createConnector } from './connector-factory'
 import { encryptToken, decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
@@ -1312,6 +1312,70 @@ describe('TelnaConnector Phase 2B — package path param substitution', () => {
 
 // ── Phase 3: SIM Registry ──────────────────────────────────────────────
 
+describe('unwrapTelnaDetail — bounded structural normalization', () => {
+  const DETAIL = { id: 7, iccid: '89012345678901234567', name: 'detail' }
+
+  it('A. returns bare detail body as-is when namedKey supplied', () => {
+    expect(unwrapTelnaDetail(DETAIL, 'profile')).toBe(DETAIL)
+  })
+
+  it('B. unwraps { data: DETAIL } when namedKey supplied', () => {
+    expect(unwrapTelnaDetail({ data: DETAIL }, 'profile')).toBe(DETAIL)
+  })
+
+  it('C. unwraps { data: { data: DETAIL } } when namedKey supplied', () => {
+    expect(unwrapTelnaDetail({ data: { data: DETAIL } }, 'profile')).toBe(DETAIL)
+  })
+
+  it('D. unwraps { [namedKey]: DETAIL } top-level named envelope', () => {
+    expect(unwrapTelnaDetail({ profile: DETAIL }, 'profile')).toBe(DETAIL)
+  })
+
+  it('E. unwraps { data: { [namedKey]: DETAIL } } nested named envelope', () => {
+    expect(unwrapTelnaDetail({ data: { profile: DETAIL } }, 'profile')).toBe(DETAIL)
+  })
+
+  it.each([
+    ['sim', { sim: DETAIL }],
+    ['usage', { usage: DETAIL }],
+    ['balance', { balance: DETAIL }],
+    ['pkg', { pkg: DETAIL }],
+    ['template', { template: DETAIL }],
+    ['wallet', { wallet: DETAIL }],
+  ])('E. nested named envelope works for namedKey=%s', (key, body) => {
+    expect(unwrapTelnaDetail({ data: body }, key)).toBe(DETAIL)
+  })
+
+  it('without namedKey: { data: { data: DETAIL } } → DETAIL (double data preserved)', () => {
+    expect(unwrapTelnaDetail({ data: { data: DETAIL } })).toBe(DETAIL)
+  })
+
+  it('without namedKey: { data: DETAIL } → DETAIL and bare body preserved', () => {
+    expect(unwrapTelnaDetail({ data: DETAIL })).toBe(DETAIL)
+    expect(unwrapTelnaDetail(DETAIL)).toBe(DETAIL)
+  })
+
+  it.each([
+    ['null body', null],
+    ['undefined body', undefined],
+    ['string primitive', 'detail'],
+    ['number primitive', 42],
+  ])('passes through %s without fabricating an object', (_label, body) => {
+    expect(unwrapTelnaDetail(body, 'profile')).toBe(body)
+  })
+
+  it('does NOT unwrap unrelated intermediate wrappers into objects', () => {
+    const wrapped = unwrapTelnaDetail({ data: { other: { iccid: '89012345678901234567' } } }, 'profile')
+    expect(wrapped).toEqual({ other: { iccid: '89012345678901234567' } })
+    expect(telnaDetailWithIccid(wrapped)).toBe(false)
+  })
+
+  it('nested named wrapper with null/primitive detail never passes the identity guard', () => {
+    expect(telnaDetailWithIccid(unwrapTelnaDetail({ data: { profile: null } }, 'profile'))).toBe(false)
+    expect(telnaDetailWithIccid(unwrapTelnaDetail({ data: { profile: 'x' } }, 'profile'))).toBe(false)
+  })
+})
+
 describe('TelnaConnector Phase 3 — listSimRegistries', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -1528,6 +1592,21 @@ expect(result.data?.sim.status).toBe('ACTIVE')
     expect(result.data?.sim.imsi).toBe('310150123456789')
   })
 
+  it('normalizes nested named { data: { sim: simData } } envelope', async () => {
+    const simData = { id: 1, iccid: '89012345678901234567', imsi: '310150123456789', status: 'ACTIVE' }
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { sim: simData } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimRegistry('89012345678901234567')
+    expect(result.success).toBe(true)
+    expect(result.data?.sim.iccid).toBe('89012345678901234567')
+    expect(result.data?.sim.imsi).toBe('310150123456789')
+  })
+
   it('fails closed on an empty sim detail envelope (no meaningless success)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
@@ -1620,6 +1699,21 @@ describe('TelnaConnector Phase 5 — getSimUsage / getSimBalances detail envelop
     expect(result.error?.code).toBe('USAGE_FAILED')
   })
 
+  it('getSimUsage normalizes nested named { data: { usage: usage } } envelope', async () => {
+    const usage = { iccid: '89012345678901234567', bytes_used: 1048576, data_used_mb: 1, percentage_used: 10 }
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { usage } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimUsage('89012345678901234567')
+    expect(result.success).toBe(true)
+    expect(result.data?.usage.iccid).toBe('89012345678901234567')
+    expect(result.data?.usage.data_used_mb).toBe(1)
+  })
+
   it('getSimBalances normalizes bare balance body (no envelope)', async () => {
     const balance = { iccid: '89012345678901234567', data_remaining_mb: 500, data_remaining_bytes: 524288000 }
     const fakeResponse = {
@@ -1646,6 +1740,21 @@ describe('TelnaConnector Phase 5 — getSimUsage / getSimBalances detail envelop
     const result = await connector.getSimBalances('89012345678901234567')
     expect(result.success).toBe(false)
     expect(result.error?.code).toBe('BALANCE_FAILED')
+  })
+
+  it('getSimBalances normalizes nested named { data: { balance: balance } } envelope', async () => {
+    const balance = { iccid: '89012345678901234567', data_remaining_mb: 500, data_remaining_bytes: 524288000 }
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { balance } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimBalances('89012345678901234567')
+    expect(result.success).toBe(true)
+    expect(result.data?.balance.iccid).toBe('89012345678901234567')
+    expect(result.data?.balance.data_remaining_mb).toBe(500)
   })
 })
 
@@ -1771,6 +1880,45 @@ describe('TelnaConnector Phase 4 — getSimPCRProfile', () => {
     ['array detail', []],
     ['primitive detail', 'not-a-profile'],
   ])('fails closed on %s (never success with a meaningless profile)', async (_label, body) => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify(body)),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimPCRProfile('89012345678901234567')
+    expect(result.success).toBe(false)
+    expect(result.error?.code).toBe('PCR_FAILED')
+  })
+
+  it('normalizes nested named { data: { profile: profile } } envelope', async () => {
+    const fakeResponse = {
+      ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { profile: mockPCRProfile } })),
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getSimPCRProfile('89012345678901234567')
+    assertProfileNormalized(result)
+  })
+
+  it.each([
+    ['empty nested named profile', { data: { profile: {} } }],
+    ['nested named profile with package identity but no SIM identity (A)', {
+      data: {
+        profile: {
+          id: 123,
+          current_package: { id: 456, package_template_id: 789 },
+        },
+      },
+    }],
+    ['nested named profile with blank iccid', { data: { profile: { ...mockPCRProfile, iccid: '   ' } } }],
+    ['nested named profile as array', { data: { profile: [mockPCRProfile] } }],
+    ['nested named profile as null', { data: { profile: null } }],
+    ['nested named profile as primitive', { data: { profile: 'not-a-profile' } }],
+  ])('fails closed on %s (never certifies identity without provider profiled SIM identity)', async (_label, body) => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),

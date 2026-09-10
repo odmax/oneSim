@@ -66,16 +66,22 @@ export function unwrapTelnaNamedList(body: unknown, namedKey: string): unknown[]
   return []
 }
 
-/** Detail unwrap: { data: { data: {...} } } → { data: {...} } → bare object. */
+/**
+ * Detail unwrap (bounded, non-recursive contract):
+ *   namedKey supplied → { [namedKey]: DETAIL } | { data: { [namedKey]: DETAIL } } | { data: DETAIL } | { data: { data: DETAIL } } | bare DETAIL
+ *   namedKey omitted  → { data: { data: DETAIL } } → { data: DETAIL } → bare object/array.
+ * No arbitrary recursive unwrapping.
+ */
 export function unwrapTelnaDetail(body: unknown, namedKey?: string): unknown {
   if (!body || typeof body !== 'object') return body
   const b = body as Record<string, unknown>
+
   if (namedKey && b[namedKey] && typeof b[namedKey] === 'object') return b[namedKey]
   const data = b.data
   if (data && typeof data === 'object') {
-    if ((data as Record<string, unknown>).data && typeof (data as Record<string, unknown>).data === 'object') {
-      return (data as Record<string, unknown>).data
-    }
+    const d = data as Record<string, unknown>
+    if (namedKey && d[namedKey] && typeof d[namedKey] === 'object') return d[namedKey]
+    if (d.data && typeof d.data === 'object') return d.data
     return data
   }
   return body
