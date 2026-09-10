@@ -101,6 +101,62 @@ export function telnaDetailWithIccid(value: unknown): value is Record<string, un
 }
 
 /**
+ * Provider-local fail-closed guard for the V2.1 SIM PCR profile detail: a
+ * meaningful profile is a non-null, non-array object that carries the SIM
+ * identity under `sim` (NOT `iccid` — the documented PCR profile field). Never a
+ * primitive, never a bare `{ data: null }` / `{}` envelope, never an array — so
+ * `getSimPCRProfile` & friends never report success with a meaningless wrapper or
+ * a profile that carries package identity but no SIM identity. The `sim` is
+ * compared against nothing synthesized from the request path — only the provider
+ * response is authoritative for identity.
+ */
+export function telnaPCRProfileWithSim(value: unknown): value is Record<string, unknown> {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false
+  const sim = (value as Record<string, unknown>).sim
+  return typeof sim === 'string' && sim.trim() !== ''
+}
+
+/**
+ * PCR-profile-specific envelope resolution for the V2.1 SIM PCR profile.
+ *
+ * The generic `unwrapTelnaDetail` contract descends through `data` fields
+ * (`{ data: { data: DETAIL } }` → DETAIL), which misfires on the PCR profile
+ * because the profile legitimately defines its OWN `data` (data_state)
+ * sub-object — `{ data: PROFILE }` would be resolved to the inner
+ * `data_state` instead of the profile. This resolver is `sim`-aware and never
+ * descends into a layer that already carries the SIM identity.
+ *
+ * Precedence (first match wins), returns null when nothing meaningful:
+ *   1. bare PROFILE                        (carries nonblank `sim`)
+ *   2. named envelope { profile }           (incl. nested { data: { profile } })
+ *   3. shallow wrapper { data: PROFILE }    (carries nonblank `sim`)
+ *   4. nested envelope { data: { data: PROFILE } }
+ *   5. nearest object leaf (guard still rejects if it lacks `sim`)
+ */
+export function unwrapTelnaPCRProfileDetail(body: unknown): Record<string, unknown> | null {
+  if (body == null || typeof body !== 'object' || Array.isArray(body)) return null
+  const b = body as Record<string, unknown>
+  const carriesSim = (o: unknown): boolean =>
+    o != null && typeof o === 'object' && !Array.isArray(o) &&
+    typeof (o as Record<string, unknown>).sim === 'string' &&
+    ((o as Record<string, unknown>).sim as string).trim() !== ''
+  if (carriesSim(b)) return b as Record<string, unknown>
+  const named = b.profile
+  if (named != null && typeof named === 'object' && !Array.isArray(named)) return named as Record<string, unknown>
+  const data = b.data
+  if (data != null && typeof data === 'object' && !Array.isArray(data)) {
+    const d = data as Record<string, unknown>
+    if (carriesSim(d)) return d as Record<string, unknown>
+    const nestedNamed = d.profile
+    if (nestedNamed != null && typeof nestedNamed === 'object' && !Array.isArray(nestedNamed)) return nestedNamed as Record<string, unknown>
+    const nestedData = d.data
+    if (nestedData != null && typeof nestedData === 'object' && !Array.isArray(nestedData)) return nestedData as Record<string, unknown>
+    return d as Record<string, unknown>
+  }
+  return b as Record<string, unknown>
+}
+
+/**
  * Telna enum/state normalization: trim, uppercase, and replace spaces/hyphens
  * with underscore. E.g. "PRE-SERVICE" → "PRE_SERVICE", "IN-SERVICE" →
  * "IN_SERVICE", "De-activated" → "DE_ACTIVATED". Provider-local.
@@ -882,11 +938,11 @@ export class TelnaConnector implements IProviderConnector {
     }
 
     // 3) Package-list status is intentionally SUPPLEMENTAL ABSENT here. The
-    //    previously used GET /v2.1/pcr/packages?sim=<ICCID> filter is an
-    //    UNPROVEN query parameter and the live API rejects it (HTTP 400). The
-    //    lifecycle therefore derives from the safe SIM-registry / eUICC evidence
-    //    above. When an exact package instance id (C) was supplied, the exact
-    //    GET /v2.1/pcr/packages/{package_id} read (done above) remains the
+    //    documented V2.1 package-list filter surface (GET /v2.1/pcr/packages?
+    //    inventory&package_template&sim&status&count&offset) is a correlation
+    //    aid only; the lifecycle derives from the SIM-registry / eUICC evidence
+    //    above and, when an exact package instance id (C) was supplied, the
+    //    exact GET /v2.1/pcr/packages/{package_id} read (done above) remains the
     //    authoritative package-of-record source.
 
     // Conservative, provider-neutral normalization. Evidence is mapped into the
@@ -1183,13 +1239,15 @@ export class TelnaConnector implements IProviderConnector {
 
   /**
    * GET /v2.1/pcr/packages — package filter surface (named `packages` envelope,
-   * tolerant). ONLY source-proven package-list query names are used:
-   * inventory_id, package_template_id, count, offset. An ICCID is NEVER sent as
-   * a package-list query filter — `sim` is NOT a proven /v2.1/pcr/packages query
-   * parameter and the live API rejects it (HTTP 400). ICCID correlation is
-   * always performed LOCALLY against candidate.sim.
+   * tolerant). ONLY the documented V2.1 package-list query names are used:
+   * `inventory`, `package_template`, `sim`, `status`, `count`, `offset`. The
+   * legacy `inventory_id`/`package_template_id` names belong to OTHER endpoints
+   * (path params / sim-registry) and are NEVER used for GET /v2.1/pcr/packages.
+   * The `sim` filter is documented and allowed; correlated sims are additionally
+   * verified locally against candidate.sim so a filter-lie can never certify a
+   * package for the wrong ICCID.
    */
-  async listV2Packages(filters: { inventory_id?: number | string; package_template_id?: number | string; count?: number; offset?: number } = {}): Promise<ConnectorResult<{ items: TelnaV2Package[]; total: number }>> {
+  async listV2Packages(filters: { sim?: string; package_template?: number | string; inventory?: number | string; status?: string; count?: number; offset?: number } = {}): Promise<ConnectorResult<{ items: TelnaV2Package[]; total: number }>> {
     const result = await this.request({ method: 'GET', endpoint: 'packages', query: filters })
     const items = (result.success && result.data ? unwrapTelnaNamedList(result.data, 'packages') : []) || []
     const total = (result.success && result.data ? Number((result.data as { total?: unknown })?.total) || items.length : items.length)
@@ -1218,23 +1276,34 @@ export class TelnaConnector implements IProviderConnector {
   /**
    * Bounded, read-only correlation of package instances by the exact template id
    * (B) + exact local ICCID (A) match. Paginates GET /v2.1/pcr/packages by
-   * package_template_id=<B> (source-proven query name) with a finite page cap.
-   * Every candidate is defended locally: its template must resolve exactly to B
-   * when the field exists, and its sim must exactly equal one of the claimed
-   * ICCIDs. Never POSTs; never picks first/newest/closest-by-time; never
-   * substitutes A for C.
+   * `package_template=<B>` (documented query name) — and additionally by
+   * `sim=<A>` when exactly one claimed ICCID is supplied — with a finite page
+   * cap and PAGE_SIZE ≤ 100. Every candidate is defended locally: its template
+   * must resolve exactly to B (string-compared) and its sim must exactly equal
+   * one of the claimed ICCIDs. Never POSTs; never picks first/newest/closest-by-
+   * time; never substitutes A for C.
    */
   private async reconcileByTemplate(
     planId: number,
     iccids: string[],
   ): Promise<{ success: true; candidates: Array<{ id: string; iccid: string; status: string | null; templateId: number | null; raw: TelnaV2Package }> } | { success: false }> {
-    const PAGE_SIZE = 200
+    // Bounded: the documented V2.1 package-list page size is at most 100 and the
+    // scan has a finite defensive page cap — never an unbounded account scan.
+    const PAGE_SIZE = 100
     const MAX_PAGES = 25
     const iccidSet = new Set(iccids)
+    const planIdStr = String(planId)
     const candidates: Array<{ id: string; iccid: string; status: string | null; templateId: number | null; raw: TelnaV2Package }> = []
     for (let page = 0; page < MAX_PAGES; page++) {
       const offset = page * PAGE_SIZE
-      const result = await this.listV2Packages({ package_template_id: planId, count: PAGE_SIZE, offset })
+      // A+B filter: exact template id (B) always; exact sim (A) when a single
+      // claimed ICCID is known (documented package-list `sim` filter).
+      const result = await this.listV2Packages({
+        sim: iccids.length === 1 ? iccids[0] : undefined,
+        package_template: planId,
+        count: PAGE_SIZE,
+        offset,
+      })
       if (!result.success || !result.data) return { success: false }
       const items = result.data.items || []
       const total = result.data.total
@@ -1242,7 +1311,7 @@ export class TelnaConnector implements IProviderConnector {
         // Defensive exact-B gate: a provider candidate outside the requested
         // template is rejected even if the server-side filter was not honored.
         const templateId = this.packageTemplateIdOf(p)
-        if (templateId !== null && templateId !== planId) continue
+        if (templateId !== null && String(templateId) !== planIdStr) continue
         // Defensive exact-A gate: a candidate must carry a sim exactly equal to
         // one claimed ICCID — never a fuzzy/time/positional match.
         const pkgSim = p.sim != null && String(p.sim).trim() !== '' ? String(p.sim) : null
@@ -1255,6 +1324,8 @@ export class TelnaConnector implements IProviderConnector {
           raw: p,
         })
       }
+      // Stop only when the page is short or the total is exhausted — never stop
+      // after a single valid candidate while later pages could add ambiguity.
       if (items.length === 0 || offset + items.length >= total) break
     }
     return { success: true, candidates }
@@ -1266,9 +1337,11 @@ export class TelnaConnector implements IProviderConnector {
    * Correlates the exact claimed ICCIDs (A) against the documented GET
    * /v2.1/pcr/packages read — NEVER a POST, NEVER a replay of the activation.
    *
-   * Correlation is bounded by the exact Telna package-template id (B):
-   *   1. the package list is queried with the source-proven
-   *      package_template_id=<B> filter (paginated, finite defensive cap);
+   * Correlation is bounded by the exact Telna package-template id (B) + the
+   * exact claimed ICCID (A) — documented package-list filters:
+   *   1. the package list is queried with `package_template=<B>` (+ `sim=<A>`
+   *      when exactly one ICCID is claimed) and paginated with a finite
+   *      defensive cap and PAGE_SIZE ≤ 100;
    *   2. candidate.sim MUST exactly equal one of the supplied exact ICCIDs;
    *   3. when the candidate carries template info it must resolve exactly to B
    *      (defensive local re-check of the provider-returned list);
@@ -1311,7 +1384,7 @@ export class TelnaConnector implements IProviderConnector {
       }
     }
 
-    // Read-only bounded scan by the exact template id (B).
+    // Read-only bounded scan keyed by the exact template id (B) + exact ICCID (A).
     const correlated = await this.reconcileByTemplate(templateId, iccids)
     if (!correlated.success) {
       return {
@@ -1327,6 +1400,8 @@ export class TelnaConnector implements IProviderConnector {
       candidateCount: candidates.length,
       templateFilter: templateId,
       templateFilterApplied: true,
+      simFilter: iccids.length === 1 ? iccids[0] : undefined,
+      simFilterApplied: iccids.length === 1,
       matchedCount: candidates.length,
     }
 
@@ -1413,7 +1488,7 @@ export class TelnaConnector implements IProviderConnector {
     // upstream-confirmed outcome so the P0 dispatch preserves the ICCID claim,
     // the wallet hold and the order ownership while a bounded read-only
     // correlation runs.
-    if (!pkg || pkg.id == null) {
+    if (!pkg || pkg.id == null || String(pkg.id).trim() === '') {
       const code = pkg ? 'AMBIGUOUS_PACKAGE_ID_MISSING' : 'INVALID_RESPONSE'
       const message = pkg
         ? 'Telna accepted the package creation but the response carried no package instance id'
@@ -1662,12 +1737,13 @@ export class TelnaConnector implements IProviderConnector {
 
   /**
    * GET /v2.1/pcr/packages — package sync read. Delegates to the SINGLE
-   * canonical package-list query contract (listV2Packages: inventory_id /
-   * package_template_id / count / offset — never an ICCID filter).
+   * canonical package-list query contract (listV2Packages: inventory /
+   * package_template / sim / status / count / offset — the documented V2.1
+   * package-list names, never inventory_id / package_template_id).
    */
   async listPackages(inventoryId?: number, packageTemplateId?: number, count?: number, offset?: number): Promise<ConnectorResult<{ items: TelnaPackage[]; total: number }>> {
     const start = Date.now()
-    const result = await this.listV2Packages({ inventory_id: inventoryId, package_template_id: packageTemplateId, count, offset })
+    const result = await this.listV2Packages({ inventory: inventoryId, package_template: packageTemplateId, count, offset })
     const duration = Date.now() - start
     const items = (result.success && result.data ? result.data.items : []) || []
     const total = result.success ? result.data?.total ?? items.length : 0
@@ -1728,13 +1804,16 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'GET', endpoint: 'simPCRProfile', pathParams: { iccid } })
     const duration = Date.now() - start
-    // Detail envelope is normalized through the provider-local unwrapTelnaDetail
-    // contract (same as getEuiccProfile): { data: { data } } → { data } → bare →
-    // named { profile }. Fail closed unless a meaningful PCR profile carrying the
-    // SIM identity (iccid) was extracted — never success with a wrapper/primitive.
-    const profile = result.success && result.data ? unwrapTelnaDetail(result.data, 'profile') : null
+    // The PCR detail envelope is resolved through the sim-aware provider-local
+    // resolver (NOT the generic unwrapTelnaDetail, whose nested-`data` descent
+    // would misfire on the profile's own `data`/data_state sub-object). Fail
+    // closed unless a meaningful PCR profile carrying the SIM identity (`sim`
+    // per the V2.1 contract — NOT `iccid`) was extracted — never success with a
+    // wrapper/primitive, never success when only package identity (e.g. an old
+    // current_package shape) is present.
+    const profile = result.success && result.data ? unwrapTelnaPCRProfileDetail(result.data) : null
     console.log(`[TELNA_PCR_PROFILE] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
-    if (!result.success || !telnaDetailWithIccid(profile)) {
+    if (!result.success || !telnaPCRProfileWithSim(profile)) {
       return { success: false, error: { code: result.error?.code || 'PCR_FAILED', message: result.error?.message || 'PCR profile not found' } }
     }
     return { success: true, data: { profile: profile as unknown as TelnaPCRProfile } }
@@ -1744,9 +1823,9 @@ export class TelnaConnector implements IProviderConnector {
     const start = Date.now()
     const result = await this.request({ method: 'PUT', endpoint: 'simPCRProfile', pathParams: { iccid }, body: update })
     const duration = Date.now() - start
-    const profile = result.success && result.data ? unwrapTelnaDetail(result.data, 'profile') : null
+    const profile = result.success && result.data ? unwrapTelnaPCRProfileDetail(result.data) : null
     console.log(`[TELNA_PACKAGE_ASSIGN] iccid=${maskIccid(iccid)} status=${result.status} requestId=${result.requestId} durationMs=${duration}`)
-    if (!result.success || !telnaDetailWithIccid(profile)) {
+    if (!result.success || !telnaPCRProfileWithSim(profile)) {
       return { success: false, error: { code: result.error?.code || 'PCR_FAILED', message: result.error?.message || 'PCR profile update failed' } }
     }
     return { success: true, data: { profile: profile as unknown as TelnaPCRProfile } }

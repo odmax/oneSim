@@ -121,7 +121,8 @@ describe('Telna package identity contract — ICCID (A) never masquerades as the
     const fn = connector.slice(connector.indexOf('async createPackage('), connector.indexOf('async topUpESIM('))
     // A response without a package object (or an object without `id`) is never
     // a success — the ICCID (pkg.sim) alone is insufficient evidence.
-    expect(fn).toMatch(/if\s*\(!pkg\s*\|\|\s*pkg\.id\s*==\s*null\)/)
+    expect(fn).toMatch(/if\s*\(!pkg\s*\|\|\s*pkg\.id\s*==\s*null\s*\|\|/)
+    expect(fn).toContain("String(pkg.id).trim() === ''")
     expect(fn).toMatch(/code\s*=\s*pkg\s*\?\s*'AMBIGUOUS_PACKAGE_ID_MISSING'\s*:\s*'INVALID_RESPONSE'/)
     // The failure is surfaced through the P0 ambiguous contract: claim HELD,
     // wallet reserved, reconciliation required — never a retryable/local code.
@@ -140,9 +141,6 @@ describe('Telna reconciliation correlation contract — read-only exact C recove
   it('reconcileAmbiguousPurchase correlates ONLY via the read-only packages list, bounded by exact template id (B) + local exact ICCID (A)', () => {
     const fn = connector.slice(connector.indexOf('async reconcileAmbiguousPurchase('), connector.indexOf('async getV2Package('))
     expect(fn).toContain('async reconcileAmbiguousPurchase(input: AmbiguousPurchaseReconcileInput)')
-    // Bounded by the exact numeric package-template id (B). The unproven ICCID
-    // package-list filter (`sim`) is NEVER sent: the candidate scan is keyed by
-    // package_template_id=<B> and the ICCID match is performed locally.
     expect(fn).toContain('const correlated = await this.reconcileByTemplate(templateId, iccids)')
     expect(fn).toContain('providerPackageInstanceId')
     // FAIL CLOSED: no claimed ICCIDs or no valid numeric B -> inconclusive, zero provider scan.
@@ -161,19 +159,25 @@ describe('Telna reconciliation correlation contract — read-only exact C recove
     expect(fn).toContain('const winner = carriesRealId[0]')
   })
 
-  it('the packages list contract NEVER admits an ICCID (`sim`) filter — source-proven query names only', () => {
-    // Guard against reintroducing the unproven GET /v2.1/pcr/packages?sim=<ICCID>
-    // filter that the live API rejects (HTTP 400). ICCID correlation must always
-    // be local; the restricted list query may only carry proven names.
-    expect(connector).not.toMatch(/listV2Packages\(\{\s*sim\b/)
-    expect(connector).not.toMatch(/query:\s*\{\s*sim\b/)
+  it('the packages list contract uses the documented V2.1 query names sim / package_template / inventory — never inventory_id / package_template_id', () => {
+    // The documented GET /v2.1/pcr/packages filter surface is `inventory`,
+    // `package_template`, `sim`, `status`, `count`, `offset`. The legacy
+    // `inventory_id` / `package_template_id` names belong to OTHER endpoints
+    // (path-param detail reads / sim-registry / template lists) and are NEVER
+    // sent on the canonical package-list read. The `sim` filter is documented
+    // and allowed; candidates are additionally verified locally so a provider
+    // filter-lie can never certify the wrong ICCID.
     const fn = connector.slice(connector.indexOf('async listV2Packages('), connector.indexOf('private packageTemplateIdOf('))
-    expect(fn).toContain('package_template_id?: number | string')
+    expect(fn).toContain('sim?: string')
+    expect(fn).toContain('package_template?: number | string')
+    expect(fn).toContain('inventory?: number | string')
     expect(fn).toContain("query: filters")
-    expect(fn).not.toMatch(/sim\b/)
-    // The bounded correlation scan paginates with the proven names.
+    expect(fn).not.toMatch(/package_template_id\?:|inventory_id\?:/)
+    // The bounded correlation scan paginates with the documented names.
     const corr = connector.slice(connector.indexOf('private async reconcileByTemplate('), connector.indexOf('async reconcileAmbiguousPurchase('))
-    expect(corr).toContain("listV2Packages({ package_template_id: planId, count: PAGE_SIZE, offset })")
+    expect(corr).toContain('sim: iccids.length === 1 ? iccids[0] : undefined')
+    expect(corr).toContain('package_template: planId')
+    expect(corr).not.toMatch(/package_template_id\b|inventory_id\b/)
     expect(corr).toContain('const iccidSet = new Set(iccids)')
   })
 

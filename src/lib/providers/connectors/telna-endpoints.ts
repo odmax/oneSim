@@ -720,62 +720,79 @@ export interface MappedTelnaSimRegistry {
 
 // â”€â”€ PCR Profile DTOs (Telna Phase 4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-export interface TelnaPCRPackage {
-  id?: number | string
-  package_template_id?: number | string
-  name?: string
+export interface TelnaPCRProfileDataState {
+  state?: string
+  active_throttling?: string | null
 }
 
+export interface TelnaPCRProfileVoiceState {
+  state?: string
+}
+
+export interface TelnaPCRProfileSmsState {
+  state?: string
+}
+
+export interface TelnaPCRProfileWalletOwner {
+  inventory?: string | number
+  group?: string | number
+  sim?: string | number
+}
+
+export interface TelnaPCRProfileWallet {
+  id?: string | number
+  wallet_type?: string
+  owner?: TelnaPCRProfileWalletOwner
+  balance?: number
+  overdraft?: number
+}
+
+/**
+ * Documented V2.1 SIM PCR profile (GET/PUT /v2.1/pcr/sim-pcr-profiles/{iccid}).
+ *
+ * The authoritative contract carries the SIM identity under `sim` (NOT `iccid`),
+ * plus data/voice/sms signal states, wallet_mode, wallets and route_policy. It
+ * carries NO package identity — there is NO current_package / pending_package /
+ * package-instance field, so a PCR profile must NEVER be used to resolve the
+ * provider package-instance reference (C) of a purchase.
+ */
 export interface TelnaPCRProfile {
-  id: number
-  iccid: string
-  status: string
-  current_package?: TelnaPCRPackage
-  pending_package?: TelnaPCRPackage
-  traffic_policy_id?: number
-  wallet_id?: number
-  activation_state?: string
-  renewal?: {
-    enabled?: boolean
-    renewal_date?: string
-    renewal_package_id?: number | string
-  }
-  expiration?: {
-    expired?: boolean
-    expiration_date?: string
-  }
-  created_at?: string
-  updated_at?: string
+  sim?: string
+  data?: TelnaPCRProfileDataState
+  voice?: TelnaPCRProfileVoiceState
+  sms?: TelnaPCRProfileSmsState
+  wallet_mode?: 'GROUP' | 'SIM' | string
+  wallets?: TelnaPCRProfileWallet[]
+  route_policy?: string | number | { id?: string | number; name?: string } | null
   [key: string]: unknown
 }
 
+export interface MappedTelnaPCRWallet {
+  id: string | null
+  walletType: string | null
+  ownerInventory: string | null
+  ownerGroup: string | null
+  ownerSim: string | null
+  balance: number | null
+  overdraft: number | null
+}
+
 export interface MappedTelnaPCRProfile {
-  iccid: string
-  status: string
-  currentPackage: {
-    id: string | null
-    packageTemplateId: string | null
-    name: string | null
-  }
-  pendingPackage: {
-    id: string | null
-    packageTemplateId: string | null
-    name: string | null
-  }
-  trafficPolicyId: number | null
-  walletId: number | null
-  activationState: string | null
-  renewal: {
-    enabled: boolean
-    renewalDate: string | null
-    renewalPackageId: string | null
-  }
-  expiration: {
-    expired: boolean
-    expirationDate: string | null
-  }
-  createdAt: string | null
-  updatedAt: string | null
+  /** SIM identity (A) — the provider-keyed SIM of the profile. */
+  sim: string
+  /** Raw provider network/activation signal state from data.state (null when absent). */
+  dataState: string | null
+  activeThrottling: string | null
+  voiceState: string | null
+  smsState: string | null
+  walletMode: string | null
+  wallets: MappedTelnaPCRWallet[]
+  routePolicyId: string | null
+  /**
+   * NEVER a package-instance reference: the V2.1 PCR profile carries no package
+   * identity, so no currentPackage/pendingPackage/package-resolution fields exist
+   * here — a PCR profile cannot and must never resolve C.
+   */
   rawData: Record<string, unknown>
 }
 

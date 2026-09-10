@@ -37,7 +37,7 @@ vi.mock('@/lib/providers/capability-state', () => ({
 
 import type { Provider } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { TelnaConnector, normalizeTelnaState, normalizeTelnaTimeAllowance, getTelnaSimState, getTelnaRefId, getTelnaInventoryId, getTelnaGroupId, unwrapTelnaDetail, telnaDetailWithIccid } from './telna-connector'
+import { TelnaConnector, normalizeTelnaState, normalizeTelnaTimeAllowance, getTelnaSimState, getTelnaRefId, getTelnaInventoryId, getTelnaGroupId, unwrapTelnaDetail, telnaDetailWithIccid, telnaPCRProfileWithSim, unwrapTelnaPCRProfileDetail } from './telna-connector'
 import { resolveConnectorType, createConnector } from './connector-factory'
 import { encryptToken, decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
@@ -1131,7 +1131,7 @@ describe('TelnaConnector Phase 2B — listPackages', () => {
     expect(result.data?.items[1].name).toBe('10GB Global Roaming')
   })
 
-  it('passes inventory_id and package_template_id query params', async () => {
+it('passes inventory and package_template query params (documented V2.1 package-list names)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -1141,13 +1141,16 @@ describe('TelnaConnector Phase 2B — listPackages', () => {
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     await connector.listPackages(42, 55, 100, 0)
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('inventory_id=42'),
+      expect.stringContaining('inventory=42'),
       expect.any(Object)
     )
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('package_template_id=55'),
+      expect.stringContaining('package_template=55'),
       expect.any(Object)
     )
+    // The legacy sim-registry / path-param names are never used on the package-list surface.
+    expect(JSON.stringify(vi.mocked(globalThis.fetch).mock.calls)).not.toContain('inventory_id=42')
+    expect(JSON.stringify(vi.mocked(globalThis.fetch).mock.calls)).not.toContain('package_template_id=55')
   })
 
   it('handles empty result', async () => {
@@ -1373,6 +1376,54 @@ describe('unwrapTelnaDetail — bounded structural normalization', () => {
   it('nested named wrapper with null/primitive detail never passes the identity guard', () => {
     expect(telnaDetailWithIccid(unwrapTelnaDetail({ data: { profile: null } }, 'profile'))).toBe(false)
     expect(telnaDetailWithIccid(unwrapTelnaDetail({ data: { profile: 'x' } }, 'profile'))).toBe(false)
+  })
+})
+
+describe('unwrapTelnaPCRProfileDetail — sim-aware PCR envelope resolution', () => {
+  const PROFILE = { sim: '89012345678901234567', data: { state: 'ACTIVE' }, voice: { state: 'ACTIVE' } }
+
+  it('A. returns bare profile body (the profile carries its OWN data/data_state sub-object)', () => {
+    expect(unwrapTelnaPCRProfileDetail(PROFILE)).toBe(PROFILE)
+  })
+
+  it('B. resolves { data: PROFILE } to the profile, NOT its data_state sub-object', () => {
+    expect(unwrapTelnaPCRProfileDetail({ data: PROFILE })).toBe(PROFILE)
+  })
+
+  it('C. resolves nested { data: { data: PROFILE } } envelope', () => {
+    expect(unwrapTelnaPCRProfileDetail({ data: { data: PROFILE } })).toBe(PROFILE)
+  })
+
+  it('D. resolves named { profile } envelope', () => {
+    expect(unwrapTelnaPCRProfileDetail({ profile: PROFILE })).toBe(PROFILE)
+  })
+
+  it('E. resolves nested named { data: { profile } } envelope', () => {
+    expect(unwrapTelnaPCRProfileDetail({ data: { profile: PROFILE } })).toBe(PROFILE)
+  })
+
+  it.each([
+    ['null body', null],
+    ['undefined body', undefined],
+    ['string primitive', 'profile'],
+    ['array body', [PROFILE]],
+    ['empty object', {}],
+    ['empty wrapper', { data: {} }],
+    ['null wrapper', { data: null }],
+  ])('fails closed on %s', (_label, body) => {
+    expect(telnaPCRProfileWithSim(unwrapTelnaPCRProfileDetail(body))).toBe(false)
+  })
+
+  it('never descends into a layer that already carries the SIM identity', () => {
+    const profileWithNestedData = { sim: '89012345678901234567', data: { state: 'ACTIVE', data_state: { extra: true } } }
+    expect(unwrapTelnaPCRProfileDetail(profileWithNestedData)).toBe(profileWithNestedData)
+    expect(unwrapTelnaPCRProfileDetail({ data: profileWithNestedData })).toBe(profileWithNestedData)
+  })
+
+  it('rejects package-identity-only shapes (old current_package style) that lack `sim`', () => {
+    const oldShape = { iccid: '89012345678901234567', current_package: { id: 1 }, pending_package: null }
+    expect(unwrapTelnaPCRProfileDetail({ data: oldShape })).not.toBe(null)
+    expect(telnaPCRProfileWithSim(unwrapTelnaPCRProfileDetail({ data: oldShape }))).toBe(false)
   })
 })
 
@@ -1758,28 +1809,25 @@ describe('TelnaConnector Phase 5 — getSimUsage / getSimBalances detail envelop
   })
 })
 
+const mockPCRProfile = {
+  sim: '89012345678901234567',
+  data: { state: 'ACTIVE', active_throttling: null },
+  voice: { state: 'ACTIVE' },
+  sms: { state: 'ACTIVE' },
+  wallet_mode: 'GROUP' as const,
+  wallets: [
+    { id: 200, wallet_type: 'PRIMARY', owner: { group: 10, inventory: 5 }, balance: 12.5, overdraft: 0 },
+  ],
+  route_policy: { id: 50, name: 'Standard' },
+}
+
 describe('TelnaConnector Phase 4 — getSimPCRProfile', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  const mockPCRProfile = {
-    id: 1,
-    iccid: '89012345678901234567',
-    status: 'ACTIVE',
-    current_package: { id: 5001, package_template_id: 1001, name: '5GB Monthly Data' },
-    pending_package: null,
-    traffic_policy_id: 50,
-    wallet_id: 200,
-    activation_state: 'ACTIVATED',
-    renewal: { enabled: true, renewal_date: '2026-01-15', renewal_package_id: 5001 },
-    expiration: { expired: false, expiration_date: '2025-08-15' },
-    created_at: '2025-01-01T00:00:00Z',
-    updated_at: '2025-07-01T00:00:00Z',
-}
-
-  it('returns PCR profile by ICCID on success', async () => {
+  it('returns PCR profile by ICCID on success (V2.1 sim-based document, no package identity)', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -1789,12 +1837,16 @@ describe('TelnaConnector Phase 4 — getSimPCRProfile', () => {
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.getSimPCRProfile('89012345678901234567')
     expect(result.success).toBe(true)
-    expect(result.data?.profile.iccid).toBe('89012345678901234567')
-    expect(result.data?.profile.current_package?.name).toBe('5GB Monthly Data')
-    expect(result.data?.profile.renewal?.enabled).toBe(true)
-    // Identity distinction: iccid = A, package_template_id = B, current_package.id = C.
-    expect(result.data?.profile.current_package?.id).toBe(5001)
-    expect(result.data?.profile.current_package?.package_template_id).toBe(1001)
+    // V2.1 identity is the profile's `sim` (A) — never `iccid`, never a package.
+    expect(result.data?.profile.sim).toBe('89012345678901234567')
+    expect(result.data?.profile.data?.state).toBe('ACTIVE')
+    expect(result.data?.profile.voice?.state).toBe('ACTIVE')
+    expect(result.data?.profile.wallets?.[0]?.id).toBe(200)
+    expect(result.data?.profile.route_policy).toEqual({ id: 50, name: 'Standard' })
+    // The V2.1 PCR profile carries NO package identity.
+    expect(result.data?.profile).not.toHaveProperty('current_package')
+    expect(result.data?.profile).not.toHaveProperty('pending_package')
+    expect(result.data?.profile).not.toHaveProperty('iccid')
     expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining('/pcr/sim-pcr-profiles/89012345678901234567'),
       expect.any(Object)
@@ -1802,7 +1854,7 @@ describe('TelnaConnector Phase 4 — getSimPCRProfile', () => {
   })
 
   it('normalizes nested { data: { data: profile } } envelope on PUT update', async () => {
-    const profile = { id: 1, iccid: '89012345678901234567', status: 'ACTIVE', current_package: { id: 6002, package_template_id: 2002, name: '10GB Global Data' }, pending_package: null }
+    const profile = { ...mockPCRProfile, data: { state: 'ACTIVE', active_throttling: '0' } }
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -1812,8 +1864,8 @@ describe('TelnaConnector Phase 4 — getSimPCRProfile', () => {
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 2002 })
     expect(result.success).toBe(true)
-    expect(result.data?.profile.current_package?.id).toBe(6002)
-    expect(result.data?.profile.current_package?.package_template_id).toBe(2002)
+    expect(result.data?.profile.sim).toBe('89012345678901234567')
+    expect(result.data?.profile.data?.state).toBe('ACTIVE')
   })
 
   it('fails closed on an empty PCR profile update detail envelope (no meaningless success)', async () => {
@@ -1831,11 +1883,13 @@ describe('TelnaConnector Phase 4 — getSimPCRProfile', () => {
 
   const assertProfileNormalized = (result: Awaited<ReturnType<InstanceType<typeof TelnaConnector>['getSimPCRProfile']>>) => {
     expect(result.success).toBe(true)
-    expect(result.data?.profile.iccid).toBe('89012345678901234567')
-    expect(result.data?.profile.current_package?.id).toBe(5001)
-    expect(result.data?.profile.current_package?.package_template_id).toBe(1001)
-    expect(result.data?.profile.current_package?.name).toBe('5GB Monthly Data')
-    expect(result.data?.profile.pending_package).toBeNull()
+    expect(result.data?.profile.sim).toBe('89012345678901234567')
+    expect(result.data?.profile.data?.state).toBe('ACTIVE')
+    expect(result.data?.profile.wallets?.[0]?.id).toBe(200)
+    // The V2.1 PCR profile never exposes package identity (C).
+    expect(result.data?.profile).not.toHaveProperty('current_package')
+    expect(result.data?.profile).not.toHaveProperty('pending_package')
+    expect(result.data?.profile).not.toHaveProperty('iccid')
   }
 
   it('normalizes nested { data: { data: profile } } envelope', async () => {
@@ -1914,7 +1968,7 @@ describe('TelnaConnector Phase 4 — getSimPCRProfile', () => {
         },
       },
     }],
-    ['nested named profile with blank iccid', { data: { profile: { ...mockPCRProfile, iccid: '   ' } } }],
+    ['nested named profile with blank sim', { data: { profile: { ...mockPCRProfile, sim: '   ' } } }],
     ['nested named profile as array', { data: { profile: [mockPCRProfile] } }],
     ['nested named profile as null', { data: { profile: null } }],
     ['nested named profile as primitive', { data: { profile: 'not-a-profile' } }],
@@ -1982,15 +2036,14 @@ describe('TelnaConnector Phase 4 — updateSimPCRProfile', () => {
     vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
   })
 
-  it('updates PCR profile with package_template_id on success', async () => {
+it('updates PCR profile with package_template_id on success', async () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
       text: vi.fn().mockResolvedValue(JSON.stringify({
         data: {
-          id: 1, iccid: '89012345678901234567', status: 'ACTIVE',
-          current_package: { id: 6002, package_template_id: 2002, name: '10GB Global Data' },
-          pending_package: null,
+          ...mockPCRProfile,
+          data: { state: 'ACTIVE', active_throttling: null },
         },
       })),
     }
@@ -1998,8 +2051,9 @@ describe('TelnaConnector Phase 4 — updateSimPCRProfile', () => {
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
     const result = await connector.updateSimPCRProfile('89012345678901234567', { package_template_id: 2002 })
     expect(result.success).toBe(true)
-    expect(result.data?.profile.current_package?.id).toBe(6002)
-    expect(result.data?.profile.current_package?.package_template_id).toBe(2002)
+    expect(result.data?.profile.sim).toBe('89012345678901234567')
+    expect(result.data?.profile.data?.state).toBe('ACTIVE')
+    expect(result.data?.profile).not.toHaveProperty('current_package')
     expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining('/pcr/sim-pcr-profiles/89012345678901234567'),
       expect.any(Object)
@@ -2010,7 +2064,7 @@ describe('TelnaConnector Phase 4 — updateSimPCRProfile', () => {
     const fakeResponse = {
       ok: true, status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { id: 1, iccid: '89012345678901234567', status: 'ACTIVE' } })),
+      text: vi.fn().mockResolvedValue(JSON.stringify({ data: { ...mockPCRProfile } })),
     }
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(fakeResponse as any)
     const connector = new TelnaConnector('telna-provider-1', 'Telna')
@@ -2255,7 +2309,8 @@ describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
     const urls = fetchSpy.mock.calls.map(c => String(c[0]))
     expect(urls.some(u => u.includes('/v2.1/inventory/sim-registries/'))).toBe(true)
     expect(urls.some(u => u.includes('/v2.1/esim-rsp/euicc-profiles/'))).toBe(true)
-    // The unproven GET /pcr/packages?sim= filter is never emitted.
+    // The ICCID status path never keys the package list by ICCID — status
+    // derives from sim-registry + euicc evidence (the package list is absent).
     expect(urls.some(u => u.includes('/v2.1/pcr/packages?sim='))).toBe(false)
   })
 
@@ -2894,8 +2949,8 @@ describe('Telna Phase 1 � purchase / package / install / usage', () => {
     expect(r.data?.dataUsedMB).toBe(1024)
     const url = String(fetchSpy.mock.calls[0][0])
     expect(url).toContain('/v2.1/pcr/packages')
-    expect(url).toContain('package_template_id=42')
-    expect(url).not.toContain('sim=')
+    expect(url).toContain('package_template=42')
+    expect(url).toContain('sim=8944501234567890123')
   })
 
   it('usage bounded fallback: two valid packages match exact B + A -> DATA_UNAVAILABLE (never an arbitrary first pick)', async () => {
@@ -3621,23 +3676,26 @@ describe('Telna Connect V2.1 � live named-envelope + state normalization', () 
     expect(r.data?.items[0].id).toBe(42)
   })
 
-it('4. package named envelope { total, offset, count, packages } parses with source-proven query names only', async () => {
+it('4. package named envelope { total, offset, count, packages } parses with the documented V2.1 query names (never inventory_id/package_template_id)', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(json({
       total: 1, offset: 0, count: 1,
       packages: [{ id: 'pkg-1', sim: '89A', status: 'ACTIVE', data_usage_remaining: 100 }],
     }))
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
     const c = new TelnaConnector('telna-provider-1', 'Telna')
-    const r = await c.listV2Packages({ package_template_id: 42, count: 1, offset: 0 })
+    const r = await c.listV2Packages({ package_template: 42, count: 1, offset: 0 })
     expect(r.success).toBe(true)
     expect(r.data?.items).toHaveLength(1)
     expect(r.data?.items[0].id).toBe('pkg-1')
-    // The unproven ICCID filter is NEVER part of the package-list query contract.
+    // The package-list query contract uses the documented V2.1 names only —
+    // `sim` is allowed when supplied (none here), legacy *_id names never.
     const url = String(fetchSpy.mock.calls[0][0])
-    expect(url).toContain('package_template_id=42')
+    expect(url).toContain('package_template=42')
     expect(url).toContain('count=1')
     expect(url).toContain('offset=0')
     expect(url).not.toContain('sim=')
+    expect(url).not.toContain('package_template_id=')
+    expect(url).not.toContain('inventory_id=')
   })
 
   it('5. normalizeTelnaState: PRE-SERVICE -> PRE_SERVICE, IN-SERVICE -> IN_SERVICE', () => {
@@ -4387,7 +4445,7 @@ describe('Telna reconcileAmbiguousPurchase — read-only exact package correlati
     } as any)
   }
 
-  it('2. exact ICCID + exact template id (B) -> resolves via package_template_id=42 with the provider package instance id (C)', async () => {
+  it('2. exact ICCID + exact template id (B) -> resolves via package_template=42 + sim=<A> with the provider package instance id (C)', async () => {
     const fetchSpy = vi.fn().mockResolvedValueOnce(json({
       total: 1, offset: 0, count: 1,
       packages: [{ id: 9001, sim: A_ICCID, status: 'NOT_ACTIVE', package_template: { id: 42, name: 'Africa 10GB' } }],
@@ -4401,11 +4459,12 @@ describe('Telna reconcileAmbiguousPurchase — read-only exact package correlati
     expect((r.data?.evidence as any)?.source).toBe('packages-template-correlation')
     const url = String(fetchSpy.mock.calls[0][0])
     expect(url).toContain('/v2.1/pcr/packages')
-    expect(url).toContain('package_template_id=42')
+    expect(url).toContain('package_template=42')
+    expect(url).toContain(`sim=${A_ICCID}`)
     expect(url).toContain('count=')
     expect(url).toContain('offset=0')
-    // The unproven ICCID package-list filter is NEVER emitted.
-    expect(url).not.toContain('sim=')
+    expect(url).not.toContain('package_template_id=')
+    expect(url).not.toContain('inventory_id=')
     expect(fetchSpy.mock.calls[0][1]?.method ?? 'GET').toBe('GET')
   })
 
@@ -4476,14 +4535,14 @@ describe('Telna reconcileAmbiguousPurchase — read-only exact package correlati
     }
   })
 
-  it('9. paginated candidate scan walks additional pages until the returned total is bounded', async () => {
+  it('9. paginated candidate scan walks additional pages (PAGE_SIZE 100) until the returned total is bounded', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(json({
-        total: 3, offset: 0, count: 200,
+        total: 2, offset: 0, count: 100,
         packages: [{ id: 9001, sim: '89011111111111111111', status: 'ACTIVE', package_template: { id: 42 } }],
       }))
       .mockResolvedValueOnce(json({
-        total: 3, offset: 200, count: 200,
+        total: 2, offset: 100, count: 100,
         packages: [{ id: 9002, sim: A_ICCID, status: 'NOT_ACTIVE', package_template: { id: 42 } }],
       }))
     const r = await runReconcile(fetchSpy)
@@ -4493,8 +4552,8 @@ describe('Telna reconcileAmbiguousPurchase — read-only exact package correlati
     expect(fetchSpy).toHaveBeenCalledTimes(2)
     const urls = fetchSpy.mock.calls.map(c => String(c[0]))
     expect(urls[0]).toContain('offset=0')
-    expect(urls[1]).toContain('offset=200')
-    expect(urls.every(u => !u.includes('sim='))).toBe(true)
+    expect(urls[1]).toContain('offset=100')
+    expect(urls.every(u => u.includes('sim='))).toBe(true)
   })
 
   it('10. reconcile with NO template id (B) → inconclusive and zero provider requests (no account-wide hunt)', async () => {

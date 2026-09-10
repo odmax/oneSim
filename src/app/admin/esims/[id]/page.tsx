@@ -189,14 +189,14 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             <div className="mb-4 rounded-lg bg-gray-50 p-4">
               <h4 className="mb-2 text-sm font-semibold text-gray-700">Current PCR Profile</h4>
               <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-                <div><dt className="text-xs text-gray-500">Status</dt><dd className="font-medium text-gray-900">{pcrProfile.status}</dd></div>
-                <div><dt className="text-xs text-gray-500">Current Package</dt><dd className="font-medium text-gray-900">{pcrProfile.currentPackage.name || pcrProfile.currentPackage.id || 'None'}</dd></div>
-                <div><dt className="text-xs text-gray-500">Pending Package</dt><dd className="text-gray-700">{pcrProfile.pendingPackage.name || pcrProfile.pendingPackage.id || 'None'}</dd></div>
-                <div><dt className="text-xs text-gray-500">Traffic Policy</dt><dd className="font-mono text-xs text-gray-900">{pcrProfile.trafficPolicyId ?? '-'}</dd></div>
-                <div><dt className="text-xs text-gray-500">Wallet ID</dt><dd className="font-mono text-xs text-gray-900">{pcrProfile.walletId ?? '-'}</dd></div>
-                <div><dt className="text-xs text-gray-500">Activation State</dt><dd className="text-gray-900">{pcrProfile.activationState || '-'}</dd></div>
-                <div><dt className="text-xs text-gray-500">Renewal</dt><dd className="text-gray-900">{pcrProfile.renewal.enabled ? `Enabled (${pcrProfile.renewal.renewalDate || 'no date'})` : 'Disabled'}</dd></div>
-                <div><dt className="text-xs text-gray-500">Expiration</dt><dd className="text-gray-900">{pcrProfile.expiration.expired ? `Expired: ${pcrProfile.expiration.expirationDate}` : pcrProfile.expiration.expirationDate || 'N/A'}</dd></div>
+                <div><dt className="text-xs text-gray-500">SIM (A)</dt><dd className="font-mono text-xs text-gray-900">{pcrProfile.sim || '-'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Data State</dt><dd className="font-medium text-gray-900">{pcrProfile.dataState || '-'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Active Throttling</dt><dd className="font-mono text-xs text-gray-900">{pcrProfile.activeThrottling ?? '-'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Voice State</dt><dd className="text-gray-900">{pcrProfile.voiceState || '-'}</dd></div>
+                <div><dt className="text-xs text-gray-500">SMS State</dt><dd className="text-gray-900">{pcrProfile.smsState || '-'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Wallet Mode</dt><dd className="text-gray-900">{pcrProfile.walletMode || '-'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Wallets</dt><dd className="text-gray-900">{pcrProfile.wallets.length > 0 ? pcrProfile.wallets.map((w) => `${w.id} (${w.walletType ?? 'n/a'})`).join(', ') : 'None'}</dd></div>
+                <div><dt className="text-xs text-gray-500">Route Policy</dt><dd className="font-mono text-xs text-gray-900">{pcrProfile.routePolicyId ?? '-'}</dd></div>
               </dl>
             </div>
           )}

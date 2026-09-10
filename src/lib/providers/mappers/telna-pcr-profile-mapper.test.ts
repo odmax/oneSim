@@ -3,108 +3,83 @@ import { mapTelnaPCRProfile } from './telna-pcr-profile-mapper'
 import type { TelnaPCRProfile } from '../connectors/telna-endpoints'
 
 const baseProfile: TelnaPCRProfile = {
-  id: 1,
-  iccid: '89012345678901234567',
-  status: 'ACTIVE',
-  current_package: { id: 5001, package_template_id: 1001, name: '5GB Monthly Data' },
-  pending_package: undefined,
-  traffic_policy_id: 50,
-  wallet_id: 200,
-  activation_state: 'ACTIVATED',
-  renewal: { enabled: true, renewal_date: '2026-01-15T00:00:00Z', renewal_package_id: 5001 },
-  expiration: { expired: false, expiration_date: '2025-08-15T00:00:00Z' },
-  created_at: '2025-01-01T00:00:00Z',
-  updated_at: '2025-07-01T00:00:00Z',
+  sim: '89012345678901234567',
+  data: { state: 'IN_SERVICE', active_throttling: '1' },
+  voice: { state: 'ACTIVE' },
+  sms: { state: 'ACTIVE' },
+  wallet_mode: 'GROUP',
+  wallets: [
+    {
+      id: 200,
+      wallet_type: 'PRIMARY',
+      owner: { group: 10 },
+      balance: 12.5,
+      overdraft: 0,
+    },
+  ],
+  route_policy: { id: 50, name: 'Standard' },
 }
 
 describe('mapTelnaPCRProfile', () => {
-  it('maps a complete PCR profile', () => {
+  it('maps a complete V2.1 PCR profile (sim identity + signal/wallet/route state)', () => {
     const result = mapTelnaPCRProfile(baseProfile)
-    expect(result.iccid).toBe('89012345678901234567')
-    expect(result.status).toBe('ACTIVE')
-    expect(result.currentPackage.id).toBe('5001')
-    expect(result.currentPackage.packageTemplateId).toBe('1001')
-    expect(result.currentPackage.name).toBe('5GB Monthly Data')
-    expect(result.pendingPackage.id).toBeNull()
-    expect(result.pendingPackage.name).toBeNull()
-    expect(result.trafficPolicyId).toBe(50)
-    expect(result.walletId).toBe(200)
-    expect(result.activationState).toBe('ACTIVATED')
-    expect(result.renewal.enabled).toBe(true)
-    expect(result.renewal.renewalDate).toBe('2026-01-15T00:00:00Z')
-    expect(result.renewal.renewalPackageId).toBe('5001')
-    expect(result.expiration.expired).toBe(false)
-    expect(result.expiration.expirationDate).toBe('2025-08-15T00:00:00Z')
-    expect(result.createdAt).toBe('2025-01-01T00:00:00Z')
-    expect(result.updatedAt).toBe('2025-07-01T00:00:00Z')
+    expect(result.sim).toBe('89012345678901234567')
+    expect(result.dataState).toBe('IN_SERVICE')
+    expect(result.activeThrottling).toBe('1')
+    expect(result.voiceState).toBe('ACTIVE')
+    expect(result.smsState).toBe('ACTIVE')
+    expect(result.walletMode).toBe('GROUP')
+    expect(result.wallets).toHaveLength(1)
+    expect(result.wallets[0].id).toBe('200')
+    expect(result.wallets[0].walletType).toBe('PRIMARY')
+    expect(result.wallets[0].ownerGroup).toBe('10')
+    expect(result.wallets[0].ownerInventory).toBeNull()
+    expect(result.wallets[0].ownerSim).toBeNull()
+    expect(result.wallets[0].balance).toBe(12.5)
+    expect(result.wallets[0].overdraft).toBe(0)
+    expect(result.routePolicyId).toBe('50')
   })
 
-  it('maps pending package when present', () => {
+  it('normalizes numeric and string wallet owner ids', () => {
     const profile: TelnaPCRProfile = {
       ...baseProfile,
-      pending_package: { id: 6002, package_template_id: 2002, name: '10GB Global Data' },
+      sim: 'SIM-ABC',
+      wallet_mode: 'SIM',
+      wallets: [
+        { id: 'w-1', wallet_type: 'SIM', owner: { inventory: 'inv-9', sim: 'SIM-ABC', group: 7 }, balance: 0, overdraft: 5 },
+      ],
     }
     const result = mapTelnaPCRProfile(profile)
-    expect(result.pendingPackage.id).toBe('6002')
-    expect(result.pendingPackage.packageTemplateId).toBe('2002')
-    expect(result.pendingPackage.name).toBe('10GB Global Data')
+    expect(result.walletMode).toBe('SIM')
+    expect(result.wallets[0].ownerInventory).toBe('inv-9')
+    expect(result.wallets[0].ownerGroup).toBe('7')
+    expect(result.wallets[0].ownerSim).toBe('SIM-ABC')
+    expect(result.wallets[0].balance).toBe(0)
+    expect(result.wallets[0].overdraft).toBe(5)
   })
 
-  it('handles null current_package fields', () => {
-    const profile: TelnaPCRProfile = {
-      ...baseProfile,
-      current_package: { id: null as any, package_template_id: null as any, name: undefined },
-    }
-    const result = mapTelnaPCRProfile(profile)
-    expect(result.currentPackage.id).toBeNull()
-    expect(result.currentPackage.packageTemplateId).toBeNull()
-    expect(result.currentPackage.name).toBeNull()
+  it('route_policy may be a plain scalary value (string or number)', () => {
+    expect(mapTelnaPCRProfile({ ...baseProfile, route_policy: 'APP-DEFAULT' }).routePolicyId).toBe('APP-DEFAULT')
+    expect(mapTelnaPCRProfile({ ...baseProfile, route_policy: 7 }).routePolicyId).toBe('7')
+    expect(mapTelnaPCRProfile({ ...baseProfile, route_policy: null }).routePolicyId).toBeNull()
   })
 
-  it('handles missing renewal', () => {
-    const profile: TelnaPCRProfile = {
-      ...baseProfile,
-      renewal: undefined,
-    }
-    const result = mapTelnaPCRProfile(profile)
-    expect(result.renewal.enabled).toBe(false)
-    expect(result.renewal.renewalDate).toBeNull()
-    expect(result.renewal.renewalPackageId).toBeNull()
+  it('handles missing nested sections and missing wallets', () => {
+    const result = mapTelnaPCRProfile({ sim: '89012345678901234567' })
+    expect(result.dataState).toBeNull()
+    expect(result.activeThrottling).toBeNull()
+    expect(result.voiceState).toBeNull()
+    expect(result.smsState).toBeNull()
+    expect(result.walletMode).toBeNull()
+    expect(result.wallets).toEqual([])
+    expect(result.routePolicyId).toBeNull()
+    expect(result.sim).toBe('89012345678901234567')
   })
 
-  it('handles missing expiration', () => {
-    const profile: TelnaPCRProfile = {
-      ...baseProfile,
-      expiration: undefined,
-    }
-    const result = mapTelnaPCRProfile(profile)
-    expect(result.expiration.expired).toBe(false)
-    expect(result.expiration.expirationDate).toBeNull()
-  })
-
-  it('handles missing optional scalars', () => {
-    const profile: TelnaPCRProfile = {
-      id: 2, iccid: '89098765432109876543', status: 'SUSPENDED',
-    }
-    const result = mapTelnaPCRProfile(profile)
-    expect(result.iccid).toBe('89098765432109876543')
-    expect(result.status).toBe('SUSPENDED')
-    expect(result.currentPackage.id).toBeNull()
-    expect(result.trafficPolicyId).toBeNull()
-    expect(result.walletId).toBeNull()
-    expect(result.activationState).toBeNull()
-    expect(result.createdAt).toBeNull()
-    expect(result.updatedAt).toBeNull()
-  })
-
-  it('handles expired SIM', () => {
-    const profile: TelnaPCRProfile = {
-      ...baseProfile,
-      expiration: { expired: true, expiration_date: '2025-06-01T00:00:00Z' },
-    }
-    const result = mapTelnaPCRProfile(profile)
-    expect(result.expiration.expired).toBe(true)
-    expect(result.expiration.expirationDate).toBe('2025-06-01T00:00:00Z')
+  it('emits an empty sim when the provider response lacks a SIM identity', () => {
+    const result = mapTelnaPCRProfile({} as TelnaPCRProfile)
+    expect(result.sim).toBe('')
+    expect(result.wallets).toEqual([])
   })
 
   it('preserves unknown fields in rawData', () => {
@@ -118,22 +93,19 @@ describe('mapTelnaPCRProfile', () => {
     expect(result.rawData.nested).toEqual({ key: 'value' })
   })
 
-  it('handles string IDs', () => {
-    const profile: TelnaPCRProfile = {
-      ...baseProfile,
-      current_package: { id: 'PKG-5001', package_template_id: 'TPL-1001', name: 'Custom Package' },
-    }
-    const result = mapTelnaPCRProfile(profile)
-    expect(result.currentPackage.id).toBe('PKG-5001')
-    expect(result.currentPackage.packageTemplateId).toBe('TPL-1001')
+  it('NEVER exposes a package-instance reference (no currentPackage/pendingPackage/status/expiration)', () => {
+    const result = mapTelnaPCRProfile(baseProfile) as Record<string, unknown>
+    expect('currentPackage' in result).toBe(false)
+    expect('pendingPackage' in result).toBe(false)
+    expect('status' in result).toBe(false)
+    expect('expiration' in result).toBe(false)
+    expect('iccid' in result).toBe(false)
   })
 
-  it('handles unknown status', () => {
-    const profile: TelnaPCRProfile = {
-      ...baseProfile,
-      status: 'UNKNOWN_STATUS',
-    }
-    const result = mapTelnaPCRProfile(profile)
-    expect(result.status).toBe('UNKNOWN_STATUS')
+  it('ignores a legacy package-shaped field that may arrive (defensive — never mapped)', () => {
+    const profile = { ...baseProfile, current_package: { id: 5001 }, status: 'ACTIVE' } as unknown as TelnaPCRProfile
+    const result = mapTelnaPCRProfile(profile) as Record<string, unknown>
+    expect('currentPackage' in result).toBe(false)
+    expect(result.routePolicyId).toBe('50')
   })
 })

@@ -89,7 +89,10 @@ export async function assignPackageToSim(esimId: string, providerPackageId: stri
       return { error: safeAdminMessage(currentProfileResult.error, 'Failed to load PCR profile') }
     }
     const beforeProfile = mapTelnaPCRProfile(currentProfileResult.data.profile)
-    const oldPackageId = beforeProfile.currentPackage.id
+    // The V2.1 PCR profile carries NO package identity (C) — a prior package
+    // reference can no longer be derived from it, so a package change event is
+    // never inferred from PCR data.
+    const oldPackageId = null
 
     // 5. Apply selected package
     const packageTemplateId = providerPackage.providerPlanCode || providerPackage.providerPlanId
@@ -113,20 +116,18 @@ export async function assignPackageToSim(esimId: string, providerPackageId: stri
       // Non-critical — continue without SIM registry refresh
     }
 
-    // 7. Update local ESIM record
+    // 7. Update local ESIM record. The V2.1 PCR profile carries no package
+    //    identity, so providerSubscriptionId / packageName / expiresAt are never
+    //    derived from it — a PCR profile must never supply C.
     const updateData: Record<string, unknown> = {
-      providerSubscriptionId: afterProfile.currentPackage.id ?? esim.providerSubscriptionId,
-      providerStatus: afterProfile.status,
+      ...(afterProfile.dataState ? { providerStatus: afterProfile.dataState } : {}),
       lastSyncAt: new Date(),
       packageSnapshot: {
         before: beforeProfile,
         after: afterProfile,
         assignedPackage: { id: providerPackage.id, name: providerPackage.name, planId: providerPackage.providerPlanId },
       },
-      packageName: afterProfile.currentPackage.name || providerPackage.name,
-    }
-    if (afterProfile.expiration.expirationDate) {
-      updateData.expiresAt = new Date(afterProfile.expiration.expirationDate)
+      packageName: providerPackage.name,
     }
     await prisma.eSIM.update({
       where: { id: esimId },
@@ -185,7 +186,6 @@ export async function assignPackageToSim(esimId: string, providerPackageId: stri
         iccid: esim.iccid,
         oldPackage: oldPackageId,
         newPackage: packageTemplateId,
-        status: afterProfile.status,
         durationMs,
       },
     }
@@ -222,12 +222,11 @@ export async function refreshSimPCRProfile(esimId: string) {
 
     const mapped = mapTelnaPCRProfile(result.data.profile)
     const updateData: Record<string, unknown> = {
-      providerStatus: mapped.status,
+      ...(mapped.dataState ? { providerStatus: mapped.dataState } : {}),
       lastSyncAt: new Date(),
     }
-    if (mapped.expiration.expirationDate) {
-      updateData.expiresAt = new Date(mapped.expiration.expirationDate)
-    }
+    // The V2.1 PCR profile carries no package identity / expiration — only signal
+    // state — so the refresh writes nothing package-derived.
     await prisma.eSIM.update({
       where: { id: esimId },
       data: updateData as any,
