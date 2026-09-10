@@ -703,6 +703,13 @@ export interface AmbiguousPurchaseReconcileInput {
   quantity: number
   /** ISO timestamp of the ambiguous attempt — correlation HINT only, never the sole basis. */
   attemptedAt: string
+  /**
+   * Fulfillment identities (ICCIDs) claimed by and owned by this order.
+   * EXACT-filter correlation hints for connectors whose provider reads are
+   * keyed by ICCID. Never the sole basis for a resolution — resolution still
+   * requires a unique, real provider-owned reference match.
+   */
+  iccids?: string[]
 }
 
 /** Result of a read-only reconciliation attempt (never a provider mutation). */

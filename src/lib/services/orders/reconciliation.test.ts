@@ -18,6 +18,10 @@ vi.mock('@/lib/providers/adapter-manager', () => ({
   getAdapterForType: vi.fn(),
 }))
 
+vi.mock('@/lib/providers/connectors/connector-factory', () => ({
+  buildConnectorFromProvider: vi.fn(),
+}))
+
 vi.mock('@/lib/services/orders/order-state-machine', () => ({
   createTimelineEvent: vi.fn(),
   transitionOrder: vi.fn().mockResolvedValue({ success: true }),
@@ -40,6 +44,7 @@ vi.mock('@/lib/services/orders/fulfillment', () => ({
 
 const { prisma } = await import('@/lib/prisma')
 const { getAdapterForType } = await import('@/lib/providers/adapter-manager')
+const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
 const { createTimelineEvent, transitionOrder, failOrder } = await import('@/lib/services/orders/order-state-machine')
 const { reconcileProviderOrder, getReconciliationDelay, isRedispatchAllowed, isReconciliationEligible, reconciliationCycleKey } = await import('./reconciliation')
 const { releaseReservedFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
@@ -48,6 +53,7 @@ const { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, LE
 
 const mockPrisma = vi.mocked(prisma)
 const mockAdapter = vi.mocked(getAdapterForType)
+const mockBuildConnector = vi.mocked(buildConnectorFromProvider)
 const mockRelease = vi.mocked(releaseReservedFundsUpTo)
 const mockTransition = vi.mocked(transitionOrder)
 const mockFinal = vi.mocked(completeProviderFinalization)
@@ -820,5 +826,179 @@ describe('reconciliationCycleKey — cycle-scoped reconciliation idempotency', (
   it('is provider-neutral: the key derives only from orderId + generation, never provider info', () => {
     expect(reconciliationCycleKey('ord', 0)).toBe(reconciliationCycleKey('ord', 0))
     expect(reconciliationCycleKey('ord', 0)).not.toContain('prov')
+  })
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// TASK 3–8: Strategy 3 connector reconciliation — C wins, ICCID stays identity
+// ════════════════════════════════════════════════════════════════════════════
+describe('reconcileProviderOrder Strategy 3 — authoritative provider reference (C) beats ICCID', () => {
+  const A_ICCID = '89012345678901234567'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.providerAttempt.count.mockResolvedValue(0)
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
+    mockPrisma.providerAttempt.create.mockResolvedValue({ id: 'rec-1' } as any)
+    mockFinal.mockResolvedValue({ success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true } as any)
+  })
+
+  function telnaOrder(overrides: any = {}) {
+    return {
+      id: 'order-s3', businessId: 'biz-1', userId: 'user-1',
+      status: 'PROVIDER_RECONCILIATION', totalAmount: { toString: () => '10' },
+      providerId: 'prov-1', providerFulfillId: null, providerReservationId: null,
+      provider: { id: 'prov-1', type: 'TELNA', apiBaseUrl: 'https://api', apiToken: 'tok', environment: 'staging', authUrl: null, name: 'Telna' },
+      esims: [{ id: 'esim-1', iccid: A_ICCID }],
+      business: { id: 'biz-1' },
+      package: { providerPlanId: '42' },
+      quantity: 1, createdAt: new Date(),
+      ...overrides,
+    }
+  }
+
+  function reconcileConnector(overrides: any = {}) {
+    const fn = vi.fn().mockResolvedValue({
+      success: true,
+      data: { resolved: true, iccid: A_ICCID, reason: 'unique-match', evidence: { providerPackageInstanceId: 'C-PKG', packageStatus: 'ACTIVE' } },
+      ...overrides,
+    })
+    return { reconcileAmbiguousPurchase: fn, fn }
+  }
+
+  it('9/10/11. S3 proves C → durable providerReference is C, ICCID stays fulfillment identity, generic ICCID-only S2 never preempts', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(telnaOrder())
+    // S2 would find ACTIVE on the ICCID — but S3 runs first and resolves C.
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', iccid: A_ICCID } }),
+    } as any)
+    const { reconcileAmbiguousPurchase: rec, fn } = reconcileConnector()
+    mockBuildConnector.mockResolvedValue({ reconcileAmbiguousPurchase: rec } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    // S3 received the exact claimed ICCIDs plus the provider template id.
+    expect(rec).toHaveBeenCalledWith(expect.objectContaining({ iccids: [A_ICCID], planId: '42' }))
+    // C is the durable reference on the RECONCILIATION attempt.
+    const created = mockPrisma.providerAttempt.create.mock.calls[0][0].data
+    expect(created.providerReference).toBe('C-PKG')
+    expect(created.source).toBe('RECONCILIATION')
+    // Finalization receives C → becomes the durable order.providerFulfillId.
+    expect(mockFinal).toHaveBeenCalledWith(expect.objectContaining({ providerRef: 'C-PKG' }))
+    expect(mockFinal).toHaveBeenCalledTimes(1)
+    // The generic ICCID-only S2 fallback never claimed the reference.
+    const adapter: any = await mockAdapter.mock.results[0].value
+    expect(adapter.getActivationStatus).not.toHaveBeenCalledWith(A_ICCID)
+    void fn
+  })
+
+  it('12. historical Telna order (ICCID-shaped providerRef): S1 non-terminal → S3 recovers C naturally, no second dispatch', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(
+      telnaOrder({ provider: { id: 'prov-1', type: 'TELNA', apiBaseUrl: 'https://api', apiToken: 'tok', environment: 'staging', authUrl: null, name: 'Telna' } }),
+    )
+    // The old-code activation attempt persisted the ICCID (A) as providerReference.
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([
+      { providerId: 'prov-1', providerReference: A_ICCID, attemptNumber: 1, startedAt: new Date('2026-08-01T00:00:00Z'), status: 'PROCESSING', source: 'PURCHASE', retryClassification: null, dispatchStartedAt: new Date('2026-08-01T00:00:00Z') },
+    ])
+    // S1 polls the ICCID-shaped A → non-terminal PENDING_ACTIVATION (must NOT
+    // prematurely settle STILL_PENDING when the connector can recover C).
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PENDING_ACTIVATION', iccid: A_ICCID } }),
+    } as any)
+    const { reconcileAmbiguousPurchase: rec, fn } = reconcileConnector()
+    mockBuildConnector.mockResolvedValue({ reconcileAmbiguousPurchase: rec } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(rec).toHaveBeenCalled()
+    const created = mockPrisma.providerAttempt.create.mock.calls[0][0].data
+    expect(created.providerReference).toBe('C-PKG')
+    expect(mockFinal).toHaveBeenCalledWith(expect.objectContaining({ providerRef: 'C-PKG' }))
+    // No purchase dispatch is ever invoked from reconciliation.
+    expect((mockAdapter.mock.results[0].value as any).activateESIM).toBeUndefined()
+    void fn
+  })
+
+  it('13/14. unresolved S3 (zero candidates) → STILL_PENDING, finalizer NOT called (wallet held, no premature FOUND_SUCCESS)', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(telnaOrder())
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: false }),
+    } as any)
+    const rec = vi.fn().mockResolvedValue({
+      success: true,
+      data: { resolved: false, reason: 'no-match', evidence: { source: 'packages-list-sim-exact', matchedCount: 0 } },
+    })
+    mockBuildConnector.mockResolvedValue({ reconcileAmbiguousPurchase: rec } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    expect(mockFinal).not.toHaveBeenCalled()
+    expect(mockPrisma.providerAttempt.create.mock.calls[0][0].data.status).toBe('PROCESSING')
+  })
+
+  it('15. at most one finalization reach on resolved S3 — exactly one RECONCILIATION succeeded attempt', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(telnaOrder())
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: false }),
+    } as any)
+    const { reconcileAmbiguousPurchase: rec, fn } = reconcileConnector()
+    mockBuildConnector.mockResolvedValue({ reconcileAmbiguousPurchase: rec } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(mockFinal).toHaveBeenCalledTimes(1)
+    expect(mockPrisma.providerAttempt.create.mock.calls[0][0].data.status).toBe('SUCCEEDED')
+    void fn
+  })
+
+  it('16. Choice (URL_TOKEN) regression: S3 no-match falls through to the ICCID-only S2 path unchanged', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(
+      telnaOrder({ provider: { id: 'prov-1', type: 'URL_TOKEN', apiBaseUrl: 'https://api', apiToken: 'tok', environment: 'staging', authUrl: null, name: 'Choice' } }),
+    )
+    // No authoritative reference, ICCID search would confirm ACTIVE.
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([])
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'ACTIVE', iccid: A_ICCID } }),
+    } as any)
+    mockBuildConnector.mockResolvedValue({
+      reconcileAmbiguousPurchase: vi.fn().mockResolvedValue({
+        success: true,
+        data: { resolved: false, reason: 'no-match', evidence: { candidateCount: 0 } },
+      }),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+
+    // Existing semantics preserved: ICCID-only search still FOUND_SUCCESS with
+    // the ICCID as reference when the connector cannot prove a stronger ref.
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(result.providerReference).toBe(A_ICCID)
+  })
+
+  it('17. connector failure inside S3 is best-effort: falls back to the preserved S1 pending verdict, never crashes reconciliation', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(
+      telnaOrder({ provider: { id: 'prov-1', type: 'TELNA', apiBaseUrl: 'https://api', apiToken: 'tok', environment: 'staging', authUrl: null, name: 'Telna' } }),
+    )
+    // ICCID-shaped reference recovered from the old-code attempt.
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([
+      { providerId: 'prov-1', providerReference: A_ICCID, attemptNumber: 1, startedAt: new Date('2026-08-01T00:00:00Z'), status: 'PROCESSING', source: 'PURCHASE', retryClassification: null, dispatchStartedAt: new Date('2026-08-01T00:00:00Z') },
+    ])
+    // S1 is non-terminal → the preserved pending verdict is returned when S3 fails.
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PENDING_ACTIVATION', iccid: A_ICCID } }),
+    } as any)
+    mockBuildConnector.mockResolvedValue({
+      reconcileAmbiguousPurchase: vi.fn().mockRejectedValue(new Error('upstream read burst')),
+    } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.providerReference).toBe(A_ICCID)
+    expect(mockFinal).not.toHaveBeenCalled()
   })
 })

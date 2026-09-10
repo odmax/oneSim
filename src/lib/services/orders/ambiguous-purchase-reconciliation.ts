@@ -24,7 +24,10 @@ export interface ReconcileAmbiguousPurchaseResult {
  * connector; otherwise the order remains in PROVIDER_RECONCILIATION.
  */
 export async function reconcileAmbiguousPurchase(orderId: string): Promise<ReconcileAmbiguousPurchaseResult> {
-  const order = await prisma.eSIMPurchase.findUnique({ where: { id: orderId } })
+  const order = await prisma.eSIMPurchase.findUnique({
+    where: { id: orderId },
+    include: { esims: { select: { iccid: true } } },
+  })
   if (!order) return { success: false, resolved: false, error: 'Order not found' }
   if (order.status !== 'PROVIDER_RECONCILIATION') {
     return { success: false, resolved: false, error: `Order is not in PROVIDER_RECONCILIATION (current: ${order.status})` }
@@ -49,11 +52,16 @@ export async function reconcileAmbiguousPurchase(orderId: string): Promise<Recon
     return { success: false, resolved: false, error: 'Provider does not support read-only reconciliation' }
   }
 
+  const iccids = (order as { esims?: Array<{ iccid: string | null }> }).esims
+    ?.map(e => e.iccid)
+    .filter((i): i is string => typeof i === 'string' && i.trim() !== '') || []
+
   const result = await connector.reconcileAmbiguousPurchase({
     orderId,
     planId,
     quantity: order.quantity || 1,
     attemptedAt: attempt.startedAt ? attempt.startedAt.toISOString() : '',
+    iccids,
   })
   if (!result.success) {
     return { success: false, resolved: false, error: result.error?.message || 'Provider reconciliation failed' }

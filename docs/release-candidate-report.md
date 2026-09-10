@@ -61,6 +61,32 @@
 | Rollback Script | ✅ Complete | Git revert, rebuild, PM2 restart |
 | Nginx Configuration | ✅ Documented | SSL, proxy_pass, WebSocket support |
 
+## Order Reconciliation & Provider Reference Integrity
+
+Authoritative provider-package reference (`C`) recovery after ambiguous purchases
+— outcome: **✅ Complete** (4,144/4,144 tests, `tsc` clean, build clean).
+
+**Behavior contract (acceptance-tested):**
+- The ICCID (A) always observes the dispatch attempt that provisioned the provider
+  package instance (B); the provider package-instance reference (C) is recovered at
+  verification, matching, and status-lookup time.
+- A 2xx purchase accepted without a package instance id is an **ambiguous,
+  upstream-confirmed** outcome — the claim is HELD, the wallet reservation is kept,
+  and reconciliation is required (never a blind retry/replay).
+- `reconcileProviderOrder` (generic engine) now runs **Strategy 3** — the connector
+  correlates by exact claimed ICCIDs (+ exact `package_template`/planId when known)
+  through the read-only reconciliation API (`reconcileAmbiguousPurchase`), and the
+  durable provider reference (C) beats any ICCID-only heuristic (Strategy 2).
+- Correlated resolution is **exact, read-only, and idempotent**: unique real package
+  instance id only — no newest/first/time heuristics, no re-issuance POST. PENDING
+  attempt verdicts are preserved and fall through to reconciliation instead of
+  being discarded.
+
+**Guard rails:** Telna connector + generic engine + recovery are covered by a
+source-level contract-invariant suite (12 tests) proving the creation mutation
+stays on the `packageCreate` POST path only and that C can never be synthesized
+from A.
+
 ## Provider Certification
 
 | Provider | Type | Auth | Sync | Purchase | Cert Status | Live |

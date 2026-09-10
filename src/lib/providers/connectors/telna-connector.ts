@@ -3,7 +3,7 @@ import { decryptToken } from '@/lib/encryption'
 import { claimProviderIccid, releaseProviderIccidClaim } from '@/lib/services/esims/esim-inventory-claim'
 import { telnaEndpointPath, telnaEndpointAuthFamily, telnaEndpointMethod, telnaEndpointMutation, telnaEndpointEntitlement, isTelnaEndpointProven, buildTelnaEndpointUrl, type TelnaEndpoint, type TelnaAuthFamily, type TelnaHttpMethod, type TelnaPaginatedResponse,
  type TelnaCountry, type TelnaCompany, type TelnaInventory, type TelnaGroup, type TelnaWallet, type TelnaPackageTemplate, type TelnaPackageTemplateDetail, type TelnaPackage, type TelnaSimRegistry, type TelnaPCRProfile, type TelnaPCRProfileUpdate, type TelnaUsage, type TelnaSession, type TelnaBalance, type TelnaConsumption, type TelnaV2PackageTemplate, type TelnaCreatePackageRequest, type TelnaCreatePackageTemplateRequest, type TelnaV2Package, type TelnaV2SimRegistry, type TelnaEuiccProfile, type TelnaCreateCompanyRequest, type TelnaUpdateCompanyRequest, type TelnaCreateInventoryRequest, type TelnaUpdateInventoryRequest, type TelnaWalletPatchRequest, type TelnaPackageUpdateRequest } from './telna-endpoints'
-import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, StatusLookupEsim, StatusLookupIdentifier, ConnectorInstallDataOutput, InstallationLookupInput, InstallationLookupResult, CustomPackageDefinitionResult, CustomPackageCreateInput, CustomPackageCreateResult } from './connector-interface'
+import type { IProviderConnector, ConnectorResult, ConnectorPlan, ActivateESIMParams, ActivateESIMResult, TopUpESIMParams, TopUpESIMResult, UsageResult, StatusResult, RateResult, TokenState, EsimLifecycleResult, ConnectorCapabilities, ConnectorAuthProfile, StatusLookupEsim, StatusLookupIdentifier, ConnectorInstallDataOutput, InstallationLookupInput, InstallationLookupResult, CustomPackageDefinitionResult, CustomPackageCreateInput, CustomPackageCreateResult, AmbiguousPurchaseReconcileInput, AmbiguousPurchaseReconcileResult } from './connector-interface'
 import { normalizeSimStatus } from '../mappers/telna-sim-mapper'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { getCustomPackageCreationReadiness } from '@/lib/providers/capability-state'
@@ -89,6 +89,23 @@ export function unwrapTelnaDetail(body: unknown, namedKey?: string): unknown {
 export function normalizeTelnaState(value: string | null | undefined): string {
   if (!value) return ''
   return String(value).trim().toUpperCase().replace(/[\s-]+/g, '_')
+}
+
+/**
+ * Provider-local exact extraction of the Telna package-template id from a
+ * package instance. The documented package_template field is the numeric
+ * template id (primitive `number`) OR the fuller template object
+ * ({ id: number|string, name, ... }). Tolerant, never fabricated: null when
+ * absent/unparseable/empty so correlation never matches on a fabricated zero.
+ */
+export function telnaPackageTemplateId(template: unknown): number | null {
+  if (template == null) return null
+  const raw = typeof template === 'object' ? (template as Record<string, unknown>).id : template
+  if (raw == null) return null
+  const s = String(raw).trim()
+  if (s === '') return null
+  const n = Number(s)
+  return Number.isFinite(n) ? n : null
 }
 
 /**
@@ -675,7 +692,10 @@ export class TelnaConnector implements IProviderConnector {
       }
 
       const pkg = result.data.pkg
-      const packageInstanceId = pkg.id != null ? String(pkg.id) : undefined
+      // createPackage ONLY succeeds when the provider returned its created
+      // package instance id — so the exact provider reference (C) is guaranteed
+      // here and can never fall back to the ICCID (A).
+      const packageInstanceId = String(pkg.id)
       const rawMetadata: Record<string, any> = {
         // Three distinct identities:
         //  - iccid                     = Telna eSIM identity (A)
@@ -683,17 +703,19 @@ export class TelnaConnector implements IProviderConnector {
         //  - providerPackageInstanceId = exact created Telna package instance (C)
         iccid,
         providerTemplateId: templateId,
-        providerPackageInstanceId: packageInstanceId ?? null,
+        providerPackageInstanceId: packageInstanceId,
         packageStatus: pkg.status ?? null,
       }
 
       return {
         success: true,
         data: {
-          // activationId = provider package instance (C); esim identity (A) is
-          // the claimed ICCID. The package instance id is preserved verbatim so
-          // later usage can address the EXACT package.
-          activationId: packageInstanceId || iccid,
+          // activationId = the EXACT created provider package instance (C). The
+          // esim identity (A) is the claimed ICCID and stays in iccids /
+          // iccidOrSimId / rawMetadata only — it is never the activationId. The
+          // package instance id is preserved verbatim so later usage/status can
+          // address the EXACT package.
+          activationId: packageInstanceId,
           iccids: [iccid],
           iccidOrSimId: iccid,
           // Package creation does NOT prove device installation or network
@@ -1143,6 +1165,140 @@ export class TelnaConnector implements IProviderConnector {
     return { success: true, data: { items: items as TelnaV2Package[], total } }
   }
 
+  /**
+   * Provider-neutral read-only reconciliation of an ambiguous Telna activation.
+   *
+   * Correlates the exact claimed ICCIDs (A) against the documented GET
+   * /v2.1/pcr/packages read — NEVER a POST, NEVER a replay of the activation.
+   *
+   * Correlation rules (exact filters only, never time/newest/first heuristics):
+   *   1. candidate package.sim MUST equal one of the supplied exact ICCIDs;
+   *   2. when a non-empty planId is known it is the expected Telna package
+   *      template id — candidates must carry that EXACT template id (tolerant
+   *      of the object { id } vs primitive numeric representations);
+   *   3. a candidate only counts when it carries a real package instance id (C);
+   *   4. exactly one such candidate → resolved with evidence.providerPackageInstanceId = C;
+   *   5. zero → 'no-match' (unresolved, wallet held);
+   *   6. several → 'multiple-matches' (unresolved, wallet held).
+   *
+   * No claimed ICCID to correlate → 'inconclusive' (never a blind account-wide
+   * correlation that could fabricate a false unique match).
+   */
+  async reconcileAmbiguousPurchase(input: AmbiguousPurchaseReconcileInput): Promise<ConnectorResult<AmbiguousPurchaseReconcileResult>> {
+    const iccids = Array.isArray(input.iccids)
+      ? input.iccids.map(String).filter((v) => typeof v === 'string' && v.trim() !== '')
+      : []
+    if (iccids.length === 0) {
+      return {
+        success: true,
+        data: {
+          resolved: false,
+          reason: 'inconclusive',
+          evidence: { source: 'packages-list-sim-exact', iccidProvided: false, note: 'no claimed ICCID provided to correlate' },
+        },
+      }
+    }
+
+    const planId = String(input.planId ?? '').trim()
+    const templateFilter = planId !== '' ? Number(planId) : null
+
+    // Read-only candidate collection across the exact claimed ICCIDs.
+    let readFailed = false
+    const candidates: Array<{ id: string; iccid: string; status: string | null; templateId: number | null }> = []
+    for (const iccid of iccids) {
+      const result = await this.listV2Packages({ sim: iccid })
+      if (!result.success || !result.data) {
+        readFailed = true
+        continue
+      }
+      for (const p of result.data.items) {
+        // Defensive exact-ICCID gate: when the provider echoes a sim on the
+        // package it must EQUAL the queried ICCID — a package belonging to a
+        // different ICCID is never a correlation candidate even if the list
+        // filter was not honored server-side.
+        const pkgSim = p.sim != null && String(p.sim).trim() !== '' ? String(p.sim) : null
+        if (pkgSim && pkgSim !== iccid) continue
+        candidates.push({
+          id: p.id != null && String(p.id).trim() !== '' ? String(p.id) : '',
+          iccid: String(pkgSim ?? iccid),
+          status: p.status != null ? String(p.status) : null,
+          templateId: telnaPackageTemplateId(p.package_template),
+        })
+      }
+    }
+
+    if (readFailed) {
+      return {
+        success: false,
+        error: { code: 'RECONCILE_READ_FAILED', message: 'Failed to read Telna package instances during reconciliation' },
+      }
+    }
+
+    // Exact template filter only when the expected template id is known.
+    const templateFilterApplied = templateFilter !== null && Number.isFinite(templateFilter) && templateFilter > 0
+    const matches = templateFilterApplied
+      ? candidates.filter((c) => c.templateId != null && c.templateId === templateFilter)
+      : candidates
+
+    const baseEvidence: Record<string, unknown> = {
+      source: 'packages-list-sim-exact',
+      iccids,
+      candidateCount: candidates.length,
+      templateFilter: templateFilterApplied ? templateFilter : null,
+      templateFilterApplied,
+      matchedCount: matches.length,
+    }
+
+    if (matches.length === 0) {
+      return {
+        success: true,
+        data: {
+          resolved: false,
+          reason: 'no-match',
+          evidence: { ...baseEvidence, idsPresent: candidates.filter((c) => c.id !== '').map((c) => c.id) },
+        },
+      }
+    }
+
+    const carriesRealId = matches.filter((c) => c.id !== '')
+    if (carriesRealId.length === 0) {
+      return {
+        success: true,
+        data: {
+          resolved: false,
+          reason: 'no-match',
+          evidence: { ...baseEvidence, note: 'matched candidates carried no package instance id — no provider reference to recover' },
+        },
+      }
+    }
+
+    if (carriesRealId.length > 1) {
+      return {
+        success: true,
+        data: {
+          resolved: false,
+          reason: 'multiple-matches',
+          evidence: { ...baseEvidence, packageInstanceIds: carriesRealId.map((c) => c.id) },
+        },
+      }
+    }
+
+    const winner = carriesRealId[0]
+    return {
+      success: true,
+      data: {
+        resolved: true,
+        reason: 'unique-match',
+        iccid: winner.iccid,
+        evidence: {
+          ...baseEvidence,
+          providerPackageInstanceId: winner.id,
+          packageStatus: winner.status,
+        },
+      },
+    }
+  }
+
   /** GET /v2.1/pcr/packages/{package_id} — exact package instance detail (tolerant). */
   async getV2Package(packageId: string | number): Promise<ConnectorResult<{ pkg: TelnaV2Package }>> {
     const result = await this.request({ method: 'GET', endpoint: 'package', pathParams: { package_id: packageId } })
@@ -1166,8 +1322,35 @@ export class TelnaConnector implements IProviderConnector {
     const result = await this.request({ endpoint: 'packageCreate', body: req })
     if (!result.success) return { success: false, error: result.error }
     const pkg = (result.data as { data?: TelnaV2Package })?.data || (result.data as TelnaV2Package)
-    if (!pkg || (pkg.id == null && pkg.sim == null)) {
-      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'POST /v2.1/pcr/packages response missing id/sim' } }
+    // An HTTP 2xx means Telna ACCEPTED the package creation — the mutation
+    // committed. But this method only reports success when the provider returns
+    // the CREATED package instance id (C). A missing/flat package payload or a
+    // missing `id` in an otherwise-accepted response is PROOF the purchase took
+    // place WITHOUT a usable provider package reference. This is NEVER resolved
+    // by substituting the ICCID (A) as activationId, never by fabricating an
+    // arbitrary id, and never by re-POSTing. It is surfaced as an ambiguous
+    // upstream-confirmed outcome so the P0 dispatch preserves the ICCID claim,
+    // the wallet hold and the order ownership while a bounded read-only
+    // correlation runs.
+    if (!pkg || pkg.id == null) {
+      const code = pkg ? 'AMBIGUOUS_PACKAGE_ID_MISSING' : 'INVALID_RESPONSE'
+      const message = pkg
+        ? 'Telna accepted the package creation but the response carried no package instance id'
+        : 'POST /v2.1/pcr/packages returned no package object'
+      return {
+        success: false,
+        error: {
+          code,
+          message,
+          details: {
+            ambiguous: true,
+            upstreamConfirmed: true,
+            reconciliationRequired: true,
+            sim: req.sim,
+            packageTemplateId: req.package_template,
+          },
+        },
+      }
     }
     return { success: true, data: { pkg } }
   }

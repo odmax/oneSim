@@ -155,6 +155,10 @@ export async function reconcileProviderOrder(orderId: string): Promise<Reconcili
       provider: true,
       esims: { select: { id: true, iccid: true } },
       business: { select: { id: true } },
+      // The retail package carries providerPlanId = the provider-owned SKU /
+      // package-template id used at purchase (needed for Strategy 3 exact
+      // correlation). Order-level snapshots never substitute for this relation.
+      package: { select: { providerPlanId: true } },
     },
   })
   if (!order) return { outcome: 'NOT_FOUND', message: 'Order not found' }
@@ -311,6 +315,13 @@ async function tryReconcileWithProvider(order: any, authoritativeRef: string | n
     const refParam = authoritativeRef
     const existingIccids = order.esims.map((e: any) => e.iccid).filter(Boolean)
 
+    // Holds the non-terminal S1 verdict when the provider also supports the
+    // read-only connector reconciliation (Strategy 3): a PENDING/PROCESSING
+    // status or a lookup error must NOT prematurely prevent a connector from
+    // recovering a STRONGER authoritative provider reference (C). When S3 finds
+    // nothing stronger, this preserved result is returned unchanged.
+    let pendingResult: ReconciliationResult | null = null
+
     // Strategy 1: Poll by the authoritative provider-owned reference (order-level
     // evidence or the best matching ProviderAttempt reference). Local OneSIM ids
     // are never used; only refParam is sent upstream.
@@ -339,7 +350,10 @@ async function tryReconcileWithProvider(order: any, authoritativeRef: string | n
             return { outcome: 'FOUND_FAILURE', message: `Provider confirms failure — status: ${status}`, providerReference: refParam, providerStatus: status }
           }
           if (['PENDING', 'PROCESSING', 'QUEUED', 'RESERVED'].includes(status)) {
-            return { outcome: 'STILL_PENDING', message: `Provider still processing — status: ${status}`, providerReference: refParam, providerStatus: status }
+            // Non-terminal: hold the verdict and let a supported connector
+            // (Strategy 3) try the read-only correlation BEFORE finalizing
+            // STILL_PENDING — never preempt a stronger provider reference (C).
+            pendingResult = { outcome: 'STILL_PENDING', message: `Provider still processing — status: ${status}`, providerReference: refParam, providerStatus: status }
           }
         } else if (statusResult && statusResult.success === false) {
           // Preserve the REAL lookup error. If the order carries a durable
@@ -349,15 +363,64 @@ async function tryReconcileWithProvider(order: any, authoritativeRef: string | n
           const code = String(statusResult.error?.code || 'UNKNOWN')
           const transient = ['TIMEOUT', 'NETWORK_ERROR', 'PROVIDER_UNAVAILABLE', 'RATE_LIMITED', 'HTTP_50', 'HTTP_5']
             .some((c) => code.startsWith(c))
-          return refParam
-            ? { outcome: 'STILL_PENDING', message: `Provider status query failed (${code}) — reference preserved`, providerReference: refParam }
-            : { outcome: transient ? 'STILL_PENDING' : 'NOT_FOUND', message: `Provider status query failed (${code})` }
+          if (refParam) {
+            // Reference-preserving pending verdict; a supported connector may
+            // still recover a stronger reference before STILL_PENDING is returned.
+            pendingResult = { outcome: 'STILL_PENDING', message: `Provider status query failed (${code}) — reference preserved`, providerReference: refParam }
+          } else {
+            return { outcome: transient ? 'STILL_PENDING' : 'NOT_FOUND', message: `Provider status query failed (${code})` }
+          }
         }
       } catch { /* fall through to next strategy */ }
     }
 
+    // Strategy 3: Connector-specific read-only reconciliation (e.g. Choice
+    // bundle_code search, Telna exact package-instance correlation). The
+    // connector's reconcileAmbiguousPurchase is provider-owned, READ-ONLY and
+    // NEVER repeats the activation POST. It runs BEFORE the generic ICCID-only
+    // fallback (Strategy 2) so a connector that can recover a STRONGER
+    // authoritative provider reference (C) does so before any weaker
+    // ICCID-derived reference could be claimed.
+    try {
+      const connector = await buildConnectorFromProvider(order.providerId).catch(() => null)
+      if (connector && typeof (connector as any).reconcileAmbiguousPurchase === 'function') {
+        const recResult = await (connector as any).reconcileAmbiguousPurchase({
+          orderId: order.id,
+          planId: order.package?.providerPlanId || '',
+          quantity: order.quantity || 1,
+          attemptedAt: order.createdAt?.toISOString() || '',
+          // Exact claimed fulfillment identities owned by this order — correlation
+          // hints for ICCID-keyed provider reads (never the sole basis).
+          iccids: existingIccids,
+        })
+        if (recResult?.success && recResult.data?.resolved) {
+          // When the connector proves the exact provider-owned operation reference
+          // (evidence.providerPackageInstanceId = C), that C is the authoritative
+          // provider reference and must win over any ICCID-derived value. The
+          // ICCID recovered alongside it remains the fulfillment identity (A).
+          const evidence = (recResult.data.evidence || {}) as Record<string, unknown>
+          const packageInstanceId = evidence.providerPackageInstanceId
+          const hasProvenRef = packageInstanceId != null && String(packageInstanceId).trim() !== ''
+          const reference = hasProvenRef ? String(packageInstanceId) : (recResult.data?.iccid || '')
+          return {
+            outcome: 'FOUND_SUCCESS',
+            message: hasProvenRef
+              ? `Connector reconciliation resolved — provider package instance ${reference} (ICCID: ${recResult.data.iccid ?? 'unknown'})`
+              : `Connector reconciliation resolved — ICCID: ${recResult.data.iccid}`,
+            providerReference: reference || undefined,
+            iccids: recResult.data?.iccid ? [String(recResult.data.iccid)] : [],
+          }
+        }
+        if (recResult?.success && recResult.data?.reason === 'confirmed-failed') {
+          return { outcome: 'FOUND_FAILURE', message: 'Connector confirmed provider failure via reconciliation' }
+        }
+      }
+    } catch { /* connector reconciliation is best-effort */ }
+
     // Strategy 2: Search by ICCID — ONLY when no authoritative reference exists
-    // (providers whose status endpoint is keyed by ICCID).
+    // (providers whose status endpoint is keyed by ICCID). Deliberately AFTER
+    // Strategy 3: a generic ICCID hit proves the ICCID but must never preempt a
+    // connector that can prove the authoritative provider operation reference.
     if (!refParam && existingIccids.length > 0 && typeof (adapter as any).getActivationStatus === 'function') {
       for (const iccid of existingIccids) {
         try {
@@ -369,31 +432,13 @@ async function tryReconcileWithProvider(order: any, authoritativeRef: string | n
       }
     }
 
-    // Strategy 3: Connector-specific read-only reconciliation (e.g. Choice
-    // bundle_code search). The connector's reconcileAmbiguousPurchase is
-    // provider-owned and NEVER repeats the activation POST.
-    try {
-      const connector = await buildConnectorFromProvider(order.providerId).catch(() => null)
-      if (connector && typeof (connector as any).reconcileAmbiguousPurchase === 'function') {
-        const recResult = await (connector as any).reconcileAmbiguousPurchase({
-          orderId: order.id,
-          planId: order.package?.providerPlanId || '',
-          quantity: order.quantity || 1,
-          attemptedAt: order.createdAt?.toISOString() || '',
-        })
-        if (recResult?.success && recResult.data?.resolved && recResult.data?.iccid) {
-          return { outcome: 'FOUND_SUCCESS', message: `Connector reconciliation resolved — ICCID: ${recResult.data.iccid}`, providerReference: recResult.data.iccid, iccids: [recResult.data.iccid] }
-        }
-        if (recResult?.success && recResult.data?.reason === 'confirmed-failed') {
-          return { outcome: 'FOUND_FAILURE', message: 'Connector confirmed provider failure via reconciliation' }
-        }
-      }
-    } catch { /* connector reconciliation is best-effort */ }
-
     // No authoritative reference and no local ICCID fallback: there is nothing to
     // poll, so remain reconciling (STILL_PENDING) rather than fabricating a
     // "not found". Controlled redispatch for genuinely fresh, evidence-less
     // orders is owned by the recovery classifier, never invented here.
+    // A preserved non-terminal S1 verdict (refParam held, wallet held) wins over
+    // re-deriving a bare STILL_PENDING: the provider reference stays durable.
+    if (pendingResult) return pendingResult
     return refParam
       ? { outcome: 'STILL_PENDING', message: 'Provider query returned no terminal status — reference preserved', providerReference: refParam }
       : { outcome: 'STILL_PENDING', message: 'Provider query returned no terminal status' }
