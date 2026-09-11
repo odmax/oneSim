@@ -190,11 +190,34 @@ describe('Telna reconciliation correlation contract — read-only exact C recove
     expect(fn).toContain('no provider reference to recover')
   })
 
-  it('generic engine: Strategy 3 passes exact ICCIDs (+ planId) and promotes evidence.providerPackageInstanceId (C) as the durable provider reference', () => {
+  it('generic engine: Strategy 3 passes exact ICCIDs (+ planId + recovered provider reference) and promotes evidence.providerPackageInstanceId (C) as the durable provider reference', () => {
     expect(reconciliation).toContain('package: { select: { providerPlanId: true } }')
     expect(reconciliation).toContain('iccids: existingIccids')
     expect(reconciliation).toContain('providerPackageInstanceId')
     expect(reconciliation).toContain('const hasProvenRef = packageInstanceId != null && String(packageInstanceId).trim() !== \'\'')
+    // The generic engine passes the recovered authoritative provider reference
+    // (C) through to the connector so it is PREFERRED and independently verified.
+    expect(reconciliation).toContain('providerReference: refParam || undefined')
+  })
+
+  it('reconcileAmbiguousPurchase PREFERS + VERIFIES a persisted provider reference (C) via the exact detail read before any A+B correlation, FAILING CLOSED on mismatch', () => {
+    const fn = connector.slice(connector.indexOf('async reconcileAmbiguousPurchase('), connector.indexOf('async getV2Package('))
+    // Persisted C is a candidate to VERIFY — never trusted from the value alone.
+    expect(fn).toContain('await this.getV2Package(candidateC)')
+    expect(fn).toContain("source: 'provider-reference-exact-verification'")
+    // Fail-closed markers: insufficient A/B input, unverifiable detail read,
+    // and identity mismatch all leave the purchase unresolved (wallet held).
+    expect(fn).toContain('reference-identity-mismatch')
+    expect(fn).toContain('provider detail read failed or not found')
+    // The exact reference path is evaluated BEFORE the bounded A+B correlation.
+    expect(fn.indexOf('const candidateC')).toBeGreaterThan(-1)
+    expect(fn.indexOf('const candidateC')).toBeLessThan(fn.indexOf('const correlated = await this.reconcileByTemplate(templateId, iccids)'))
+    // Still READ-ONLY: the prefer-C path never POSTs and never re-enters the
+    // creation mutation; no time/positional heuristic ever selects a package.
+    expect(fn).not.toMatch(/createPackage\(/)
+    expect(fn).not.toMatch(/endpoint: 'packageCreate'/)
+    expect(fn).not.toMatch(/method:\s*'POST'/)
+    expect(fn).not.toMatch(/\.sort\(|newest|created_date|startedAt|attemptedAt/)
   })
 
   it('generic engine: S1 non-terminal never prematurely prevents S3 (preserved pending verdict falls through)', () => {

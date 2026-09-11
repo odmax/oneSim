@@ -392,6 +392,12 @@ async function tryReconcileWithProvider(order: any, authoritativeRef: string | n
           // Exact claimed fulfillment identities owned by this order — correlation
           // hints for ICCID-keyed provider reads (never the sole basis).
           iccids: existingIccids,
+          // The recovered authoritative provider-owned reference (C), if any —
+          // order-level providerFulfillId / providerReservationId, or the best
+          // owning-provider ProviderAttempt.providerReference. When present, the
+          // connector must PREFER and independently VERIFY this candidate through
+          // the authoritative provider detail read BEFORE any A+B correlation.
+          providerReference: refParam || undefined,
         })
         if (recResult?.success && recResult.data?.resolved) {
           // When the connector proves the exact provider-owned operation reference

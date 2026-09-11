@@ -1358,6 +1358,90 @@ export class TelnaConnector implements IProviderConnector {
     const iccids = Array.isArray(input.iccids)
       ? input.iccids.map(String).filter((v) => typeof v === 'string' && v.trim() !== '')
       : []
+    // Prefer an existing persisted provider-owned reference (C) BEFORE any A+B
+    // correlation. The generic engine recovers order-level evidence first
+    // (providerFulfillId / providerReservationId) then the best owning-provider
+    // ProviderAttempt.providerReference and passes it here. A persisted value is
+    // NEVER trusted on its own — it must be VERIFIED independently through the
+    // authoritative exact detail read GET /v2.1/pcr/packages/{package_id}, and
+    // resolution demands every exact identity check: package.id === C, sim
+    // exactly equals one claimed ICCID (A), and package_template.id equals the
+    // claimed numeric plan id (B). Any mismatch FAILS CLOSED (unresolved, wallet
+    // held, no A+B fallback that could silently replace the persisted provider
+    // transaction identity); a read failure or not-found stays conservative.
+    const candidateC = String(input.providerReference ?? '').trim()
+    if (candidateC !== '') {
+      const claimedPlanId = String(input.planId ?? '').trim()
+      const claimedTemplateId = Number(claimedPlanId)
+      if (iccids.length === 0 || claimedPlanId === '' || !Number.isFinite(claimedTemplateId) || claimedTemplateId <= 0) {
+        // Without an exact claimed ICCID (A) and a valid numeric plan id (B) the
+        // exact reference cannot be identity-verified — FAIL CLOSED.
+        return {
+          success: true,
+          data: {
+            resolved: false,
+            reason: 'inconclusive',
+            evidence: {
+              source: 'provider-reference-exact-verification',
+              providerPackageInstanceId: candidateC,
+              note: 'no claimed ICCID and/or no valid numeric package template id (B) to verify the exact reference against',
+            },
+          },
+        }
+      }
+      const detail = await this.getV2Package(candidateC)
+      if (!detail.success || !detail.data) {
+        return {
+          success: true,
+          data: {
+            resolved: false,
+            reason: 'inconclusive',
+            evidence: {
+              source: 'provider-reference-exact-verification',
+              providerPackageInstanceId: candidateC,
+              note: 'persisted provider reference could not be verified — provider detail read failed or not found',
+            },
+          },
+        }
+      }
+      const pkg = detail.data.pkg
+      const pkgId = pkg.id != null && String(pkg.id).trim() !== '' ? String(pkg.id) : ''
+      const pkgSim = pkg.sim != null && String(pkg.sim).trim() !== '' ? String(pkg.sim) : ''
+      const pkgTemplateId = this.packageTemplateIdOf(pkg)
+      const idOk = pkgId === candidateC
+      const simOk = pkgSim !== '' && iccids.includes(pkgSim)
+      const templateOk = pkgTemplateId !== null && String(pkgTemplateId) === String(claimedTemplateId)
+      if (!idOk || !simOk || !templateOk) {
+        const failed = !idOk ? 'exact provider reference id mismatch' : !simOk ? 'claimed ICCID (A) mismatch' : 'claimed package template (B) mismatch'
+        return {
+          success: true,
+          data: {
+            resolved: false,
+            reason: 'no-match',
+            evidence: {
+              source: 'provider-reference-exact-verification',
+              providerPackageInstanceId: pkgId || candidateC,
+              packageStatus: pkg.status != null ? String(pkg.status) : null,
+              note: `reference-identity-mismatch: ${failed} — no A+B fallback to avoid silently replacing the persisted provider transaction identity`,
+            },
+          },
+        }
+      }
+      return {
+        success: true,
+        data: {
+          resolved: true,
+          reason: 'unique-match',
+          iccid: pkgSim,
+          evidence: {
+            source: 'provider-reference-exact-verification',
+            providerPackageInstanceId: pkgId,
+            packageStatus: pkg.status != null ? String(pkg.status) : null,
+            identityChecks: { id: true, sim: true, template: true },
+          },
+        },
+      }
+    }
     if (iccids.length === 0) {
       return {
         success: true,

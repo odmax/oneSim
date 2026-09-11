@@ -4623,4 +4623,146 @@ describe('Telna reconcileAmbiguousPurchase — read-only exact package correlati
     expect(r.data?.resolved).toBe(true)
     expect((r.data?.evidence as any)?.providerPackageInstanceId).toBe('PKG-55')
   })
+
+  // ── Prefer-C: a persisted provider-owned reference (C) is independently
+  //    verified through the exact detail read before any A+B correlation. ──
+
+  it('A. persisted providerReference C verified via exact detail GET (id=A=B) -> resolved, packageStatus reported, NOT_ACTIVE is never a failure', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({
+      data: { id: '8656cce5-ad38-4378-915d-3cbc68181850', sim: A_ICCID, status: 'NOT_ACTIVE', package_template: { id: 42 } },
+    }))
+    const r = await runReconcile(fetchSpy, { providerReference: '8656cce5-ad38-4378-915d-3cbc68181850' })
+    expect(r.success).toBe(true)
+    expect(r.data?.resolved).toBe(true)
+    expect(r.data?.reason).toBe('unique-match')
+    expect(r.data?.iccid).toBe(A_ICCID)
+    expect((r.data?.evidence as any)?.source).toBe('provider-reference-exact-verification')
+    expect((r.data?.evidence as any)?.providerPackageInstanceId).toBe('8656cce5-ad38-4378-915d-3cbc68181850')
+    expect((r.data?.evidence as any)?.packageStatus).toBe('NOT_ACTIVE')
+    expect((r.data?.evidence as any)?.identityChecks).toEqual({ id: true, sim: true, template: true })
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('/v2.1/pcr/packages/8656cce5-ad38-4378-915d-3cbc68181850')
+    expect(url).not.toContain('package_template=')
+    expect((fetchSpy.mock.calls[0][1]?.method ?? 'GET').toUpperCase()).toBe('GET')
+  })
+
+  it('B. persisted C exists but the detail read returns a DIFFERENT ICCID (A) -> fail closed no-match, no A+B fallback', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({
+      data: { id: 'C-PKG', sim: '89011111111111111111', status: 'ACTIVE', package_template: { id: 42 } },
+    }))
+    const r = await runReconcile(fetchSpy, { providerReference: 'C-PKG' })
+    expect(r.success).toBe(true)
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('no-match')
+    const evidence = r.data?.evidence as any
+    expect(evidence.note).toContain('reference-identity-mismatch')
+    expect(evidence.note).toContain('claimed ICCID (A) mismatch')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/packages/C-PKG')
+  })
+
+  it('C. persisted C exists but the detail read resolves a DIFFERENT template (B) -> fail closed no-match, no A+B fallback', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({
+      data: { id: 'C-PKG', sim: A_ICCID, status: 'ACTIVE', package_template: { id: 99 } },
+    }))
+    const r = await runReconcile(fetchSpy, { providerReference: 'C-PKG' })
+    expect(r.success).toBe(true)
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('no-match')
+    expect((r.data?.evidence as any)?.note).toContain('claimed package template (B) mismatch')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/packages/C-PKG')
+  })
+
+  it('D. the detail read returns a DIFFERENT exact package id than persisted C -> fail closed no-match, real id surfaced in evidence', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({
+      data: { id: 'OTHER-PKG', sim: A_ICCID, status: 'ACTIVE', package_template: { id: 42 } },
+    }))
+    const r = await runReconcile(fetchSpy, { providerReference: 'C-PKG' })
+    expect(r.success).toBe(true)
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('no-match')
+    const evidence = r.data?.evidence as any
+    expect(evidence.note).toContain('reference-identity-mismatch')
+    expect(evidence.note).toContain('exact provider reference id mismatch')
+    expect(evidence.providerPackageInstanceId).toBe('OTHER-PKG')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('E. persisted C detail read FAILS (HTTP 500) -> conservative unresolved inconclusive, no A+B fallback (fail closed)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({ error: 'boom' }, 500))
+    const r = await runReconcile(fetchSpy, { providerReference: 'C-PKG' })
+    expect(r.success).toBe(true)
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('inconclusive')
+    expect((r.data?.evidence as any)?.note).toContain('provider detail read failed or not found')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/packages/C-PKG')
+  })
+
+  it('E2. persisted C detail read NOT FOUND (404) -> conservative unresolved inconclusive, no A+B fallback (fail closed)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({ error: 'not found' }, 404))
+    const r = await runReconcile(fetchSpy, { providerReference: 'C-PKG' })
+    expect(r.success).toBe(true)
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('inconclusive')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/packages/C-PKG')
+  })
+
+  it('F. NO persisted providerReference -> bounded A+B list correlation retained (unique exact match resolves via list, not detail)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({
+      total: 1, offset: 0, count: 1,
+      packages: [{ id: 9001, sim: A_ICCID, status: 'ACTIVE', package_template: { id: 42 } }],
+    }))
+    const r = await runReconcile(fetchSpy)
+    expect(r.data?.resolved).toBe(true)
+    expect(r.data?.reason).toBe('unique-match')
+    const url = String(fetchSpy.mock.calls[0][0])
+    expect(url).toContain('/v2.1/pcr/packages?')
+    expect(url).toContain('package_template=42')
+    expect(url).not.toContain('/v2.1/pcr/packages/')
+  })
+
+  it('G. NO persisted providerReference + multiple exact A+B candidates -> multiple-matches (never an arbitrary first pick)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(json({
+      total: 2, offset: 0, count: 2,
+      packages: [
+        { id: 9001, sim: A_ICCID, status: 'ACTIVE', package_template: { id: 42 } },
+        { id: 9002, sim: A_ICCID, status: 'ACTIVE', package_template: { id: 42 } },
+      ],
+    }))
+    const r = await runReconcile(fetchSpy)
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('multiple-matches')
+  })
+
+  it('H. prefer-C verification NEVER issues a POST and never replays the activation (single exact detail GET)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 'C-PKG', sim: A_ICCID, status: 'ACTIVE', package_template: { id: 42 } } }))
+    const r = await runReconcile(fetchSpy, { providerReference: 'C-PKG' })
+    expect(r.data?.resolved).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    for (const call of fetchSpy.mock.calls) {
+      expect((call[1]?.method ?? 'GET').toUpperCase()).toBe('GET')
+      expect(String(call[0])).toContain('/v2.1/pcr/packages/C-PKG')
+    }
+  })
+
+  it('I. persisted C + NO claimed ICCID input -> fail closed inconclusive, zero provider calls (cannot verify identity)', async () => {
+    const fetchSpy = vi.fn()
+    const r = await runReconcile(fetchSpy, { providerReference: 'C-PKG', iccids: [] })
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('inconclusive')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('I2. persisted C + NON-NUMERIC template id -> fail closed inconclusive, zero provider calls (cannot verify identity)', async () => {
+    const fetchSpy = vi.fn()
+    const r = await runReconcile(fetchSpy, { providerReference: 'C-PKG', planId: 'not-a-number' })
+    expect(r.data?.resolved).toBe(false)
+    expect(r.data?.reason).toBe('inconclusive')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
 })

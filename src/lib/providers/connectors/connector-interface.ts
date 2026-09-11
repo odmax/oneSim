@@ -710,6 +710,21 @@ export interface AmbiguousPurchaseReconcileInput {
    * requires a unique, real provider-owned reference match.
    */
   iccids?: string[]
+  /**
+   * An existing provider-owned transaction/instance reference already persisted
+   * on THIS order (order-level providerFulfillId / providerReservationId, or the
+   * best owning-provider ProviderAttempt.providerReference). NEVER a local
+   * OneSIM id, NEVER the order/esim id, NEVER an ICCID masquerading as a
+   * package instance.
+   *
+   * When present and nonblank, the connector must PREFER and VERIFY this value
+   * as a candidate C through the authoritative provider detail read before any
+   * A+B correlation, resolve only when every identity check (exact id, exact
+   * A, exact B) passes, FAIL CLOSED on mismatch, and never silently replace the
+   * persisted provider transaction identity with an A+B pick. Absent/null →
+   * connectors retain their bounded correlation fallback.
+   */
+  providerReference?: string
 }
 
 /** Result of a read-only reconciliation attempt (never a provider mutation). */

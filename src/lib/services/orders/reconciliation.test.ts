@@ -893,6 +893,47 @@ describe('reconcileProviderOrder Strategy 3 — authoritative provider reference
     void fn
   })
 
+  it('15. S3 passes the recovered authoritative provider reference (C) through to the connector (prefer-C) before any A+B correlation', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(telnaOrder())
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([
+      { providerId: 'prov-1', providerReference: '8656cce5-ad38-4378-915d-3cbc68181850', attemptNumber: 1, startedAt: new Date('2026-08-01T00:00:00Z'), status: 'PROCESSING', source: 'PURCHASE', retryClassification: null, dispatchStartedAt: new Date('2026-08-01T00:00:00Z') },
+    ])
+    mockAdapter.mockResolvedValue({ getActivationStatus: vi.fn().mockResolvedValue({ success: false }) } as any)
+    const { reconcileAmbiguousPurchase: rec, fn } = reconcileConnector()
+    mockBuildConnector.mockResolvedValue({ reconcileAmbiguousPurchase: rec } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(rec).toHaveBeenCalledWith(expect.objectContaining({ iccids: [A_ICCID], planId: '42', providerReference: '8656cce5-ad38-4378-915d-3cbc68181850' }))
+    const created = mockPrisma.providerAttempt.create.mock.calls[0][0].data
+    expect(created.providerReference).toBe('C-PKG')
+    void fn
+  })
+
+  it('16. Telna acceptance evidence (persisted C) + unresolved reconciliation read -> redispatch stays blocked after exhaustion (wallet held, no second purchase)', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(telnaOrder())
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([
+      { providerId: 'prov-1', providerReference: '8656cce5-ad38-4378-915d-3cbc68181850', attemptNumber: 1, startedAt: new Date('2026-08-01T00:00:00Z'), status: 'PROCESSING', source: 'PURCHASE', retryClassification: null, dispatchStartedAt: new Date('2026-08-01T00:00:00Z') },
+    ])
+    mockPrisma.providerAttempt.count.mockResolvedValue(7) // exhaustion threshold reached
+    mockAdapter.mockResolvedValue({ getActivationStatus: vi.fn().mockResolvedValue({ success: false }) } as any)
+    const rec = vi.fn().mockResolvedValue({
+      success: true,
+      data: { resolved: false, reason: 'inconclusive', evidence: { source: 'provider-reference-exact-verification', providerPackageInstanceId: '8656cce5-ad38-4378-915d-3cbc68181850', note: 'provider detail read failed or not found' } },
+    })
+    mockBuildConnector.mockResolvedValue({ reconcileAmbiguousPurchase: rec } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+
+    expect(result.outcome).toBe('STILL_PENDING')
+    expect(result.action).toBe('KEEP_WAITING')
+    expect(createTimelineEvent).toHaveBeenCalledWith('order-s3', expect.objectContaining({ eventType: 'REDISPATCH_BLOCKED' }))
+    expect(createTimelineEvent).not.toHaveBeenCalledWith('order-s3', expect.objectContaining({ eventType: 'REDISPATCH_ALLOWED' }))
+    expect(mockFinal).not.toHaveBeenCalled()
+    expect(mockRelease).not.toHaveBeenCalled()
+  })
+
   it('12. historical Telna order (ICCID-shaped providerRef): S1 non-terminal → S3 recovers C naturally, no second dispatch', async () => {
     mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(
       telnaOrder({ provider: { id: 'prov-1', type: 'TELNA', apiBaseUrl: 'https://api', apiToken: 'tok', environment: 'staging', authUrl: null, name: 'Telna' } }),
