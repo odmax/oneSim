@@ -78,6 +78,7 @@ function connectorToAdapter(connector: IProviderConnector): ProviderAdapter {
         },
       }
     },
+    supportsStructuredStatusLookup: connector.supportsStructuredStatusLookup === true,
     resolveStatusLookup: (esim) => connector.resolveStatusLookup
       ? connector.resolveStatusLookup(esim)
       : (esim.providerSubscriptionId || esim.providerActivationId || esim.iccid || null),

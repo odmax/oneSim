@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
 
 /**
  * Provider-owned reference recovery + acceptance evidence.
@@ -165,4 +166,57 @@ export async function resolveAuthoritativeProviderReferenceForOrder(order: Provi
 export async function orderHasProviderAcceptanceEvidence(order: ProviderReferenceOrderLike): Promise<boolean> {
   const attempts = await loadOrderAttemptReferences(order.id)
   return hasProviderAcceptanceEvidence(order, attempts)
+}
+
+// ─────────────────────────────────────────────
+// Authoritative status lookup identifier
+// ─────────────────────────────────────────────
+
+export interface AuthoritativeStatusLookupInput {
+  /** Recovered authoritative provider-owned reference (C). Never a local OneSIM id. */
+  providerReference?: string | null
+  /** Claimed/known ICCIDs already persisted on the order (A). Never fabricated. */
+  iccids?: Array<string | null | undefined>
+  /** True when the target adapter/connector addresses a provider-owned
+   *  subscription/package-instance via a structured StatusLookupIdentifier. */
+  structuredSupported?: boolean
+}
+
+/**
+ * Build the semantically-correct status-lookup identifier for recovery when an
+ * authoritative provider-owned reference (C) and/or a claimed ICCID (A) exist.
+ *
+ * Semantic identity, never string-shape inference:
+ *  - A is the claimed ICCID → StatusLookupIdentifier.iccid.
+ *  - C is the authoritative provider-owned reference recovered from durable
+ *    order evidence or an owning-provider attempt → mapped to the interface's
+ *    provider-owned subscription/package-instance field
+ *    (StatusLookupIdentifier.providerSubscriptionId).
+ *
+ * Connectors that declare structured support receive `{ iccid, providerSubscriptionId }`
+ * so a UUID package-instance (C) is addressed exactly and NEVER misrouted as an
+ * ICCID by a bare-string heuristic. Connectors without structured support
+ * receive the bare recovered reference (or claimed ICCID) unchanged — legacy
+ * behavior is preserved for every other connector.
+ *
+ * Returns null only when neither a provider reference nor a claimed ICCID
+ * exists — callers must fail closed (no fabricated identifier).
+ */
+export function buildAuthoritativeStatusLookup(
+  input: AuthoritativeStatusLookupInput,
+): string | StatusLookupIdentifier | null {
+  const ref = input.providerReference ? String(input.providerReference).trim() : ''
+  const claimed = (input.iccids || []).find((v) => v != null && String(v).trim() !== '')
+  const iccid = claimed != null ? String(claimed).trim() : ''
+
+  if (ref === '' && iccid === '') return null
+
+  if (input.structuredSupported === true) {
+    const identifier: StatusLookupIdentifier = {}
+    if (iccid !== '') identifier.iccid = iccid
+    if (ref !== '') identifier.providerSubscriptionId = ref
+    return identifier
+  }
+
+  return ref !== '' ? ref : iccid
 }

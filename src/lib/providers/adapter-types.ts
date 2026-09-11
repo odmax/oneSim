@@ -155,6 +155,17 @@ export interface ProviderAdapter {
   activateESIM(params: ActivateESIMParams): Promise<ProviderResult<ActivateESIMResult>>
 
   /**
+   * True when `getActivationStatus` accepts a structured StatusLookupIdentifier
+   * (e.g. `{ iccid, providerSubscriptionId }`) that addresses a provider-owned
+   * subscription / package-instance reference. Generic recovery uses this to
+   * construct the structured lookup from a claimed ICCID (A) plus the
+   * authoritative provider reference (C) instead of feeding C as a bare
+   * ICCID-like string. Absent/false = bare-reference lookup unchanged.
+   * Optional — defaults to false.
+   */
+  supportsStructuredStatusLookup?: boolean
+
+  /**
    * Validate that the adapter is configured for purchase.
    * Called before any wallet hold. Optional — adapters without this are treated as valid.
    */

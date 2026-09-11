@@ -264,3 +264,71 @@ describe('recoverOrder — idempotent terminal + deferral behavior', () => {
     expect(mockActivateESIM).not.toHaveBeenCalled()
   })
 })
+
+describe('recoverOrder — structured status lookup (semantic identity, never a bare C)', () => {
+  const A_ICCID = '8910300000016182009'
+  const C_UUID = '8656cce5-ad38-4378-915d-3cbc68181850'
+
+  it('D. PENDING_PROVIDER + PROCESSING attempt + UUID reference + structured-capable adapter → polls { iccid: A, providerSubscriptionId: C }, never bare C', async () => {
+    mockOrderFindUnique.mockResolvedValue(orderRow({ esims: [{ id: 'e1', iccid: A_ICCID }] }) as any)
+    mockAttemptFindMany.mockResolvedValue([attempt({ status: 'PROCESSING', providerReference: C_UUID, dispatchStartedAt: new Date('2026-09-09T10:00:00Z') })] as any)
+    mockGetAdapter.mockResolvedValue({
+      getActivationStatus: mockActivationStatus,
+      activateESIM: mockActivateESIM,
+      supportsStructuredStatusLookup: true,
+    } as any)
+    mockActivationStatus.mockResolvedValue({ success: true, data: { status: 'ACTIVE', iccid: A_ICCID } })
+
+    const result = await recoverOrder('order-1')
+
+    expect(result.success).toBe(true)
+    expect(result.action).toBe('POLL_PROVIDER')
+    // Semantic identity: A in the ICCID slot, C in the provider-owned reference slot.
+    expect(mockActivationStatus).toHaveBeenCalledWith({ iccid: A_ICCID, providerSubscriptionId: C_UUID })
+    expect(mockActivationStatus).not.toHaveBeenCalledWith(C_UUID)
+    expect(mockActivateESIM).not.toHaveBeenCalled()
+    // Finalized with the authoritative provider reference C.
+    expect(mockFinalize).toHaveBeenCalledTimes(1)
+    expect(mockFinalize).toHaveBeenCalledWith(expect.objectContaining({ providerRef: C_UUID }))
+  })
+
+  it('E/J. PROVIDER_RECONCILIATION + PROCESSING attempt + reference → RECONCILIATION_REQUIRED (reconcile once, no poll, no dispatch)', async () => {
+    mockOrderFindUnique.mockResolvedValue(orderRow({ status: 'PROVIDER_RECONCILIATION', retryCount: 34, maxRetries: 3, esims: [{ id: 'e1', iccid: A_ICCID }] }) as any)
+    mockAttemptFindMany.mockResolvedValue([attempt({ status: 'PROCESSING', providerReference: C_UUID, dispatchStartedAt: new Date('2026-09-09T10:00:00Z') })] as any)
+    mockReconcile.mockResolvedValue({ outcome: 'STILL_PENDING', status: 'PROVIDER_RECONCILIATION', message: 'exact C read inconclusive' } as any)
+
+    const result = await recoverOrder('order-1')
+
+    expect(result.action).toBe('RECONCILIATION_REQUIRED')
+    expect(result.status).toBe('PROVIDER_RECONCILIATION')
+    // Exactly one reconciliation pass — never re-enqueued to the generic poll loop,
+    // never a second purchase/dispatch, wallet stays reserved.
+    expect(mockReconcile).toHaveBeenCalledTimes(1)
+    expect(mockActivationStatus).not.toHaveBeenCalled()
+    expect(mockActivateESIM).not.toHaveBeenCalled()
+    expect(mockFinalize).not.toHaveBeenCalled()
+    expect(vi.mocked(prisma.providerAttempt.create)).not.toHaveBeenCalled()
+    expect(vi.mocked(releaseReservedFunds)).not.toHaveBeenCalled()
+  })
+
+  it('K. activationCode present does NOT bypass identity verification (no ICCID → no finalization, no capture)', async () => {
+    mockAttemptFindMany.mockResolvedValue([attempt({ status: 'PROCESSING', providerReference: '12811381', dispatchStartedAt: new Date('2026-09-09T10:00:00Z') })] as any)
+    // Bare adapter (no structured support): bare numeric ref passed through.
+    mockActivationStatus.mockResolvedValue({
+      success: true,
+      data: { status: 'ACTIVE', iccid: null, activationCode: 'LPA:1$smdp.test$matching-id', qrCode: 'data:image/png;base64,xx' },
+    })
+
+    const result = await recoverOrder('order-1')
+
+    expect(result.success).toBe(false)
+    expect(mockActivationStatus).toHaveBeenCalledWith('12811381')
+    // activationCode is delivery data only — completion requires an eSIM/ICCID identity.
+    expect(mockFinalize).not.toHaveBeenCalled()
+    expect(mockActivateESIM).not.toHaveBeenCalled()
+    expect(mockOrderUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'order-1' },
+      data: expect.objectContaining({ retryCount: 1, nextRetryAt: expect.any(Date) }),
+    }))
+  })
+})

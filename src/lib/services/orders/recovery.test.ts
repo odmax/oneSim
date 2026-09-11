@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { classifyOrderRecovery, computeRetryBackoff, computeNextRetryAt, type RecoveryAction } from './recovery'
+import { buildAuthoritativeStatusLookup } from './provider-reference'
 
 function makeOrder(overrides: any = {}) {
   return {
@@ -125,6 +126,107 @@ describe('classifyOrderRecovery', () => {
     const input = makeOrder({ status: 'FAILED' })
     input.providerAttempts = [makeAttempt({ providerId: 'prov-1', providerReference: null, status: 'FAILED', errorCode: 'PROVIDER_ERROR', retryClassification: 'RETRYABLE' })]
     expect(classifyOrderRecovery(input).action).toBe('REDISPATCH_PROVIDER')
+  })
+
+  it('A. PROVIDER_RECONCILIATION + PROCESSING attempt + reference + polling → RECONCILIATION_REQUIRED (never generic POLL_PROVIDER)', () => {
+    // The controlled defect: an order already in PROVIDER_RECONCILIATION carries a
+    // PROCESSING PURCHASE attempt with an authoritative provider reference (C). Polling
+    // support is true, so the pre-fix classifier short-circuited into POLL_PROVIDER and
+    // fed the opaque reference as a bare identifier. It must route RECONCILIATION_REQUIRED
+    // even though the attempt is still pending/processing with a reference.
+    const input = makeOrder({ status: 'PROVIDER_RECONCILIATION', retryCount: 34, maxRetries: 3 })
+    input.providerAttempts = [
+      makeAttempt({
+        providerId: 'prov-1', status: 'PROCESSING',
+        providerReference: '8656cce5-ad38-4378-915d-3cbc68181850',
+        dispatchStartedAt: new Date('2026-09-09T10:00:00Z'),
+      }),
+    ]
+    input.providerPollingSupported = true
+    const result = classifyOrderRecovery(input)
+    expect(result.action).toBe('RECONCILIATION_REQUIRED')
+  })
+
+  it('B. PENDING_PROVIDER async operation + PROCESSING attempt + reference + polling → POLL_PROVIDER stays unchanged', () => {
+    const input = makeOrder({ status: 'PENDING_PROVIDER' })
+    input.providerAttempts = [
+      makeAttempt({ providerId: 'prov-1', status: 'PROCESSING', providerReference: '12811381', dispatchStartedAt: new Date('2026-09-09T10:00:00Z') }),
+    ]
+    input.providerPollingSupported = true
+    const result = classifyOrderRecovery(input)
+    expect(result.action).toBe('POLL_PROVIDER')
+  })
+
+  it('A2. PROVIDER_RECONCILIATION + PROCESSING attempt + reference but polling unsupported → still RECONCILIATION_REQUIRED', () => {
+    const input = makeOrder({ status: 'PROVIDER_RECONCILIATION' })
+    input.providerAttempts = [
+      makeAttempt({ providerId: 'prov-1', status: 'PROCESSING', providerReference: '8656cce5-ad38-4378-915d-3cbc68181850', dispatchStartedAt: new Date('2026-09-09T10:00:00Z') }),
+    ]
+    input.providerPollingSupported = false
+    const result = classifyOrderRecovery(input)
+    expect(result.action).toBe('RECONCILIATION_REQUIRED')
+  })
+
+  it('I. evidence-backed PROVIDER_RECONCILIATION beyond max retry budget stays eligible (reconciliation scheduler, not terminal)', () => {
+    const input = makeOrder({ status: 'PROVIDER_RECONCILIATION', retryCount: 35, maxRetries: 3 })
+    input.providerAttempts = [
+      makeAttempt({ providerId: 'prov-1', status: 'PROCESSING', providerReference: '8656cce5-ad38-4378-915d-3cbc68181850', dispatchStartedAt: new Date('2026-09-09T10:00:00Z') }),
+    ]
+    input.providerPollingSupported = true
+    const result = classifyOrderRecovery(input)
+    expect(result.action).toBe('RECONCILIATION_REQUIRED')
+  })
+})
+
+describe('buildAuthoritativeStatusLookup — semantic identifier construction (never string-shape inference)', () => {
+  it('C1. claimed ICCID (A) + authoritative reference (C) + structured support → { iccid: A, providerSubscriptionId: C }', () => {
+    const lookup = buildAuthoritativeStatusLookup({
+      providerReference: '8656cce5-ad38-4378-915d-3cbc68181850',
+      iccids: ['8910300000016182009'],
+      structuredSupported: true,
+    })
+    expect(lookup).toEqual({
+      iccid: '8910300000016182009',
+      providerSubscriptionId: '8656cce5-ad38-4378-915d-3cbc68181850',
+    })
+  })
+
+  it('C2. structured support + reference only (no ICCID yet) → { providerSubscriptionId: C } (never a bare UUID as ICCID)', () => {
+    const lookup = buildAuthoritativeStatusLookup({
+      providerReference: '8656cce5-ad38-4378-915d-3cbc68181850',
+      iccids: [],
+      structuredSupported: true,
+    })
+    expect(lookup).toEqual({ providerSubscriptionId: '8656cce5-ad38-4378-915d-3cbc68181850' })
+  })
+
+  it('L1. no structured support → bare recovered reference unchanged (numeric refs keep working)', () => {
+    expect(buildAuthoritativeStatusLookup({
+      providerReference: '12811381',
+      iccids: ['8910300000016182009'],
+      structuredSupported: false,
+    })).toBe('12811381')
+  })
+
+  it('L2. no structured support + no reference → claimed ICCID as bare string (legacy pre-evidence behavior)', () => {
+    expect(buildAuthoritativeStatusLookup({
+      providerReference: '',
+      iccids: ['8910300000016182009'],
+      structuredSupported: false,
+    })).toBe('8910300000016182009')
+  })
+
+  it('M1. fail closed: no reference AND no claimed ICCID → null (never a fabricated identifier)', () => {
+    expect(buildAuthoritativeStatusLookup({
+      providerReference: '',
+      iccids: [],
+      structuredSupported: true,
+    })).toBeNull()
+    expect(buildAuthoritativeStatusLookup({
+      providerReference: '',
+      iccids: [],
+      structuredSupported: false,
+    })).toBeNull()
   })
 })
 

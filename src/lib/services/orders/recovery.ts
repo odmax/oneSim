@@ -9,7 +9,7 @@ import { transitionOrder } from './order-state-machine'
 import { reconcileProviderOrder } from './reconciliation'
 import { resolvePackageBacking } from './package-backing-resolver'
 import type { classifyRetry as ClassifyRetryFn } from '@/lib/services/routing/provider-failover-engine'
-import { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, loadOrderAttemptReferences, type ProviderReferenceOrderLike } from './provider-reference'
+import { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, loadOrderAttemptReferences, buildAuthoritativeStatusLookup, type ProviderReferenceOrderLike } from './provider-reference'
 import { allocateProviderAttemptNumber } from './provider-attempt-number'
 
 // ─────────────────────────────────────────────
@@ -103,6 +103,19 @@ export function classifyOrderRecovery(input: ClassificationInput): RecoveryClass
   // Check provider attempts for pending/processing
   const pendingAttempt = providerAttempts.find(a => a.status === 'PROCESSING' || a.status === 'STARTED')
   if (pendingAttempt?.providerReference && providerPollingSupported) {
+    if (status === 'PROVIDER_RECONCILIATION' && hasProviderAcceptanceEvidence(order, providerAttempts)) {
+      // Explicit reconciliation state must take precedence over generic
+      // polling: an order already in PROVIDER_RECONCILIATION that carries
+      // provider acceptance evidence is owned by the reconciliation engine,
+      // which resolves the authoritative provider reference (C) read-only
+      // (including the exact-package verification path). It must NEVER be
+      // short-circuited into a generic POLL_PROVIDER merely because a PURCHASE
+      // attempt is still PROCESSING with a providerReference — that poll would
+      // feed an opaque reference as a bare identifier and can misroute a UUID
+      // package instance as an ICCID. PENDING_PROVIDER async operations with a
+      // legitimate still-processing attempt keep their POLL_PROVIDER flow.
+      return { action: 'RECONCILIATION_REQUIRED', reason: 'Order in PROVIDER_RECONCILIATION with provider acceptance evidence — re-checking via reconciliation' }
+    }
     return { action: 'POLL_PROVIDER', reason: `Provider has pending/processing attempt — polling supported` }
   }
 
@@ -386,7 +399,26 @@ async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; s
     )
     if (!ref) return { fulfilled: false, stillProcessing: false, status: order.status, error: 'No provider reference for polling' }
 
-    const result = await adapter.getActivationStatus(ref)
+    // Semantic identity, never string-shape inference: an authoritative persisted
+    // reference (C) plus the claimed ICCID (A) are addressed through the
+    // structured StatusLookupIdentifier the connector declares it supports
+    // ({ iccid, providerSubscriptionId }) — so a UUID package instance is NEVER
+    // fed to getStatus as a bare ICCID-like string and the exact package read is
+    // reachable. Connectors without structured support receive the bare ref.
+    const knownIccids = (order.esims || [])
+      .map((e: any) => e.iccid)
+      .filter((v: any) => v != null && String(v).trim() !== '')
+      .map(String)
+    const lookup = buildAuthoritativeStatusLookup({
+      providerReference: ref,
+      iccids: knownIccids,
+      structuredSupported: (adapter as any)?.supportsStructuredStatusLookup === true,
+    })
+    if (lookup === null) {
+      return { fulfilled: false, stillProcessing: false, status: order.status, error: 'No provider reference for polling' }
+    }
+
+    const result = await adapter.getActivationStatus(lookup)
     if (!result.success) return { fulfilled: false, stillProcessing: false, status: order.status, error: result.error?.message || 'Status check failed' }
 
     const status = result.data?.status || ''

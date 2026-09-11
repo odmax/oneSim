@@ -596,6 +596,16 @@ export interface IProviderConnector {
   activateESIM(params: ActivateESIMParams): Promise<ConnectorResult<ActivateESIMResult>>
   getStatus(identifier: string | StatusLookupIdentifier): Promise<ConnectorResult<StatusResult>>
   /**
+   * True when `getStatus` addresses a provider-owned subscription / package-
+   * instance reference through a structured `StatusLookupIdentifier`
+   * (`providerSubscriptionId` alongside the claimed `iccid`). Generic recovery
+   * uses this to build a structured lookup instead of feeding an opaque
+   * provider-owned reference (C) as a bare ICCID-like string. Connectors
+   * without this flag receive the bare recovered reference unchanged.
+   * Optional — defaults to false.
+   */
+  supportsStructuredStatusLookup?: boolean
+  /**
    * Resolve the provider-appropriate status-lookup identifier for an eSIM.
    * Connectors that support structured lookups (e.g. Choice package_detail by
    * ICCID/IMSI/imsi_version) return a `StatusLookupIdentifier` object; string-

@@ -8,7 +8,7 @@ import { releaseOrderClaimedIccids } from '@/lib/services/esims/esim-inventory-c
 import { failOrder } from './order-state-machine'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import { normalizeConnectorInstallData, type ProviderInstallData } from '@/lib/esim/installation-data'
-import { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, loadOrderAttemptReferences } from './provider-reference'
+import { resolveAuthoritativeProviderReference, hasProviderAcceptanceEvidence, loadOrderAttemptReferences, buildAuthoritativeStatusLookup } from './provider-reference'
 import { allocateProviderAttemptNumber } from './provider-attempt-number'
 
 // ─────────────────────────────────────────────
@@ -324,10 +324,20 @@ async function tryReconcileWithProvider(order: any, authoritativeRef: string | n
 
     // Strategy 1: Poll by the authoritative provider-owned reference (order-level
     // evidence or the best matching ProviderAttempt reference). Local OneSIM ids
-    // are never used; only refParam is sent upstream.
+    // are never used; only refParam is sent upstream. Connectors that declare
+    // structured support receive the semantic identifier { iccid: A,
+    // providerSubscriptionId: C } so an opaque package instance (C) is addressed
+    // exactly and never misrouted as a bare ICCID-like string.
     if (refParam && typeof (adapter as any).getActivationStatus === 'function') {
       try {
-        const statusResult = await (adapter as any).getActivationStatus(refParam)
+        const lookupIdentifier = buildAuthoritativeStatusLookup({
+          providerReference: refParam,
+          iccids: existingIccids,
+          structuredSupported: (adapter as any)?.supportsStructuredStatusLookup === true,
+        })
+        // lookupIdentifier is null only when refParam and existingIccids are both
+        // absent — refParam is present here, so the fallback is defensive.
+        const statusResult = await (adapter as any).getActivationStatus(lookupIdentifier ?? refParam)
         if (statusResult.success && statusResult.data) {
           const status = (statusResult.data.status || '').toUpperCase()
           const returnedIccids: string[] = [

@@ -1042,4 +1042,51 @@ describe('reconcileProviderOrder Strategy 3 — authoritative provider reference
     expect(result.providerReference).toBe(A_ICCID)
     expect(mockFinal).not.toHaveBeenCalled()
   })
+
+  it('S1-structured. reconciliation Strategy 1 uses semantic identity when the adapter declares structured support — C never a bare UUID', async () => {
+    const C_UUID = '8656cce5-ad38-4378-915d-3cbc68181850'
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(telnaOrder())
+    // Durable authoritative reference C (uuid package instance) on the PURCHASE attempt.
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([
+      { providerId: 'prov-1', providerReference: C_UUID, attemptNumber: 1, startedAt: new Date('2026-08-01T00:00:00Z'), status: 'PROCESSING', source: 'PURCHASE', retryClassification: null, dispatchStartedAt: new Date('2026-08-01T00:00:00Z') },
+    ])
+    const statusFn = vi.fn().mockResolvedValue({ success: true, data: { status: 'PROCESSING' } })
+    mockAdapter.mockResolvedValue({
+      getActivationStatus: statusFn,
+      supportsStructuredStatusLookup: true,
+    } as any)
+    const { reconcileAmbiguousPurchase: rec, fn } = reconcileConnector()
+    mockBuildConnector.mockResolvedValue({ reconcileAmbiguousPurchase: rec } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    // S1 addressed C exactly through the structured identifier, never as a bare
+    // UUID fed into the ICCID slot; S3 still resolved C and proved it.
+    expect(statusFn).toHaveBeenCalledWith({ iccid: A_ICCID, providerSubscriptionId: C_UUID })
+    expect(statusFn).not.toHaveBeenCalledWith(C_UUID)
+    expect(rec).toHaveBeenCalledWith(expect.objectContaining({ providerReference: C_UUID }))
+    const created = mockPrisma.providerAttempt.create.mock.calls[0][0].data
+    expect(created.providerReference).toBe('C-PKG')
+    expect(mockFinal).toHaveBeenCalledWith(expect.objectContaining({ providerRef: 'C-PKG' }))
+    void fn
+  })
+
+  it('S1-bare. reconciliation Strategy 1 without structured support keeps the bare reference call (numeric refs unchanged)', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(telnaOrder())
+    mockPrisma.providerAttempt.findMany.mockResolvedValue([
+      { providerId: 'prov-1', providerReference: '12811381', attemptNumber: 1, startedAt: new Date('2026-08-01T00:00:00Z'), status: 'PROCESSING', source: 'PURCHASE', retryClassification: null, dispatchStartedAt: new Date('2026-08-01T00:00:00Z') },
+    ])
+    // iBASIS-style adapter: no structured flag → bare string reference preserved.
+    const statusFn = vi.fn().mockResolvedValue({ success: true, data: { status: 'PENDING_ACTIVATION' } })
+    mockAdapter.mockResolvedValue({ getActivationStatus: statusFn } as any)
+    const { reconcileAmbiguousPurchase: rec, fn } = reconcileConnector()
+    mockBuildConnector.mockResolvedValue({ reconcileAmbiguousPurchase: rec } as any)
+
+    const result = await reconcileProviderOrder('order-s3')
+
+    expect(result.outcome).toBe('FOUND_SUCCESS')
+    expect(statusFn).toHaveBeenCalledWith('12811381')
+    void fn
+  })
 })

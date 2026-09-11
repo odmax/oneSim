@@ -302,6 +302,17 @@ export class TelnaConnector implements IProviderConnector {
   readonly providerId: string
   readonly name: string
 
+  /**
+   * Telna getStatus addresses the exact purchased package instance (C) via a
+   * structured StatusLookupIdentifier `{ iccid, providerSubscriptionId }`: the
+   * claimed ICCID (A) drives the SIM-registry / eUICC-profile evidence and
+   * providerSubscriptionId drives the exact GET /v2.1/pcr/packages/{C} read.
+   * Without structured addressing a UUID package instance would be misrouted
+   * as an ICCID by the bare-string heuristic. Never derived from string shape —
+   * this is an explicit connector-semantic declaration.
+   */
+  supportsStructuredStatusLookup = true
+
   constructor(providerId: string, name: string | undefined) {
     this.providerId = providerId
     this.name = name || 'Telna'

@@ -2654,6 +2654,28 @@ describe('TelnaConnector getStatus post-purchase contract (package-instance iden
     expect(result.data?.evidence).toMatchObject({ reason: 'telna-sim-terminated' })
   })
 
+  it('14. structured UUID providerSubscriptionId (C) is addressed via the exact package read — C is NEVER fed to ICCID-keyed reads', async () => {
+    const C = '8656cce5-ad38-4378-915d-3cbc68181850'
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: C, sim: ICCID, status: 'NOT_ACTIVE' } }))
+      .mockResolvedValueOnce(registry('PRE_SERVICE'))
+      .mockResolvedValueOnce(profile('RELEASED', true))
+      .mockResolvedValueOnce(packages([]))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus({ iccid: ICCID, providerSubscriptionId: C })
+    expect(result.success).toBe(true)
+    expect(result.data?.iccid).toBe(ICCID)
+    const urls = fetchSpy.mock.calls.map(c => String(c[0]))
+    expect(urls[0]).toContain(`/v2.1/pcr/packages/${C}`)
+    // C must never masquerade as an ICCID (the bare-string misroute this regression guards).
+    expect(urls.some(u => u.includes(`/v2.1/inventory/sim-registries/${C}`))).toBe(false)
+    expect(urls.some(u => u.includes(`/v2.1/esim-rsp/euicc-profiles/${C}`))).toBe(false)
+    // ICCID-keyed evidence reads address the claimed ICCID (A), not C.
+    expect(urls.some(u => u.includes(`/v2.1/inventory/sim-registries/${ICCID}`))).toBe(true)
+    expect(urls.some(u => u.includes(`/v2.1/esim-rsp/euicc-profiles/${ICCID}`))).toBe(true)
+  })
+
   it('13. ICCID path: PRE_SERVICE + profile RELEASED with activation_code -> COMPLETED', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(registry('PRE_SERVICE'))
