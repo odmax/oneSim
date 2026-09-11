@@ -3,6 +3,27 @@ import { captureReservedFunds, captureReservedFundsUpTo } from '@/lib/services/o
 import { createTimelineEvent, transitionOrder } from '@/lib/services/orders/order-state-machine'
 import { publishOrderLifecycleEvent, ORDER_LIFECYCLE_EVENTS } from './lifecycle-publisher'
 import { hasUsableInstallData, type InstallDataFields } from '@/lib/esim/installation-data'
+import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
+
+/**
+ * Canonical eSIM lifecycle status for a provider fulfillment write.
+ *
+ * The eSIM lifecycle is NEVER fabricated as ACTIVE from purchase success,
+ * provider package existence, activationCode presence, or a raw
+ * `providerStatus: ACTIVE` — ACTIVE requires the system's own
+ * activation/device/usage evidence (see lifecycle-status.ts). A purchase
+ * fulfillment without such evidence normalizes to PENDING_ACTIVATION; a
+ * "PROCESSING" inventory placeholder must not survive successful fulfillment.
+ */
+function deriveFulfillmentLifecycle(currentEsim: { status?: string | null; dataUsedMB?: number | null; activatedAt?: Date | null } | undefined, providerStatus: string | null | undefined): string {
+  const lifecycle = deriveEsimLifecycleStatus({
+    providerNormalizedStatus: providerStatus || 'PENDING_ACTIVATION',
+    currentStatus: currentEsim?.status || 'PROCESSING',
+    dataUsedMB: currentEsim?.dataUsedMB ?? 0,
+    activatedAt: currentEsim?.activatedAt ?? null,
+  })
+  return lifecycle.status
+}
 
 // ─────────────────────────────────────────────
 // Types
@@ -83,7 +104,7 @@ export async function persistProviderFulfillment(input: PersistFulfillmentInput)
   // Load existing eSIMs for this order
   const existingEsims = await prisma.eSIM.findMany({
     where: { purchaseId: orderId },
-    select: { id: true, iccid: true, status: true, activationCode: true, qrCodeUrl: true, qrCode: true, smdpAddress: true, matchingId: true, installationStatus: true },
+    select: { id: true, iccid: true, status: true, activationCode: true, qrCodeUrl: true, qrCode: true, smdpAddress: true, matchingId: true, installationStatus: true, dataUsedMB: true, activatedAt: true, providerStatus: true, providerActivationId: true, providerResponse: true },
   })
   const existingIccids = new Set(existingEsims.map(e => e.iccid))
 
@@ -110,11 +131,15 @@ export async function persistProviderFulfillment(input: PersistFulfillmentInput)
     const alreadyExists = existingIccids.has(cleanIccid)
     try {
       if (alreadyExists) {
-        // Update missing fields without overwriting valid data
+        // Update missing fields without overwriting valid data.
+        // Provider identity (C) is NEVER substituted with the local OneSIM
+        // row id: if no authoritative provider identity is available it must
+        // remain missing, not be fabricated from a local UUID.
         const esim = existingEsims.find(e => e.iccid === cleanIccid)!
         const updateData: any = {
-          providerActivationId: providerFulfillId || esim.id,
-          providerStatus: providerStatus || 'ACTIVE',
+          ...(providerFulfillId ? { providerActivationId: providerFulfillId } : {}),
+          ...(providerStatus ? { providerStatus } : {}),
+          status: deriveFulfillmentLifecycle(esim, providerStatus),
           ...(providerReservationId ? { providerReservationId } : {}),
           ...(rawMetadata ? { providerResponse: rawMetadata } : {}),
         }
@@ -135,10 +160,10 @@ export async function persistProviderFulfillment(input: PersistFulfillmentInput)
             purchaseId: orderId,
             iccid: cleanIccid,
             imsi: null,
-            status: 'PENDING_ACTIVATION',
+            status: deriveFulfillmentLifecycle(undefined, providerStatus),
             providerActivationId: providerFulfillId || '',
             providerSubscriptionId: providerReservationId || null,
-            providerStatus: providerStatus || 'ACTIVE',
+            ...(providerStatus ? { providerStatus } : { providerStatus: null }),
             ...installWrite,
             ...(hasUsableInstallData(installFields) ? { installationStatus: 'READY' } : {}),
             expiresAt: new Date(Date.now() + (pkg?.validityDays || validityDays) * 86400000),
@@ -161,12 +186,13 @@ export async function persistProviderFulfillment(input: PersistFulfillmentInput)
       if (e.code === 'P2002' || /unique.*iccid/i.test(e.message || '')) {
         const existing = existingIccids.has(cleanIccid)
           ? null
-          : await prisma.eSIM.findUnique({ where: { iccid: cleanIccid }, select: { id: true, status: true, activationCode: true, qrCodeUrl: true, qrCode: true, smdpAddress: true, matchingId: true, installationStatus: true } })
+          : await prisma.eSIM.findUnique({ where: { iccid: cleanIccid }, select: { id: true, status: true, activationCode: true, qrCodeUrl: true, qrCode: true, smdpAddress: true, matchingId: true, installationStatus: true, dataUsedMB: true, activatedAt: true, providerStatus: true, providerActivationId: true, providerResponse: true } })
         if (existing) {
           // ICCID exists in DB (possibly from a different order) — update this order's fields
           const updateData: any = {
-            providerActivationId: providerFulfillId || existing.id,
-            providerStatus: providerStatus || 'ACTIVE',
+            ...(providerFulfillId ? { providerActivationId: providerFulfillId } : {}),
+            ...(providerStatus ? { providerStatus } : {}),
+            status: deriveFulfillmentLifecycle(existing, providerStatus),
             ...(activationCode && !existing.activationCode ? { activationCode } : {}),
             ...(qrCodeUrl && !existing.qrCodeUrl ? { qrCodeUrl } : {}),
             ...(qrCode && !existing.qrCode ? { qrCode } : {}),
@@ -237,10 +263,19 @@ export async function completeProviderFinalization(input: {
   if (!order) return { success: false, orderStatus: 'UNKNOWN', walletCaptured: false, eSIMsPersisted: false, error: 'Order not found' }
   if (order.status === 'FULFILLED') return { success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true }
 
+  // Authoritative provider purchase identity (C) is threaded into eSIM
+  // persistence so providerActivationId is ALWAYS the provider identity — never
+  // substituted with a local OneSIM UUID (esim.id / order id / ICCID) and never
+  // fabricated when no legitimate provider evidence exists.
+  const enrichedProviderResult: ProviderFulfillmentResult = {
+    ...providerResult,
+    providerFulfillId: providerRef || providerResult.providerFulfillId || null,
+  }
+
   // Step 1: Durably record provider success evidence
   const providerEvidence = {
-    providerFulfillId: providerRef || providerResult.providerFulfillId || null,
-    providerReservationId: providerResult.providerReservationId || null,
+    providerFulfillId: enrichedProviderResult.providerFulfillId,
+    providerReservationId: enrichedProviderResult.providerReservationId || null,
     providerResponse: providerResult.rawMetadata || providerResult.providerResponse || null,
   }
   await prisma.eSIMPurchase.update({
@@ -253,122 +288,31 @@ export async function completeProviderFinalization(input: {
       lastRetryAt: new Date(),
     },
   })
-  await createTimelineEvent(orderId, { eventType: 'PROVIDER_FULFILLMENT_RECORDED', message: `Provider ${providerName} reported success — ${providerResult.iccids.length} ICCIDs` })
+  await createTimelineEvent(orderId, { eventType: 'PROVIDER_FULFILLMENT_RECORDED', message: `Provider ${providerName} reported success — ${(providerResult.iccids || []).length} ICCIDs` })
 
-  // Step 2: Persist eSIMs idempotently
-  const persistResult = await persistProviderFulfillment({
-    orderId, businessId, providerResult, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays, userId,
+  // Step 2: Delegate ALL accounting + finalization to the canonical
+  // quantity-aware path (processPartialFulfillment). It persists eSIMs
+  // idempotently, derives/persists fulfilledQuantity + failedQuantity, captures
+  // the wallet cumulatively (exactly-once per unit), normalizes eSIM lifecycle
+  // via deriveEsimLifecycleStatus, transitions to FULFILLED /
+  // PARTIALLY_FULFILLED and clears terminal retry scheduling. Full qty=1 and
+  // reconciliation-success finalizations therefore CANNOT diverge from partial
+  // fulfillment accounting — a single consistent fulfillment model.
+  return await processPartialFulfillment({
+    orderId,
+    businessId: businessId || order.businessId,
+    providerId,
+    providerRef,
+    providerName,
+    totalAmount: totalAmount || Number(order.totalAmount),
+    providerResult: enrichedProviderResult,
+    userId,
+    packageSnapshot,
+    packageName,
+    packageDataGB,
+    packageValidityDays,
+    validityDays,
   })
-
-  if (persistResult.persistedQuantity > 0) {
-    await createTimelineEvent(orderId, { eventType: 'ESIMS_PERSISTED', message: `${persistResult.persistedQuantity} eSIM${persistResult.persistedQuantity !== 1 ? 's' : ''} persisted (${persistResult.iccids.map(i => i.slice(-4)).join(', ')})` })
-  }
-
-  // Step 3: Check for failed items
-  if (persistResult.failedItems.length > 0) {
-    await createTimelineEvent(orderId, {
-      eventType: 'LOCAL_FINALIZATION_FAILED',
-      message: `eSIM persistence: ${persistResult.persistedQuantity}/${persistResult.requestedQuantity} succeeded. Failed: ${persistResult.failedItems.map(f => f.iccid.slice(-4)).join(', ')}`,
-    })
-    return {
-      success: false,
-      orderStatus: order.status,
-      walletCaptured: false,
-      eSIMsPersisted: false,
-      error: `Partial eSIM persistence: ${persistResult.persistedQuantity}/${persistResult.requestedQuantity}`,
-      recoveryRequired: true,
-    }
-  }
-
-  // Step 4: Verify we have all requested ICCIDs
-  const requestedQty = order.quotedQuantity ?? order.quantity ?? 1
-  const currentEsims = await prisma.eSIM.count({ where: { purchaseId: orderId } })
-  if (currentEsims < requestedQty) {
-    if (currentEsims > 0) {
-      // Partial fulfillment — charge per successful unit and keep the reservation
-      // for the remainder (F3: partial capture). Reconcile the rest later.
-      await createTimelineEvent(orderId, {
-        eventType: 'PARTIAL_FULFILLMENT_RECORDED',
-        message: `Provider delivered ${currentEsims} of ${requestedQty} eSIMs — billing partial fulfillment`,
-      })
-      return await processPartialFulfillment({
-        orderId,
-        businessId: businessId || order.businessId,
-        providerId,
-        providerRef,
-        providerName,
-        totalAmount: totalAmount || Number(order.totalAmount),
-        providerResult,
-        userId,
-        packageSnapshot,
-        packageName,
-        packageDataGB,
-        packageValidityDays,
-        validityDays,
-      })
-    }
-    await createTimelineEvent(orderId, {
-      eventType: 'LOCAL_FINALIZATION_FAILED',
-      message: `Quantity mismatch: have ${currentEsims} eSIMs, need ${requestedQty}`,
-    })
-    return {
-      success: false,
-      orderStatus: order.status,
-      walletCaptured: false,
-      eSIMsPersisted: true,
-      error: `Quantity mismatch: ${currentEsims}/${requestedQty}`,
-      recoveryRequired: true,
-    }
-  }
-
-  // Step 5: Capture wallet idempotently (cumulative — never re-captures)
-  const captureResult = await captureReservedFundsUpTo(orderId, businessId || order.businessId, totalAmount || Number(order.totalAmount))
-  if (!captureResult.success) {
-    await createTimelineEvent(orderId, { eventType: 'LOCAL_FINALIZATION_FAILED', message: `Wallet capture failed: ${captureResult.error}` })
-    return {
-      success: false,
-      orderStatus: order.status,
-      walletCaptured: false,
-      eSIMsPersisted: true,
-      error: `Wallet capture failed: ${captureResult.error}`,
-      recoveryRequired: true,
-    }
-  }
-  await createTimelineEvent(orderId, { eventType: 'WALLET_CAPTURED', message: `Captured $${totalAmount}` })
-
-  // Step 6: Transition to FULFILLED
-  const transition = await transitionOrder(orderId, 'FULFILLED')
-  if (!transition.success) {
-    return {
-      success: false,
-      orderStatus: order.status,
-      walletCaptured: true,
-      eSIMsPersisted: true,
-      error: transition.error,
-      recoveryRequired: true,
-    }
-  }
-
-  await prisma.eSIMPurchase.update({
-    where: { id: orderId },
-    data: { providerStatus: 'ACTIVE' },
-  })
-
-  await createTimelineEvent(orderId, { eventType: 'ORDER_FULFILLED', message: `Order completed — ${providerName}` })
-  publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.FULFILLED }).catch(() => {})
-
-  // Audit
-  await prisma.auditLog.create({
-    data: {
-      userId: userId || order.userId || '',
-      action: 'PROVIDER_FULFILLMENT_COMPLETED',
-      entity: 'Purchase',
-      entityId: orderId,
-      details: JSON.stringify({ providerId, providerRef, iccids: persistResult.iccids, totalAmount }),
-    },
-  }).catch(() => {})
-
-  return { success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true }
 }
 
 // ─────────────────────────────────────────────
@@ -425,6 +369,30 @@ export async function resumeProviderFinalization(orderId: string): Promise<Final
     if (persistResult.failedItems.length > 0) {
       return { success: false, orderStatus: order.status, walletCaptured: false, eSIMsPersisted: false, error: 'eSIM persistence incomplete', recoveryRequired: true }
     }
+  } else if (order.esims.length > 0) {
+    // Pre-existing rows (possibly created before lifecycle normalization, or a
+    // PROCESSING inventory placeholder that already carries the order's provider
+    // identity). Re-run the idempotent persistence so the canonical lifecycle is
+    // derived and the authoritative provider purchase identity (C) is written —
+    // providerActivationId can NEVER remain a local OneSIM UUID.
+    persistResult = await persistProviderFulfillment({
+      orderId,
+      businessId: order.businessId,
+      providerResult: {
+        iccids: order.esims.map(e => e.iccid).filter(Boolean),
+        providerFulfillId: order.providerFulfillId || undefined,
+        providerStatus: (order as any).providerStatus || undefined,
+      },
+      packageSnapshot: order.packageSnapshot,
+      packageName: order.packageName || '',
+      packageDataGB: order.packageDataGB ?? 0,
+      packageValidityDays: order.packageValidityDays ?? 30,
+      userId: order.userId,
+    })
+
+    if (persistResult.failedItems.length > 0) {
+      return { success: false, orderStatus: order.status, walletCaptured: false, eSIMsPersisted: false, error: 'eSIM persistence incomplete', recoveryRequired: true }
+    }
   }
 
   // Wallet capture / FULFILLED are ICCID-backed: never capture or transition
@@ -462,9 +430,20 @@ export async function resumeProviderFinalization(orderId: string): Promise<Final
   // Transition to FULFILLED
   await transitionOrder(orderId, 'FULFILLED').catch(() => {})
 
+  // Canonical terminal accounting: quantities, completion marker, cleared retry
+  // scheduling. providerStatus is NEVER fabricated as ACTIVE — the eSIM rows hold
+  // their own provider-reported status + canonical lifecycle.
+  const qtys = await deriveOrderFulfillmentQuantities(orderId)
   await prisma.eSIMPurchase.update({
     where: { id: orderId },
-    data: { providerStatus: 'ACTIVE' },
+    data: {
+      fulfilledQuantity: qtys.fulfilledQuantity,
+      failedQuantity: qtys.failedQuantity,
+      capturedAmount: qtys.capturedAmount,
+      fulfillmentCompletedAt: new Date(),
+      nextRetryAt: null,
+      retryReason: null,
+    },
   }).catch(() => {})
 
   if (order.status !== 'FULFILLED') {
@@ -553,11 +532,35 @@ export async function processPartialFulfillment(input: {
     orderId, businessId, providerResult, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays, userId,
   })
 
+  if (persistResult.persistedQuantity > 0) {
+    await createTimelineEvent(orderId, { eventType: 'ESIMS_PERSISTED', message: `${persistResult.persistedQuantity} eSIM${persistResult.persistedQuantity !== 1 ? 's' : ''} persisted (${persistResult.iccids.map(i => i.slice(-4)).join(', ')})` })
+  }
+
   await createTimelineEvent(orderId, { eventType: 'FULFILLMENT_BATCH_RECEIVED', message: `${persistResult.persistedQuantity}/${persistResult.requestedQuantity} eSIMs in batch` })
+
+  // Failed ICCID persistence must never be treated as fulfillment: keep the
+  // order recoverable, hold the wallet, never transition.
+  if (persistResult.failedItems.length > 0) {
+    await createTimelineEvent(orderId, {
+      eventType: 'LOCAL_FINALIZATION_FAILED',
+      message: `eSIM persistence: ${persistResult.persistedQuantity}/${persistResult.requestedQuantity} succeeded. Failed: ${persistResult.failedItems.map(f => f.iccid.slice(-4)).join(', ')}`,
+    })
+    return {
+      success: false,
+      orderStatus: order.status,
+      walletCaptured: false,
+      eSIMsPersisted: false,
+      error: `Partial eSIM persistence: ${persistResult.persistedQuantity}/${persistResult.requestedQuantity}`,
+      recoveryRequired: true,
+    }
+  }
 
   const qtys = await deriveOrderFulfillmentQuantities(orderId)
   const newlyFulfilled = Math.max(0, qtys.fulfilledQuantity - (order.fulfilledQuantity ?? 0))
-  const unitPrice = Number(order.quotedUnitPrice ?? order.packageUnitPrice ?? 0)
+  // Unit price with a legacy-safe per-unit fallback: when the order carried no
+  // explicit unit price, the full value / requested quantity is the only fair
+  // bound for a cumulative per-unit capture.
+  const unitPrice = Number(order.quotedUnitPrice ?? order.packageUnitPrice ?? (order.totalAmount ? Number(order.totalAmount) / Math.max(1, qtys.requestedQuantity) : 0))
   // CUMULATIVE capture target — the value of all units fulfilled so far.
   // captureReservedFundsUpTo treats its arg as a cumulative cap and captures only
   // the delta, so a later batch (fulfilled 3 → 4) captures the +1 unit delta and a
@@ -570,7 +573,11 @@ export async function processPartialFulfillment(input: {
   })
 
   let walletCaptured = false
+  let captureRequired = false
+  let captureFailed = false
+  let captureError: string | undefined
   if (newlyFulfilled > 0 && cumulativeCaptureTarget > 0) {
+    captureRequired = true
     // Charge per successful unit, cumulative across batches: capture up to the
     // total value of units fulfilled so far (unitPrice × fulfilledQuantity).
     // captureReservedFundsUpTo is idempotent and never exceeds the reservation,
@@ -579,6 +586,10 @@ export async function processPartialFulfillment(input: {
     if (captureResult.success) {
       walletCaptured = true
       await createTimelineEvent(orderId, { eventType: 'PARTIAL_WALLET_CAPTURED', message: `Captured up to ${cumulativeCaptureTarget} for ${qtys.fulfilledQuantity} eSIMs (${newlyFulfilled} new)` })
+    } else {
+      captureFailed = true
+      captureError = captureResult.error
+      await createTimelineEvent(orderId, { eventType: 'LOCAL_FINALIZATION_FAILED', message: `Wallet capture failed: ${captureResult.error}` })
     }
   }
 
@@ -587,11 +598,25 @@ export async function processPartialFulfillment(input: {
   await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { capturedAmount: totalCaptured } })
 
   if (qtys.remainingQuantity === 0 && qtys.fulfilledQuantity > 0) {
+    // Never FULFILL an ICCID-backed order whose required capture failed: funds
+    // must be collected exactly once alongside provider success.
+    if (captureRequired && !walletCaptured) {
+      return { success: false, orderStatus: order.status, walletCaptured: false, eSIMsPersisted: true, error: `Wallet capture failed: ${captureError}`, recoveryRequired: true }
+    }
     await transitionOrder(orderId, 'FULFILLED')
-    await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { fulfillmentCompletedAt: new Date() } })
+    await prisma.eSIMPurchase.update({ where: { id: orderId }, data: { fulfillmentCompletedAt: new Date(), nextRetryAt: null, retryReason: null } })
     await createTimelineEvent(orderId, { eventType: 'ORDER_FULFILLED', message: `All ${qtys.fulfilledQuantity} eSIMs fulfilled` })
     publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.FULFILLED }).catch(() => {})
-    return { success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true }
+    await prisma.auditLog.create({
+      data: {
+        userId: userId || order.userId || '',
+        action: 'PROVIDER_FULFILLMENT_COMPLETED',
+        entity: 'Purchase',
+        entityId: orderId,
+        details: JSON.stringify({ providerId, providerRef, iccids: persistResult.iccids, totalAmount }),
+      },
+    }).catch(() => {})
+    return { success: true, orderStatus: 'FULFILLED', walletCaptured: walletCaptured || !captureRequired, eSIMsPersisted: true }
   }
 
   if (qtys.fulfilledQuantity > 0 && qtys.remainingQuantity > 0) {
@@ -602,5 +627,5 @@ export async function processPartialFulfillment(input: {
     return { success: true, orderStatus: 'PARTIALLY_FULFILLED', walletCaptured: walletCaptured, eSIMsPersisted: true }
   }
 
-  return { success: false, orderStatus: order.status, walletCaptured: false, eSIMsPersisted: false, error: 'No valid eSIMs in provider response' }
+  return { success: false, orderStatus: order.status, walletCaptured: false, eSIMsPersisted: false, error: 'No valid eSIMs in provider response', recoveryRequired: true }
 }

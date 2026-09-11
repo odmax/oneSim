@@ -90,11 +90,11 @@ describe('persistProviderFulfillment — idempotent eSIM persistence', () => {
     expect(result.success).toBe(true)
     expect(result.persistedQuantity).toBe(1)
     expect(mockPrisma.eSIM.create).not.toHaveBeenCalled()
-    expect(mockPrisma.eSIM.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        providerStatus: 'ACTIVE',
-      }),
-    }))
+    expect(mockPrisma.eSIM.update).toHaveBeenCalled()
+    const updateData = mockPrisma.eSIM.update.mock.calls[0][0].data
+    expect(updateData).toHaveProperty('status')
+    expect(updateData).not.toHaveProperty('providerStatus')
+    expect(updateData).not.toHaveProperty('providerActivationId')
   })
 
   it('3. does not overwrite activationCode with null when updating existing eSIM', async () => {
@@ -280,11 +280,15 @@ describe('completeProviderFinalization', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   it('8. completes full fulfillment: eSIMs → capture → FULFILLED', async () => {
-    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
+      if (args?.include?.esims) {
+        return Promise.resolve(mockOrder({ esims: [{ id: 'esim-1', iccid: '89012345678901234567' }] }))
+      }
+      return Promise.resolve(mockOrder())
+    })
     mockPrisma.eSIM.findMany.mockResolvedValue([])
     mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
     mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
-    mockPrisma.eSIM.count.mockResolvedValue(1)
     mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
       if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1', amount: -10 })
       return Promise.resolve(null)
@@ -600,11 +604,15 @@ describe('timeline events — idempotent and deduplicated', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   it('23. PROVIDER_FULFILLMENT_RECORDED event recorded during completeProviderFinalization', async () => {
-    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
+      if (args?.include?.esims) {
+        return Promise.resolve(mockOrder({ esims: [{ id: 'esim-1', iccid: '89012345678901234567' }] }))
+      }
+      return Promise.resolve(mockOrder())
+    })
     mockPrisma.eSIM.findMany.mockResolvedValue([])
     mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
     mockPrisma.eSIM.create.mockResolvedValue(mockEsim())
-    mockPrisma.eSIM.count.mockResolvedValue(1)
     mockPrisma.walletTransaction.findFirst.mockImplementation(({ where: { type } }: any) => {
       if (type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-1', amount: -10 })
       return Promise.resolve(null)

@@ -98,7 +98,12 @@ const FINALIZE_INPUT = {
 describe('finalization concurrency proof — A–G', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
+      if (args?.include?.esims) {
+        return Promise.resolve(mockOrder({ esims: [{ id: 'esim-new', iccid: '89012345678901234567', status: 'PENDING_ACTIVATION', providerActivationId: 'ref-1' }] }))
+      }
+      return Promise.resolve(mockOrder())
+    })
     mockPrisma.eSIM.findMany.mockResolvedValue([])
     mockPrisma.eSIM.create.mockResolvedValue({ id: 'esim-new', iccid: '89012345678901234567', status: 'PENDING_ACTIVATION' })
     mockPrisma.eSIM.count.mockResolvedValue(1)
@@ -176,9 +181,20 @@ describe('finalization concurrency proof — A–G', () => {
    */
   it('C: parallel partial fulfillments — correct eSIM count, cumulative capture', async () => {
     // Order requests 2 units; each parallel finalizer delivers 1 unique ICCID.
-    // After both persist, eSIM.count returns 2 → fully satisfied (no partial path).
+    // After both persist, the order rows carry 2 eSIMs → fully satisfied.
     const order = mockOrder({ quantity: 2 })
-    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(order)
+    mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
+      if (args?.include?.esims) {
+        return Promise.resolve(mockOrder({
+          quantity: 2,
+          esims: [
+            { id: 'esim-A', iccid: 'ICCID-A', status: 'PENDING_ACTIVATION', providerActivationId: 'ref-1' },
+            { id: 'esim-B', iccid: 'ICCID-B', status: 'PENDING_ACTIVATION', providerActivationId: 'ref-1' },
+          ],
+        }))
+      }
+      return Promise.resolve(order)
+    })
     const inputA = { ...FINALIZE_INPUT, providerResult: { iccids: ['ICCID-A'] } }
     const inputB = { ...FINALIZE_INPUT, providerResult: { iccids: ['ICCID-B'] } }
 
