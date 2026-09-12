@@ -17,8 +17,16 @@ function maskIccid(iccid: string | null | undefined): string {
 /** Backfill null sync schedules for existing eSIMs. Idempotent. */
 export async function backfillEsimSyncSchedules(): Promise<void> {
   const now = new Date()
+  // Null-schedule non-terminal eSIMs in active-ish / pending-ish states become
+  // eligible REGARDLESS of age. A null statusNextSyncAt means the row was never
+  // scheduled (created before the scheduler/backfill existed, or its schedule
+  // was cleared); the previous 24h createdAt gate permanently stranded older
+  // rows because ESIM_STATUS_SYNC only selects statusNextSyncAt <= now. Pure
+  // backfill: only null schedules are touched, populated schedules are never
+  // overwritten, terminal statuses are never scheduled, and no provider or
+  // wallet call is involved.
   await prisma.eSIM.updateMany({
-    where: { statusNextSyncAt: null, status: { in: ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'RESERVED'] }, createdAt: { gte: new Date(now.getTime() - 86400000) } },
+    where: { statusNextSyncAt: null, status: { in: ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'RESERVED'] } },
     data: { statusNextSyncAt: new Date(now.getTime() + 60000) },
   }).catch(() => {})
   await prisma.eSIM.updateMany({

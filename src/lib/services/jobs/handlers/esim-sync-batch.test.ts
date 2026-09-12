@@ -18,7 +18,7 @@ vi.mock('../recurring-jobs', () => ({
 
 const { prisma } = await import('@/lib/prisma')
 const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
-const { executeStatusSynchronization } = await import('./esim-sync-batch')
+const { executeStatusSynchronization, backfillEsimSyncSchedules } = await import('./esim-sync-batch')
 
 const mockPrisma = vi.mocked(prisma)
 const mockBuildConnector = vi.mocked(buildConnectorFromProvider)
@@ -313,5 +313,66 @@ describe('executeUsageSynchronization — capability gate + isolation', () => {
       where: { id: 'esim-1' },
       data: expect.objectContaining({ usageSyncRetryCount: 0 }),
     }))
+  })
+})
+
+describe('backfillEsimSyncSchedules — null-schedule pending/active backfill (age-independent)', () => {
+  const PENDING_STATUSES = ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'RESERVED']
+  const TERMINAL_STATUSES = ['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED']
+
+  function pendingBackfillCall() {
+    // The FIRST eSIM.updateMany call is the pending-state backfill.
+    return mockPrisma.eSIM.updateMany.mock.calls[0][0]
+  }
+
+  it('1. PROCESSING + null schedule + OLDER than 24h becomes eligible (no age gate)', async () => {
+    await backfillEsimSyncSchedules()
+    const call = pendingBackfillCall()
+    expect(call.where.statusNextSyncAt).toBeNull()
+    expect(call.where.status.in).toContain('PROCESSING')
+    expect(call.where.createdAt).toBeUndefined()
+    expect(call.data.statusNextSyncAt).toBeInstanceOf(Date)
+  })
+
+  it('2. PENDING_ACTIVATION + null schedule + older than 24h becomes eligible', async () => {
+    await backfillEsimSyncSchedules()
+    const call = pendingBackfillCall()
+    expect(call.where.status.in).toContain('PENDING_ACTIVATION')
+    expect(call.where.createdAt).toBeUndefined()
+  })
+
+  it('3. recent pending rows remain supported (same age-independent backfill)', async () => {
+    await backfillEsimSyncSchedules()
+    const call = pendingBackfillCall()
+    expect(call.where.status.in).toEqual(PENDING_STATUSES)
+    expect(call.where.createdAt).toBeUndefined()
+  })
+
+  it('4. already populated statusNextSyncAt is untouched (null-only backfill)', async () => {
+    await backfillEsimSyncSchedules()
+    const call = pendingBackfillCall()
+    expect(call.where.statusNextSyncAt).toBeNull()
+  })
+
+  it('5. terminal statuses remain unscheduled', async () => {
+    await backfillEsimSyncSchedules()
+    const pending = pendingBackfillCall().where.status.in
+    for (const t of TERMINAL_STATUSES) expect(pending).not.toContain(t)
+  })
+
+  it('6. repeated backfill is idempotent (same guarded predicate, no extra writes)', async () => {
+    await backfillEsimSyncSchedules()
+    await backfillEsimSyncSchedules()
+    expect(mockPrisma.eSIM.updateMany.mock.calls[0][0]).toEqual(mockPrisma.eSIM.updateMany.mock.calls[4][0])
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(8) // 4 per pass
+  })
+
+  it('7. backfill makes zero provider calls and zero wallet mutations', async () => {
+    await backfillEsimSyncSchedules()
+    expect(mockBuildConnector).not.toHaveBeenCalled()
+    // The mocked prisma surface for this module exposes no wallet methods, so a
+    // wallet mutation could not be invoked; assert only the 4 expected eSIM
+    // schedule passes exist (pending + active/installed + usage + cleanup).
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(4)
   })
 })
