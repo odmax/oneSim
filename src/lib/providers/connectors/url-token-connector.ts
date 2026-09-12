@@ -114,14 +114,29 @@ interface AuthAccount {
   userId?: string
 }
 
-/** Choice lifecycle value groups (case/underscore-insensitive). */
+/**
+ * Choice lifecycle value groups (case/underscore-insensitive).
+ *
+ * Vocabulary is that of the committed provider contract (Choice Wireless IMSI
+ * library Client API json v3.09.doc): package_status values `New` / `In Use`,
+ * package.status `active`, suspend/resume confirmations. Webhook threshold
+ * codes (1 = first usage, 2-5 = thresholds, 6 = maximum reached, 7 = package
+ * expiration) are normalized in choice-webhook-normalizer.
+ *
+ * `closed`, `deleted`, and `error` are NOT part of the documented Choice
+ * lifecycle vocabulary and are deliberately NOT mapped to terminal states:
+ * they fall through to the connector's weak non-terminal fallback so the
+ * canonical engine preserves any stored ACTIVE/INSTALLED/SUSPENDED/terminal
+ * state. Only documented authoritative lifecycle signals map to terminal
+ * EXPIRED / FAILED / CANCELLED.
+ */
 const CHOICE_STATUS_GROUPS: Record<string, string[]> = {
   ACTIVE: ['active', 'in use', 'in_use', 'enabled'],
   PENDING_ACTIVATION: ['new', 'pending', 'ready', 'ready to install', 'ready_to_install', 'provisioned'],
   SUSPENDED: ['suspended', 'suspend', 'disabled', 'blocked'],
-  EXPIRED: ['expired', 'closed'],
-  FAILED: ['failed', 'error', 'rejected'],
-  CANCELLED: ['cancelled', 'canceled', 'deleted'],
+  EXPIRED: ['expired'],
+  FAILED: ['failed', 'rejected'],
+  CANCELLED: ['cancelled', 'canceled'],
 }
 
 const MEANINGFUL_INTERNAL_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED']

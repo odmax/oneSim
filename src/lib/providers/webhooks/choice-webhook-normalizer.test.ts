@@ -76,6 +76,17 @@ describe('normalizeChoiceWebhook', () => {
       expect(result.providerStatus).toBe('EXPIRED')
     })
 
+    it('threshold_code 7 is the documented package-expiration notice (authoritative terminal, not a warning)', () => {
+      // Choice IMSI library Client API json v3.09.doc §definitions:
+      //   7 - notice of package expiration.
+      //   expire_time - package expires. Notice sent.
+      //   message - message will indicate the above threshold code event.
+      // A package-expiration notice is authoritative expiry → ESIM_EXPIRED.
+      const result = normalizeChoiceWebhook({ command: 'imsi_usage_threshold_notice', threshold_code: 7 })
+      expect(result.eventType).toBe('ESIM_EXPIRED')
+      expect(result.providerStatus).toBe('EXPIRED')
+    })
+
     it('detects expired from expiry message', () => {
       const result = normalizeChoiceWebhook({
         command: 'imsi_usage_threshold_notice',

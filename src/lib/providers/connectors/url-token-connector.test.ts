@@ -855,12 +855,71 @@ describe('UrlTokenConnector', () => {
       vi.unstubAllGlobals()
     })
 
-    it.each([['expired'], ['closed']])('maps %s to EXPIRED', async (variant) => {
+    it.each([['expired']])('maps %s to EXPIRED', async (variant) => {
       const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: variant } }))
       vi.stubGlobal('fetch', mockFetch)
 
       const result = await connector.getStatus({ iccid: '89012345678901234567' })
       expect(result.data?.status).toBe('EXPIRED')
+
+      vi.unstubAllGlobals()
+    })
+
+    // D2: `closed`, `deleted`, `error` are NOT part of the documented Choice
+    // lifecycle vocabulary (Choice IMSI library Client API json v3.09.doc lists
+    // only New/In Use/active + webhook threshold codes). They must never become
+    // terminal without authoritative proof: they fall through to the weak
+    // non-terminal fallback and the canonical engine preserves stronger states.
+    it.each([
+      ['closed', 'PENDING_ACTIVATION'],
+      ['deleted', 'PENDING_ACTIVATION'],
+      ['error', 'PENDING_ACTIVATION'],
+    ])('maps unproven status %s to non-terminal %s (not a terminal freeze)', async (variant, expected) => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: variant } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567' })
+      expect(result.success).toBe(true)
+      expect(result.data?.status).not.toBe('EXPIRED')
+      expect(result.data?.status).not.toBe('FAILED')
+      expect(result.data?.status).not.toBe('CANCELLED')
+      expect(result.data?.status).toBe(expected)
+
+      vi.unstubAllGlobals()
+    })
+
+    it('preserves stored ACTIVE when Choice returns a `closed` status (no downgrade, no terminal)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: 'closed', package_status: '' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567', currentStatus: 'ACTIVE' })
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.status).not.toBe('EXPIRED')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('preserves stored SUSPENDED when Choice returns a `deleted` status (no downgrade, no terminal)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: 'deleted', package_status: '' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567', currentStatus: 'SUSPENDED' })
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('SUSPENDED')
+      expect(result.data?.status).not.toBe('CANCELLED')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('preserves stored PENDING_ACTIVATION when Choice returns an `error` status (no terminal FAILED)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(okJson({ success: true, package: { status: 'error', package_status: '' } }))
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus({ iccid: '89012345678901234567', currentStatus: 'PENDING_ACTIVATION' })
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('PENDING_ACTIVATION')
+      expect(result.data?.status).not.toBe('FAILED')
 
       vi.unstubAllGlobals()
     })

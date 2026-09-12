@@ -215,4 +215,18 @@ describe('processProviderWebhookEvent — canonical lifecycle arbitration (D1)',
     await process(event, makeEsim({ status: 'PENDING_ACTIVATION' }))
     expect(lastEsimUpdate().providerResponse).toMatchObject({ webhook: 'ESIM_ACTIVATED', evidence: 'provider-active-no-evidence' })
   })
+
+  it('9/10/11. usage-threshold webhook (threshold_code 6, non-expiry) does NOT change lifecycle status', async () => {
+    // Choice `imsi_usage_threshold_notice` codes 2-6 are usage thresholds;
+    // only code 7 is the documented package-expiration notice. A code-6 event
+    // (USAGE_UPDATED) must never move a stored state — ACTIVE / SUSPENDED /
+    // PENDING_ACTIVATION all stay unchanged (no status field in the write).
+    const event = makeEvent({ payload: { body: { command: 'imsi_usage_threshold_notice', threshold_code: 6, imsi: '310150123456789' } } })
+    for (const status of ['ACTIVE', 'SUSPENDED', 'PENDING_ACTIVATION']) {
+      vi.clearAllMocks()
+      await process(event, makeEsim({ status }))
+      expect(mockPrisma.eSIM.update).toHaveBeenCalledTimes(1)
+      expect(lastEsimUpdate().status).toBeUndefined()
+    }
+  })
 })
