@@ -1234,6 +1234,120 @@ describe('US-Matrix status lookup (read-only evidence policy)', () => {
   })
 })
 
+describe('US-Matrix status read-failure hardening (failures never fabricate a lifecycle state)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.provider.findUnique.mockResolvedValue(mockProvider())
+    mockPrisma.provider.update.mockResolvedValue({})
+  })
+
+  it('network error during esimInfo → success:false NETWORK_ERROR, no fabricated status', async () => {
+    const fetchSpy = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('NETWORK_ERROR')
+    expect(r.data).toBeUndefined()
+  })
+
+  it('timeout during esimInfo → success:false TIMEOUT, never a lifecycle observation', async () => {
+    const fetchSpy = vi.fn().mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('TIMEOUT')
+    expect(r.data).toBeUndefined()
+  })
+
+  it('HTTP 500 provider outage → success:false HTTP_500 (NOT PENDING_ACTIVATION)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({ ok: false, status: 500, headers: new Headers({}), text: vi.fn().mockResolvedValue('server error') })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('HTTP_500')
+    expect(r.data).toBeUndefined()
+  })
+
+  it('HTTP 404 not-found → success:false HTTP_404, distinct from outage (never a fake status)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({ ok: false, status: 404, headers: new Headers({}), text: vi.fn().mockResolvedValue('not found') })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('HTTP_404')
+    expect(r.data).toBeUndefined()
+  })
+
+  it('HTTP 401 auth failure → success:false HTTP_401 (auth errors keep propagating)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({ ok: false, status: 401, headers: new Headers({}), text: vi.fn().mockResolvedValue('unauthorized') })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('HTTP_401')
+    expect(r.data).toBeUndefined()
+  })
+
+  it('HTTP 403 forbidden → success:false HTTP_403', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({ ok: false, status: 403, headers: new Headers({}), text: vi.fn().mockResolvedValue('forbidden') })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('HTTP_403')
+    expect(r.data).toBeUndefined()
+  })
+
+  it('2xx empty body (malformed) → success:false INVALID_RESPONSE, no fabricated state', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers({}), text: vi.fn().mockResolvedValue('') })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_RESPONSE')
+    expect(r.data).toBeUndefined()
+  })
+
+  it('2xx non-JSON body (malformed) → success:false INVALID_RESPONSE', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers({}), text: vi.fn().mockResolvedValue('not-json-at-all') })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_RESPONSE')
+  })
+
+  it('2xx unrecognized envelope (no activationProfile/profileLogs) → success:false INVALID_RESPONSE', async () => {
+    // A 200 with an error envelope (e.g. { success: false, errmsg }) is NOT the
+    // documented { activationProfile, profileLogs } read — never normalize it.
+    const fetchSpy = vi.fn().mockResolvedValueOnce(okJson({ success: true, errmsg: '' }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(false)
+    expect(r.error?.code).toBe('INVALID_RESPONSE')
+    expect(r.data).toBeUndefined()
+  })
+
+  it('event-log read failure does NOT abort a genuine info observation (info channel is authoritative for state)', async () => {
+    // The info read succeeded (ENABLED → device-installed evidence). The events
+    // read failing only means "no network-attach evidence" — it must NOT turn
+    // the whole read into a failure, and must NOT fabricate ACTIVE.
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(okJson({ activationProfile: { iccid: '8944501234567890123', eid: '8904305', imsi: '724543', status: 'ENABLED' }, profileLogs: [{ status: 'ENABLED', type: 'PROFILE', eventName: 'INSTALL', createdAt: '2026-08-01T10:00:00Z' }] }))
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const r = await connector.getStatus('esim-uuid-1')
+    expect(r.success).toBe(true)
+    expect(r.data?.status).toBe('INSTALLED')
+    expect(r.data?.evidence?.networkAttached).toBeFalsy()
+  })
+})
+
 describe('US-Matrix usage (POST /packages/usage, rate-group normalization)', () => {
   beforeEach(() => {
     vi.clearAllMocks()

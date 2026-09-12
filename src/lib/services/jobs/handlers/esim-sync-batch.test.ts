@@ -157,6 +157,24 @@ describe('executeStatusSynchronization — provider-neutral identifier', () => {
     expect(updateCall.data.statusNextSyncAt.getTime() - Date.now()).toBeLessThan(fiveMin + 5000)
   })
 
+  it('US-Matrix provider outage (HTTP_500) → retry increments, ESIM.status untouched, failed counted', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ status: 'ACTIVE', statusSyncRetryCount: 2 })])
+    const connector = choiceConnector({
+      getStatus: vi.fn().mockResolvedValue({ success: false, error: { code: 'HTTP_500', message: 'Provider server error' } }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    const result = await executeStatusSynchronization(10)
+
+    expect(result.failed).toBe(1)
+    expect(result.updated).toBe(0)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.statusSyncRetryCount).toEqual({ increment: 1 })
+    expect(updateCall.data).not.toHaveProperty('status')
+    expect(updateCall.data).not.toHaveProperty('providerStatus')
+    expect(updateCall.data.statusNextSyncAt.getTime() - Date.now()).toBeGreaterThanOrEqual(5 * 60 * 1000 - 5000)
+  })
+
   it('logs a safe failure diagnostic (masked ICCID, no payload)', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const connector = choiceConnector({

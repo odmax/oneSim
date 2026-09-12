@@ -242,3 +242,45 @@ describe('syncESIMStatus — canonical evidence pipeline (root-cause fix)', () =
     expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
   })
 })
+
+describe('US-Matrix read-failure state preservation (provider outage never rewrites status)', () => {
+  const states = ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'INSTALLED', 'ACTIVE', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED']
+  for (const state of states) {
+    it(`${state} + provider outage → stays ${state} (no write from a failed read)`, async () => {
+      mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: state }) as any)
+      const connector = statusConnector({
+        getStatus: vi.fn().mockResolvedValue({ success: false, error: { code: 'HTTP_500', message: 'Provider server error' } }),
+      })
+      mockBuildConnector.mockResolvedValue(connector as any)
+      const result = await syncESIMStatus('esim-1')
+      expect(result.success).toBe(false)
+      expect(result.error).toBe('Provider server error')
+      expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+    })
+  }
+
+  it('a failed status read does NOT reset retry/error metadata (row untouched)', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'ACTIVE', statusSyncRetryCount: 3 }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({ success: false, error: { code: 'NETWORK_ERROR', message: 'down' } }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.success).toBe(false)
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+  })
+
+  it('genuine successful pending provider response → PENDING_ACTIVATION through the shared engine', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'PENDING' }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PENDING', providerStatus: 'pending' } }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.success).toBe(true)
+    expect(result.newStatus).toBe('PENDING_ACTIVATION')
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBe('PENDING_ACTIVATION')
+    expect(updateCall.data.statusSyncRetryCount).toBe(0)
+  })
+})

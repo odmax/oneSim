@@ -1365,15 +1365,31 @@ export class UsMatrixConnector implements IProviderConnector {
 
     // 1) Vendor profile info (documented read-only). The exact response
     //    envelope is { activationProfile, profileLogs } — read directly.
+    //
+    //    A non-success read (transport / timeout / HTTP 4xx-5xx / auth / 404)
+    //    means we did NOT obtain a lifecycle observation. Propagate the failure
+    //    so sync can retry with meaningful counters and never fabricate a
+    //    "successful" status from an outage.
     const infoBody: GetEsimInfoRequestDTO = { esimId: esimUuid }
     const infoResult = await this.request('esimInfo', { method: 'POST', body: infoBody })
-    if (!infoResult.success && infoResult.error?.code === 'HTTP_401') {
-      return { success: false, error: infoResult.error }
+    if (!infoResult.success) {
+      return { success: false, error: infoResult.error || { code: 'STATUS_READ_FAILED', message: 'US-Matrix status read failed' } }
     }
 
-    const info = infoResult.success ? infoResult.data as GetEsimInfoResponseDTO | null : null
-    const profile: ActivationProfileDTO | undefined = info?.activationProfile
-    const profileLogs: ProfileLogDTO[] = Array.isArray(info?.profileLogs) ? info.profileLogs : []
+    const info = infoResult.data as GetEsimInfoResponseDTO | null
+    if (info == null || typeof info !== 'object') {
+      // 2xx with an empty or non-JSON body → malformed read: no lifecycle state
+      // to normalize. Surface a failure for retry; never fabricate a state.
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'US-Matrix /esims/info returned an empty or non-JSON body' } }
+    }
+    if (info.activationProfile === undefined && !('profileLogs' in info)) {
+      // 2xx but not the documented { activationProfile, profileLogs } envelope
+      // (e.g. an error envelope with HTTP 200) → unrecognized response shape.
+      return { success: false, error: { code: 'INVALID_RESPONSE', message: 'US-Matrix /esims/info returned an unrecognized response shape' } }
+    }
+
+    const profile: ActivationProfileDTO | undefined = info.activationProfile
+    const profileLogs: ProfileLogDTO[] = Array.isArray(info.profileLogs) ? info.profileLogs : []
 
     // 2) Network attach evidence (read-only event logs). The exact response
     //    envelope is { search_id, page_number, total_pages, data: [...] } —
