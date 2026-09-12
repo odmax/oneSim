@@ -55,7 +55,12 @@ function mapSubscriptionState(state: string): string {
     case 'ACTIVE':
       return 'ACTIVE'
     case 'CANCELLED':
-      return 'INACTIVE'
+      // SeamlessSubscriptionState.CANCELLED is the authoritative lifecycle
+      // state of the issued eSIM subscription (GET /subscriptions/{id}). It is
+      // canonical CANCELLED — a cancelled subscription must never surface as an
+      // unhandled alias (INACTIVE) that the shared engine would weaken to
+      // PENDING_ACTIVATION.
+      return 'CANCELLED'
     default:
       return 'PENDING_ACTIVATION'
   }

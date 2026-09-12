@@ -868,7 +868,7 @@ describe('TelnaSeamlessConnector', () => {
       vi.unstubAllGlobals()
     })
 
-    it('returns INACTIVE for cancelled subscription', async () => {
+    it('returns CANCELLED for a cancelled subscription (never INACTIVE, never PENDING_ACTIVATION)', async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true, status: 200,
         text: () => Promise.resolve(JSON.stringify({ subscriptionId: 'sub-cancelled', status: 'CANCELLED' })),
@@ -877,7 +877,23 @@ describe('TelnaSeamlessConnector', () => {
 
       const result = await connector.getStatus('sub-cancelled')
       expect(result.success).toBe(true)
-      expect(result.data?.status).toBe('INACTIVE')
+      expect(result.data?.status).toBe('CANCELLED')
+      expect(result.data?.status).not.toBe('INACTIVE')
+      expect(result.data?.status).not.toBe('PENDING_ACTIVATION')
+
+      vi.unstubAllGlobals()
+    })
+
+    it('keeps unknown subscription status on the existing safe PENDING_ACTIVATION fallback', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true, status: 200,
+        text: () => Promise.resolve(JSON.stringify({ subscriptionId: 'sub-unknown', status: 'READY' })),
+      })
+      vi.stubGlobal('fetch', mockFetch)
+
+      const result = await connector.getStatus('sub-unknown')
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('PENDING_ACTIVATION')
 
       vi.unstubAllGlobals()
     })

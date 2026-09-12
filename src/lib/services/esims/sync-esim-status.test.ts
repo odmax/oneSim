@@ -353,3 +353,56 @@ describe('Telna weak non-terminal signal preserves stronger stored state (ERROR 
     expect(updateCall.data.status).toBeUndefined()
   })
 })
+
+describe('Seamless cancellation normalization through the shared engine (CANCELLED never becomes PENDING_ACTIVATION)', () => {
+  it('stored PENDING_ACTIVATION + Seamless CANCELLED → persisted CANCELLED', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'PENDING_ACTIVATION' }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'CANCELLED', rawStatus: 'CANCELLED', iccid: '8944501234567890123' },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.success).toBe(true)
+    expect(result.newStatus).toBe('CANCELLED')
+    expect(result.statusChanged).toBe(true)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBe('CANCELLED')
+    expect(updateCall.data.status).not.toBe('PENDING_ACTIVATION')
+  })
+
+  it('stored ACTIVE + Seamless CANCELLED → persisted CANCELLED', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'ACTIVE', activatedAt: new Date('2026-01-01') }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'CANCELLED', rawStatus: 'CANCELLED', iccid: '8944501234567890123' },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.success).toBe(true)
+    expect(result.newStatus).toBe('CANCELLED')
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBe('CANCELLED')
+  })
+
+  it('stored EXPIRED + Seamless CANCELLED → EXPIRED preserved by canonical terminal protection', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'EXPIRED' }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'CANCELLED', rawStatus: 'CANCELLED', iccid: '8944501234567890123' },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.success).toBe(true)
+    expect(result.newStatus).toBe('EXPIRED')
+    expect(result.statusChanged).toBe(false)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+  })
+})
