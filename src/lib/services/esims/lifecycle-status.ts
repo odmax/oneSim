@@ -84,8 +84,16 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
     return { status: currentUpper, setActivatedAt: false, reason: 'monotonic-preserve-active' }
   }
 
-  // 3. Explicit device-installed signal from provider
+  // 3. Explicit device-installed signal from provider. A device/install signal
+  //    is weaker than authoritative local evidence: it never downgrades ACTIVE
+  //    (which holds stronger activation evidence) and never erases a provider
+  //    suspension. It upgrades provisioning states (PENDING / PROCESSING /
+  //    PENDING_ACTIVATION / INSTALLING) up to INSTALLED, and is a no-op for a
+  //    current INSTALLED.
   if (providerInstalledSignal || DEVICE_ACTIVATION_SIGNALS.includes(upper)) {
+    if (currentUpper === 'ACTIVE' || currentUpper === 'SUSPENDED') {
+      return { status: currentUpper, setActivatedAt: false, reason: 'preserve-authoritative-on-installed-signal' }
+    }
     return { status: 'INSTALLED', setActivatedAt: !hasActivationHistory(activatedAt), reason: 'provider-installed-signal' }
   }
 

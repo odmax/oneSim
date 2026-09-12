@@ -608,3 +608,97 @@ describe('deriveEsimLifecycleStatus — Phase 1 hardening transition matrix', ()
     }
   })
 })
+
+describe('device/install-signal precedence (Phase 1 follow-up)', () => {
+  // A device/install signal is weaker than authoritative local evidence:
+  // it must never downgrade ACTIVE or erase SUSPENDED.
+
+  it('96. ACTIVE + INSTALLED provider value stays ACTIVE', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'INSTALLED', currentStatus: 'ACTIVE' }))
+    expect(r.status).toBe('ACTIVE')
+    expect(r.setActivatedAt).toBe(false)
+    expect(r.reason).toBe('preserve-authoritative-on-installed-signal')
+  })
+
+  it('97. ACTIVE + DEVICE_ACTIVATED provider value stays ACTIVE', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'DEVICE_ACTIVATED', currentStatus: 'ACTIVE' }))
+    expect(r.status).toBe('ACTIVE')
+    expect(r.reason).toBe('preserve-authoritative-on-installed-signal')
+  })
+
+  it('98. ACTIVE + providerInstalledSignal=true stays ACTIVE', () => {
+    const r = deriveEsimLifecycleStatus(input({ currentStatus: 'ACTIVE', providerInstalledSignal: true }))
+    expect(r.status).toBe('ACTIVE')
+    expect(r.reason).toBe('preserve-authoritative-on-installed-signal')
+  })
+
+  it('99. ACTIVE + ATTACHED/ONLINE device signal stays ACTIVE', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ATTACHED', currentStatus: 'ACTIVE' })).status).toBe('ACTIVE')
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ONLINE', currentStatus: 'ACTIVE' })).status).toBe('ACTIVE')
+  })
+
+  it('100. SUSPENDED + INSTALLED provider value stays SUSPENDED (no erase)', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'INSTALLED', currentStatus: 'SUSPENDED' }))
+    expect(r.status).toBe('SUSPENDED')
+    expect(r.reason).toBe('preserve-authoritative-on-installed-signal')
+  })
+
+  it('101. SUSPENDED + DEVICE_ACTIVATED provider value stays SUSPENDED (no erase)', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'DEVICE_ACTIVATED', currentStatus: 'SUSPENDED' }))
+    expect(r.status).toBe('SUSPENDED')
+    expect(r.reason).toBe('preserve-authoritative-on-installed-signal')
+  })
+
+  it('102. SUSPENDED + providerInstalledSignal=true stays SUSPENDED (no erase)', () => {
+    const r = deriveEsimLifecycleStatus(input({ currentStatus: 'SUSPENDED', providerInstalledSignal: true, activatedAt: null }))
+    expect(r.status).toBe('SUSPENDED')
+    expect(r.reason).toBe('preserve-authoritative-on-installed-signal')
+  })
+
+  it('103. SUSPENDED + IN_USE/ONLINE device signal stays SUSPENDED', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'IN_USE', currentStatus: 'SUSPENDED' })).status).toBe('SUSPENDED')
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ONLINE', currentStatus: 'SUSPENDED' })).status).toBe('SUSPENDED')
+  })
+
+  // Device signals still promote earlier provisioning states up to INSTALLED.
+  it('104. INSTALLED + device signal stays INSTALLED', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ONLINE', currentStatus: 'INSTALLED', providerInstalledSignal: true })).status).toBe('INSTALLED')
+  })
+
+  it('105. PENDING_ACTIVATION + device signal → INSTALLED', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'INSTALLED', currentStatus: 'PENDING_ACTIVATION' })).status).toBe('INSTALLED')
+  })
+
+  it('106. PROCESSING + device signal → INSTALLED', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'IN_USE', currentStatus: 'PROCESSING', providerInstalledSignal: true })).status).toBe('INSTALLED')
+  })
+
+  it('107. PENDING + device signal → INSTALLED', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'DEVICE_ACTIVATED', currentStatus: 'PENDING' })).status).toBe('INSTALLED')
+  })
+
+  // Terminal states remain untouched by device signals.
+  it('108. EXPIRED + device signal stays EXPIRED', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'INSTALLED', currentStatus: 'EXPIRED', providerInstalledSignal: true })).status).toBe('EXPIRED')
+  })
+
+  it('109. FAILED + device signal stays FAILED', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'DEVICE_ACTIVATED', currentStatus: 'FAILED' })).status).toBe('FAILED')
+  })
+
+  it('110. CANCELLED + device signal stays CANCELLED', () => {
+    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ONLINE', currentStatus: 'CANCELLED', providerInstalledSignal: true })).status).toBe('CANCELLED')
+  })
+
+  // Exhaustive: no device/install signal downgrades ACTIVE / INSTALLED / SUSPENDED.
+  it('111. no device/install signal ever downgrades ACTIVE / INSTALLED / SUSPENDED', () => {
+    const signals = ['INSTALLED', 'ACTIVATED_ON_DEVICE', 'DEVICE_ACTIVATED', 'IN_USE', 'ONLINE', 'ATTACHED']
+    const currents = ['ACTIVE', 'INSTALLED', 'SUSPENDED']
+    for (const current of currents) {
+      for (const provider of signals) {
+        expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: provider, currentStatus: current })).status).toBe(current)
+      }
+      expect(deriveEsimLifecycleStatus(input({ currentStatus: current, providerInstalledSignal: true })).status).toBe(current)
+    }
+  })
+})
