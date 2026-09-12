@@ -709,3 +709,130 @@ describe('order status safety (Task 8)', () => {
     expect(true).toBe(true)
   })
 })
+
+describe('Telna reconciliation staging shape (regression)', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('29. reconciliation success on existing PROCESSING claim → FULFILLED + PENDING_ACTIVATION, providerActivationId=C, single cumulative capture', async () => {
+    const ICCID_A = '89012345678901234567'
+    const PROVIDER_C = 'C-TELNA-PKG-123'
+
+    // Existing eSIM as it exists mid-flight after a successful Telna package
+    // creation: claimed (iccid A), still PROCESSING locally, install data already
+    // present (READY), provider identity NOT yet bound (''), no activation.
+    const esimA = {
+      id: 'esim-1',
+      iccid: ICCID_A,
+      status: 'PROCESSING',
+      activationCode: 'LPA:1$smdp.example.com$matching',
+      qrCodeUrl: null,
+      qrCode: null,
+      smdpAddress: 'smdp.example.com',
+      matchingId: 'matching-123',
+      installationStatus: 'READY',
+      dataUsedMB: 0,
+      activatedAt: null,
+      providerStatus: null,
+      providerActivationId: '',
+      providerResponse: null,
+    }
+
+    // Order paused in PROVIDER_RECONCILIATION: quantity 1, reserved, no prior
+    // accounting, with authoritative provider reference C durably persisted and
+    // a pending retry scheduled before finalization.
+    const order = mockOrder({
+      status: 'PROVIDER_RECONCILIATION',
+      fulfilledQuantity: 0,
+      failedQuantity: 0,
+      providerFulfillId: PROVIDER_C,
+      nextRetryAt: new Date('2026-09-01T00:00:00Z'),
+      retryReason: 'provider-ambiguous',
+    })
+
+    mockPrisma.eSIMPurchase.findUnique.mockImplementation((args: any) => {
+      if (args?.include?.esims) return Promise.resolve({ ...order, esims: [esimA] })
+      return Promise.resolve(order)
+    })
+    mockPrisma.eSIM.findMany.mockResolvedValue([esimA])
+    mockPrisma.eSIMPackage.findUnique.mockResolvedValue({ validityDays: 30 })
+
+    const orderUpdates: any[] = []
+    mockPrisma.eSIMPurchase.update.mockImplementation((args: any) => {
+      orderUpdates.push(args.data)
+      return Promise.resolve({})
+    })
+    const esimUpdates: any[] = []
+    mockPrisma.eSIM.update.mockImplementation((args: any) => {
+      esimUpdates.push(args.data)
+      return Promise.resolve({})
+    })
+
+    // Wallet: exactly one reserve, no release, no refund, no prior capture.
+    let captures: Array<{ amount: number }> = []
+    mockPrisma.walletTransaction.findFirst.mockImplementation(({ where }: any) => {
+      if (where?.type === 'WALLET_RESERVE') return Promise.resolve({ id: 'tx-reserve', amount: -10 })
+      return Promise.resolve(null)
+    })
+    mockPrisma.walletTransaction.findMany.mockImplementation(({ where }: any) => {
+      if (where?.type === 'WALLET_CAPTURE') return Promise.resolve(captures)
+      return Promise.resolve([])
+    })
+    mockPrisma.walletTransaction.create.mockImplementation(({ data }: any) => {
+      if (data?.type === 'WALLET_CAPTURE') captures = [...captures, { amount: data.amount ?? 0 }]
+      return Promise.resolve({ id: 'cap-1', ...data })
+    })
+    mockTransition.mockResolvedValue({ success: true })
+
+    const result = await completeProviderFinalization({
+      orderId: 'order-1',
+      businessId: 'biz-1',
+      providerId: 'prov-telna',
+      providerRef: PROVIDER_C,
+      providerName: 'Telna',
+      totalAmount: 10,
+      providerResult: { iccids: [ICCID_A] },
+    })
+
+    // Finalizer result — success, not partial, wallet captured.
+    expect(result.success).toBe(true)
+    expect(result.orderStatus).toBe('FULFILLED')
+    expect(result.walletCaptured).toBe(true)
+    expect(result.eSIMsPersisted).toBe(true)
+
+    // eSIM: existing claim row UPDATED (never re-created) — canonical lifecycle,
+    // install data preserved, authoritative C bound (never '' or a local UUID).
+    expect(mockPrisma.eSIM.create).not.toHaveBeenCalled()
+    expect(esimUpdates).toHaveLength(1)
+    const updateData = esimUpdates[0]
+    expect(updateData.status).toBe('PENDING_ACTIVATION')
+    expect(updateData.status).not.toBe('PROCESSING')
+    expect(updateData.providerActivationId).toBe(PROVIDER_C)
+    expect(updateData.providerActivationId).not.toBe('')
+    expect(updateData.providerActivationId).not.toBe(esimA.id)
+    expect(updateData.installationStatus).toBe('READY')
+    expect(updateData).not.toHaveProperty('activationCode') // preserved, never overwritten
+
+    // Order: canonical accounting, terminal FULFILLED with cleared retry state.
+    expect(mockTransition).toHaveBeenCalledWith('order-1', 'FULFILLED')
+    const fulfUpdate = orderUpdates.find(u => u.fulfilledQuantity === 1)
+    expect(fulfUpdate).toBeDefined()
+    expect(fulfUpdate!.failedQuantity).toBe(0)
+    expect(orderUpdates.some(u => u.capturedAmount === 10)).toBe(true)
+    expect(orderUpdates.some(u => u.fulfillmentCompletedAt instanceof Date && u.nextRetryAt === null && u.retryReason === null)).toBe(true)
+    expect(orderUpdates.some(u => u.providerFulfillId === PROVIDER_C)).toBe(true)
+
+    // Wallet: exactly one cumulative capture for the single fulfilled unit
+    // ($10 unit × 1 = $10); never a release or refund.
+    const walletCalls = mockPrisma.walletTransaction.create.mock.calls.map((c: any) => c[0].data)
+    const capturesCreated = walletCalls.filter((d: any) => d.type === 'WALLET_CAPTURE')
+    expect(capturesCreated).toHaveLength(1)
+    expect(capturesCreated[0].amount).toBe(10)
+    expect(walletCalls.some((d: any) => d.type === 'WALLET_RELEASE' || d.type === 'WALLET_REFUND')).toBe(false)
+
+    // Safety: no provider dispatch, no purchase, no reconciliation attempt
+    // record, no refund/release, no fail.
+    expect(mockPrisma.providerAttempt.create).not.toHaveBeenCalled()
+    expect(mockPrisma.eSIM.create).not.toHaveBeenCalled()
+    expect(failOrder).not.toHaveBeenCalled()
+  })
+})
