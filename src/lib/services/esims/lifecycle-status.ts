@@ -31,12 +31,23 @@ export interface LifecycleResult {
   reason: string
 }
 
-/** Statuses that represent a meaningful lifecycle state and should be preserved
- *  unless the provider explicitly reports a terminal/better state. */
-const STICKY_STATUSES = ['ACTIVE', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED']
+/**
+ * Canonical provider-terminal lifecycle states. Once the canonical engine maps
+ * a provider report into one of these, the eSIM must never be pulled back out by
+ * a later weaker, unrecognized, or ambiguous report (e.g. an unverified ACTIVE
+ * claim, a device-installed signal, a PENDING report, or an unknown value).
+ * Legitimate recovery flows operate above this engine and rewrite the row
+ * directly, so no in-engine exit is needed.
+ */
+const TERMINAL_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED']
 
-/** Statuses from which we never regress to a "not yet active" state. */
-const NEVER_REGRESS_TO_PENDING_FROM = ['ACTIVE', 'INSTALLED', 'INSTALLING']
+/** Lifecycle states backed by OneSIM's own device/activation evidence (or a
+ *  provider suspension that has no legitimate silent exit). A weaker or
+ *  unrecognized provider report must never downgrade these to a "not yet
+ *  active" provisioning state; they may still move to recognized authoritative
+ *  terminal states (SUSPENDED/EXPIRED/FAILED/CANCELLED) or to ACTIVE via
+ *  canonical evidence. */
+const PRESERVABLE_CURRENT_STATUSES = ['ACTIVE', 'INSTALLED', 'INSTALLING', 'SUSPENDED']
 
 /** Provider-reported statuses that represent device-level activation. */
 const DEVICE_ACTIVATION_SIGNALS = ['INSTALLED', 'ACTIVATED_ON_DEVICE', 'DEVICE_ACTIVATED', 'IN_USE', 'ONLINE', 'ATTACHED']
@@ -58,20 +69,29 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
   const upper = providerNormalizedStatus.toUpperCase()
   const currentUpper = (currentStatus || '').toUpperCase()
 
-  // Monotonic guard: never regress from a device-active state to "not yet
-  // active" based on a weaker provider provisioning report (Part 23).
-  if (NEVER_REGRESS_TO_PENDING_FROM.includes(currentUpper) && WEAKER_PROVISIONING_STATES.includes(upper)) {
+  // 1. Canonical terminal states are one-way: never resurrect EXPIRED, FAILED,
+  //    or CANCELLED from a weaker/unrecognized/ambiguous provider report
+  //    (unverified ACTIVE claim, device-installed signal, PENDING report, or
+  //    unknown value). Preserve the terminal state and only the terminal state.
+  if (TERMINAL_STATUSES.includes(currentUpper)) {
+    return { status: currentUpper, setActivatedAt: false, reason: 'preserve-terminal' }
+  }
+
+  // 2. Monotonic guard: never regress from a state backed by OneSIM's own
+  //    device/activation evidence (or from a provider suspension) to a "not
+  //    yet active" provisioning state based on a weaker provider report.
+  if (PRESERVABLE_CURRENT_STATUSES.includes(currentUpper) && WEAKER_PROVISIONING_STATES.includes(upper)) {
     return { status: currentUpper, setActivatedAt: false, reason: 'monotonic-preserve-active' }
   }
 
-  // Explicit device-installed signal from provider
+  // 3. Explicit device-installed signal from provider
   if (providerInstalledSignal || DEVICE_ACTIVATION_SIGNALS.includes(upper)) {
     return { status: 'INSTALLED', setActivatedAt: !hasActivationHistory(activatedAt), reason: 'provider-installed-signal' }
   }
 
-  // Provider says ACTIVE — check for usage/activation evidence. The connector
-  // may provide VERIFIED network-attach evidence (providerNetworkAttachedSignal)
-  // that proves device activation without usage history.
+  // 4. Provider says ACTIVE — check for usage/activation evidence. The connector
+  //    may provide VERIFIED network-attach evidence (providerNetworkAttachedSignal)
+  //    that proves device activation without usage history.
   if (upper === 'ACTIVE') {
     if (hasActivationHistory(activatedAt)) {
       return { status: 'ACTIVE', setActivatedAt: false, reason: 'already-activated' }
@@ -82,41 +102,47 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
     if (hasUsageEvidence(dataUsedMB)) {
       return { status: 'ACTIVE', setActivatedAt: !hasActivationHistory(activatedAt), reason: 'usage-evidence' }
     }
-    // Already ACTIVE and provider confirms — preserve existing state
     if (currentUpper === 'ACTIVE') {
       return { status: 'ACTIVE', setActivatedAt: false, reason: 'preserve-active' }
     }
-    // Provider says active but no evidence → pending activation
+    // Provider claims active but has no evidence: never fabricate ACTIVE, and
+    // never let an unverified claim downgrade stronger local evidence either.
+    if (PRESERVABLE_CURRENT_STATUSES.includes(currentUpper)) {
+      return { status: currentUpper, setActivatedAt: false, reason: 'preserve-authoritative-on-weak-active' }
+    }
     return { status: 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'provider-active-no-evidence' }
   }
 
-  // Explicit pending states
+  // 5. Explicit pending states
   if (upper === 'PENDING_ACTIVATION' || upper === 'PENDING') {
     return { status: 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'provider-pending' }
   }
 
-  // Failed/error states
+  // 6. Failed/error states
   if (upper === 'FAILED' || upper === 'ERROR' || upper === 'REJECTED') {
     return { status: 'FAILED', setActivatedAt: false, reason: 'provider-failed' }
   }
 
-  // Suspended
+  // 7. Suspended
   if (upper === 'SUSPENDED' || upper === 'DISABLED') {
     return { status: 'SUSPENDED', setActivatedAt: false, reason: 'provider-suspended' }
   }
 
-  // Expired
+  // 8. Expired
   if (upper === 'EXPIRED' || upper === 'EXPIRING') {
     return { status: 'EXPIRED', setActivatedAt: false, reason: 'provider-expired' }
   }
 
-  // CANCELLED
+  // 9. CANCELLED
   if (upper === 'CANCELLED' || upper === 'CANCELED') {
     return { status: 'CANCELLED', setActivatedAt: false, reason: 'provider-cancelled' }
   }
 
-  // Unknown provider status — preserve current if meaningful
-  if (STICKY_STATUSES.includes(currentUpper)) {
+  // 10. Unknown provider status — fail-safe: an unrecognized value must not
+  //     destroy canonical authoritative (device evidence / activation /
+  //     suspension) or canonical terminal evidence. Only early/non-authoritative
+  //     states fall back to PENDING_ACTIVATION.
+  if (PRESERVABLE_CURRENT_STATUSES.includes(currentUpper) || TERMINAL_STATUSES.includes(currentUpper)) {
     return { status: currentUpper, setActivatedAt: false, reason: 'preserve-current-on-unknown-provider' }
   }
 
