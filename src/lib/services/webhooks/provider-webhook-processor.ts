@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { normalizeChoiceWebhook } from '@/lib/providers/webhooks/choice-webhook-normalizer'
+import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
 
 export interface NormalizedWebhookEvent {
   providerType: string
@@ -30,6 +31,27 @@ export function normalizeProviderWebhook(providerType: string, payload: any): No
     return normalizer(payload)
   }
   return normalizeGeneric(payload, providerType)
+}
+
+/**
+ * Maps a normalized lifecycle event to the provider-normalized canonical claim
+ * that the shared lifecycle engine arbitrates. This is a CLAIM, not evidence:
+ * ACTIVE still requires activation history / verified network attach / usage
+ * evidence inside deriveEsimLifecycleStatus (rule 4). EXPIRED / SUSPENDED map
+ * to their canonical states and inherit terminal/monotonic protection.
+ */
+export function webhookLifecycleClaim(eventType: NormalizedWebhookEvent['eventType']): string {
+  switch (eventType) {
+    case 'ESIM_EXPIRED':
+      return 'EXPIRED'
+    case 'ESIM_SUSPENDED':
+      return 'SUSPENDED'
+    case 'ESIM_RESUMED':
+    case 'ESIM_ACTIVATED':
+      return 'ACTIVE'
+    default:
+      return 'PENDING_ACTIVATION'
+  }
 }
 
 function normalizeGeneric(payload: any, providerType: string): NormalizedWebhookEvent {
@@ -110,22 +132,48 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
     const now = new Date()
 
     switch (normalized.eventType) {
-      case 'ESIM_ACTIVATED': {
+      // Lifecycle events are routed through the SHARED canonical engine
+      // (deriveEsimLifecycleStatus) — exactly like polling/status sync. The
+      // webhook processor never re-implements a provider state machine and
+      // never directly forces ACTIVE/EXPIRED/SUSPENDED from the event NAME.
+      // Terminal preservation (EXPIRED/FAILED/CANCELLED are one-way) and
+      // monotonic protection come from the engine, so a stale/late/out-of-order
+      // webhook cannot resurrect a terminal eSIM or downgrade a stronger state.
+      case 'ESIM_ACTIVATED':
+      case 'ESIM_EXPIRED':
+      case 'ESIM_SUSPENDED':
+      case 'ESIM_RESUMED': {
         const existing = await prisma.eSIM.findUnique({ where: { id: esimId } })
-        const activatedAt = normalized.activatedAt ? new Date(normalized.activatedAt) : (existing?.activatedAt || now)
-
-        await prisma.eSIM.update({
-          where: { id: esimId },
-          data: {
-            status: 'ACTIVE',
-            providerStatus: normalized.providerStatus || 'ACTIVE',
-            activatedAt,
-            ...(existing && !existing.activationDetectedAt ? { activationDetectedAt: now } : {}),
-            lastUsageAt: normalized.usageDate ? new Date(normalized.usageDate) : now,
-            lastSyncAt: now,
-            lastStatusSyncAt: now,
-          },
+        const claim = webhookLifecycleClaim(normalized.eventType)
+        const lifecycle = deriveEsimLifecycleStatus({
+          providerNormalizedStatus: claim,
+          currentStatus: existing?.status || 'PENDING_ACTIVATION',
+          dataUsedMB: (existing?.dataUsedMB || 0) || (normalized.dataUsedMB || 0),
+          activatedAt: existing?.activatedAt ?? null,
         })
+        const lifecycleWrite: any = {
+          status: lifecycle.status,
+          providerStatus: normalized.providerStatus || lifecycle.status,
+          lastSyncAt: now,
+          lastStatusSyncAt: now,
+        }
+        if (normalized.usageDate) lifecycleWrite.lastUsageAt = new Date(normalized.usageDate)
+        if (normalized.eventType === 'ESIM_EXPIRED' && normalized.expiresAt) lifecycleWrite.expiresAt = new Date(normalized.expiresAt)
+        // Activation history is only set when the engine authorizes it from
+        // real evidence (usage/network/activation history) — never fabricated
+        // from the event name or a raw timestamp.
+        if (lifecycle.setActivatedAt && existing && !existing.activatedAt) {
+          lifecycleWrite.activatedAt = normalized.activatedAt ? new Date(normalized.activatedAt) : now
+          lifecycleWrite.activationDetectedAt = now
+        }
+        lifecycleWrite.providerResponse = {
+          ...(existing?.providerResponse && typeof existing.providerResponse === 'object' ? existing.providerResponse as Record<string, unknown> : {}),
+          webhook: normalized.eventType,
+          rawStatus: normalized.providerStatus || claim,
+          evidence: lifecycle.reason,
+          evidenceObservedAt: now.toISOString(),
+        }
+        await prisma.eSIM.update({ where: { id: esimId }, data: lifecycleWrite })
         break
       }
 
@@ -146,23 +194,6 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
             timestamp: normalized.usageDate ? new Date(normalized.usageDate) : now,
           },
         })
-        break
-      }
-
-      case 'ESIM_EXPIRED': {
-        const expData: any = { status: 'EXPIRED', providerStatus: 'EXPIRED', lastSyncAt: now, lastStatusSyncAt: now }
-        if (normalized.expiresAt) expData.expiresAt = new Date(normalized.expiresAt)
-        await prisma.eSIM.update({ where: { id: esimId }, data: expData })
-        break
-      }
-
-      case 'ESIM_SUSPENDED': {
-        await prisma.eSIM.update({ where: { id: esimId }, data: { status: 'SUSPENDED', providerStatus: 'SUSPENDED', lastSyncAt: now, lastStatusSyncAt: now } })
-        break
-      }
-
-      case 'ESIM_RESUMED': {
-        await prisma.eSIM.update({ where: { id: esimId }, data: { status: 'ACTIVE', providerStatus: 'ACTIVE', lastSyncAt: now, lastStatusSyncAt: now } })
         break
       }
 
