@@ -284,3 +284,72 @@ describe('US-Matrix read-failure state preservation (provider outage never rewri
     expect(updateCall.data.statusSyncRetryCount).toBe(0)
   })
 })
+
+describe('Telna weak non-terminal signal preserves stronger stored state (ERROR normalization)', () => {
+  it('stored ACTIVE + Telna weak PENDING_ACTIVATION (profile ERROR fall-through) → stays ACTIVE, no status write', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'ACTIVE', activatedAt: new Date('2026-01-01') }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          status: 'PENDING_ACTIVATION',
+          rawStatus: 'ERROR',
+          evidence: { reason: 'telna-no-strong-evidence' },
+          rawMetadata: { source: 'sim-registry+euicc-profiles', profileState: 'ERROR' },
+        },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.success).toBe(true)
+    expect(result.newStatus).toBe('ACTIVE')
+    expect(result.statusChanged).toBe(false)
+    expect(result.status).toBe('ACTIVE')
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+  })
+
+  it('stored INSTALLED + Telna weak PENDING_ACTIVATION (profile ERROR fall-through) → stays INSTALLED', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'INSTALLED' }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          status: 'PENDING_ACTIVATION',
+          rawStatus: 'ERROR',
+          evidence: { reason: 'telna-no-strong-evidence' },
+          rawMetadata: { source: 'sim-registry+euicc-profiles', profileState: 'ERROR' },
+        },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.success).toBe(true)
+    expect(result.newStatus).toBe('INSTALLED')
+    expect(result.statusChanged).toBe(false)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+  })
+
+  it('stored SUSPENDED + Telna weak PENDING_ACTIVATION (profile ERROR fall-through) → stays SUSPENDED', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'SUSPENDED' }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          status: 'PENDING_ACTIVATION',
+          rawStatus: 'ERROR',
+          evidence: { reason: 'telna-no-strong-evidence' },
+          rawMetadata: { source: 'sim-registry+euicc-profiles', profileState: 'ERROR' },
+        },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.success).toBe(true)
+    expect(result.newStatus).toBe('SUSPENDED')
+    expect(result.statusChanged).toBe(false)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+  })
+})

@@ -969,10 +969,22 @@ export class TelnaConnector implements IProviderConnector {
     let status: string
     let evidence: StatusResult['evidence']
 
-    if (simStatus === 'TERMINATED' || profileState === 'DELETED' || profileState === 'UNAVAILABLE' || profileState === 'ERROR' || exactPackageStatus === 'TERMINATED') {
-      // Strong terminal SIM / profile / exact-package evidence.
+    // Terminal evidence is limited to the SIM registry and the exact package
+    // record. The eUICC profile states DELETED / UNAVAILABLE / ERROR are NOT
+    // terminal: they describe profile delivery or removal at the eUICC layer
+    // (a failed download/install or a profile no longer present), which is not
+    // proof the subscription expired. They fall through to the weak branches
+    // below so the canonical engine preserves any stronger stored state.
+    if (simStatus === 'TERMINATED') {
+      // SIM TERMINATED = the physical eSIM is terminated at the provider —
+      // strong terminal SIM evidence.
       status = 'EXPIRED'
       evidence = { reason: 'telna-sim-terminated' }
+    } else if (exactPackageStatus === 'TERMINATED') {
+      // The exact GET /v2.1/pcr/packages/{package_id} record of the purchased
+      // instance is TERMINATED — authoritative terminal evidence for it.
+      status = 'EXPIRED'
+      evidence = { reason: 'telna-package-terminated' }
     } else if (simStatus === 'SUSPENDED' || profileState === 'DISABLED') {
       // SIM/profile locally suspended or disabled.
       status = 'SUSPENDED'
