@@ -32,7 +32,14 @@ const IBASIS_STATUS_MAP: Record<string, string> = {
   activation_pending: 'PENDING',
   active: 'ACTIVE',
   suspended: 'SUSPENDED',
-  deactivated: 'INACTIVE',
+  // `deactivated` is the same iBASIS lifecycle concept as in the subscription
+  // mapper (GET /subscriptions/{id}): a permanently ended subscription —
+  // distinct from the reversible `suspended` status (suspend/restore exist).
+  // It is the canonical terminal EXPIRED, NOT the non-canonical INACTIVE.
+  deactivated: 'EXPIRED',
+  // `inactive` is a distinct inventory token inside the iBASIS SIM-inventory
+  // vocabulary; kept as the inventory-level INACTIVE label and never used as a
+  // canonical lifecycle signal.
   inactive: 'INACTIVE',
   retired: 'RETIRED',
   cancelled: 'RETIRED',

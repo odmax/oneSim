@@ -16,11 +16,31 @@ describe('normalizeSimStatus', () => {
     expect(normalizeSimStatus('pending')).toBe('PENDING')
     expect(normalizeSimStatus('Active')).toBe('ACTIVE')
     expect(normalizeSimStatus('Suspended')).toBe('SUSPENDED')
-    expect(normalizeSimStatus('Deactivated')).toBe('INACTIVE')
+    expect(normalizeSimStatus('Deactivated')).toBe('EXPIRED')
     expect(normalizeSimStatus('inactive')).toBe('INACTIVE')
     expect(normalizeSimStatus('Retired')).toBe('RETIRED')
     expect(normalizeSimStatus('cancelled')).toBe('RETIRED')
     expect(normalizeSimStatus('Expired')).toBe('EXPIRED')
+  })
+
+  it('aligns deactivated with the subscription lifecycle terminal meaning (never INACTIVE)', () => {
+    // `deactivated` on the iBASIS inventory SIM is the SAME lifecycle concept
+    // as `deactivated` on the subscription object — a permanently ended
+    // subscription (distinct from the reversible `suspended`). Both iBASIS
+    // mappers must therefore normalize it to the canonical terminal EXPIRED,
+    // never to the non-canonical INACTIVE lifecycle value.
+    expect(normalizeSimStatus('deactivated')).toBe('EXPIRED')
+    expect(normalizeSimStatus('Deactivated')).toBe('EXPIRED')
+    expect(normalizeSimStatus('DEACTIVATED')).toBe('EXPIRED')
+    expect(normalizeSimStatus('deactivated')).not.toBe('INACTIVE')
+    expect(normalizeSimStatus('deactivated')).not.toBe('PENDING_ACTIVATION')
+  })
+
+  it('keeps the distinct inventory-only inactive token on the INACTIVE label', () => {
+    // `inactive` stays an inventory-level availability label — never a
+    // canonical lifecycle terminal from an ambiguous inventory token.
+    expect(normalizeSimStatus('inactive')).toBe('INACTIVE')
+    expect(normalizeSimStatus('Inactive')).toBe('INACTIVE')
   })
 
   it('is case-insensitive and trims whitespace', () => {

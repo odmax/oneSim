@@ -47,6 +47,24 @@ describe('normalizeSubscriptionStatus', () => {
     expect(normalizeSubscriptionStatus(undefined)).toBe('UNKNOWN')
     expect(normalizeSubscriptionStatus('')).toBe('UNKNOWN')
   })
+
+  it('maps deactivated to the canonical terminal EXPIRED (never INACTIVE) — consistent with the SIM-inventory mapper', () => {
+    // iBASIS reports `deactivated` on BOTH the subscription object and the SIM
+    // inventory object. Both iBASIS mappers align on the SAME canonical meaning:
+    // a permanently ended subscription (distinct from reversible `suspended`)
+    // → terminal EXPIRED. It is NEVER the non-canonical INACTIVE and never
+    // falls through to PENDING_ACTIVATION.
+    expect(normalizeSubscriptionStatus('deactivated')).toBe('EXPIRED')
+    expect(normalizeSubscriptionStatus('Deactivated')).toBe('EXPIRED')
+    expect(normalizeSubscriptionStatus('deactivated')).not.toBe('INACTIVE')
+    expect(normalizeSubscriptionStatus('deactivated')).not.toBe('SUSPENDED')
+    expect(isTerminalSubscriptionStatus(normalizeSubscriptionStatus('deactivated'))).toBe(true)
+  })
+
+  it('keeps suspended distinct from deactivated (reversible suspension, not terminal)', () => {
+    expect(normalizeSubscriptionStatus('suspended')).toBe('SUSPENDED')
+    expect(isTerminalSubscriptionStatus('SUSPENDED')).toBe(false)
+  })
 })
 
 describe('terminal statuses', () => {
