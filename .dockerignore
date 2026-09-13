@@ -1,0 +1,71 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# OneSIM .dockerignore — build context for the ECS container image.
+# Everything excluded here never enters the Docker context or the image.
+# Approximately reverse-engineered from the repository contents.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# --- Version control ---
+.git
+.gitignore
+.gitattributes
+.github
+
+# --- Dependencies / build output (re-created inside the image) ---
+node_modules
+.next
+
+# --- Local environment / secrets — NEVER shipped ---
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# --- Logs / runtime artifacts ---
+logs
+*.log
+dev-output.log
+server*.log
+
+# --- PM2 (not used in containers; CloudWatch collects stdout/stderr) ---
+ecosystem.config.js
+
+# --- Credentials / cookie jars ---
+cookie.jar
+cookies*.txt
+*.cookie
+
+# --- SQL backups / admin DB artifacts ---
+*.sql
+!prisma/**/*.sql
+onesim_backup.sql
+setup-db.sql
+setup-database.ps1
+db
+
+# --- Diagnostic / audit artifacts ---
+docs
+dts
+scripts
+*.diff
+
+# --- Tests / coverage (image ships only build output) ---
+coverage
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.test.js
+
+# --- Editor / OS junk ---
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.swp
+
+# --- Misc local dev files ---
+null
+start-dev.ps1
+start-server.bat
+test-*.js
+tsconfig.tsbuildinfo
