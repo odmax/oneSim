@@ -55,7 +55,22 @@ export async function resolvePackageIdentifier(input: PackageIdentifier, opts?: 
           providerPackage: { select: { country: true, region: true } },
         },
       })
-      const matches = candidates.filter(c => derivePublicSku(c) === input.sku)
+      // Geography lives on ProviderPackage, but derivePublicSku reads the FLAT
+      // country/region. Candidates must be flattened exactly like the export/
+      // public-catalog serializers do, otherwise a package whose providerPackage
+      // carries a real country (e.g. USA) derives OS-XX-… here while the client
+      // was shown OS-USA-… and resolution fails. Previously only XX-geography
+      // packages matched, which is why non-empty-geography packages failed.
+      const matches = candidates.filter(c =>
+        derivePublicSku({
+          id: c.id,
+          providerPackageId: c.providerPackageId,
+          country: c.providerPackage?.country,
+          region: c.providerPackage?.region,
+          dataGB: c.dataGB,
+          validityDays: c.validityDays,
+        }) === input.sku,
+      )
       if (matches.length === 1) {
         const pkg = await prisma.eSIMPackage.findUnique({ where: { id: matches[0].id } })
         if (pkg) {
