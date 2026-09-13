@@ -152,10 +152,27 @@ export interface UsMatrixPackage {
   price?: number
   /** Data limit in GB. */
   dataLimit?: number
-  limit?: number
+  dataType?: string
+  /**
+   * SERVICE VALIDITY for a purchased package, when combined with `limitType`.
+   * Confirmed live contract: when limitType === "day", `limit` is the service
+   * duration in days (e.g. "7 Days", "15 Days"). May be numeric or numeric-string.
+   * The authoritative validity normalizer lives in UsMatrixConnector.
+   */
+  limit?: number | string
+  /**
+   * Unit of `limit`. "day" is the only supported service-validity unit observed
+   * live; any other value means the duration is unprovable → fail closed.
+   */
   limitType?: string
   status?: 'standBy' | 'live' | 'expired' | string
+  statusIntegration?: string
   active?: boolean
+  /**
+   * Package AVAILABILITY / assignment-eligibility window (start to end dates).
+   * NOT the purchased service duration — service duration comes from
+   * `limit` + `limitType`. Do not derive validity from start/end.
+   */
   start?: string
   end?: string
   countries?: Array<{ id?: string; name?: string; iso3?: string }>

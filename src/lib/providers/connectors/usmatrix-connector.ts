@@ -154,6 +154,27 @@ function parseAvailabilityCount(raw: unknown): { ok: true; count: number } | { o
   return { ok: true, count }
 }
 
+/**
+ * Parse US-Matrix service validity from the CONFIRMED live catalog contract:
+ *   raw.limit (positive integer, numeric or numeric string) combined with
+ *   raw.limitType === "day" (case-insensitive).
+ *
+ * Returns 0 (fail closed) when the duration cannot be proven:
+ *  - limit is missing / NaN / zero / negative / non-integer
+ *  - limitType is anything other than "day"
+ *
+ * It NEVER derives service duration from raw.start/end (the package
+ * availability/eligibility window) and NEVER from the plan name.
+ * A returned 0 is a typed "unprovable" signal — see syncPlans (isAvailable:false).
+ */
+export function parseUsMatrixValidityDays(p: { limit?: unknown; limitType?: unknown }): number {
+  const limitType = String(p.limitType ?? '').trim().toLowerCase()
+  if (limitType !== 'day') return 0
+  const n = typeof p.limit === 'string' && p.limit.trim() !== '' ? Number(p.limit) : Number(p.limit)
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return 0
+  return n
+}
+
 export class UsMatrixConnector implements IProviderConnector {
   readonly providerId: string
   readonly name: string
@@ -412,15 +433,26 @@ export class UsMatrixConnector implements IProviderConnector {
     const plans: ConnectorPlan[] = (list.data.items || [])
       .map((p): ConnectorPlan | null => {
         if (!p?.id || !p.name) return null
+        // Service validity is the confirmed live contract value:
+        //   raw.limit (positive integer) + raw.limitType === "day".
+        // raw.start/end is the package availability/eligibility window, NOT the
+        // service duration; the plan name is never used in production. 0 means
+        // "cannot be proven" and makes the plan unpublishable (see below) so an
+        // unknown duration can never silently become an arbitrary 30-day product.
+        const validityDays = parseUsMatrixValidityDays(p)
+        const validityProven = validityDays > 0
         return {
           id: String(p.id),
           name: String(p.name),
-          data_gb: p.dataLimit != null ? Number(p.dataLimit) : (p.limit ?? 0),
-          validity_days: 30, // no validity field documented; conservative default
+          data_gb: p.dataLimit != null ? Number(p.dataLimit) : (p.limit != null ? Number(p.limit) : 0),
+          validity_days: validityDays,
           price_usd: p.price != null ? Number(p.price) : 0,
           currency: 'USD', // documented as USD; no currency field in the API
           description: String(p.name),
           sku: p.code ? String(p.code) : String(p.id),
+          // Fail closed: when the authoritative duration cannot be proven the plan
+          // is marked unavailable and can never be exposed as a defaulted product.
+          isAvailable: validityProven ? undefined : false,
           raw_data: p,
         }
       })

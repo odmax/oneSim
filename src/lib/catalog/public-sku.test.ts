@@ -54,4 +54,15 @@ it('never contains the internal provider package id in full (only a stable hash 
   it('public prefix is OS-', () => {
     expect(PUBLIC_SKU_PREFIX).toBe('OS-')
   })
+
+  it('correcting validity changes ONLY the duration segment; the identity hash suffix is unchanged', () => {
+    const base = { id: 'pkg-id-1', providerPackageId: 'cmtpp00000000000000000001', country: 'XX', region: null, dataGB: 5 }
+    const oldSku = derivePublicSku({ ...base, validityDays: 30 })
+    const fixedSku = derivePublicSku({ ...base, validityDays: 7 })
+    expect(oldSku.startsWith('OS-XX-5GB-30D-')).toBe(true)
+    expect(fixedSku.startsWith('OS-XX-5GB-7D-')).toBe(true)
+    // Hash suffix is identity-driven and therefore identical.
+    expect(fixedSku.split('-').slice(-1)[0]).toBe(oldSku.split('-').slice(-1)[0])
+    expect(fixedSku).not.toBe(oldSku)
+  })
 })

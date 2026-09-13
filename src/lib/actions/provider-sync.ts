@@ -177,11 +177,29 @@ export async function syncProviderPlans(providerId: string) {
         where: { providerId, providerPlanId },
       }).catch(() => null)
 
+      // Validity: the connector-normalized `plan.validity_days` is the
+      // authoritative provider duration and is trusted when it is a positive
+      // finite integer. Only when a connector could NOT map a duration may the
+      // legacy generic fallback (raw.validity, then 30) apply — EXCEPT US-Matrix,
+      // whose authoritative duration is limit + limitType ("day") and which MUST
+      // fail closed: an unprovable US-Matrix duration must never silently become
+      // 30 (the historical defect). See usmatrix-connector.parseUsMatrixValidityDays.
+      const isUsMatrixProvider =
+        String(provider.code || '').toUpperCase() === 'USMATRIX' ||
+        String(provider.adapterStrategy || '').toUpperCase() === 'USMATRIX'
+      const connectorValidity = plan.validity_days
+      const hasValidConnectorValidity = Number.isFinite(Number(connectorValidity)) && Number(connectorValidity) > 0
+      const validityDays = hasValidConnectorValidity
+        ? Number(connectorValidity)
+        : isUsMatrixProvider
+          ? 0 // fail closed — never fabricate 30 for US-Matrix
+          : parseInt(raw.validity) || 30
+
       const pkgData = {
         providerPlanCode,
         name: plan.name || raw.planName || '',
         dataGB: plan.data_gb || parseInt(raw.dataAllowance) || 0,
-        validityDays: plan.validity_days || parseInt(raw.validity) || 30,
+        validityDays,
         costPrice: plan.price_usd || parseFloat(raw.retailPrice) || 0,
         currency: plan.currency || 'USD',
         country: raw.country || raw.region || null,

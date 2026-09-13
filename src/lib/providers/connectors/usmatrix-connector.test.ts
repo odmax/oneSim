@@ -285,6 +285,67 @@ describe('US-Matrix catalog discovery (GET /api/v1/packages)', () => {
   })
 })
 
+describe('US-Matrix validity normalization (limit + limitType="day")', () => {
+  async function validityFor(pkg: any): Promise<{ validity: number | undefined; isAvailable: boolean | undefined }> {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ data: [pkg], meta: { totalItems: 1, itemsPerPage: 100, currentPage: 1, totalPages: 1 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const result = await connector.syncPlans()
+    return { validity: result.data?.[0]?.validity_days, isAvailable: result.data?.[0]?.isAvailable }
+  }
+
+  it.each([
+    ['1-day', 1, 'day', 1],
+    ['7-day', 7, 'day', 7],
+    ['15-day', 15, 'day', 15],
+    ['30-day', 30, 'day', 30],
+  ])('%s plan maps limit+limitType to validity_days', async (_name, limit, limitType, expected) => {
+    const { validity, isAvailable } = await validityFor({ id: 'pkg-v', name: 'Plan', limit, limitType })
+    expect(validity).toBe(expected)
+    expect(isAvailable).not.toBe(false)
+  })
+
+  it('10-day exception: no duration in name, start/end span ~30 days, limit=10 day -> 10', async () => {
+    const { validity } = await validityFor({
+      id: 'pkg-10', name: 'Test South Africa', limit: 10, limitType: 'day',
+      start: '2026-08-13T00:00:02.000Z', end: '2026-09-12T23:59:58.000Z',
+    })
+    expect(validity).toBe(10)
+  })
+
+  it('20-day exception: name contains "-20" but not "20Days", limit=20 day -> 20', async () => {
+    const { validity } = await validityFor({
+      id: 'pkg-20', name: 'Test South Africa-20', limit: 20, limitType: 'day',
+      start: '2026-08-13T00:00:02.000Z', end: '2026-09-12T23:59:58.000Z',
+    })
+    expect(validity).toBe(20)
+  })
+
+  it('numeric-string limit is accepted when the API types it that way', async () => {
+    const { validity } = await validityFor({ id: 'pkg-s', name: 'Plan', limit: '15', limitType: 'day' })
+    expect(validity).toBe(15)
+  })
+
+  it('case normalization: "DAY"/"Day" equals "day"', async () => {
+    expect((await validityFor({ id: 'pkg-d1', name: 'Plan', limit: 7, limitType: 'DAY' })).validity).toBe(7)
+    expect((await validityFor({ id: 'pkg-d2', name: 'Plan', limit: 7, limitType: 'Day' })).validity).toBe(7)
+  })
+
+  it.each([
+    ['null limit', { limit: null, limitType: 'day' }],
+    ['NaN limit', { limit: Number.NaN, limitType: 'day' }],
+    ['zero limit', { limit: 0, limitType: 'day' }],
+    ['negative limit', { limit: -1, limitType: 'day' }],
+    ['unsupported limitType month', { limit: 30, limitType: 'month' }],
+    ['unsupported limitType week', { limit: 7, limitType: 'week' }],
+  ])('fail closed (validity_days=0, isAvailable=false, never 30) for %s', async (_name, overrides) => {
+    const { validity, isAvailable } = await validityFor({ id: 'pkg-bad', name: 'Bad Plan', ...overrides })
+    expect(validity).toBe(0)
+    expect(validity).not.toBe(30)
+    expect(isAvailable).toBe(false)
+  })
+})
+
 describe('US-Matrix eSIM inventory (GET /api/v1/esims)', () => {
   it('requires an explicit `allocated` boolean before transport', async () => {
     const fetchSpy = vi.fn()

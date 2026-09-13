@@ -166,3 +166,49 @@ describe('syncProviderPlans — Telna no-cost + deactivation safety', () => {
     expect(updatedIds).not.toContain('other-template')
   })
 })
+
+describe('syncProviderPlans — US-Matrix validity fail-closed (never silently 30)', () => {
+  it('US-Matrix unprovable duration (validity_days=0) persists 0, NOT the generic 30 fallback', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(
+      providerRow({ id: 'prov-usm', code: 'USMATRIX', adapterStrategy: 'USMATRIX' }) as any,
+    )
+    // Connector-side failure signal: validity_days=0 (duration not provable).
+    mockAdapter.mockResolvedValue(adapterReturning([
+      { id: 'usm-1', name: 'Plan A', data_gb: 1, validity_days: 0, price_usd: 5, isAvailable: false, raw_data: { limit: 10, limitType: 'day' } },
+    ]) as any)
+
+    await syncProviderPlans('prov-usm')
+
+    const create = mockPrisma.providerPackage.create.mock.calls[0][0] as any
+    expect(create.data.validityDays).toBe(0)
+    expect(create.data.validityDays).not.toBe(30)
+    expect(create.data.isAvailable).toBe(false)
+  })
+
+  it('US-Matrix connector-provided positive validity is trusted unchanged', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(
+      providerRow({ id: 'prov-usm', code: 'USMATRIX', adapterStrategy: 'USMATRIX' }) as any,
+    )
+    mockAdapter.mockResolvedValue(adapterReturning([
+      { id: 'usm-7', name: 'Plan B', data_gb: 1, validity_days: 7, price_usd: 5, isAvailable: true, raw_data: { limit: 7, limitType: 'day' } },
+    ]) as any)
+
+    await syncProviderPlans('prov-usm')
+
+    const create = mockPrisma.providerPackage.create.mock.calls[0][0] as any
+    expect(create.data.validityDays).toBe(7)
+  })
+
+  it('legacy generic fallback (raw.validity || 30) still applies for NON-USMatrix providers', async () => {
+    // Telna provider (legacy): connector reports no validity_days and raw has none
+    // → the generic 30 fallback is preserved for providers that rely on it.
+    mockAdapter.mockResolvedValue(adapterReturning([
+      { id: 't1', name: 'Legacy', data_gb: 1, price_usd: 5, isAvailable: true, raw_data: {} },
+    ]) as any)
+
+    await syncProviderPlans('prov-telna')
+
+    const create = mockPrisma.providerPackage.create.mock.calls[0][0] as any
+    expect(create.data.validityDays).toBe(30)
+  })
+})
