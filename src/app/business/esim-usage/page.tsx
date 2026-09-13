@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { deriveUsageMetrics } from '@/lib/esim/usage-metrics'
+import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 
 function UsagePill({ value, total }: { value: number; total: number }) {
   const pct = total > 0 ? Math.round((value / total) * 100) : 0
@@ -179,7 +180,7 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm font-mono text-gray-900">{esim.iccid}</td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-700">
-                      {esim.purchase.package.displayName || esim.purchase.package.name}
+                      {sanitizePublicText(esim.purchase.package.displayName || esim.purchase.package.name, null, esim.purchase.package.providerName) || esim.purchase.package.displayName || esim.purchase.package.name}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-900">
                       {current.hasSnapshot ? `${(current.used / 1024).toFixed(2)} GB` : 'Usage unavailable'}

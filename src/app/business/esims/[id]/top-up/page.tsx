@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 import TopUpForm from './TopUpForm'
 
 export default async function BusinessTopUpPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
@@ -99,7 +100,7 @@ export default async function BusinessTopUpPage({ params, searchParams }: { para
             </div>
             <div className="flex justify-between">
               <dt className="text-gray-500">Package</dt>
-              <dd className="font-medium text-gray-900">{originalPkg.displayName || originalPkg.name}</dd>
+              <dd className="font-medium text-gray-900">{sanitizePublicText(originalPkg.displayName || originalPkg.name, null, originalPkg.providerName) || originalPkg.displayName || originalPkg.name}</dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-gray-500">Data</dt>

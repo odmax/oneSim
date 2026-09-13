@@ -10,6 +10,7 @@ import { getActivationInstructions } from '@/lib/esim/activation-instructions'
 import { buildInstallationPresentation } from '@/lib/esim/installation-data'
 import { getPackageDisplayName, getPackageDataGB, PurchaseSnapshot } from '@/lib/packages/snapshot-utils'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 
 export async function GET(
   request: NextRequest,
@@ -52,17 +53,19 @@ export async function GET(
   })
   const instructions = getActivationInstructions(install.kind === 'QR_IMAGE_URL' || install.kind === 'QR_PAYLOAD')
 
-  const snap = (esim.packageSnapshot || esim.purchase.packageSnapshot) as PurchaseSnapshot | null
+const snap = (esim.packageSnapshot || esim.purchase.packageSnapshot) as PurchaseSnapshot | null
+  const pkgProviderName = esim.purchase.package?.providerName || null
+  const publicDisplay = (candidate: string | null | undefined): string => sanitizePublicText(candidate, null, pkgProviderName) || candidate || 'OneSIM eSIM'
   const packageInfo = snap ? {
     id: snap.packageId || esim.purchase.package.id,
-    displayName: snap.displayName || safeEsim.packageName || esim.purchase.package.displayName || esim.purchase.package.name,
+    displayName: publicDisplay(snap.displayName || safeEsim.packageName || esim.purchase.package.displayName || esim.purchase.package.name),
     dataGB: snap.dataGB || esim.packageDataGB || esim.purchase.packageDataGB || esim.purchase.package.dataGB,
     validityDays: snap.validityDays || esim.packageValidityDays || esim.purchase.packageValidityDays || esim.purchase.package.validityDays,
     unitCost: snap.priceUSD || parseFloat(esim.purchase.package.priceUSD.toString()),
     currency: snap.currency || esim.purchase.package.currency || 'USD',
   } : {
     id: esim.purchase.package.id,
-    displayName: safeEsim.packageName || esim.purchase.package.displayName || esim.purchase.package.name,
+    displayName: publicDisplay(safeEsim.packageName || esim.purchase.package.displayName || esim.purchase.package.name),
     dataGB: esim.packageDataGB || esim.purchase.packageDataGB || esim.purchase.package.dataGB,
     validityDays: esim.packageValidityDays || esim.purchase.packageValidityDays || esim.purchase.package.validityDays,
     unitCost: parseFloat(esim.purchase.package.priceUSD.toString()),

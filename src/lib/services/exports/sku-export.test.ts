@@ -19,16 +19,17 @@ function leakedPackage(provider: string, overrides: any = {}) {
     providerPackageId: `pp-${provider.toLowerCase()}-000`,
     sku: `OS-${provider}-XX-35GB-30D-AJ33VU`, // legacy persisted SKU leaks the provider
     packageCode: `OS-${provider}-XX-35GB-30D-AJ33VU`,
-    name: 'Regional 35GB',
-    displayName: 'Regional 35GB Plan',
-    description: 'desc',
-    customerDescription: 'cust',
+    name: `${provider} Test - 35GB - Global - 30 Days`, // provider-branded copy
+    displayName: `${provider} Test - 35GB - Global - 30 Days`,
+    description: `Powered by ${provider} with global roaming`,
+    customerDescription: `${provider} worldwide coverage`,
     dataGB: 35,
     validityDays: 30,
     currency: 'USD',
     priceUSD: 29.99,
     productType: 'NEW_ESIM',
     isActive: true,
+    providerName: provider,
     providerPackage: { country: 'ZA', region: null },
     ...overrides,
   }
@@ -78,5 +79,25 @@ describe('getSkuExportData — provider-neutral SKU downloads', () => {
     const a = await getSkuExportData()
     const b = await getSkuExportData()
     expect(a[0].sku).toBe(b[0].sku)
+  })
+
+  it.each(PROVIDER_TOKENS)('package TEXT metadata never leaks provider %s in JSON/CSV/XLSX', async (provider) => {
+    mockPrisma.eSIMPackage.findMany.mockResolvedValue([leakedPackage(provider)] as any)
+    const data = await getSkuExportData()
+    const token = provider.toUpperCase().replace(/[\s-]/g, '')
+    expect(data[0].name.toUpperCase()).not.toContain(token)
+    expect((data[0].displayName || '').toUpperCase()).not.toContain(token)
+    expect((data[0].description || '').toUpperCase()).not.toContain(token)
+    expect((data[0].customerDescription || '').toUpperCase()).not.toContain(token)
+    for (const out of [skuToJson(data), skuToCsv(data), skuToXlsx(data)]) {
+      expect(out.toUpperCase()).not.toContain(token)
+    }
+  })
+
+  it('preserves geography/data/validity in the neutral public name', async () => {
+    mockPrisma.eSIMPackage.findMany.mockResolvedValue([leakedPackage('TELNA')] as any)
+    const data = await getSkuExportData()
+    expect(data[0].name.toUpperCase()).not.toContain('TELNA')
+    expect(data[0].name).toMatch(/Global|35GB|30/i)
   })
 })

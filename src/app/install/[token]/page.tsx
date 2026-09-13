@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { notFound } from 'next/navigation'
+import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 import InstallClient from './InstallClient'
 
 export default async function InstallPage({ params }: { params: { token: string } }) {
@@ -47,7 +48,7 @@ export default async function InstallPage({ params }: { params: { token: string 
     activationCode: esim.activationCode || null,
     qrCodeUrl: esim.qrCodeUrl || null,
     expiresAt: esim.expiresAt?.toISOString() || null,
-    packageName: esim.packageName || pkg.displayName || pkg.name,
+    packageName: sanitizePublicText(esim.packageName || pkg.displayName || pkg.name, null, pkg.providerName) || pkg.displayName || pkg.name,
     dataGB: esim.packageDataGB || pkg.dataGB,
     validityDays: esim.packageValidityDays || pkg.validityDays,
     dataUsedMB: esim.dataUsedMB || latestUsage?.dataUsedMB || 0,

@@ -7,6 +7,7 @@ import { requiresTravelDateForPackage } from '@/lib/providers/travel-date-utils'
 import { CountrySearchPage } from './CountrySearchPage'
 import { buildPackageSearchText } from '@/lib/packages/search-text'
 import { queryPurchasablePackages } from '@/lib/packages/query-purchasable'
+import { derivePublicPackagePresentation } from '@/lib/catalog/public-package-presentation'
 
 export default async function BuyESIMPage({
   searchParams
@@ -25,12 +26,35 @@ export default async function BuyESIMPage({
   const packagesWithRequirement = readyPackages.map(pkg => {
     const searchText = buildPackageSearchText(pkg)
     const requiresTravelDate = pkg.providerPackage ? requiresTravelDateForPackage(pkg.providerPackage) : false
+    // Client-facing package TEXT must be provider-neutral (name/displayName/
+    // description/customerDescription may otherwise carry the upstream brand).
+    const presentation = derivePublicPackagePresentation({
+      name: pkg.name,
+      displayName: pkg.displayName,
+      description: pkg.description,
+      customerDescription: pkg.customerDescription,
+      country: pkg.providerPackage?.country,
+      region: pkg.providerPackage?.region,
+      dataGB: pkg.dataGB,
+      validityDays: pkg.validityDays,
+      providerName: pkg.providerName,
+    })
     const stripped = stripPackageProviderFields(pkg)
     delete (stripped as any).providerPackage
     // Use snapshot-based selling price — authoritative source of truth
     const snapshotPrice = pkg.providerPackage?.sellingPrice
     const unitPrice = snapshotPrice ? Number(snapshotPrice) : parseFloat(pkg.priceUSD.toString())
-    return { ...stripped, _searchText: searchText, requiresTravelDate, unitPrice, currency: pkg.currency || 'USD' }
+    return {
+      ...stripped,
+      name: presentation.name,
+      displayName: presentation.displayName,
+      description: presentation.description,
+      customerDescription: presentation.customerDescription,
+      _searchText: searchText,
+      requiresTravelDate,
+      unitPrice,
+      currency: pkg.currency || 'USD',
+    }
   })
 
   const business = await prisma.business.findUnique({

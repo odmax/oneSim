@@ -7,6 +7,7 @@ import { redirect } from 'next/navigation'
 import { providerRouter } from '@/lib/services/providers/router'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
 import { derivePublicSku } from '@/lib/catalog/public-sku'
+import { derivePublicPackagePresentation } from '@/lib/catalog/public-package-presentation'
 import { getAppBaseUrl } from '@/lib/config/app-url'
 import crypto from 'crypto'
 
@@ -276,6 +277,7 @@ export async function testListPackages(): Promise<{
       validityDays: true,
       priceUSD: true,
       customerDescription: true,
+      providerName: true,
       providerPackageId: true,
       providerPackage: { select: { country: true, region: true } },
     },
@@ -284,7 +286,8 @@ export async function testListPackages(): Promise<{
   return {
     success: true,
     packages: packages.map(p => {
-      // Client-facing SKU must be provider-neutral (never the persisted value).
+      // Client-facing SKU AND package text must be provider-neutral (never the
+      // persisted values, which may carry the upstream brand).
       const publicSku = derivePublicSku({
         id: p.id,
         providerPackageId: p.providerPackageId,
@@ -293,9 +296,22 @@ export async function testListPackages(): Promise<{
         dataGB: p.dataGB,
         validityDays: p.validityDays,
       })
+      const presentation = derivePublicPackagePresentation({
+        name: p.name,
+        displayName: p.displayName,
+        customerDescription: p.customerDescription,
+        country: p.providerPackage?.country,
+        region: p.providerPackage?.region,
+        dataGB: p.dataGB,
+        validityDays: p.validityDays,
+        providerName: p.providerName,
+      })
       return {
         ...p,
         priceUSD: p.priceUSD.toString(),
+        name: presentation.name,
+        displayName: presentation.displayName,
+        customerDescription: presentation.customerDescription,
         sku: publicSku,
         packageCode: publicSku,
       }

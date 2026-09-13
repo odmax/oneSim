@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth/config';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
+import { sanitizePublicText } from '@/lib/catalog/public-package-presentation';
 import {
   ShoppingCart,
   FileText,
@@ -169,7 +170,7 @@ export default async function BusinessDashboard() {
               <tbody className="divide-y divide-gray-50">
                 {recentOrders.map((order) => (
                   <tr key={order.id} className="hover:bg-gray-50/50 transition-colors">
-                    <td className="whitespace-nowrap px-5 py-4 text-sm font-medium text-gray-900">{order.package.displayName || order.package.name}</td>
+                    <td className="whitespace-nowrap px-5 py-4 text-sm font-medium text-gray-900">{sanitizePublicText(order.package.displayName || order.package.name, null, order.package.providerName) || order.package.displayName || order.package.name}</td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">{order.quantity}</td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm font-semibold text-gray-900">${order.totalAmount.toFixed(2)}</td>
                     <td className="whitespace-nowrap px-5 py-4"><StatusBadge status={order.status} /></td>

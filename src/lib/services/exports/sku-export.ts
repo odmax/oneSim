@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { derivePublicSku } from '@/lib/catalog/public-sku'
+import { derivePublicPackagePresentation } from '@/lib/catalog/public-package-presentation'
 
 export interface SkuExportRow {
   sku: string
@@ -43,6 +44,7 @@ export async function getSkuExportData(): Promise<SkuExportRow[]> {
       priceUSD: true,
       productType: true,
       isActive: true,
+      providerName: true,
       providerPackage: { select: { country: true, region: true } },
     },
   })
@@ -56,13 +58,26 @@ export async function getSkuExportData(): Promise<SkuExportRow[]> {
       dataGB: pkg.dataGB,
       validityDays: pkg.validityDays,
     })
+    // Client-facing NAME fields must be provider-neutral as well (the SKU alone
+    // is not enough — package copy may carry the upstream brand).
+    const presentation = derivePublicPackagePresentation({
+      name: pkg.name,
+      displayName: pkg.displayName,
+      description: pkg.description,
+      customerDescription: pkg.customerDescription,
+      country: pkg.providerPackage?.country,
+      region: pkg.providerPackage?.region,
+      dataGB: pkg.dataGB,
+      validityDays: pkg.validityDays,
+      providerName: pkg.providerName,
+    })
     return {
       sku: publicSku,
       packageCode: publicSku,
-      name: pkg.name,
-      displayName: pkg.displayName || null,
-      description: pkg.description || null,
-      customerDescription: pkg.customerDescription || null,
+      name: presentation.name,
+      displayName: presentation.displayName,
+      description: presentation.description,
+      customerDescription: presentation.customerDescription,
       dataGB: pkg.dataGB,
       validityDays: pkg.validityDays,
       currency: pkg.currency || 'USD',

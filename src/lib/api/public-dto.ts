@@ -11,6 +11,7 @@
  */
 
 import { derivePublicSku } from '@/lib/catalog/public-sku'
+import { derivePublicPackagePresentation, sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 
 /* -------------------------------------------------------------------------- */
 /*  Package DTO                                                               */
@@ -46,14 +47,28 @@ export function serializePublicPackage(pkg: any, providerPackage?: any): PublicP
     dataGB: pkg.dataGB,
     validityDays: pkg.validityDays,
   })
+  // Text metadata is ALSO provider-neutral (name/displayName/description/
+  // customerDescription must never carry the upstream provider brand).
+  const presentation = derivePublicPackagePresentation({
+    name: pkg.name,
+    displayName: pkg.displayName,
+    description: pkg.description,
+    customerDescription: pkg.customerDescription,
+    country: providerPackage?.country,
+    region: providerPackage?.region,
+    dataGB: pkg.dataGB,
+    validityDays: pkg.validityDays,
+    // Internal identity used ONLY to remove provider tokens — never output.
+    provider: { name: pkg.providerName },
+  })
   return {
     id: pkg.id,
     sku: publicSku,
     packageCode: publicSku,
-    displayName: pkg.displayName ?? null,
-    name: pkg.name,
-    customerDescription: pkg.customerDescription ?? null,
-    description: pkg.description ?? null,
+    displayName: presentation.displayName,
+    name: presentation.name,
+    customerDescription: presentation.customerDescription,
+    description: presentation.description,
     dataGB: pkg.dataGB,
     validityDays: pkg.validityDays,
     unitPrice,
@@ -110,16 +125,23 @@ export type PublicOrderEsimDTO = {
 export function serializePublicOrder(purchase: any): PublicOrderDTO {
   const snap = purchase.packageSnapshot ?? null
   const pkg = purchase.package
+  const providerNameForText = pkg?.providerName || purchase.providerName || null
+  const safeDisplay = (candidate: string | null | undefined, fallback: string): string => {
+    const cleaned = sanitizePublicText(candidate, null, providerNameForText)
+    if (cleaned) return cleaned
+    if (fallback) return sanitizePublicText(fallback, null, providerNameForText) || fallback
+    return `${purchase.packageDataGB ?? pkg?.dataGB?.toString?.() ?? ''}GB ${purchase.packageValidityDays ?? pkg?.validityDays ?? ''}D`.trim() || 'OneSIM eSIM'
+  }
   const pkgInfo: PublicOrderPackageDTO = snap ? {
     id: snap.packageId || pkg.id,
-    displayName: snap.displayName || purchase.packageName || pkg.displayName || pkg.name,
+    displayName: safeDisplay(snap.displayName || purchase.packageName || pkg.displayName || pkg.name, pkg.displayName || pkg.name),
     dataGB: snap.dataGB || purchase.packageDataGB || pkg.dataGB,
     validityDays: snap.validityDays || purchase.packageValidityDays || pkg.validityDays,
     priceUSD: snap.priceUSD || parseFloat(pkg.priceUSD.toString()),
     currency: snap.currency || purchase.packageCurrency || pkg.currency || 'USD',
   } : {
     id: pkg.id,
-    displayName: purchase.packageName || pkg.displayName || pkg.name,
+    displayName: safeDisplay(purchase.packageName || pkg.displayName || pkg.name, pkg.displayName || pkg.name),
     dataGB: purchase.packageDataGB || pkg.dataGB,
     validityDays: purchase.packageValidityDays || pkg.validityDays,
     priceUSD: parseFloat(pkg.priceUSD.toString()),
@@ -252,7 +274,7 @@ export function serializePublicUsageEsim(e: any): PublicUsageEsimDTO {
     dataTotalMB: e.dataTotalMB ?? null,
     package: {
       id: e.purchase.package.id,
-      displayName: e.purchase.package.displayName || e.purchase.package.name,
+      displayName: sanitizePublicText(e.purchase.package.displayName || e.purchase.package.name, null, e.purchase.package.providerName) || e.purchase.package.displayName || e.purchase.package.name,
       dataGB: e.purchase.package.dataGB,
       validityDays: e.purchase.package.validityDays,
     },

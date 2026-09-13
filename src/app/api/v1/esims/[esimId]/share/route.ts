@@ -8,6 +8,7 @@ import { sendEmail } from '@/lib/email/send-email'
 import { buildESIMInstallEmail } from '@/lib/email/esim-share-email'
 import { getAppUrl } from '@/lib/config/urls'
 import { requireRouteScopes } from '@/lib/api/v1-response'
+import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 import crypto from 'crypto'
 
 function makeError(code: string, message: string) {
@@ -66,14 +67,14 @@ const rateCheck = await checkRateLimit(businessId)
       },
     })
 
-    const installLink = `${getAppUrl()}/install/${token}`
+const installLink = `${getAppUrl()}/install/${token}`
     const pkg = (esim.purchase as any).package
 
     // Send email if recipient provided
     if (email) {
       const emailContent = buildESIMInstallEmail({
         recipientName: email.split('@')[0] || 'Customer',
-        packageName: pkg.displayName || pkg.name,
+        packageName: sanitizePublicText(pkg.displayName || pkg.name, null, pkg.providerName) || pkg.displayName || pkg.name,
         iccid: esim.iccid,
         activationCode: esim.activationCode || undefined,
         qrCodeUrl: esim.qrCodeUrl || undefined,

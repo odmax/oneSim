@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 
 const STATUS_CONFIG: Record<string, { label: string; dot: string; bg: string }> = {
   CREATED: { label: 'Created', dot: 'bg-gray-400', bg: 'bg-gray-50 text-gray-600' },
@@ -59,7 +60,7 @@ export default async function OrdersPage({ searchParams }: { searchParams?: { st
   const purchases = await prisma.eSIMPurchase.findMany({
     where,
     include: {
-      package: { select: { id: true, name: true, displayName: true, dataGB: true, validityDays: true } },
+      package: { select: { id: true, name: true, displayName: true, dataGB: true, validityDays: true, providerName: true } },
       user: { select: { name: true, email: true } },
       esims: { select: { id: true, iccid: true, qrCodeUrl: true, status: true } },
     },
@@ -112,7 +113,7 @@ export default async function OrdersPage({ searchParams }: { searchParams?: { st
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-base font-semibold text-gray-900">
-                        {purchase.package.displayName || purchase.package.name}
+                        {sanitizePublicText(purchase.package.displayName || purchase.package.name, null, purchase.package.providerName) || purchase.package.displayName || purchase.package.name}
                       </h3>
                       <StatusBadge status={purchase.status} />
                       {hasQR && (

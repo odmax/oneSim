@@ -3,6 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { derivePublicSku } from '@/lib/catalog/public-sku'
+import { derivePublicPackagePresentation } from '@/lib/catalog/public-package-presentation'
 import DevelopersClient from './developers-client'
 
 export default async function DevelopersPage() {
@@ -33,6 +34,7 @@ export default async function DevelopersPage() {
       priceUSD: true,
       description: true,
       customerDescription: true,
+      providerName: true,
       providerPackageId: true,
       providerPackage: { select: { country: true, region: true } },
     },
@@ -70,8 +72,8 @@ export default async function DevelopersPage() {
 
       <DevelopersClient
         packages={packages.map(p => {
-          // Client-facing SKU is the canonical provider-neutral public SKU —
-          // never the persisted (possibly provider-identifying) value.
+          // Client-facing SKU + package TEXT are provider-neutral (never the
+          // persisted value, which may carry the upstream brand).
           const publicSku = derivePublicSku({
             id: p.id,
             providerPackageId: p.providerPackageId,
@@ -80,11 +82,24 @@ export default async function DevelopersPage() {
             dataGB: p.dataGB,
             validityDays: p.validityDays,
           })
+          const presentation = derivePublicPackagePresentation({
+            name: p.name,
+            displayName: p.displayName,
+            description: p.description,
+            customerDescription: p.customerDescription,
+            country: p.providerPackage?.country,
+            region: p.providerPackage?.region,
+            dataGB: p.dataGB,
+            validityDays: p.validityDays,
+            providerName: (p as any).providerName,
+          })
           return {
             ...p,
             priceUSD: p.priceUSD.toString(),
-            displayName: p.displayName,
-            customerDescription: p.customerDescription,
+            displayName: presentation.displayName,
+            name: presentation.name,
+            description: presentation.description,
+            customerDescription: presentation.customerDescription,
             sku: publicSku,
             packageCode: publicSku,
           }
