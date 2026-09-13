@@ -9,6 +9,11 @@ vi.mock('@/lib/prisma', () => ({
       update: vi.fn(),
       create: vi.fn().mockResolvedValue({ id: 'job-new' }),
     },
+    eSIM: {
+      findMany: vi.fn().mockResolvedValue([]),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      update: vi.fn(),
+    },
   },
 }))
 
@@ -167,5 +172,28 @@ describe('background job queue transaction safety', () => {
     // The claim update (PENDING → PROCESSING) must NOT run.
     expect(mockPrisma.backgroundJob.updateMany).toHaveBeenCalledTimes(1) // only the stale sweep
     expect((providerHandler.executeProviderOperation as any).mock.results.length).toBe(0)
+  })
+
+  it('dispatches a due ESIM_STATUS_SYNC job to the canonical handler, which runs the null-schedule backfill (natural worker path, no HTTP cron route)', async () => {
+    const job = { ...dueJob(), type: 'ESIM_STATUS_SYNC', payload: {}, runAt: new Date(Date.now() - 5000), maxAttempts: 999 }
+    mockPrisma.backgroundJob.findMany.mockResolvedValue([job])
+    mockPrisma.backgroundJob.updateMany.mockResolvedValue({ count: 1 }) // stale sweep + claim
+    mockPrisma.backgroundJob.findUnique.mockResolvedValue(job as any)
+    mockPrisma.eSIM.findMany.mockResolvedValue([]) // no due eSIMs — handler still backfills
+    mockPrisma.eSIM.updateMany.mockClear()
+
+    const results = await processDueJobs()
+
+    expect(results[0]).toMatchObject({ type: 'ESIM_STATUS_SYNC', status: 'COMPLETED' })
+    // The canonical status-sync handler performed the age-independent, null-only
+    // backfill even though no HTTP /api/cron/process-jobs route invoked it.
+    const scheduleCall = mockPrisma.eSIM.updateMany.mock.calls.find((c) => c[0].where?.statusNextSyncAt === null)
+    expect(scheduleCall).toBeTruthy()
+    expect(scheduleCall[0].where.status.in).toContain('PROCESSING')
+    expect(scheduleCall[0].where.createdAt).toBeUndefined()
+    // And the recurring job was rescheduled for the next natural cycle.
+    expect(mockPrisma.backgroundJob.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ type: 'ESIM_STATUS_SYNC', status: 'COMPLETED' }) }),
+    )
   })
 })

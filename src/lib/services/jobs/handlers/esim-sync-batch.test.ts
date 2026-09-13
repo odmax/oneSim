@@ -376,3 +376,21 @@ describe('backfillEsimSyncSchedules — null-schedule pending/active backfill (a
     expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(4)
   })
 })
+
+describe('executeStatusSynchronization — null-schedule backfill runs inside the canonical handler (natural worker path)', () => {
+  it('8. executing the ESIM_STATUS_SYNC handler runs the age-independent backfill BEFORE selecting due eSIMs', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([]) // no due eSIMs — handler still backfills
+
+    await executeStatusSynchronization(10)
+
+    // The canonical handler performs the 4 backfill schedule passes first.
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(4)
+    const pending = mockPrisma.eSIM.updateMany.mock.calls[0][0]
+    expect(pending.where.statusNextSyncAt).toBeNull()
+    expect(pending.where.status.in).toContain('PROCESSING')
+    expect(pending.where.createdAt).toBeUndefined()
+    // then the due-batch selection runs
+    expect(mockPrisma.eSIM.findMany).toHaveBeenCalled()
+    expect(mockBuildConnector).not.toHaveBeenCalled()
+  })
+})

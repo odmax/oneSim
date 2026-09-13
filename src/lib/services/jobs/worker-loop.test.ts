@@ -9,6 +9,10 @@ vi.mock('./provider-operation-lanes', () => ({
   providerOperationLaneGate: vi.fn().mockReturnValue(async () => true),
 }))
 
+vi.mock('./recurring-jobs', () => ({
+  seedRecurringJobs: vi.fn().mockResolvedValue(undefined),
+}))
+
 import { processDueJobs } from './queue'
 import { workerTick, startJobWorkerLoop } from './worker-loop'
 
@@ -68,6 +72,27 @@ describe('low-latency job worker loop', () => {
       // scheduled WITHOUT waiting the full idle interval.
       await vi.advanceTimersByTimeAsync(1)
       expect(mockProcess.mock.calls.length).toBeGreaterThan(callsAfterFirstTick)
+    } finally {
+      vi.useRealTimers()
+      ;(globalThis as any).__onesimJobWorkerStarted = false
+    }
+  })
+
+  it('seeds recurring jobs exactly once at startup and never again on fast ticks (worker self-sufficiency)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { seedRecurringJobs } = await import('./recurring-jobs')
+      ;(globalThis as any).__onesimJobWorkerStarted = false
+
+      // Duplicate starts are the same process boot — seeding must happen once.
+      startJobWorkerLoop()
+      startJobWorkerLoop()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(seedRecurringJobs).toHaveBeenCalledTimes(1)
+
+      // Idle ~1s ticks continue indefinitely but never re-seed.
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(seedRecurringJobs).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
       ;(globalThis as any).__onesimJobWorkerStarted = false

@@ -49,10 +49,12 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Idempotent: seeds recurring jobs before processing due jobs
+    // Idempotent: seeds recurring jobs before processing due jobs. The
+    // null-schedule eSIM backfill is NOT needed here anymore — it runs inside
+    // the canonical ESIM_STATUS_SYNC handler (esim-sync-batch), which is
+    // reached both by this route and by the natural internal worker loop, so
+    // correctness no longer depends on this HTTP route.
     await seedRecurringJobs()
-    const { backfillEsimSyncSchedules } = await import('@/lib/services/jobs/handlers/esim-sync-batch')
-    await backfillEsimSyncSchedules()
     const results = await processDueJobs(20)
 
     const completed = results.filter(r => r.status === 'COMPLETED').length

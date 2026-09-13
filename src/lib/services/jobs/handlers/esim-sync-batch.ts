@@ -45,6 +45,13 @@ export async function backfillEsimSyncSchedules(): Promise<void> {
 
 export async function executeStatusSynchronization(batchSize = 20): Promise<{ processed: number; updated: number; failed: number; skipped: number }> {
   const now = new Date()
+  // Null-schedule backfill runs as part of the NATURAL ESIM_STATUS_SYNC job
+  // lifecycle (worker loop AND the HTTP process-jobs route both reach this
+  // handler). Without this, historical null-schedule rows could remain stranded
+  // whenever the HTTP cron route is not invoked. Idempotent, age-independent,
+  // provider-neutral, and never touches wallet/order/provider-attempt state.
+  await backfillEsimSyncSchedules()
+
   const esims = await prisma.eSIM.findMany({
     where: {
       statusNextSyncAt: { lte: now },

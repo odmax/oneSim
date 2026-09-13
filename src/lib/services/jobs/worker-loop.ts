@@ -1,5 +1,6 @@
 import type { JobType } from '@prisma/client'
 import { processDueJobs } from './queue'
+import { seedRecurringJobs } from './recurring-jobs'
 import { refreshLanedProviders, providerOperationLaneGate } from './provider-operation-lanes'
 
 /**
@@ -48,6 +49,14 @@ export function startJobWorkerLoop(): void {
   globalForWorker.__onesimJobWorkerStarted = true
 
   console.log('[JOB_WORKER] started (priority types: PROVIDER_OPERATION)')
+
+  // Seed recurring job definitions ONCE at startup (idempotent WHERE-NOT-EXISTS).
+  // The internal worker must be self-sufficient for recurring jobs (e.g.
+  // ESIM_STATUS_SYNC) even when the HTTP /api/cron/process-jobs route is never
+  // invoked — fresh/empty recurring-job tables otherwise leave the worker with
+  // nothing to process. Bounded to startup: never re-seeds on every fast tick,
+  // and duplicate jobs are impossible (the DB-level NOT EXISTS guard).
+  void seedRecurringJobs().catch(() => {})
 
   const scheduleNext = (delayMs: number) => {
     const t = setTimeout(run, delayMs)
