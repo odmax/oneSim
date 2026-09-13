@@ -1,0 +1,259 @@
+version: 0.2
+
+# ============================================================================
+# OneSIM — immutable container image pipeline (CodeBuild -> ECR)
+# ----------------------------------------------------------------------------
+# Job scope (ONLY):
+#   1. Fail-closed source-identity gate (exact full commit SHA)
+#   2. `docker build` from the audited repository Dockerfile (no secrets)
+#   3. Static pre-push image inspection (non-root user, direct Next CMD,
+#      HEALTHCHECK, WORKDIR, no baked runtime secrets)
+#   4. `docker push` of the IMMUTABLE SHA tag only
+#   5. Authoritative ECR digest capture via `aws ecr describe-images`
+#
+# Explicitly OUT of scope (no deployment/migration/provider operations):
+#   no ``ecs``/``rds``/CFN/Terraform/Route53/ALB/DDB, no ``prisma migrate``,
+#   no seed scripts, no provider APIs, no Secrets Manager/SSM retrieval.
+#
+# IAM note (required least-privilege addition BEFORE this may succeed):
+#   the CodeBuild service role must receive `ecr:DescribeImages` scoped ONLY
+#   to the `onesim-app` repository. It already has ecr:GetAuthorizationToken
+#   and ECR layer/image write operations on onesim-app.
+#
+# Privileged note: the CodeBuild project environment must make a Docker daemon
+# available (linuxContainer privilegedMode or a Docker-capable runtime).
+# ============================================================================
+
+env:
+  shell: bash
+
+phases:
+  install:
+    commands:
+      - echo "ONESIM_IMAGE_BUILD=install:tool-sanity"
+      - command -v aws || { echo "MISSING_TOOL=aws"; exit 1; }
+      - command -v docker || { echo "MISSING_TOOL=docker"; exit 1; }
+      - command -v git || { echo "MISSING_TOOL=git"; exit 1; }
+
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        echo "ONESIM_IMAGE_BUILD=pre_build:validate-environment-and-source"
+        : "${AWS_DEFAULT_REGION:?AWS_DEFAULT_REGION is required}"
+        : "${ECR_REPOSITORY:?ECR_REPOSITORY is required}"
+        : "${EXPECTED_GIT_SHA:?EXPECTED_GIT_SHA is required}"
+
+        if [ "${AWS_DEFAULT_REGION}" != "af-south-1" ]; then
+          echo "REGION_VALIDATION=FAIL"
+          exit 1
+        fi
+        echo "REGION_VALIDATION=PASS"
+
+        if [ "${ECR_REPOSITORY}" != "onesim-app" ]; then
+          echo "ECR_REPOSITORY_VALIDATION=FAIL"
+          exit 1
+        fi
+        echo "ECR_REPOSITORY_VALIDATION=PASS"
+
+        if ! [[ "${EXPECTED_GIT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "EXPECTED_GIT_SHA_VALIDATION=FAIL(not 40 lowercase hex)"
+          exit 1
+        fi
+        echo "EXPECTED_GIT_SHA_VALIDATION=PASS"
+
+        ACTUAL_SHA="$(git rev-parse HEAD)"
+        if [ -z "${ACTUAL_SHA}" ]; then
+          echo "SOURCE_GATE=FAIL(no checked-out head)"
+          exit 1
+        fi
+        if [ "${ACTUAL_SHA}" != "${EXPECTED_GIT_SHA}" ]; then
+          echo "SOURCE_GATE=FAIL(checked-out commit does not match expected immutable release sha)"
+          echo "EXPECTED_SHA=${EXPECTED_GIT_SHA}"
+          echo "ACTUAL_SHA=${ACTUAL_SHA}"
+          exit 90
+        fi
+        echo "SOURCE_GATE=PASS"
+        echo "SOURCE_GIT_SHA=${ACTUAL_SHA}"
+
+        ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text --region "${AWS_DEFAULT_REGION}")"
+        if ! [[ "${ACCOUNT_ID}" =~ ^[0-9]{12}$ ]]; then
+          echo "AWS_ACCOUNT_ID_VALIDATION=FAIL"
+          exit 1
+        fi
+        echo "AWS_ACCOUNT_ID_VALIDATION=PASS"
+
+        ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+        echo "ECR_TARGET=${ECR_URI}:${EXPECTED_GIT_SHA}"
+
+        aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
+          | docker login --username AWS --password-stdin "${ECR_URI}"
+        echo "ECR_LOGIN=PASS"
+
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        echo "ONESIM_IMAGE_BUILD=build:sha-gate+docker-build+static-inspection+push+digest"
+
+        # Slow path double-check immediately before any docker work: never build
+        # or push anything unless the checked-out commit is exactly the audited SHA.
+        ACTUAL_SHA="$(git rev-parse HEAD)"
+        if [ "${ACTUAL_SHA}" != "${EXPECTED_GIT_SHA}" ]; then
+          echo "SOURCE_GATE=FAIL(sha changed between phases)"
+          exit 90
+        fi
+        echo "SOURCE_GATE_BUILD_PHASE=PASS"
+
+        # Make the privileged-mode/daemon requirement fail fast and clearly if the
+        # environment cannot provide a Docker daemon. (Static check only - the
+        # application container is NOT executed in this pipeline.)
+        if ! docker info >/dev/null 2>&1; then
+          echo "DOCKER_DAEMON_UNAVAILABLE=FAIL"
+          exit 1
+        fi
+        echo "DOCKER_DAEMON=PASS"
+
+        ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text --region "${AWS_DEFAULT_REGION}")"
+        FULL_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY}:${EXPECTED_GIT_SHA}"
+        IMAGE_REF="${FULL_IMAGE}"
+        IMAGE_TAG="${EXPECTED_GIT_SHA}"
+
+        # ---- Docker build (no DATABASE_URL / NEXTAUTH_SECRET / provider secrets;
+        #      the audited Dockerfile supplies its own build-only placeholder) ----
+        docker build -t "${IMAGE_REF}" .
+        echo "DOCKER_BUILD=PASS"
+
+        # =============================== static inspection ===============================
+        # A. non-root runtime user -------------------------------------------------------
+        IMG_USER="$(docker inspect --format '{{.Config.User}}' "${IMAGE_REF}")"
+        if [ "${IMG_USER}" != "onesim" ]; then
+          echo "IMAGE_USER_CHECK=FAIL(user=${IMG_USER})"
+          exit 1
+        fi
+        echo "IMAGE_USER_CHECK=PASS"
+
+        # B. CMD/Entrypoint: direct Next.js exec-form start, no process manager,
+        #    no migration/shell bootstrap -------------------------------------------------
+        IMG_CMD="$(docker inspect --format '{{json .Config.Cmd}}' "${IMAGE_REF}")"
+        IMG_ENTRY="$(docker inspect --format '{{json .Config.Entrypoint}}' "${IMAGE_REF}")"
+        if [ "${IMG_ENTRY}" != "null" ]; then
+          echo "IMAGE_CMD_CHECK=FAIL(unexpected entrypoint)"
+          exit 1
+        fi
+        case "${IMG_CMD}" in
+          *".bin/next"*) : ;;
+          *) echo "IMAGE_CMD_CHECK=FAIL(next binary not found)"; exit 1 ;;
+        esac
+        if ! printf '%s' "${IMG_CMD}" | grep -q '"start"'; then
+          echo "IMAGE_CMD_CHECK=FAIL(start argument not found)"
+          exit 1
+        fi
+        IMG_CMD_LC="$(printf '%s' "${IMG_CMD}" | tr '[:upper:]' '[:lower:]')"
+        case "${IMG_CMD_LC}" in
+          *"pm2"*|*"migrate"*|*"npm"*|*"sh -c"*|*"/bin/sh"*|*"/bin/bash"*)
+            echo "IMAGE_CMD_CHECK=FAIL(forbidden wrapper)"
+            exit 1
+            ;;
+        esac
+        echo "IMAGE_CMD_CHECK=PASS"
+
+        # C. Docker HEALTHCHECK exists and targets the provider-free health route -------
+        IMG_HEALTH="$(docker inspect --format '{{json .Config.Healthcheck}}' "${IMAGE_REF}")"
+        if [ -z "${IMG_HEALTH}" ] || [ "${IMG_HEALTH}" = "null" ]; then
+          echo "IMAGE_HEALTHCHECK_CHECK=FAIL(missing)"
+          exit 1
+        fi
+        case "${IMG_HEALTH}" in
+          *"api/health"*) : ;;
+          *) echo "IMAGE_HEALTHCHECK_CHECK=FAIL(health path)"; exit 1 ;;
+        esac
+        echo "IMAGE_HEALTHCHECK_CHECK=PASS"
+
+        # D. WORKDIR ---------------------------------------------------------------------
+        IMG_WORKDIR="$(docker inspect --format '{{.Config.WorkingDir}}' "${IMAGE_REF}")"
+        if [ "${IMG_WORKDIR}" != "/app" ]; then
+          echo "IMAGE_WORKDIR_CHECK=FAIL(wd=${IMG_WORKDIR})"
+          exit 1
+        fi
+        echo "IMAGE_WORKDIR_CHECK=PASS"
+
+        # E. Config.Env must not contain real values for sensitive runtime variables ----
+        RUNTIME_SECRET_FAIL=0
+        IMG_ENV="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${IMAGE_REF}")"
+        while IFS= read -r ENV_LINE; do
+          [ -n "${ENV_LINE}" ] || continue
+          ENV_KEY="${ENV_LINE%%=*}"
+          ENV_VAL="${ENV_LINE#*=}"
+          case "${ENV_KEY}" in
+            DATABASE_URL|NEXTAUTH_URL|NEXTAUTH_SECRET|ENCRYPTION_KEY|CRON_SECRET|ORDER_CALLBACK_JOB_SECRET|INVENTORY_RESERVATION_JOB_SECRET|ORDER_RECOVERY_JOB_SECRET|EXCHANGE_RATE_JOB_SECRET|*API[_-]KEY*|*PROVIDER*|*TOKEN*|*PASSWORD*|*PASSWD*|*SECRET*)
+              if [ -n "${ENV_VAL}" ]; then
+                echo "RUNTIME_SECRET_ENV_KEY_VIOLATION=${ENV_KEY}"
+                RUNTIME_SECRET_FAIL=1
+              fi
+              ;;
+          esac
+        done <<< "${IMG_ENV}"
+        if [ "${RUNTIME_SECRET_FAIL}" != "0" ]; then
+          echo "IMAGE_RUNTIME_SECRET_CONFIG_CHECK=FAIL"
+          exit 1
+        fi
+        echo "IMAGE_RUNTIME_SECRET_CONFIG_CHECK=PASS"
+
+        # F. Docker history: scan for suspicious secret configuration without dumping  --
+        HIST_TEXT="$(docker history --no-trunc "${IMAGE_REF}" 2>/dev/null || true)"
+        if [ -z "${HIST_TEXT}" ]; then
+          echo "IMAGE_HISTORY_SECRET_CHECK=FAIL(history unavailable)"
+          exit 1
+        fi
+        # Neutralize the audited build-only placeholder before scanning.
+        HIST_SANITIZED="$(printf '%s\n' "${HIST_TEXT}" | sed 's#build-time-only-placeholder-secret-change-me#__BUILD_ONLY_PLACEHOLDER__#g')"
+        # Drop the placeholder-bearing instructions, then count suspicious tokens.
+        HIST_FILTERED="$(printf '%s\n' "${HIST_SANITIZED}" | grep -v '__BUILD_ONLY_PLACEHOLDER__' || true)"
+        HIST_SUSPECT_COUNT="$(printf '%s\n' "${HIST_FILTERED}" | grep -Eic \
+          -e 'DATABASE_URL=(postgres|postgresql)://' \
+          -e 'ENCRYPTION_KEY=[^[:space:]]+' \
+          -e 'CRON_SECRET=[^[:space:]]+' \
+          -e 'PRISMA_PASSWORD=[^[:space:]]+' \
+          -e 'NEXTAUTH_SECRET=[^[:space:]]+' \
+          -e 'STRIPE_(SECRET|KEY)=[^[:space:]]+' \
+          -e '(API|BOT|BRANCH)[_-]?(KEY|TOKEN)=[^[:space:]]+' \
+          -e '://[^[:space:]/]+:[^@[:space:]]+@' \
+          || true)"
+        if [ "$(printf '%s' "${HIST_SUSPECT_COUNT}" | tr -d '[:space:]')" != "0" ]; then
+          echo "IMAGE_HISTORY_SECRET_CHECK=FAIL(suspicious tokens, count=${HIST_SUSPECT_COUNT})"
+          exit 1
+        fi
+        echo "IMAGE_HISTORY_SECRET_CHECK=PASS"
+
+        # All static checks passed -> push the immutable SHA tag (IMMUTABLE tag
+        # mutability means any accidental replacement fails on its own).
+        docker push "${IMAGE_REF}"
+        echo "ECR_PUSH=PASS"
+
+        # Authoritative digest via ECR. NOTE: the role must be granted
+        # ecr:DescribeImages (scoped to onesim-app) for this phase to succeed.
+        IMG_DETAILS_COUNT="$(aws ecr describe-images --repository-name "${ECR_REPOSITORY}" \
+          --image-ids imageTag="${IMAGE_TAG}" --region "${AWS_DEFAULT_REGION}" \
+          --query 'length(imageDetails)' --output text 2>/dev/null || true)"
+        if [ "${IMG_DETAILS_COUNT}" != "1" ]; then
+          echo "ECR_DIGEST_QUERY=FAIL(expected exactly one image detail; role requires ecr:DescribeImages on onesim-app)"
+          exit 1
+        fi
+        IMAGE_DIGEST="$(aws ecr describe-images --repository-name "${ECR_REPOSITORY}" \
+          --image-ids imageTag="${IMAGE_TAG}" --region "${AWS_DEFAULT_REGION}" \
+          --query 'imageDetails[0].imageDigest' --output text)"
+        case "${IMAGE_DIGEST}" in
+          sha256:[0-9a-f]*) : ;;
+          *) echo "ECR_DIGEST_CAPTURE=FAIL(invalid digest)"; exit 1 ;;
+        esac
+        echo "ECR_DIGEST_CAPTURE=PASS"
+        echo "RELEASE_GIT_SHA=${EXPECTED_GIT_SHA}"
+        echo "RELEASE_IMAGE_URI=${IMAGE_REF}"
+        echo "RELEASE_IMAGE_DIGEST=${IMAGE_DIGEST}"
+        echo "IMAGE_BUILD=PASS"
+
+  post_build:
+    commands:
+      - echo "POST_BUILD=immutable image pipeline complete; no deployment, no database migration, no provider operations performed"
+      - echo "IAM_NOTICE=CodeBuild role must additionally receive ecr:DescribeImages scoped only to the onesim-app repository before this pipeline can succeed"
