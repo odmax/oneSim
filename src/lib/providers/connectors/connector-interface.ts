@@ -24,6 +24,13 @@ export interface ConnectorPlan {
    * Defaults to true for connectors that do not set it (backward-compatible).
    */
   isAvailable?: boolean
+  /**
+   * Optional operator-facing reason a connector quarantined a plan (e.g.
+   * provider catalog metadata is contradictory or unprovable). When set, the
+   * canonical provider sync persists it alongside `isAvailable:false` so
+   * operators can understand why the plan is blocked without guessing.
+   */
+  catalogBlockReason?: string
 }
 
 

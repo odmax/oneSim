@@ -209,6 +209,12 @@ export async function syncProviderPlans(providerId: string) {
         // Defaults to true when a connector does not set it. Never set to true
         // for a plan the provider marks unavailable.
         isAvailable: plan.isAvailable !== false,
+        // Surface a connector-declared quarantine reason (e.g. US-Matrix
+        // contradictory/unprovable catalog metadata). Guarded: never clobber an
+        // existing admin-authored note unless it is already a QUARANTINE note.
+        ...(typeof plan.catalogBlockReason === 'string' && plan.catalogBlockReason && (!existing?.notes || String(existing.notes).startsWith('QUARANTINE:'))
+          ? { notes: plan.catalogBlockReason }
+          : {}),
         providerRawData: withTravelDateMarker(raw, normalizeTravelDateRequirement(raw)),
       }
 

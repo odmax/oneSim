@@ -64,6 +64,7 @@ export function getPackagePurchaseReadiness(params: {
     activePriceSnapshotId: string | null
     sellingPrice: any
     costPrice: any
+    isAvailable?: boolean
   } | null
   provider?: {
     status: string
@@ -106,6 +107,13 @@ export function getPackagePurchaseReadiness(params: {
     reasons.push('Provider package not found')
     return { ready: false, reasons }
   }
+
+  // A ProviderPackage the connector (or operator) marked unavailable is never
+  // ready, regardless of pricing/config state — mirrored the purchase-dispatch
+  // guard (provider-attempt-service). Catalog-fail-closed quarantines rely on
+  // this so contradictory/unprovable provider data can never be published or
+  // purchased through the normal flow.
+  if (providerPkg.isAvailable === false) reasons.push('Provider package is unavailable (isAvailable=false)')
 
   const validCostStatuses = ['VALID', 'OVERRIDDEN']
   if (!validCostStatuses.includes(providerPkg.costStatus ?? '')) reasons.push(`Cost status is ${providerPkg.costStatus || 'MISSING'} — admin cost override needed`)

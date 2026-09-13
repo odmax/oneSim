@@ -190,13 +190,48 @@ describe('syncProviderPlans — US-Matrix validity fail-closed (never silently 3
       providerRow({ id: 'prov-usm', code: 'USMATRIX', adapterStrategy: 'USMATRIX' }) as any,
     )
     mockAdapter.mockResolvedValue(adapterReturning([
-      { id: 'usm-7', name: 'Plan B', data_gb: 1, validity_days: 7, price_usd: 5, isAvailable: true, raw_data: { limit: 7, limitType: 'day' } },
+      { id: 'usm-7', name: 'Plan B', data_gb: 7, validity_days: 7, price_usd: 5, isAvailable: true, raw_data: { limit: 7, limitType: 'day', dataLimit: 7, dataType: 'giga' } },
     ]) as any)
 
     await syncProviderPlans('prov-usm')
 
     const create = mockPrisma.providerPackage.create.mock.calls[0][0] as any
     expect(create.data.validityDays).toBe(7)
+    expect(create.data.dataGB).toBe(7)
+  })
+
+  it('US-Matrix contradictory data allowance persists isAvailable=false and a QUARANTINE note (never name-corrected)', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(
+      providerRow({ id: 'prov-usm', code: 'USMATRIX', adapterStrategy: 'USMATRIX' }) as any,
+    )
+    mockAdapter.mockResolvedValue(adapterReturning([
+      { id: 'usm-zambia', name: 'Zambia 10GB 30Days', data_gb: 110, validity_days: 30, price_usd: 5, isAvailable: false, catalogBlockReason: 'QUARANTINE: US-Matrix catalog data inconsistent — plan name encodes 10GB but provider dataLimit is 110GB', raw_data: { dataLimit: 110, dataType: 'giga', limit: 30, limitType: 'day' } },
+    ]) as any)
+
+    await syncProviderPlans('prov-usm')
+
+    const create = mockPrisma.providerPackage.create.mock.calls[0][0] as any
+    expect(create.data.dataGB).toBe(110) // authoritative provider value, never rewritten
+    expect(create.data.isAvailable).toBe(false)
+    expect(create.data.notes).toContain('QUARANTINE')
+    // Evidence records the name value for operators but never replaces the
+    // authoritative dataGB (110) with the name-encoded 10.
+    expect(create.data.notes).toContain('110GB')
+  })
+
+  it('QUARANTINE reason never clobbers an existing admin note (guarded, idempotent)', async () => {
+    mockPrisma.provider.findUnique.mockResolvedValue(
+      providerRow({ id: 'prov-usm', code: 'USMATRIX', adapterStrategy: 'USMATRIX' }) as any,
+    )
+    mockPrisma.providerPackage.findFirst.mockResolvedValue({ id: 'pp-1', providerId: 'prov-usm', providerPlanId: 'usm-zambia', notes: 'Admin manual override' } as any)
+    mockAdapter.mockResolvedValue(adapterReturning([
+      { id: 'usm-zambia', name: 'Zambia 10GB 30Days', data_gb: 110, validity_days: 30, price_usd: 5, isAvailable: false, catalogBlockReason: 'QUARANTINE: ...', raw_data: { dataLimit: 110, dataType: 'giga', limit: 30, limitType: 'day' } },
+    ]) as any)
+
+    await syncProviderPlans('prov-usm')
+
+    const update = mockPrisma.providerPackage.update.mock.calls[0][0] as any
+    expect(update.data.notes).toBeUndefined()
   })
 
   it('legacy generic fallback (raw.validity || 30) still applies for NON-USMatrix providers', async () => {

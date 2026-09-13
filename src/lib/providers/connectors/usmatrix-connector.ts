@@ -175,6 +175,41 @@ export function parseUsMatrixValidityDays(p: { limit?: unknown; limitType?: unkn
   return n
 }
 
+/**
+ * Extract a GB amount from a US-Matrix plan NAME as a CONSISTENCY signal ONLY.
+ * The plan name is NEVER authoritative for catalog data — it is only compared
+ * against the authoritative provider dataLimit. Returns null when the name
+ * carries no `NN GB` token.
+ */
+export function extractNameGb(name: unknown): number | null {
+  const m = /([0-9]+)\s*gb/i.exec(String(name ?? ''))
+  if (!m) return null
+  const n = Number(m[1])
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/**
+ * Parse US-Matrix catalog data allowance (GB) from the CONFIRMED live contract:
+ *   raw.dataLimit (positive integer, numeric or numeric string) with
+ *   raw.dataType normalized to "giga" (trimmed, case-insensitive).
+ *
+ * Returns 0 (fail closed) when the allowance cannot be proven:
+ *  - dataLimit missing / NaN / zero / negative / non-integer
+ *  - dataType is anything other than the supported "giga" unit
+ *
+ * It NEVER inspects duration `limit` (which is service validity, see
+ * parseUsMatrixValidityDays); a missing dataLimit therefore never becomes a
+ * duration value. Other unit aliases are NOT invented — only "giga" is proven
+ * by live data (105/105 rows).
+ */
+export function parseUsMatrixDataAllowanceGB(p: { dataLimit?: unknown; dataType?: unknown }): number {
+  const dataType = String(p.dataType ?? '').trim().toLowerCase()
+  if (dataType !== 'giga') return 0
+  const n = typeof p.dataLimit === 'string' && p.dataLimit.trim() !== '' ? Number(p.dataLimit) : Number(p.dataLimit)
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return 0
+  return n
+}
+
 export class UsMatrixConnector implements IProviderConnector {
   readonly providerId: string
   readonly name: string
@@ -436,23 +471,42 @@ export class UsMatrixConnector implements IProviderConnector {
         // Service validity is the confirmed live contract value:
         //   raw.limit (positive integer) + raw.limitType === "day".
         // raw.start/end is the package availability/eligibility window, NOT the
-        // service duration; the plan name is never used in production. 0 means
-        // "cannot be proven" and makes the plan unpublishable (see below) so an
-        // unknown duration can never silently become an arbitrary 30-day product.
+        // service duration; the plan name is never used in production.
         const validityDays = parseUsMatrixValidityDays(p)
         const validityProven = validityDays > 0
+
+        // Data allowance comes ONLY from raw.dataLimit + raw.dataType "giga".
+        // Duration `limit` must NEVER be reused as data allowance.
+        const dataGB = parseUsMatrixDataAllowanceGB(p)
+        const dataProven = dataGB > 0
+        // Name is a consistency signal only (never authoritative): a GB token in
+        // the plan name that contradicts the authoritative dataLimit quarantines
+        // the plan — it is never "corrected" from the name.
+        const nameGb = extractNameGb(p.name)
+        const dataContradiction = dataProven && nameGb != null && nameGb !== dataGB
+
+        const planAvailable = validityProven && dataProven && !dataContradiction
+        const catalogBlockReason = dataContradiction
+          ? `QUARANTINE: US-Matrix catalog data inconsistent — plan name encodes ${nameGb}GB but provider dataLimit is ${dataGB}GB (dataType=${String(p.dataType ?? '').trim() || 'unspecified'})`
+          : !dataProven
+            ? 'QUARANTINE: US-Matrix data allowance unprovable (dataLimit absent/invalid or unsupported dataType)'
+            : undefined
+
         return {
           id: String(p.id),
           name: String(p.name),
-          data_gb: p.dataLimit != null ? Number(p.dataLimit) : (p.limit != null ? Number(p.limit) : 0),
+          data_gb: dataGB,
           validity_days: validityDays,
           price_usd: p.price != null ? Number(p.price) : 0,
           currency: 'USD', // documented as USD; no currency field in the API
           description: String(p.name),
           sku: p.code ? String(p.code) : String(p.id),
-          // Fail closed: when the authoritative duration cannot be proven the plan
-          // is marked unavailable and can never be exposed as a defaulted product.
-          isAvailable: validityProven ? undefined : false,
+          // Fail closed: when either the authoritative duration or the data
+          // allowance cannot be proven (or contradicts the name), the plan is
+          // unavailable/unpublishable and can never be exposed as a defaulted
+          // product. `catalogBlockReason` explains why for operators.
+          isAvailable: planAvailable ? undefined : false,
+          ...(catalogBlockReason ? { catalogBlockReason } : {}),
           raw_data: p,
         }
       })

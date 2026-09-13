@@ -20,6 +20,10 @@ export interface ProviderPlan {
    *  marks the persisted ProviderPackage unavailable instead of leaving it
    *  sellable. */
   isAvailable?: boolean
+  /** Optional operator-facing reason a connector quarantined a plan (e.g.
+   *  provider catalog metadata contradictory/unprovable). Persisted alongside
+   *  isAvailable:false so operators understand why the plan is blocked. */
+  catalogBlockReason?: string
 }
 
 export interface ActivateESIMParams {

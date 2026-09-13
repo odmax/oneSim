@@ -259,8 +259,8 @@ describe('US-Matrix catalog discovery (GET /api/v1/packages)', () => {
   it('syncPlans maps the documented package shape (price USD, dataLimit GB)', async () => {
     const packages = {
       data: [
-        { id: 'pkg-1', name: 'Europe 10GB - 30 Days', code: 'EU-10', price: 15, dataLimit: 10, status: 'live', active: true },
-        { id: 'pkg-2', name: 'Global 5GB', price: 9, dataLimit: 5 },
+        { id: 'pkg-1', name: 'Europe 10GB - 30 Days', code: 'EU-10', price: 15, dataLimit: 10, dataType: 'giga', limit: 30, limitType: 'day', status: 'live', active: true },
+        { id: 'pkg-2', name: 'Global 5GB', price: 9, dataLimit: 5, dataType: 'giga' },
       ],
       meta: { itemsPerPage: 100, totalItems: 2, currentPage: 1, totalPages: 1 },
     }
@@ -300,35 +300,36 @@ describe('US-Matrix validity normalization (limit + limitType="day")', () => {
     ['15-day', 15, 'day', 15],
     ['30-day', 30, 'day', 30],
   ])('%s plan maps limit+limitType to validity_days', async (_name, limit, limitType, expected) => {
-    const { validity, isAvailable } = await validityFor({ id: 'pkg-v', name: 'Plan', limit, limitType })
+    // Realistic valid US-Matrix row: dataLimit+giga data AND limit+day validity.
+    const { validity, isAvailable } = await validityFor({ id: 'pkg-v', name: 'Plan', dataLimit: 10, dataType: 'giga', limit, limitType })
     expect(validity).toBe(expected)
     expect(isAvailable).not.toBe(false)
   })
 
   it('10-day exception: no duration in name, start/end span ~30 days, limit=10 day -> 10', async () => {
     const { validity } = await validityFor({
-      id: 'pkg-10', name: 'Test South Africa', limit: 10, limitType: 'day',
+      id: 'pkg-10', name: 'Test South Africa', dataLimit: 10, dataType: 'giga', limit: 10, limitType: 'day',
       start: '2026-08-13T00:00:02.000Z', end: '2026-09-12T23:59:58.000Z',
     })
     expect(validity).toBe(10)
   })
 
-  it('20-day exception: name contains "-20" but not "20Days", limit=20 day -> 20', async () => {
+  it('20-day exception: name contains "-20" but not "20GB", limit=20 day -> 20', async () => {
     const { validity } = await validityFor({
-      id: 'pkg-20', name: 'Test South Africa-20', limit: 20, limitType: 'day',
+      id: 'pkg-20', name: 'Test South Africa-20', dataLimit: 20, dataType: 'giga', limit: 20, limitType: 'day',
       start: '2026-08-13T00:00:02.000Z', end: '2026-09-12T23:59:58.000Z',
     })
     expect(validity).toBe(20)
   })
 
   it('numeric-string limit is accepted when the API types it that way', async () => {
-    const { validity } = await validityFor({ id: 'pkg-s', name: 'Plan', limit: '15', limitType: 'day' })
+    const { validity } = await validityFor({ id: 'pkg-s', name: 'Plan', dataLimit: 15, dataType: 'giga', limit: '15', limitType: 'day' })
     expect(validity).toBe(15)
   })
 
   it('case normalization: "DAY"/"Day" equals "day"', async () => {
-    expect((await validityFor({ id: 'pkg-d1', name: 'Plan', limit: 7, limitType: 'DAY' })).validity).toBe(7)
-    expect((await validityFor({ id: 'pkg-d2', name: 'Plan', limit: 7, limitType: 'Day' })).validity).toBe(7)
+    expect((await validityFor({ id: 'pkg-d1', name: 'Plan', dataLimit: 7, dataType: 'giga', limit: 7, limitType: 'DAY' })).validity).toBe(7)
+    expect((await validityFor({ id: 'pkg-d2', name: 'Plan', dataLimit: 7, dataType: 'giga', limit: 7, limitType: 'Day' })).validity).toBe(7)
   })
 
   it.each([
@@ -343,6 +344,89 @@ describe('US-Matrix validity normalization (limit + limitType="day")', () => {
     expect(validity).toBe(0)
     expect(validity).not.toBe(30)
     expect(isAvailable).toBe(false)
+  })
+})
+
+describe('US-Matrix data allowance normalization (dataLimit + dataType giga)', () => {
+  async function catalogFor(pkg: any) {
+    const fetchSpy = vi.fn().mockResolvedValue(okJson({ data: [pkg], meta: { totalItems: 1, itemsPerPage: 100, currentPage: 1, totalPages: 1 } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const result = await connector.syncPlans()
+    const row: any = result.data?.[0]
+    return {
+      data_gb: row?.data_gb,
+      validity_days: row?.validity_days,
+      isAvailable: row?.isAvailable,
+      catalogBlockReason: row?.catalogBlockReason,
+    }
+  }
+
+  it('A. valid: name "UK 10GB 30Days", dataLimit 10 + giga, limit 30 day -> data_gb 10, validity 30, available', async () => {
+    const r = await catalogFor({ id: 'uk-10', name: 'UK 10GB 30Days', dataLimit: 10, dataType: 'giga', limit: 30, limitType: 'day' })
+    expect(r.data_gb).toBe(10)
+    expect(r.validity_days).toBe(30)
+    expect(r.isAvailable).not.toBe(false)
+    expect(r.catalogBlockReason).toBeUndefined()
+  })
+
+  it('B. contradiction: "Zambia 10GB 30Days" with dataLimit=110 -> authoritative 110, NEVER 30/10, quarantined with reason', async () => {
+    const r = await catalogFor({ id: 'zm-110', name: 'Zambia 10GB 30Days', dataLimit: 110, dataType: 'giga', limit: 30, limitType: 'day' })
+    expect(r.data_gb).toBe(110) // authoritative provider dataLimit; name is NOT authoritative
+    expect(r.data_gb).not.toBe(30) // duration must never be data
+    expect(r.data_gb).not.toBe(10) // never silently corrected from the name
+    expect(r.validity_days).toBe(30) // validity stays isolated
+    expect(r.isAvailable).toBe(false) // quarantined
+    expect(r.catalogBlockReason).toBeTruthy()
+    expect(r.catalogBlockReason).toContain('inconsistent')
+  })
+
+  it('C. missing dataLimit: data_gb must NOT become duration (fail closed)', async () => {
+    const r = await catalogFor({ id: 'c-missing', name: 'Plan', limit: 7, limitType: 'day' })
+    expect(r.data_gb).toBe(0)
+    expect(r.data_gb).not.toBe(7)
+    expect(r.isAvailable).toBe(false)
+  })
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['non-numeric string', 'abc'],
+  ])('D. invalid dataLimit (%s) fails closed', async (_name, dataLimit) => {
+    const r = await catalogFor({ id: 'c-invalid', name: 'Plan', dataLimit, dataType: 'giga' })
+    expect(r.data_gb).toBe(0)
+    expect(r.isAvailable).toBe(false)
+  })
+
+  it('NaN dataLimit fails closed', async () => {
+    const r = await catalogFor({ id: 'c-nan', name: 'Plan', dataLimit: Number.NaN, dataType: 'giga' })
+    expect(r.data_gb).toBe(0)
+    expect(r.isAvailable).toBe(false)
+  })
+
+  it('E. dataType normalization: case/whitespace around "giga" works', async () => {
+    for (const dataType of ['GIGA', ' Giga ', 'giga']) {
+      const r = await catalogFor({ id: 'c-giga', name: 'Plan', dataLimit: 10, dataType, limit: 30, limitType: 'day' })
+      expect(r.data_gb).toBe(10)
+      expect(r.isAvailable).not.toBe(false)
+    }
+  })
+
+  it('F. unsupported dataTypes fail closed (no invented conversions)', async () => {
+    for (const dataType of ['mb', 'byte', 'gigabyte']) {
+      const r = await catalogFor({ id: 'c-f', name: 'Plan', dataLimit: 10, dataType })
+      expect(r.data_gb).toBe(0)
+      expect(r.isAvailable).toBe(false)
+    }
+  })
+
+  it('H. validity is isolated: changing duration never changes the data allowance', async () => {
+    const seven = await catalogFor({ id: 'h-7', name: 'Plan', dataLimit: 10, dataType: 'giga', limit: 7, limitType: 'day' })
+    const thirty = await catalogFor({ id: 'h-30', name: 'Plan', dataLimit: 10, dataType: 'giga', limit: 30, limitType: 'day' })
+    expect(seven.data_gb).toBe(10)
+    expect(seven.validity_days).toBe(7)
+    expect(thirty.data_gb).toBe(10)
+    expect(thirty.validity_days).toBe(30)
   })
 })
 

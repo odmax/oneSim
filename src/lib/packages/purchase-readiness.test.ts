@@ -39,6 +39,25 @@ describe('getPackagePurchaseReadiness', () => {
     expect(r.reasons).toContain('Package is inactive')
   })
 
+  it('blocks provider package marked unavailable (isAvailable=false) — quarantine gate', () => {
+    const r = getPackagePurchaseReadiness({
+      pkg: { isActive: true },
+      providerPkg: makeProviderPkg({ isAvailable: false }),
+      provider: makeProvider(),
+    })
+    expect(r.ready).toBe(false)
+    expect(r.reasons).toContain('Provider package is unavailable (isAvailable=false)')
+  })
+
+  it('allows provider package without explicit availability (undefined is not a block)', () => {
+    const r = getPackagePurchaseReadiness({
+      pkg: { isActive: true },
+      providerPkg: makeProviderPkg({ isAvailable: undefined }),
+      provider: makeProvider(),
+    })
+    expect(r.ready).toBe(true)
+  })
+
   it('blocks hidden from catalog', () => {
     const r = getPackagePurchaseReadiness({
       pkg: { hiddenFromCatalog: true },
