@@ -6,6 +6,7 @@ import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
 import { providerRouter } from '@/lib/services/providers/router'
 import { resolvePackageIdentifier } from '@/lib/packages/resolve-package'
+import { derivePublicSku } from '@/lib/catalog/public-sku'
 import { getAppBaseUrl } from '@/lib/config/app-url'
 import crypto from 'crypto'
 
@@ -275,16 +276,29 @@ export async function testListPackages(): Promise<{
       validityDays: true,
       priceUSD: true,
       customerDescription: true,
-      sku: true,
-      packageCode: true,
+      providerPackageId: true,
+      providerPackage: { select: { country: true, region: true } },
     },
   })
 
   return {
     success: true,
-    packages: packages.map(p => ({
-      ...p,
-      priceUSD: p.priceUSD.toString(),
-    })),
+    packages: packages.map(p => {
+      // Client-facing SKU must be provider-neutral (never the persisted value).
+      const publicSku = derivePublicSku({
+        id: p.id,
+        providerPackageId: p.providerPackageId,
+        country: p.providerPackage?.country,
+        region: p.providerPackage?.region,
+        dataGB: p.dataGB,
+        validityDays: p.validityDays,
+      })
+      return {
+        ...p,
+        priceUSD: p.priceUSD.toString(),
+        sku: publicSku,
+        packageCode: publicSku,
+      }
+    }),
   }
 }

@@ -1,8 +1,9 @@
 import { prisma } from '@/lib/prisma'
+import { derivePublicSku } from '@/lib/catalog/public-sku'
 
 export interface SkuExportRow {
-  sku: string | null
-  packageCode: string | null
+  sku: string
+  packageCode: string
   name: string
   displayName: string | null
   description: string | null
@@ -14,15 +15,22 @@ export interface SkuExportRow {
   country: string | null
   region: string | null
   productType: string
-  providerName: string | null
   isActive: boolean
 }
 
+/**
+ * Client-facing SKU export. The `sku`/`packageCode` values are the canonical
+ * provider-neutral public SKU (derivePublicSku) — a provider-identifying
+ * persisted SKU is never surfaced. `providerName` is intentionally NOT part of
+ * the export: clients must never learn the upstream provider.
+ */
 export async function getSkuExportData(): Promise<SkuExportRow[]> {
   const packages = await prisma.eSIMPackage.findMany({
     where: { isActive: true, source: { in: ['CATALOG_PRODUCT', 'MANUAL'] }, archivedAt: null, hiddenFromCatalog: false },
     orderBy: { name: 'asc' },
     select: {
+      id: true,
+      providerPackageId: true,
       sku: true,
       packageCode: true,
       name: true,
@@ -33,30 +41,38 @@ export async function getSkuExportData(): Promise<SkuExportRow[]> {
       validityDays: true,
       currency: true,
       priceUSD: true,
-      providerName: true,
       productType: true,
       isActive: true,
       providerPackage: { select: { country: true, region: true } },
     },
   })
 
-  return packages.map(pkg => ({
-    sku: pkg.sku || null,
-    packageCode: pkg.packageCode || null,
-    name: pkg.name,
-    displayName: pkg.displayName || null,
-    description: pkg.description || null,
-    customerDescription: pkg.customerDescription || null,
-    dataGB: pkg.dataGB,
-    validityDays: pkg.validityDays,
-    currency: pkg.currency || 'USD',
-    price: parseFloat(pkg.priceUSD.toString()),
-    country: pkg.providerPackage?.country || null,
-    region: pkg.providerPackage?.region || null,
-    productType: pkg.productType,
-    providerName: pkg.providerName || null,
-    isActive: pkg.isActive,
-  }))
+  return packages.map(pkg => {
+    const publicSku = derivePublicSku({
+      id: pkg.id,
+      providerPackageId: pkg.providerPackageId,
+      country: pkg.providerPackage?.country,
+      region: pkg.providerPackage?.region,
+      dataGB: pkg.dataGB,
+      validityDays: pkg.validityDays,
+    })
+    return {
+      sku: publicSku,
+      packageCode: publicSku,
+      name: pkg.name,
+      displayName: pkg.displayName || null,
+      description: pkg.description || null,
+      customerDescription: pkg.customerDescription || null,
+      dataGB: pkg.dataGB,
+      validityDays: pkg.validityDays,
+      currency: pkg.currency || 'USD',
+      price: parseFloat(pkg.priceUSD.toString()),
+      country: pkg.providerPackage?.country || null,
+      region: pkg.providerPackage?.region || null,
+      productType: pkg.productType,
+      isActive: pkg.isActive,
+    }
+  })
 }
 
 export function skuToJson(data: SkuExportRow[]): string {
@@ -64,7 +80,7 @@ export function skuToJson(data: SkuExportRow[]): string {
 }
 
 export function skuToCsv(data: SkuExportRow[]): string {
-  const headers = ['sku', 'packageCode', 'name', 'displayName', 'description', 'dataGB', 'validityDays', 'currency', 'price', 'country', 'region', 'productType', 'providerName', 'isActive']
+  const headers = ['sku', 'packageCode', 'name', 'displayName', 'description', 'dataGB', 'validityDays', 'currency', 'price', 'country', 'region', 'productType', 'isActive']
   const lines = [headers.join(',')]
 
   for (const row of data) {
@@ -81,7 +97,7 @@ export function skuToCsv(data: SkuExportRow[]): string {
 }
 
 export function skuToXlsx(data: SkuExportRow[]): string {
-  const headers = ['sku', 'packageCode', 'name', 'displayName', 'description', 'dataGB', 'validityDays', 'currency', 'price', 'country', 'region', 'productType', 'providerName', 'isActive']
+  const headers = ['sku', 'packageCode', 'name', 'displayName', 'description', 'dataGB', 'validityDays', 'currency', 'price', 'country', 'region', 'productType', 'isActive']
 
   let html = '<table>'
   html += '<tr>' + headers.map(h => '<th>' + h + '</th>').join('') + '</tr>'

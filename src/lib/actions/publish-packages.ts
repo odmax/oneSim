@@ -10,11 +10,7 @@ import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes } from 
 import { finalizeCatalogPackageConfiguration } from '@/lib/pricing/configuration-finalizer'
 import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
 import { isPackagePublishEligible } from '@/lib/catalog/publish-eligibility'
-
-function shortCode(s: string | null | undefined, fallback: string): string {
-  if (!s) return fallback
-  return s.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase()
-}
+import { derivePublicSku } from '@/lib/catalog/public-sku'
 
 function shortId(id: string): string {
   return id.slice(-6).toUpperCase()
@@ -24,12 +20,13 @@ async function generateOneSimSku(tx: any, pp: {
   id: string
   provider?: { code?: string | null; name?: string | null } | null
   country?: string | null
+  region?: string | null
   dataGB: number
   validityDays: number
 }): Promise<string> {
-  const provCode = shortCode(pp.provider?.code || pp.provider?.name, 'XX')
-  const country = (pp.country || 'XX').toUpperCase()
-  const base = `OS-${provCode}-${country}-${pp.dataGB}GB-${pp.validityDays}D-${shortId(pp.id)}`
+  // Provider-neutral: OS-{COUNTRY}-{DATA}GB-{VALIDITY}D-{STABLE}. The suffix is
+  // derived from the internal ProviderPackage id, never a provider identity.
+  const base = derivePublicSku({ id: pp.id, providerPackageId: pp.id, country: pp.country, region: pp.region, dataGB: pp.dataGB, validityDays: pp.validityDays })
 
   let sku = base
   let attempt = 0
@@ -39,7 +36,7 @@ async function generateOneSimSku(tx: any, pp: {
     attempt++
     sku = `${base}-${attempt}`
   }
-  return `${base}-${pp.id.slice(-8).toUpperCase()}`
+  return `${base}-${shortId(pp.id)}`
 }
 
 export type PublishToCatalogStatus = 'SUCCESS' | 'PARTIAL' | 'FAILED'

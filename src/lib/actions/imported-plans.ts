@@ -5,6 +5,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { revalidatePath } from 'next/cache'
 import { computeMarkupFromCostAndSell, markSellingPriceByPercent } from '@/lib/pricing/pricing-engine'
+import { derivePublicSku } from '@/lib/catalog/public-sku'
 
 export type ImportedPlanStatus = 'unconfigured' | 'configured' | 'ready_to_publish' | 'published' | 'archived'
 
@@ -353,6 +354,14 @@ export async function publishImportedPlan(formData: FormData): Promise<{ success
 
   let esim = pp.publishedAs || await prisma.eSIMPackage.findFirst({ where: { providerPackageId } })
     if (!esim) {
+    const publicSku = derivePublicSku({
+      id: providerPackageId,
+      providerPackageId,
+      country: pp.country,
+      region: pp.region,
+      dataGB: pp.dataGB,
+      validityDays: pp.validityDays,
+    })
     esim = await prisma.eSIMPackage.create({
       data: {
         name: pp.name, dataGB: pp.dataGB, validityDays: pp.validityDays,
@@ -360,7 +369,8 @@ export async function publishImportedPlan(formData: FormData): Promise<{ success
         providerPackageId, source: 'CATALOG_PRODUCT', isActive: true, hiddenFromCatalog: false,
         costPriceUSD: Number(pp.costPrice) || undefined, costCurrency: pp.currency,
         priceUSD: 0, localPrice: 0, currency: 'USD',
-        sku: pp.providerPlanCode ? `${pp.provider.code}-${pp.providerPlanCode}` : undefined,
+        sku: publicSku,
+        packageCode: publicSku,
       },
     })
   }

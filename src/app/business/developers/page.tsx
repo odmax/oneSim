@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { derivePublicSku } from '@/lib/catalog/public-sku'
 import DevelopersClient from './developers-client'
 
 export default async function DevelopersPage() {
@@ -32,8 +33,8 @@ export default async function DevelopersPage() {
       priceUSD: true,
       description: true,
       customerDescription: true,
-      sku: true,
-      packageCode: true,
+      providerPackageId: true,
+      providerPackage: { select: { country: true, region: true } },
     },
   })
 
@@ -68,14 +69,26 @@ export default async function DevelopersPage() {
       </div>
 
       <DevelopersClient
-        packages={packages.map(p => ({
-          ...p,
-          priceUSD: p.priceUSD.toString(),
-          displayName: p.displayName,
-          customerDescription: p.customerDescription,
-          sku: p.sku,
-          packageCode: p.packageCode,
-        }))}
+        packages={packages.map(p => {
+          // Client-facing SKU is the canonical provider-neutral public SKU —
+          // never the persisted (possibly provider-identifying) value.
+          const publicSku = derivePublicSku({
+            id: p.id,
+            providerPackageId: p.providerPackageId,
+            country: p.providerPackage?.country,
+            region: p.providerPackage?.region,
+            dataGB: p.dataGB,
+            validityDays: p.validityDays,
+          })
+          return {
+            ...p,
+            priceUSD: p.priceUSD.toString(),
+            displayName: p.displayName,
+            customerDescription: p.customerDescription,
+            sku: publicSku,
+            packageCode: publicSku,
+          }
+        })}
         apiKeys={apiKeys}
         isAdmin={isAdmin}
         baseUrl={process.env.NEXT_PUBLIC_APP_URL || 'https://staging.onetelecom.cloud'}

@@ -4,7 +4,13 @@
  * Design principle: ALLOWLISTS only. A Prisma object must NEVER be returned
  * directly from a public API route. Each serializer explicitly names every
  * field that may appear in the public response.
+ *
+ * Provider confidentiality: the public `sku`/`packageCode` are ALWAYS the
+ * canonical provider-neutral public SKU (derivePublicSku) — a persisted SKU
+ * that identifies the upstream provider is never surfaced to clients.
  */
+
+import { derivePublicSku } from '@/lib/catalog/public-sku'
 
 /* -------------------------------------------------------------------------- */
 /*  Package DTO                                                               */
@@ -32,10 +38,18 @@ export type PublicPackageDTO = {
 
 export function serializePublicPackage(pkg: any, providerPackage?: any): PublicPackageDTO {
   const unitPrice = parseFloat(pkg.priceUSD.toString())
+  const publicSku = derivePublicSku({
+    id: pkg.id,
+    providerPackageId: pkg.providerPackageId,
+    country: providerPackage?.country,
+    region: providerPackage?.region,
+    dataGB: pkg.dataGB,
+    validityDays: pkg.validityDays,
+  })
   return {
     id: pkg.id,
-    sku: pkg.sku ?? null,
-    packageCode: pkg.packageCode ?? null,
+    sku: publicSku,
+    packageCode: publicSku,
     displayName: pkg.displayName ?? null,
     name: pkg.name,
     customerDescription: pkg.customerDescription ?? null,

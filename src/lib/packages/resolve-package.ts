@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { derivePublicSku, PUBLIC_SKU_PREFIX } from '@/lib/catalog/public-sku'
 
 export interface PackageIdentifier {
   packageId?: string
@@ -40,6 +41,31 @@ export async function resolvePackageIdentifier(input: PackageIdentifier, opts?: 
         : null
       return { package: pkg, resolvedBy: 'sku', provider, identifier: input.sku }
     }
+
+    // Backward-compatible fallback: the PUBLIC (provider-neutral) SKU shown to
+    // clients is now derived deterministically and may differ from a legacy
+    // persisted SKU. Allow clients that use the displayed public SKU to still
+    // resolve their package without ever exposing provider identity. Exact,
+    // unique match required — ambiguous matches fail closed.
+    if (typeof input.sku === 'string' && input.sku.toUpperCase().startsWith(PUBLIC_SKU_PREFIX)) {
+      const candidates = await prisma.eSIMPackage.findMany({
+        where: { ...activeFilter, source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } },
+        select: {
+          id: true, providerPackageId: true, dataGB: true, validityDays: true,
+          providerPackage: { select: { country: true, region: true } },
+        },
+      })
+      const matches = candidates.filter(c => derivePublicSku(c) === input.sku)
+      if (matches.length === 1) {
+        const pkg = await prisma.eSIMPackage.findUnique({ where: { id: matches[0].id } })
+        if (pkg) {
+          const provider = pkg.providerId
+            ? await prisma.provider.findUnique({ where: { id: pkg.providerId }, select: { id: true, name: true, type: true } })
+            : null
+          return { package: pkg, resolvedBy: 'sku', provider, identifier: input.sku }
+        }
+      }
+    }
   }
 
   // Priority 3: packageCode
@@ -58,8 +84,12 @@ export async function resolvePackageIdentifier(input: PackageIdentifier, opts?: 
   return null
 }
 
-export function generateSku(name: string, dataGB: number, validityDays: number, providerCode?: string): string {
-  const prefix = providerCode ? providerCode.toUpperCase().replace(/\s+/g, '-') : 'ONESIM-AFRICA'
+/**
+ * Provider-neutral SKU generator for template/imported packages. The upstream
+ * provider code is NEVER embedded in the public SKU. `providerCode` is retained
+ * in the signature only for call-compatibility and is ignored.
+ */
+export function generateSku(name: string, dataGB: number, validityDays: number, _providerCode?: string): string {
   const dataStr = `${dataGB}GB`
   const validityStr = `${validityDays}D`
   const namePart = name
@@ -68,7 +98,7 @@ export function generateSku(name: string, dataGB: number, validityDays: number, 
     .trim()
     .replace(/\s+/g, '-')
     .substring(0, 15)
-  return `${prefix}-${dataStr}-${validityStr}${namePart ? '-' + namePart : ''}`
+  return `OS-${dataStr}-${validityStr}${namePart ? '-' + namePart : ''}`
 }
 
 export function generatePackageCode(dataGB: number, validityDays: number): string {

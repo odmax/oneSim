@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { finalizeCatalogPackageConfiguration } from '@/lib/pricing/configuration-finalizer'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
+import { derivePublicSku } from '@/lib/catalog/public-sku'
 
 export interface PublishToRetailResult {
   success: boolean
@@ -183,10 +184,11 @@ export async function publishProviderPackageToRetailCatalog(
   return { success: true, providerPackageId, retailPackageId, created, updated, publishStatusSet: true, ready: true, readinessReasons: [] }
 }
 
-async function generateSku(tx: any, pp: { id: string; provider?: { code?: string | null; name?: string | null } | null; country?: string | null; dataGB: number; validityDays: number }): Promise<string> {
-  const provCode = (pp.provider?.code || pp.provider?.name || 'XX').replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase()
-  const country = (pp.country || 'XX').toUpperCase()
-  const base = `OS-${provCode}-${country}-${pp.dataGB}GB-${pp.validityDays}D-${pp.id.slice(-6).toUpperCase()}`
+async function generateSku(tx: any, pp: { id: string; provider?: { code?: string | null; name?: string | null } | null; country?: string | null; region?: string | null; dataGB: number; validityDays: number }): Promise<string> {
+  // Provider-neutral OneSIM public SKU: OS-{COUNTRY}-{DATA}GB-{VALIDITY}D-{STABLE}.
+  // The suffix is a stable slice of the internal ProviderPackage id (a random
+  // cuid) — NEVER a provider code/name/plan/package identity.
+  const base = derivePublicSku({ id: pp.id, providerPackageId: pp.id, country: pp.country, region: pp.region, dataGB: pp.dataGB, validityDays: pp.validityDays })
   let sku = base
   let attempt = 0
   while (attempt < 100) {
