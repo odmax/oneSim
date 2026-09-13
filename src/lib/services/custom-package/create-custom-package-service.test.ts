@@ -19,9 +19,9 @@ const {
   mockUpstreamOpCreate,
   mockUpstreamOpUpdateMany,
   mockUpstreamOpUpdate,
-  mockSystemJobLockUpsert,
+  mockExecRaw,
   mockSystemJobLockFindUnique,
-  mockSystemJobLockDelete,
+  mockSystemJobLockDeleteMany,
   mockProviderPackageFindFirst,
   mockProviderPackageCreate,
   mockESIMFindFirst,
@@ -45,9 +45,9 @@ const {
   mockUpstreamOpCreate: vi.fn(),
   mockUpstreamOpUpdateMany: vi.fn(),
   mockUpstreamOpUpdate: vi.fn(),
-  mockSystemJobLockUpsert: vi.fn(),
+  mockExecRaw: vi.fn(),
   mockSystemJobLockFindUnique: vi.fn(),
-  mockSystemJobLockDelete: vi.fn(),
+  mockSystemJobLockDeleteMany: vi.fn(),
   mockProviderPackageFindFirst: vi.fn(),
   mockProviderPackageCreate: vi.fn(),
   mockESIMFindFirst: vi.fn(),
@@ -66,11 +66,12 @@ vi.mock('@/lib/prisma', () => ({
       updateMany: mockUpstreamOpUpdateMany,
       update: mockUpstreamOpUpdate,
     },
-    systemJobLock: { upsert: mockSystemJobLockUpsert, findUnique: mockSystemJobLockFindUnique, delete: mockSystemJobLockDelete },
+    systemJobLock: { findUnique: mockSystemJobLockFindUnique, deleteMany: mockSystemJobLockDeleteMany },
     auditLog: { create: mockAuditCreate },
     packagePriceSnapshot: { create: mockPackageSnapshotCreate, update: mockPackageSnapshotUpdate },
     packageConfigurationRule: { findFirst: mockPackageConfigRuleFindFirst },
     exchangeRate: { findFirst: mockExchangeRateFindFirst },
+    $executeRawUnsafe: mockExecRaw,
     $transaction: mockTransaction,
   },
 }))
@@ -238,7 +239,7 @@ describe('createCustomPackageWithMode — MODE B (UPSTREAM_CREATE)', () => {
       getCustomPackageDefinition: vi.fn(),
       createCustomPackage: vi.fn().mockResolvedValue({ success: true, data: { success: true, providerPlanId: 'TZN-5GB-7D', providerPlanCode: 'TZN-5GB-7D' } }),
     })
-    mockSystemJobLockUpsert.mockResolvedValue({})
+    mockExecRaw.mockResolvedValue(1)
     mockProviderPackageFindFirst.mockResolvedValue(null)
     mockESIMFindFirst.mockResolvedValue(null)
     mockUpstreamOpFindUnique.mockResolvedValue(null)

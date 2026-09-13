@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { sweepExpiredReservations } from '@/lib/services/orders/inventory-reservation'
+import { acquireSystemJobLease } from '@/lib/services/jobs/system-job-lock'
 
 export async function POST(req: NextRequest) {
   const enabled = process.env.INVENTORY_RESERVATION_SWEEP_ENABLED === 'true'
@@ -18,12 +19,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const lock = await prisma.systemJobLock.upsert({
-    where: { jobName: 'inventory-reservation-sweep' },
-    create: { jobName: 'inventory-reservation-sweep', lockedAt: new Date(), lockedUntil: new Date(Date.now() + 600000), owner: `sweep-${process.pid}` },
-    update: { lockedAt: new Date(), lockedUntil: new Date(Date.now() + 600000), owner: `sweep-${process.pid}` },
-  }).catch(() => null)
-  if (!lock) return NextResponse.json({ error: 'Lock failed' }, { status: 409 })
+  const lock = await acquireSystemJobLease({ jobName: 'inventory-reservation-sweep', owner: `sweep-${process.pid}-${Date.now()}`, ttlMs: 600000 })
+  if (!lock) return NextResponse.json({ error: 'Lock held by another process' }, { status: 409 })
 
   const result = await sweepExpiredReservations()
   return NextResponse.json(result)

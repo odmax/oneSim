@@ -3233,6 +3233,11 @@ model OrderCallbackDelivery {
   lastHttpStatus   Int?
   lastErrorCode    String?
   lastErrorMessage String?
+  /// Atomically claimed by exactly one worker/process before the outbound HTTP
+  /// POST. claimOwner nulled and claimedUntil cleared on every outcome write, and
+  /// a stale/crashed claim (claimedUntil <= now) becomes re-claimable.
+  claimOwner        String?
+  claimedUntil      DateTime?
   signatureVersion String    @default("v1")
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt

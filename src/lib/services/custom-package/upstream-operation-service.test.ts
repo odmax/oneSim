@@ -5,17 +5,17 @@ const {
   mockOpCreate,
   mockOpUpdateMany,
   mockOpUpdate,
-  mockLockUpsert,
+  mockExecRaw,
   mockLockFindUnique,
-  mockLockDelete,
+  mockLockDeleteMany,
 } = vi.hoisted(() => ({
   mockOpFindUnique: vi.fn(),
   mockOpCreate: vi.fn(),
   mockOpUpdateMany: vi.fn(),
   mockOpUpdate: vi.fn(),
-  mockLockUpsert: vi.fn(),
+  mockExecRaw: vi.fn(),
   mockLockFindUnique: vi.fn(),
-  mockLockDelete: vi.fn(),
+  mockLockDeleteMany: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => ({
@@ -26,7 +26,8 @@ vi.mock('@/lib/prisma', () => ({
       updateMany: mockOpUpdateMany,
       update: mockOpUpdate,
     },
-    systemJobLock: { upsert: mockLockUpsert, findUnique: mockLockFindUnique, delete: mockLockDelete },
+    $executeRawUnsafe: mockExecRaw,
+    systemJobLock: { findUnique: mockLockFindUnique, deleteMany: mockLockDeleteMany },
   },
 }))
 
@@ -120,18 +121,36 @@ describe('upstream-operation-service — load-or-create + idempotency', () => {
 })
 
 describe('upstream-operation-service — lease', () => {
-  beforeEach(() => vi.clearAllMocks())
-
-  it('acquires a durable SystemJobLock lease (DB-backed, not in-memory)', async () => {
-    mockLockUpsert.mockResolvedValue({ id: 'lock-1' })
-    const r = await acquireUpstreamOperationLease('op-1')
-    expect(r.acquired).toBe(true)
-    const call = mockLockUpsert.mock.calls[0][0]
-    expect(call.create.jobName).toContain('cpb-upstream-op:op-1')
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockExecRaw.mockResolvedValue(1)
   })
 
-  it('reports not-acquired when the lease upsert fails (concurrent writer)', async () => {
-    mockLockUpsert.mockRejectedValue(new Error('lock failed'))
+  it('acquires a durable, ATOMIC SystemJobLock lease (DB-backed, not in-memory)', async () => {
+    mockExecRaw.mockResolvedValueOnce(1)
+    const r = await acquireUpstreamOperationLease('op-1')
+    expect(r.acquired).toBe(true)
+    expect(mockExecRaw).toHaveBeenCalledTimes(1)
+    const [sql, jobName] = mockExecRaw.mock.calls[0]
+    expect(String(jobName)).toContain('cpb-upstream-op:op-1')
+    const text = String(sql)
+    // Single-statement conditional lease: guarded INSERT ... ON CONFLICT DO
+    // UPDATE WHERE lockedUntil <= now — a concurrent worker for an unexpired
+    // lease gets affected=0 (no upsert overwrite, no read-then-write race).
+    expect(text).toContain('INSERT INTO system_job_locks')
+    expect(text).toContain('ON CONFLICT ("jobName") DO UPDATE')
+    expect(text).toContain('WHERE system_job_locks."lockedUntil" <= $4::timestamp')
+    expect(text).toContain('"lockedUntil" > $4::timestamp')
+  })
+
+  it('reports not-acquired when an unexpired lease is held by another worker (affected=0)', async () => {
+    mockExecRaw.mockResolvedValueOnce(0)
+    const r = await acquireUpstreamOperationLease('op-1')
+    expect(r.acquired).toBe(false)
+  })
+
+  it('reports not-acquired when the lease acquire fails (DB error, fail-closed)', async () => {
+    mockExecRaw.mockRejectedValueOnce(new Error('db down'))
     const r = await acquireUpstreamOperationLease('op-1')
     expect(r.acquired).toBe(false)
   })
@@ -156,13 +175,16 @@ describe('upstream-operation-service — lease', () => {
     expect(await isUpstreamOperationLeaseActive('op-1')).toBe(false)
   })
 
-  it('releaseUpstreamOperationLease deletes the lock best-effort', async () => {
-    mockLockDelete.mockResolvedValue({})
+  it('releaseUpstreamOperationLease deletes the lock best-effort, ownership-scoped', async () => {
+    mockLockDeleteMany.mockResolvedValue({ count: 1 })
     await releaseUpstreamOperationLease('op-1')
-    expect(mockLockDelete).toHaveBeenCalledWith({ where: { jobName: 'cpb-upstream-op:op-1' } })
-    // Never throws on a missing lock.
-    mockLockDelete.mockRejectedValueOnce({ code: 'P2025' })
+    expect(mockLockDeleteMany).toHaveBeenCalledWith({ where: { jobName: 'cpb-upstream-op:op-1', owner: `cpb-${process.pid}` } })
+    // Never throws on a missing lock (impact 0 rows is a safe no-op).
+    mockLockDeleteMany.mockResolvedValueOnce({ count: 0 })
     await expect(releaseUpstreamOperationLease('op-1')).resolves.toBeUndefined()
+    // A lock owned by a DIFFERENT process is never released.
+    mockLockDeleteMany.mockResolvedValueOnce({ count: 0 })
+    await expect(releaseUpstreamOperationLease('op-2')).resolves.toBeUndefined()
   })
 })
 

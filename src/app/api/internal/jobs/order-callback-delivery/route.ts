@@ -3,9 +3,14 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { signCallbackPayload, getCallbackSecret, validateCallbackUrl, classifyCallbackResponse, getCallbackRetryDelay } from '@/lib/services/orders/callback-delivery'
+import { claimOrderCallbackDelivery } from '@/lib/services/orders/callback-delivery-claim'
+import { acquireSystemJobLease } from '@/lib/services/jobs/system-job-lock'
+
+/** Claim-clearing fields applied to every outcome write so winning claims are
+ *  released (and stale claims become re-claimable after TTL expiry). */
+const CLEAR_CLAIM = { claimOwner: null, claimedUntil: null }
 
 async function deliverOne(delivery: any): Promise<{ success: boolean; status: string }> {
-  const batchSize = parseInt(process.env.ORDER_CALLBACK_BATCH_SIZE || '50', 10)
   const timeoutMs = parseInt(process.env.ORDER_CALLBACK_TIMEOUT_MS || '10000', 10)
 
   if (delivery.status === 'DELIVERED' || delivery.status === 'DEAD_LETTERED') {
@@ -16,7 +21,7 @@ async function deliverOne(delivery: any): Promise<{ success: boolean; status: st
   if (!urlCheck.valid) {
     await prisma.orderCallbackDelivery.update({
       where: { id: delivery.id },
-      data: { status: 'FAILED', lastErrorCode: 'INVALID_URL', lastErrorMessage: urlCheck.reason },
+      data: { status: 'FAILED', lastErrorCode: 'INVALID_URL', lastErrorMessage: urlCheck.reason, ...CLEAR_CLAIM },
     })
     return { success: false, status: 'INVALID_URL' }
   }
@@ -51,7 +56,7 @@ async function deliverOne(delivery: any): Promise<{ success: boolean; status: st
     if (classification === 'success') {
       await prisma.orderCallbackDelivery.update({
         where: { id: delivery.id },
-        data: { status: 'DELIVERED', deliveredAt: new Date(), attemptCount, lastHttpStatus: res.status, lastAttemptAt: new Date(), nextAttemptAt: null },
+        data: { status: 'DELIVERED', deliveredAt: new Date(), attemptCount, lastHttpStatus: res.status, lastAttemptAt: new Date(), nextAttemptAt: null, ...CLEAR_CLAIM },
       })
       return { success: true, status: 'DELIVERED' }
     }
@@ -60,14 +65,14 @@ async function deliverOne(delivery: any): Promise<{ success: boolean; status: st
       const delay = getCallbackRetryDelay(attemptCount)
       await prisma.orderCallbackDelivery.update({
         where: { id: delivery.id },
-        data: { status: 'RETRY_SCHEDULED', attemptCount, lastAttemptAt: new Date(), nextAttemptAt: new Date(Date.now() + delay), lastHttpStatus: res.status, lastErrorCode: `HTTP_${res.status}` },
+        data: { status: 'RETRY_SCHEDULED', attemptCount, lastAttemptAt: new Date(), nextAttemptAt: new Date(Date.now() + delay), lastHttpStatus: res.status, lastErrorCode: `HTTP_${res.status}`, ...CLEAR_CLAIM },
       })
       return { success: false, status: 'RETRY_SCHEDULED' }
     }
 
     await prisma.orderCallbackDelivery.update({
       where: { id: delivery.id },
-      data: { status: 'DEAD_LETTERED', attemptCount, lastAttemptAt: new Date(), lastHttpStatus: res.status, lastErrorCode: `HTTP_${res.status}` },
+      data: { status: 'DEAD_LETTERED', attemptCount, lastAttemptAt: new Date(), lastHttpStatus: res.status, lastErrorCode: `HTTP_${res.status}`, ...CLEAR_CLAIM },
     })
     return { success: false, status: 'DEAD_LETTERED' }
   } catch (e: any) {
@@ -77,13 +82,13 @@ async function deliverOne(delivery: any): Promise<{ success: boolean; status: st
       const delay = getCallbackRetryDelay(attemptCount)
       await prisma.orderCallbackDelivery.update({
         where: { id: delivery.id },
-        data: { status: 'RETRY_SCHEDULED', attemptCount, lastAttemptAt: new Date(), nextAttemptAt: new Date(Date.now() + delay), lastErrorCode: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR', lastErrorMessage: e.message?.substring(0, 200) },
+        data: { status: 'RETRY_SCHEDULED', attemptCount, lastAttemptAt: new Date(), nextAttemptAt: new Date(Date.now() + delay), lastErrorCode: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR', lastErrorMessage: e.message?.substring(0, 200), ...CLEAR_CLAIM },
       })
       return { success: false, status: 'RETRY_SCHEDULED' }
     }
     await prisma.orderCallbackDelivery.update({
       where: { id: delivery.id },
-      data: { status: 'DEAD_LETTERED', attemptCount, lastAttemptAt: new Date(), lastErrorCode: isTimeout ? 'TIMEOUT' : 'MAX_ATTEMPTS' },
+      data: { status: 'DEAD_LETTERED', attemptCount, lastAttemptAt: new Date(), lastErrorCode: isTimeout ? 'TIMEOUT' : 'MAX_ATTEMPTS', ...CLEAR_CLAIM },
     })
     return { success: false, status: 'DEAD_LETTERED' }
   }
@@ -102,14 +107,14 @@ export async function POST(req: NextRequest) {
       if (!auth || auth !== `Bearer ${secret}`) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const lock = await prisma.systemJobLock.upsert({
-    where: { jobName: 'order-callback-delivery' },
-    create: { jobName: 'order-callback-delivery', lockedAt: new Date(), lockedUntil: new Date(Date.now() + 600000), owner: `cb-${process.pid}` },
-    update: { lockedAt: new Date(), lockedUntil: new Date(Date.now() + 600000), owner: `cb-${process.pid}` },
-  }).catch(() => null)
-  if (!lock) return NextResponse.json({ error: 'Lock failed' }, { status: 409 })
+  // Batch-level lease: atomic; a concurrent replica holding an unexpired lease
+  // fails cleanly (409). Combined with the per-delivery claim below, two
+  // replicas can never double-deliver a callback.
+  const lease = await acquireSystemJobLease({ jobName: 'order-callback-delivery', owner: `cb-${process.pid}-${Date.now()}`, ttlMs: 600000 })
+  if (!lease) return NextResponse.json({ error: 'Lock held by another process' }, { status: 409 })
 
   const batchSize = parseInt(process.env.ORDER_CALLBACK_BATCH_SIZE || '50', 10)
+  const owner = `cb-${process.pid}-${Date.now()}`
   const pending = await prisma.orderCallbackDelivery.findMany({
     where: { status: { in: ['PENDING', 'RETRY_SCHEDULED'] }, nextAttemptAt: { lte: new Date() } },
     take: batchSize,
@@ -118,6 +123,9 @@ export async function POST(req: NextRequest) {
 
   let delivered = 0, retryScheduled = 0, deadLettered = 0, skipped = 0, failed = 0
   for (const d of pending) {
+    // Per-delivery atomic claim: the loser skips cleanly and performs ZERO HTTP.
+    const claimed = await claimOrderCallbackDelivery(d.id, owner)
+    if (!claimed) { skipped++; continue }
     try {
       const r = await deliverOne(d)
       if (r.status === 'DELIVERED') delivered++

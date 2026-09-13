@@ -10,6 +10,7 @@ import { recoverOrder } from '@/lib/services/orders/recovery'
 import { releaseInventoryReservation } from '@/lib/services/orders/inventory-reservation'
 import { createTimelineEvent } from '@/lib/services/orders/order-state-machine'
 import { processProviderWebhookEvent } from '@/lib/services/webhooks/provider-webhook-processor'
+import { acquireSystemJobLease, releaseSystemJobLease } from '@/lib/services/jobs/system-job-lock'
 
 type ActionResult = {
   success: boolean
@@ -29,21 +30,20 @@ async function requireRole(allowed: string[]): Promise<{ userId: string; role: s
 const LOCK_TTL = parseInt(process.env.ORDER_OPERATION_LOCK_TTL_SECONDS || '120', 10)
 const ACTIONS_ENABLED = process.env.ADMIN_OPERATIONS_ACTIONS_ENABLED === 'true'
 
-async function acquireLock(orderId: string): Promise<boolean> {
+async function acquireLock(orderId: string): Promise<string | null> {
+  // Atomic single-statement SystemJobLock lease. Two concurrent admin actions on
+  // the same order must not run: a concurrent acquire for an unexpired lease
+  // fails cleanly (no upsert overwrite). Returns the owner token for the
+  // ownership-scoped release.
   try {
-    const now = new Date()
-    const until = new Date(now.getTime() + LOCK_TTL * 1000)
-    await prisma.systemJobLock.upsert({
-      where: { jobName: `order-operation:${orderId}` },
-      create: { jobName: `order-operation:${orderId}`, lockedAt: now, lockedUntil: until, owner: `act-${process.pid}` },
-      update: { lockedAt: now, lockedUntil: until, owner: `act-${process.pid}` },
-    })
-    return true
-  } catch { return false }
+    const owner = `act-${process.pid}-${Date.now()}`
+    const ok = await acquireSystemJobLease({ jobName: `order-operation:${orderId}`, owner, ttlMs: LOCK_TTL * 1000 })
+    return ok ? owner : null
+  } catch { return null }
 }
 
-async function releaseLock(orderId: string) {
-  await prisma.systemJobLock.delete({ where: { jobName: `order-operation:${orderId}` } }).catch(() => {})
+async function releaseLock(orderId: string, owner: string) {
+  await releaseSystemJobLease(`order-operation:${orderId}`, owner)
 }
 
 async function checkEnabled(): Promise<void> {
@@ -72,7 +72,8 @@ export async function adminResumeFinalization(formData: FormData | string): Prom
   const { userId } = await requireRole(['SUPER_ADMIN', 'INTERNAL_ADMIN'])
   await checkEnabled()
   const orderId = typeof formData === 'string' ? formData : (formData as FormData).get('orderId') as string
-  if (!(await acquireLock(orderId))) return lockedResult()
+  const owner = await acquireLock(orderId)
+  if (!owner) return lockedResult()
   try {
     const result = await resumeProviderFinalization(orderId)
     await createTimelineEvent(orderId, { eventType: 'ADMIN_LOCAL_FINALIZATION_REQUESTED', message: 'Admin resumed local finalization' })
@@ -81,14 +82,15 @@ export async function adminResumeFinalization(formData: FormData | string): Prom
     return result.success
       ? { success: true, action: 'LOCAL_FINALIZATION_RESUMED', message: 'Local finalization completed.', orderStatus: result.orderStatus, auditId }
       : { success: false, action: 'FAILED', message: result.error || 'Failed', auditId }
-  } finally { releaseLock(orderId) }
+  } finally { releaseLock(orderId, owner) }
 }
 
 export async function adminPollProvider(formData: FormData | string): Promise<ActionResult> {
   const { userId } = await requireRole(['SUPER_ADMIN', 'INTERNAL_ADMIN', 'SUPPORT'])
   await checkEnabled()
   const orderId = typeof formData === 'string' ? formData : (formData as FormData).get('orderId') as string
-  if (!(await acquireLock(orderId))) return lockedResult()
+  const owner = await acquireLock(orderId)
+  if (!owner) return lockedResult()
   try {
     const order = await prisma.eSIMPurchase.findUnique({ where: { id: orderId }, include: { provider: true } })
     if (!order) return blocked('Order not found')
@@ -114,14 +116,15 @@ export async function adminPollProvider(formData: FormData | string): Promise<Ac
       message: messages[result.outcome || ''] || result.message,
       orderStatus: result.status || undefined, auditId,
     }
-  } finally { releaseLock(orderId) }
+  } finally { releaseLock(orderId, owner) }
 }
 
 export async function adminStartReconciliation(formData: FormData | string): Promise<ActionResult> {
   const { userId } = await requireRole(['SUPER_ADMIN', 'INTERNAL_ADMIN', 'SUPPORT'])
   await checkEnabled()
   const orderId = typeof formData === 'string' ? formData : (formData as FormData).get('orderId') as string
-  if (!(await acquireLock(orderId))) return lockedResult()
+  const owner = await acquireLock(orderId)
+  if (!owner) return lockedResult()
   try {
     const result = await (await import('@/lib/services/orders/reconciliation')).reconcileProviderOrder(orderId)
     await createTimelineEvent(orderId, { eventType: 'ADMIN_RECONCILIATION_REQUESTED', message: 'Admin requested reconciliation' })
@@ -132,7 +135,7 @@ export async function adminStartReconciliation(formData: FormData | string): Pro
       message: result.outcome === 'FOUND_SUCCESS' ? 'Provider confirmed success — order finalized.' : result.message,
       orderStatus: result.status || undefined, auditId,
     }
-  } finally { releaseLock(orderId) }
+  } finally { releaseLock(orderId, owner) }
 }
 
 export async function adminSafeRedispatch(formData: FormData | string): Promise<ActionResult> {
@@ -140,14 +143,15 @@ export async function adminSafeRedispatch(formData: FormData | string): Promise<
   await checkEnabled()
   if (process.env.ADMIN_SAFE_REDISPATCH_ENABLED !== 'true') return blocked('Safe redispatch is currently disabled')
   const orderId = typeof formData === 'string' ? formData : (formData as FormData).get('orderId') as string
-  if (!(await acquireLock(orderId))) return lockedResult()
+  const owner = await acquireLock(orderId)
+  if (!owner) return lockedResult()
   try {
     const recovery = await recoverOrder(orderId)
     await createTimelineEvent(orderId, { eventType: 'ADMIN_SAFE_REDISPATCH_REQUESTED', message: 'Admin initiated safe redispatch' })
     const auditId = writeAudit(userId, orderId, 'ADMIN_SAFE_REDISPATCH', recovery.action + ': ' + (recovery.message || ''))
     revalidatePath(`/admin/operations/orders/${orderId}`)
     return { success: recovery.success, action: recovery.success ? 'PROVIDER_REDISPATCHED' : 'FAILED', message: recovery.message || 'Redispatch attempted', orderStatus: recovery.status, auditId }
-  } finally { releaseLock(orderId) }
+  } finally { releaseLock(orderId, owner) }
 }
 
 export async function adminRetryCallback(formData: FormData | string): Promise<ActionResult> {
@@ -155,14 +159,15 @@ export async function adminRetryCallback(formData: FormData | string): Promise<A
   await checkEnabled()
   const deliveryId = typeof formData === 'string' ? formData : (formData as FormData).get('deliveryId') as string
   const orderId = (formData as FormData).get('orderId') as string
-  if (!(await acquireLock(orderId))) return lockedResult()
+  const owner = await acquireLock(orderId)
+  if (!owner) return lockedResult()
   try {
     await prisma.orderCallbackDelivery.update({ where: { id: deliveryId }, data: { status: 'PENDING', nextAttemptAt: new Date(), lastAttemptAt: null, attemptCount: 0 } })
     await createTimelineEvent(orderId, { eventType: 'ADMIN_CALLBACK_RETRY_REQUESTED', message: 'Admin requeued callback delivery' })
     const auditId = writeAudit(userId, orderId, 'ADMIN_RETRY_CALLBACK', `Delivery ${deliveryId} requeued`)
     revalidatePath(`/admin/operations/orders/${orderId}`)
     return { success: true, action: 'CALLBACK_REQUEUED', message: 'Callback delivery has been requeued.', auditId }
-  } finally { releaseLock(orderId) }
+  } finally { releaseLock(orderId, owner) }
 }
 
 export async function adminCancelCallback(formData: FormData): Promise<ActionResult> {
@@ -170,14 +175,15 @@ export async function adminCancelCallback(formData: FormData): Promise<ActionRes
   await checkEnabled()
   const deliveryId = formData.get('deliveryId') as string
   const orderId = formData.get('orderId') as string
-  if (!(await acquireLock(orderId))) return lockedResult()
+  const owner = await acquireLock(orderId)
+  if (!owner) return lockedResult()
   try {
     await prisma.orderCallbackDelivery.update({ where: { id: deliveryId }, data: { status: 'CANCELLED' } })
     await createTimelineEvent(orderId, { eventType: 'ADMIN_CALLBACK_CANCELLED', message: 'Admin cancelled callback delivery' })
     const auditId = writeAudit(userId, orderId, 'ADMIN_CANCEL_CALLBACK', `Delivery ${deliveryId} cancelled`)
     revalidatePath(`/admin/operations/orders/${orderId}`)
     return { success: true, action: 'CALLBACK_CANCELLED', message: 'Callback delivery has been cancelled.', auditId }
-  } finally { releaseLock(orderId) }
+  } finally { releaseLock(orderId, owner) }
 }
 
 export async function adminRequeueWebhook(formData: FormData): Promise<ActionResult> {
@@ -185,14 +191,15 @@ export async function adminRequeueWebhook(formData: FormData): Promise<ActionRes
   await checkEnabled()
   const eventId = formData.get('eventId') as string
   const orderId = formData.get('orderId') as string
-  if (!(await acquireLock(orderId))) return lockedResult()
+  const owner = await acquireLock(orderId)
+  if (!owner) return lockedResult()
   try {
     const result = await processProviderWebhookEvent(eventId)
     await createTimelineEvent(orderId, { eventType: 'ADMIN_WEBHOOK_REPROCESS_REQUESTED', message: 'Admin reprocessed webhook' })
     const auditId = writeAudit(userId, orderId, 'ADMIN_REQUEUE_WEBHOOK', result.success ? 'Reprocessed' : 'Failed')
     revalidatePath(`/admin/operations/orders/${orderId}`)
     return { success: result.success, action: result.success ? 'WEBHOOK_REPROCESSED' : 'FAILED', message: result.success ? 'Webhook was reprocessed successfully.' : result.error || 'Failed', auditId }
-  } finally { releaseLock(orderId) }
+  } finally { releaseLock(orderId, owner) }
 }
 
 export async function adminReleaseInventory(formData: FormData): Promise<ActionResult> {
@@ -200,7 +207,8 @@ export async function adminReleaseInventory(formData: FormData): Promise<ActionR
   await checkEnabled()
   const reservationId = formData.get('reservationId') as string
   const orderId = formData.get('orderId') as string
-  if (!(await acquireLock(orderId))) return lockedResult()
+  const owner = await acquireLock(orderId)
+  if (!owner) return lockedResult()
   try {
     const result = await releaseInventoryReservation({ reservationId, reason: 'Admin release' })
     await createTimelineEvent(orderId, { eventType: 'ADMIN_INVENTORY_RELEASE_REQUESTED', message: 'Admin released inventory reservation' })
@@ -209,7 +217,7 @@ export async function adminReleaseInventory(formData: FormData): Promise<ActionR
     return result.success
       ? { success: true, action: 'INVENTORY_RELEASED', message: 'Local inventory reservation released.', auditId }
       : { success: false, action: 'NOT_ALLOWED', message: result.error || 'Cannot release — provider evidence exists', auditId }
-  } finally { releaseLock(orderId) }
+  } finally { releaseLock(orderId, owner) }
 }
 
 export async function adminAcknowledgeIncident(formData: FormData): Promise<ActionResult> {

@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { acquireSystemJobLease, releaseSystemJobLease } from '@/lib/services/jobs/system-job-lock'
 
 /**
  * Durable upstream package-creation operation ledger for Mode B.
@@ -207,20 +208,22 @@ export interface LeaseResult {
 }
 
 /**
- * Exclusive logical lease for an operation using the existing SystemJobLock
- * pattern. Guarantees a single writer never runs two concurrent upstream calls
- * for the same idempotency key. Persisted (DB-backed), never an in-memory mutex.
+ * Exclusive logical lease for an operation backed by the canonical atomic
+ * SystemJobLock lease (single-statement INSERT ... ON CONFLICT ... WHERE
+ * lockedUntil <= now). Guarantees a single writer never runs two concurrent
+ * upstream calls for the same idempotency key: a concurrent acquire for an
+ * unexpired lease fails cleanly (no upsert overwrite, no in-memory mutex), and
+ * an expired lease (crash) is immediately re-acquirable. The provider call is
+ * never made inside a DB transaction.
  */
 export async function acquireUpstreamOperationLease(opId: string): Promise<LeaseResult> {
-  const now = new Date()
-  const until = new Date(now.getTime() + OP_LOCK_TTL_MS)
   try {
-    await prisma.systemJobLock.upsert({
-      where: { jobName: `${OP_LOCK_PREFIX}${opId}` },
-      create: { jobName: `${OP_LOCK_PREFIX}${opId}`, lockedAt: now, lockedUntil: until, owner: `cpb-${process.pid}` },
-      update: { lockedAt: now, lockedUntil: until, owner: `cpb-${process.pid}` },
+    const ok = await acquireSystemJobLease({
+      jobName: `${OP_LOCK_PREFIX}${opId}`,
+      owner: `cpb-${process.pid}`,
+      ttlMs: OP_LOCK_TTL_MS,
     })
-    return { acquired: true, opId }
+    return { acquired: ok, opId }
   } catch {
     return { acquired: false, opId }
   }
@@ -251,9 +254,9 @@ export async function isUpstreamOperationLeaseActive(opId: string): Promise<bool
   }
 }
 
-/** Release the lease for an operation (best-effort). */
+/** Release the lease for an operation (best-effort, ownership-scoped). */
 export async function releaseUpstreamOperationLease(opId: string): Promise<void> {
-  await prisma.systemJobLock.delete({ where: { jobName: `${OP_LOCK_PREFIX}${opId}` } }).catch(() => {})
+  await releaseSystemJobLease(`${OP_LOCK_PREFIX}${opId}`, `cpb-${process.pid}`)
 }
 
 /**

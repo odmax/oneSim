@@ -1,22 +1,22 @@
 import { prisma } from '@/lib/prisma'
 import { getPlatformBaseCurrency } from './currency-config'
 import { validateRate } from './exchange-rate-service'
+import { acquireSystemJobLease } from '@/lib/services/jobs/system-job-lock'
 
 const LOCK_TTL_MINUTES = 15
-const LOCK_OWNER = `refresh-${process.pid}-${Date.now()}`
 
 export async function refreshExchangeRates(): Promise<{
   ratesRefreshed: number; ratesStale: number; affectedPackages: number
 }> {
-  // Acquire distributed lock
+  // Acquire a single-statement atomic lease. A concurrent replica holding an
+  // unexpired 'exchange-rate-refresh' lease is skipped cleanly (no overwrite);
+  // an expired lease (crash) is immediately re-acquirable.
   const now = new Date()
-  const lockUntil = new Date(now.getTime() + LOCK_TTL_MINUTES * 60 * 1000)
-
-  const locked = await prisma.systemJobLock.upsert({
-    where: { jobName: 'exchange-rate-refresh' },
-    create: { jobName: 'exchange-rate-refresh', lockedAt: now, lockedUntil: lockUntil, owner: LOCK_OWNER },
-    update: { lockedAt: now, lockedUntil: lockUntil, owner: LOCK_OWNER },
-  }).catch(() => null)
+  const locked = await acquireSystemJobLease({
+    jobName: 'exchange-rate-refresh',
+    owner: `refresh-${process.pid}-${Date.now()}`,
+    ttlMs: LOCK_TTL_MINUTES * 60 * 1000,
+  }).catch(() => false)
   if (!locked) return { ratesRefreshed: 0, ratesStale: 0, affectedPackages: 0 }
 
   // Mark expired rates as stale

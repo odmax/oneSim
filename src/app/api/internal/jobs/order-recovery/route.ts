@@ -7,21 +7,13 @@ import {
   enqueueRecoveryForOrder,
   type RecoveryDiscoveryContext,
 } from '@/lib/services/orders/order-recovery-dispatcher'
+import { acquireSystemJobLease } from '@/lib/services/jobs/system-job-lock'
 
 async function acquireRecoveryLock(): Promise<boolean> {
-  try {
-    const now = new Date()
-    const lockUntil = new Date(now.getTime() + 15 * 60 * 1000)
-    const owner = `order-recovery-${process.pid}-${Date.now()}`
-    await prisma.systemJobLock.upsert({
-      where: { jobName: 'order-recovery' },
-      create: { jobName: 'order-recovery', lockedAt: now, lockedUntil: lockUntil, owner },
-      update: { lockedAt: now, lockedUntil: lockUntil, owner },
-    })
-    return true
-  } catch {
-    return false
-  }
+  // Atomic lease (single conditional INSERT ... ON CONFLICT ... WHERE lockedUntil <= now).
+  // A concurrent replica holding an unexpired lease fails cleanly; an expired
+  // lease (crash) is immediately re-acquirable.
+  return acquireSystemJobLease({ jobName: 'order-recovery', owner: `order-recovery-${process.pid}-${Date.now()}`, ttlMs: 15 * 60 * 1000 })
 }
 
 export async function POST(req: NextRequest) {
