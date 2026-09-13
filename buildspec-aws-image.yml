@@ -133,20 +133,28 @@ phases:
         fi
         echo "IMAGE_USER_CHECK=PASS"
 
-        # B. CMD/Entrypoint: direct Next.js exec-form start, no process manager,
-        #    no migration/shell bootstrap -------------------------------------------------
-        IMG_CMD="$(docker inspect --format '{{json .Config.Cmd}}' "${IMAGE_REF}")"
+        # B. ENTRYPOINT: MUST be empty (deterministic ECS contract). The Dockerfile
+        #    clears the base-image `docker-entrypoint.sh` with an explicit
+        #    `ENTRYPOINT []`; any non-empty entrypoint (including an inherited or
+        #    arbitrary one) fails closed. -------------------------------------------------
         IMG_ENTRY="$(docker inspect --format '{{json .Config.Entrypoint}}' "${IMAGE_REF}")"
-        if [ "${IMG_ENTRY}" != "null" ]; then
-          echo "IMAGE_CMD_CHECK=FAIL(unexpected entrypoint)"
-          exit 1
-        fi
-        case "${IMG_CMD}" in
-          *".bin/next"*) : ;;
-          *) echo "IMAGE_CMD_CHECK=FAIL(next binary not found)"; exit 1 ;;
+        case "${IMG_ENTRY}" in
+          "null"|"[]"|"")
+            echo "IMAGE_ENTRYPOINT_CHECK=PASS"
+            ;;
+          *)
+            echo "IMAGE_CMD_CHECK=FAIL(non-empty entrypoint)"
+            exit 1
+            ;;
         esac
-        if ! printf '%s' "${IMG_CMD}" | grep -q '"start"'; then
-          echo "IMAGE_CMD_CHECK=FAIL(start argument not found)"
+
+        # C. CMD: deterministic direct exec-form Next.js start (no process manager,
+        #    no migration/shell bootstrap). Strict JSON equality plus an extra
+        #    fail-closed forbidden-wrapper scan. --------------------------------------------
+        EXPECTED_CMD='["node","./node_modules/next/dist/bin/next","start"]'
+        IMG_CMD="$(docker inspect --format '{{json .Config.Cmd}}' "${IMAGE_REF}")"
+        if [ "${IMG_CMD}" != "${EXPECTED_CMD}" ]; then
+          echo "IMAGE_CMD_CHECK=FAIL(unexpected cmd json)"
           exit 1
         fi
         IMG_CMD_LC="$(printf '%s' "${IMG_CMD}" | tr '[:upper:]' '[:lower:]')"
@@ -158,7 +166,7 @@ phases:
         esac
         echo "IMAGE_CMD_CHECK=PASS"
 
-        # C. Docker HEALTHCHECK exists and targets the provider-free health route -------
+        # D. Docker HEALTHCHECK exists and targets the provider-free health route -------
         IMG_HEALTH="$(docker inspect --format '{{json .Config.Healthcheck}}' "${IMAGE_REF}")"
         if [ -z "${IMG_HEALTH}" ] || [ "${IMG_HEALTH}" = "null" ]; then
           echo "IMAGE_HEALTHCHECK_CHECK=FAIL(missing)"
@@ -170,7 +178,7 @@ phases:
         esac
         echo "IMAGE_HEALTHCHECK_CHECK=PASS"
 
-        # D. WORKDIR ---------------------------------------------------------------------
+        # E. WORKDIR ---------------------------------------------------------------------
         IMG_WORKDIR="$(docker inspect --format '{{.Config.WorkingDir}}' "${IMAGE_REF}")"
         if [ "${IMG_WORKDIR}" != "/app" ]; then
           echo "IMAGE_WORKDIR_CHECK=FAIL(wd=${IMG_WORKDIR})"
@@ -178,7 +186,7 @@ phases:
         fi
         echo "IMAGE_WORKDIR_CHECK=PASS"
 
-        # E. Config.Env must not contain real values for sensitive runtime variables ----
+        # F. Config.Env must not contain real values for sensitive runtime variables ----
         RUNTIME_SECRET_FAIL=0
         IMG_ENV="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${IMAGE_REF}")"
         while IFS= read -r ENV_LINE; do
@@ -200,7 +208,7 @@ phases:
         fi
         echo "IMAGE_RUNTIME_SECRET_CONFIG_CHECK=PASS"
 
-        # F. Docker history: scan for suspicious secret configuration without dumping  --
+        # G. Docker history: scan for suspicious secret configuration without dumping  --
         HIST_TEXT="$(docker history --no-trunc "${IMAGE_REF}" 2>/dev/null || true)"
         if [ -z "${HIST_TEXT}" ]; then
           echo "IMAGE_HISTORY_SECRET_CHECK=FAIL(history unavailable)"

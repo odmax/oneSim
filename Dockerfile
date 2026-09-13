@@ -94,7 +94,17 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 
-# Exec-form: run Next directly so Node/Next is PID 1 and receives SIGTERM
-# directly (no npm / bourne wrapper, no PM2). This is exactly the command the
-# canonical `npm start` script executes (`next start`).
-CMD ["./node_modules/.bin/next", "start"]
+# Explicitly clear the base-image ENTRYPOINT. Official `node:<version>:*.slim`
+# images ship `ENTRYPOINT ["docker-entrypoint.sh"]` (a thin `exec "$@"` shim,
+# see https://github.com/nodejs/docker-node/blob/main/docker-entrypoint.sh).
+# Inheriting it would make the effective runtime command depend on base-image
+# internals (command -v / dash workaround logic). For the ECS/Fargate contract we
+# want a deterministic final image: PID 1 is exactly the Next.js server.
+ENTRYPOINT []
+
+# Deterministic exec-form start. Running the real Next CLI entry
+# (`node <dist>/bin/next` is what `npm start` -> `next start` resolves to) through
+# `node` directly makes Node the PID 1 process with no npm / bourne wrapper, no
+# PM2, no shell bootstrap and no shebang/env indirection, so ECS/Fargate SIGTERM
+# is delivered straight to the Next server.
+CMD ["node", "./node_modules/next/dist/bin/next", "start"]
