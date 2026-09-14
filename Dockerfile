@@ -22,7 +22,7 @@
 #     to dynamic rendering; `next build` performs zero DB network access).
 # ============================================================================
 
-FROM node:20-bookworm-slim AS deps
+FROM node:22-trixie-slim@sha256:a05717adfe7289e2a0fa36a694dc430a510adab6467c7036e51551198935abef AS deps
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN apt-get update \
@@ -31,7 +31,7 @@ RUN apt-get update \
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
-FROM node:20-bookworm-slim AS builder
+FROM node:22-trixie-slim@sha256:a05717adfe7289e2a0fa36a694dc430a510adab6467c7036e51551198935abef AS builder
 WORKDIR /app
 # NEXTAUTH_SECRET: auth/config.ts validates this var at MODULE LOAD and throws
 # in production, so a build-time value must exist. It is a LOCAL BUILD-ONLY
@@ -54,7 +54,7 @@ RUN npx prisma generate
 # Canonical production build (next build).
 RUN npm run build
 
-FROM node:20-bookworm-slim AS runner
+FROM node:22-trixie-slim@sha256:a05717adfe7289e2a0fa36a694dc430a510adab6467c7036e51551198935abef AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \
