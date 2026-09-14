@@ -61,10 +61,33 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     NEXT_TELEMETRY_DISABLED=1
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && apt-get install -y --no-install-recommends \
+      openssl ca-certificates \
+      perl-base libc6 libpcre2-8-0 libsqlite3-0 \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --system --gid 1001 onesim \
   && useradd --system --uid 1001 --gid onesim --home /app --no-create-home onesim
+
+# Fail-closed Debian security floors (Trixie security updates). The four update
+# targets below are the currently published fixed versions for the inherited,
+# fixable OS packages flagged by the ECR scan. Build fails unless every floor
+# is met. zlib1g (CVE-2026-85091) intentionally omitted: no fixed Debian
+# version exists in any suite. Versions printed are package metadata, not
+# secrets.
+RUN set -eu; \
+  perlbase="$(dpkg-query -W -f='${Version}' perl-base)"; \
+  libc6v="$(dpkg-query -W -f='${Version}' libc6)"; \
+  sqlite="$(dpkg-query -W -f='${Version}' libsqlite3-0)"; \
+  pcre2="$(dpkg-query -W -f='${Version}' libpcre2-8-0)"; \
+  echo "perl-base=$perlbase"; \
+  echo "libc6=$libc6v"; \
+  echo "libsqlite3-0=$sqlite"; \
+  echo "libpcre2-8-0=$pcre2"; \
+  dpkg --compare-versions "$perlbase" ge '5.40.1-6+deb13u1' || { echo "SECURITY_FLOOR=FAIL perl-base"; exit 1; }; \
+  dpkg --compare-versions "$libc6v" ge '2.41-12+deb13u4' || { echo "SECURITY_FLOOR=FAIL libc6"; exit 1; }; \
+  dpkg --compare-versions "$sqlite" ge '3.46.1-7+deb13u2' || { echo "SECURITY_FLOOR=FAIL libsqlite3-0"; exit 1; }; \
+  dpkg --compare-versions "$pcre2" ge '10.46-1~deb13u2' || { echo "SECURITY_FLOOR=FAIL libpcre2-8-0"; exit 1; }; \
+  echo "SECURITY_PACKAGE_FLOORS=PASS"
 
 # Production-only dependency tree. `prisma` is a production dependency so the
 # same image can run `npm run db:migrate:deploy` as an ECS one-off task.
