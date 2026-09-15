@@ -7,6 +7,10 @@ node_modules/
 .DS_Store
 tsconfig.tsbuildinfo
 
+# Terraform working directories (provider binaries/caches; never source-controlled).
+# .terraform.lock.hcl IS source-controlled and must NOT be ignored.
+.terraform/
+
 # Load-harness generated outputs (machine-specific benchmark artifacts)
 dts/load/results/**
 dts/load/**/output/**

@@ -33,7 +33,7 @@ resource "aws_ecs_task_definition" "migration" {
     ]
 
     secrets = [
-      { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn }
+      { name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.database_url.arn}:DATABASE_URL::" }
     ]
 
     logConfiguration = {

@@ -69,13 +69,6 @@ data "aws_iam_policy_document" "ecs_execution_policy" {
     actions   = ["secretsmanager:GetSecretValue"]
     resources = local.web_secret_arns
   }
-  # KMS decrypt for the default AWS-managed secrets key (required by GetSecretValue)
-  statement {
-    sid       = "SecretsManagerKmsDecrypt"
-    effect    = "Allow"
-    actions   = ["kms:Decrypt"]
-    resources = ["arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key/aws/secretsmanager"]
-  }
 }
 
 resource "aws_iam_policy" "ecs_execution" {
@@ -140,7 +133,7 @@ resource "aws_ecs_task_definition" "web" {
     ]
 
     secrets = concat(
-      [{ name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn }],
+      [{ name = "DATABASE_URL", valueFrom = "${aws_secretsmanager_secret.database_url.arn}:DATABASE_URL::" }],
       [
         for k, v in aws_secretsmanager_secret.app :
         { name = k, valueFrom = v.arn }
