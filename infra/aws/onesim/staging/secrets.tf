@@ -18,13 +18,13 @@ resource "aws_secretsmanager_secret" "app" {
 }
 
 resource "random_id" "app_secret_value" {
-  for_each   = var.application_secret_specs
+  for_each    = var.application_secret_specs
   byte_length = each.value.byte_length
 }
 
 resource "aws_secretsmanager_secret_version" "app" {
-  for_each     = var.application_secret_specs
-  secret_id    = aws_secretsmanager_secret.app[each.key].id
+  for_each      = var.application_secret_specs
+  secret_id     = aws_secretsmanager_secret.app[each.key].id
   secret_string = random_id.app_secret_value[each.key].hex
 }
 

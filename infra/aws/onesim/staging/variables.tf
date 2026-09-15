@@ -186,15 +186,15 @@ variable "application_secret_specs" {
     byte_length = number
   }))
   default = {
-    NEXTAUTH_SECRET               = { byte_length = 32 }
-    ENCRYPTION_KEY                = { byte_length = 32 }
-    CRON_SECRET                   = { byte_length = 16 }
-    CALLBACK_SIGNING_SECRET       = { byte_length = 16 }
-    ORDER_CALLBACK_JOB_SECRET     = { byte_length = 16 }
+    NEXTAUTH_SECRET                  = { byte_length = 32 }
+    ENCRYPTION_KEY                   = { byte_length = 32 }
+    CRON_SECRET                      = { byte_length = 16 }
+    CALLBACK_SIGNING_SECRET          = { byte_length = 16 }
+    ORDER_CALLBACK_JOB_SECRET        = { byte_length = 16 }
     INVENTORY_RESERVATION_JOB_SECRET = { byte_length = 16 }
-    ORDER_RECOVERY_JOB_SECRET     = { byte_length = 16 }
-    EXCHANGE_RATE_JOB_SECRET      = { byte_length = 16 }
-    WEBHOOK_SECRET                = { byte_length = 16 }
+    ORDER_RECOVERY_JOB_SECRET        = { byte_length = 16 }
+    EXCHANGE_RATE_JOB_SECRET         = { byte_length = 16 }
+    WEBHOOK_SECRET                   = { byte_length = 16 }
   }
 }
 

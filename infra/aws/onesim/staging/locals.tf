@@ -14,23 +14,23 @@ locals {
 
   # Public (non-secret) runtime configuration injected via container `environment`.
   public_runtime_env = {
-    NODE_ENV     = "production"
-    PORT         = "3000"
-    HOSTNAME     = "0.0.0.0"
+    NODE_ENV                = "production"
+    PORT                    = "3000"
+    HOSTNAME                = "0.0.0.0"
     NEXT_TELEMETRY_DISABLED = "1"
-    APP_ENV      = var.app_env
-    NEXTAUTH_URL = var.nextauth_url
-    JOB_WORKER_ENABLED = var.job_worker_enabled
+    APP_ENV                 = var.app_env
+    NEXTAUTH_URL            = var.nextauth_url
+    JOB_WORKER_ENABLED      = var.job_worker_enabled
     # Staging certification posture: every provider/external-mutation surface stays
     # disabled until controlled runtime certification completes. Absent flags
     # default to equivalent off-state in application code.
-    ALLOW_MOCK_PROVIDERS = "false"
-    OUTBOUND_CALLBACKS_ENABLED = "false"
-    ORDER_RECOVERY_ENABLED = "false"
-    INVENTORY_RESERVATION_SWEEP_ENABLED = "false"
-    EXCHANGE_RATE_REFRESH_ENABLED = "false"
+    ALLOW_MOCK_PROVIDERS                     = "false"
+    OUTBOUND_CALLBACKS_ENABLED               = "false"
+    ORDER_RECOVERY_ENABLED                   = "false"
+    INVENTORY_RESERVATION_SWEEP_ENABLED      = "false"
+    EXCHANGE_RATE_REFRESH_ENABLED            = "false"
     CUSTOM_PACKAGE_UPSTREAM_CREATION_ENABLED = "false"
-    ADMIN_OPERATIONS_ACTIONS_ENABLED = "false"
+    ADMIN_OPERATIONS_ACTIONS_ENABLED         = "false"
   }
 
   # Secret ARNs referenced by the web and migration task definitions.
