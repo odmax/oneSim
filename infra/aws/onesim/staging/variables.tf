@@ -144,7 +144,7 @@ variable "nextauth_url" {
 variable "database_engine_version" {
   description = "RDS PostgreSQL engine version (staging, cost-conscious standard RDS)."
   type        = string
-  default     = "16.6"
+  default     = "16.15"
 }
 
 variable "database_instance_class" {
