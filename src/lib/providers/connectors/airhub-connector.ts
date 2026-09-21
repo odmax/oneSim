@@ -1104,10 +1104,9 @@ export class AirHubConnector implements IProviderConnector {
     if (!tokenResult.success) return { success: false, error: tokenResult.error }
 
     const baseUrl = provider.apiBaseUrl || 'https://api.airhubapp.com'
-    // The documented AirHub EXISTING-ORDER recovery read is
-    // POST /api/ESIM/GetOrderDetail with `{ partnerCode, flag: 1 }`: it returns
-    // the latest 300 order records (flag=1; fromDate/toDate are NOT required in
-    // this mode). The identifier must be the provider-owned order reference —
+    // AirHub live requires FromDate and ToDate for this read. Use the
+    // documented flag=2 form with a bounded reconciliation window.
+    // The identifier must be the provider-owned order reference —
     // never a local OneSIM id and never an ICCID (this endpoint returns a
     // recent-order collection; the requested reference is matched exactly).
     const url = `${baseUrl.replace(/\/$/, '')}/api/ESIM/GetOrderDetail`
@@ -1116,10 +1115,18 @@ export class AirHubConnector implements IProviderConnector {
     if (partnerCode === null) {
       return { success: false, error: { code: 'AIRHUB_PARTNER_CODE_MISSING', message: 'AirHub partnerCode is not configured. Authenticate to derive and persist it from the login response.' } }
     }
-    // flag=1 → latest 300 orders; fromDate/toDate are only mandatory for flag=2.
-    const body = { partnerCode: Number(partnerCode), flag: 1 }
+    const toDate = new Date()
+    const fromDate = new Date(toDate)
+    fromDate.setUTCDate(fromDate.getUTCDate() - 31)
+    const dateOnly = (value: Date): string => value.toISOString().slice(0, 10)
+    const body = {
+      partnerCode: Number(partnerCode),
+      flag: 2,
+      fromDate: dateOnly(fromDate),
+      toDate: dateOnly(toDate),
+    }
 
-    console.log(`[AIRHUB_STATUS] correlationId=${correlationId} endpoint=/api/ESIM/GetOrderDetail flag=1 orderRef=${subscriptionId}`)
+    console.log(`[AIRHUB_STATUS] correlationId=${correlationId} endpoint=/api/ESIM/GetOrderDetail flag=2 orderRef=${subscriptionId} fromDate=${body.fromDate} toDate=${body.toDate}`)
 
     try {
       // READ-ONLY transport hardening for GetOrderDetail:
