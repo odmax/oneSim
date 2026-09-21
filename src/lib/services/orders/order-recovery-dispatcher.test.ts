@@ -61,6 +61,7 @@ function order(overrides: any = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  process.env.ORDER_RECOVERY_ENABLED = 'true'
   mockFindMany.mockResolvedValue([])
   mockUnique.mockResolvedValue(order() as any)
   mockUpdateMany.mockResolvedValue({ count: 1 })
@@ -92,6 +93,24 @@ describe('discoverStrandedOrders — canonical selection', () => {
         OR: [{ nextRetryAt: { equals: null } }, { nextRetryAt: { lte: NOW } }],
       }),
     }))
+  })
+
+  it('fails closed for PROVIDER_SELF_HEAL when order recovery is disabled', async () => {
+    process.env.ORDER_RECOVERY_ENABLED = 'false'
+    mockFindMany.mockResolvedValue([order()])
+
+    const result = await discoverStrandedOrders(
+      { source: 'PROVIDER_SELF_HEAL' },
+      NOW,
+    )
+
+    expect(result).toMatchObject({
+      scanned: 0,
+      eligible: 0,
+      enqueued: 0,
+    })
+    expect(mockFindMany).not.toHaveBeenCalled()
+    expect(mockEnqueue).not.toHaveBeenCalled()
   })
 
   it('enqueues one recovery operation per eligible order (bucket idempotencyKey + providerId column)', async () => {
@@ -187,6 +206,20 @@ describe('executeOrderRecovery — leased claim + execution', () => {
     mockUnique.mockResolvedValue(order({ status: 'FULFILLED' }) as any)
     const r = await executeOrderRecovery({ orderId: 'order-1' })
     expect(r.completed).toBe(true)
+    expect(mockUpdateMany).not.toHaveBeenCalled()
+    expect(mockRecover).not.toHaveBeenCalled()
+  })
+
+  it('does not execute queued recovery while recovery is disabled', async () => {
+    process.env.ORDER_RECOVERY_ENABLED = 'false'
+
+    const result = await executeOrderRecovery({
+      orderId: 'order-1',
+    })
+
+    expect(result.completed).toBe(true)
+    expect(result.error).toBe('Order recovery is disabled')
+    expect(mockUnique).not.toHaveBeenCalled()
     expect(mockUpdateMany).not.toHaveBeenCalled()
     expect(mockRecover).not.toHaveBeenCalled()
   })
