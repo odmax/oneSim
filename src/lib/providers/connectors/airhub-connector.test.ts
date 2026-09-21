@@ -1613,7 +1613,7 @@ describe('syncPlans travel-date metadata', () => {
   })
 
 describe('getStatus', () => {
-    it('queries the documented GetOrderDetail endpoint (flag=1) keyed by exact provider order reference', async () => {
+    it('queries GetOrderDetail with a bounded date range keyed by exact provider order reference', async () => {
       mockFetchSuccess({
         isSuccess: true,
         getOrderdetails: [{ orderId: 'AH-789', simID: '8901234567890123456' }],
@@ -1628,10 +1628,12 @@ describe('getStatus', () => {
       expect(String(url)).not.toContain('GetActivationCode')
       const body = JSON.parse(opts.body)
       expect(body.partnerCode).toBe(200652387)
-      expect(body.flag).toBe(1)
-      // flag=1 → latest 300 orders: fromDate/toDate are NOT sent.
-      expect(body.fromDate).toBeUndefined()
-      expect(body.toDate).toBeUndefined()
+      expect(body.flag).toBe(2)
+      expect(body.fromDate).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(body.toDate).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(body.fromDate <= body.toDate).toBe(true)
+      const rangeMs = Date.parse(body.toDate) - Date.parse(body.fromDate)
+      expect(rangeMs).toBe(31 * 24 * 60 * 60 * 1000)
       expect(body.orderid).toBeUndefined()
     })
 
