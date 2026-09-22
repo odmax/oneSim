@@ -188,14 +188,18 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
 
     const data = result.data
     const providerOrderId = data.activationId || (data as any).providerOrderId || undefined
-    // An operation is asynchronous when the provider reports a non-terminal waiting
-    // status OR has not yet delivered a final ICCID. Broadened from the original
-    // rule so providers (e.g. iBASIS) that pre-allocate an ICCID but return a
-    // PENDING/PROCESSING status are correctly polled instead of finalized early.
-    const AWAITING_STATUSES = ['PENDING', 'PROCESSING', 'QUEUED', 'PENDING_ACTIVATION', 'RESERVED', 'PROVISIONING']
-    const isAwaitingActivation = data.status && AWAITING_STATUSES.includes(String(data.status).toUpperCase())
-    const hasIccids = data.iccids && data.iccids.length > 0
-    const isAsync = Boolean(isAwaitingActivation) || !hasIccids
+    // PENDING_ACTIVATION has delivery semantics: when an authoritative ICCID
+    // already exists, the eSIM has been provisioned and may be finalized into
+    // OneSIM as an eSIM awaiting device installation/activation. It must not be
+    // confused with provider-side PENDING/PROCESSING states.
+    //
+    // Providers that pre-allocate an ICCID while still reporting a genuine
+    // provider-side waiting state remain asynchronous and are still polled.
+    const hasIccids = Array.isArray(data.iccids) && data.iccids.length > 0
+    const providerStatus = String(data.status || '').toUpperCase()
+    const AWAITING_STATUSES = ['PENDING', 'PROCESSING', 'QUEUED', 'RESERVED', 'PROVISIONING']
+    const isAwaitingActivation = AWAITING_STATUSES.includes(providerStatus)
+    const isAsync = isAwaitingActivation || !hasIccids
 
     if (isAsync && providerOrderId) {
       await prisma.providerAttempt.update({

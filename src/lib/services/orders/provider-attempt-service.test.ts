@@ -23,6 +23,12 @@ vi.mock('@/lib/services/jobs/provider-finalizer', () => ({
   failProviderOperation: vi.fn(),
 }))
 
+vi.mock('@/lib/services/jobs/provider-job-engine', () => ({
+  ProviderJobEngine: {
+    createJob: vi.fn(),
+  },
+}))
+
 vi.mock('@/lib/services/orders/order-state-machine', () => ({
   createTimelineEvent: vi.fn(),
 }))
@@ -30,12 +36,14 @@ vi.mock('@/lib/services/orders/order-state-machine', () => ({
 const { prisma } = await import('@/lib/prisma')
 const { getAdapterForType } = await import('@/lib/providers/adapter-manager')
 const { completeProviderOperation } = await import('@/lib/services/jobs/provider-finalizer')
+const { ProviderJobEngine } = await import('@/lib/services/jobs/provider-job-engine')
 const { classifyProviderOutcome } = await import('@/lib/services/routing/provider-failover-engine')
 const { executeProviderAttempt } = await import('./provider-attempt-service')
 
 const mockPrisma = vi.mocked(prisma)
 const mockGetAdapter = vi.mocked(getAdapterForType)
 const mockComplete = vi.mocked(completeProviderOperation)
+const mockCreateJob = vi.mocked(ProviderJobEngine.createJob)
 const mockClassifyOutcome = vi.mocked(classifyProviderOutcome)
 
 const ORDER_ID = 'order-1'
@@ -107,6 +115,77 @@ describe('executeProviderAttempt', () => {
       smdpAddress: 'smdp.example.com',
       matchingId: 'mid-1',
       rawMetadata: { orderId: 'act-1' },
+    }))
+  })
+
+  it('finalizes delivered AirHub PENDING_ACTIVATION when ICCID and activation data are present', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockGetAdapter.mockResolvedValue({
+      validatePurchase: undefined,
+      activateESIM: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          activationId: '12816118',
+          iccids: ['89012345678901234567'],
+          activationCodes: ['LPA:1$smdp.example.com$matching-id'],
+          status: 'PENDING_ACTIVATION',
+          rawMetadata: { orderId: '12816118' },
+        },
+      }),
+    } as any)
+
+    const result = await executeProviderAttempt(baseInput())
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCEEDED',
+      providerReference: '12816118',
+      iccids: ['89012345678901234567'],
+    })
+    expect(mockComplete).toHaveBeenCalledWith(expect.objectContaining({
+      orderId: ORDER_ID,
+      providerRef: '12816118',
+      iccids: ['89012345678901234567'],
+      activationCode: 'LPA:1$smdp.example.com$matching-id',
+      rawMetadata: { orderId: '12816118' },
+    }))
+    expect(mockCreateJob).not.toHaveBeenCalled()
+
+    const terminalUpdate = mockPrisma.providerAttempt.update.mock.calls
+      .map((call: any[]) => call[0])
+      .find((call: any) => call.data?.status === 'SUCCEEDED')
+
+    expect(terminalUpdate).toBeDefined()
+    expect(terminalUpdate.data.completedAt).toBeInstanceOf(Date)
+    expect(terminalUpdate.data.providerReference).toBe('12816118')
+  })
+
+  it('keeps genuine provider PROCESSING asynchronous even when an ICCID is preallocated', async () => {
+    mockPrisma.eSIMPurchase.findUnique.mockResolvedValue(mockOrder())
+    mockGetAdapter.mockResolvedValue({
+      validatePurchase: undefined,
+      activateESIM: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          activationId: 'async-ref-1',
+          iccids: ['89012345678901234567'],
+          status: 'PROCESSING',
+        },
+      }),
+    } as any)
+
+    const result = await executeProviderAttempt(baseInput())
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'PROCESSING',
+      providerReference: 'async-ref-1',
+    })
+    expect(mockComplete).not.toHaveBeenCalled()
+    expect(mockCreateJob).toHaveBeenCalledWith(expect.objectContaining({
+      orderId: ORDER_ID,
+      providerRef: 'async-ref-1',
+      operation: 'activation',
     }))
   })
 
