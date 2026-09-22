@@ -84,16 +84,22 @@ export function buildInstallationPresentation(fields: InstallDataFields | null |
   // a `qrCode` that is an HTTP URL is actually an image.
   const qrCodeUrlKind = classifyQrValue(fields.qrCodeUrl)
   const qrCodeKind = classifyQrValue(fields.qrCode)
+  const activationCode = fields.activationCode || null
+  const activationCodeKind = classifyQrValue(activationCode)
 
   const qrImageUrl = qrCodeUrlKind === 'QR_IMAGE_URL' ? fields.qrCodeUrl
     : qrCodeKind === 'QR_IMAGE_URL' ? fields.qrCode
     : null
 
+  // Some providers, including Telna, return the complete LPA installation
+  // payload in activationCode rather than qrCode. Preserve it as the manual
+  // activation code while also presenting it as a locally renderable QR
+  // payload. Provider-hosted QR images and explicit qrCode values retain
+  // precedence.
   const qrPayload = qrCodeKind === 'QR_PAYLOAD' ? fields.qrCode
     : qrCodeUrlKind === 'QR_PAYLOAD' ? fields.qrCodeUrl
+    : activationCodeKind === 'QR_PAYLOAD' ? activationCode
     : null
-
-  const activationCode = fields.activationCode || null
   const smdpAddress = fields.smdpAddress || null
   const matchingId = fields.matchingId || null
 
