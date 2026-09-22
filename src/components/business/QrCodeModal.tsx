@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { isLpaPayload } from '@/lib/esim/installation-data'
 
 interface QREsimProps {
   esimId: string
@@ -40,7 +41,10 @@ function QrCodeModal({ esim, onClose }: { esim: QREsimProps; onClose: () => void
   const [imgLoading, setImgLoading] = useState(!!esim.qrCodeUrl)
   const [imgError, setImgError] = useState(false)
 
-  const lpaValue = esim.lpaValue || esim.qrCode || null
+  const lpaValue =
+    esim.lpaValue ||
+    esim.qrCode ||
+    (isLpaPayload(esim.activationCode) ? esim.activationCode : null)
   const smdpAddress = esim.smdpAddress
   const matchingId = esim.matchingId
   const displayActivationCode = esim.activationCode || extractActivationCode(lpaValue ?? null)
