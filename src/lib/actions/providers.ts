@@ -202,6 +202,7 @@ export async function updateProvider(providerId: string, formData: FormData) {
   const apiBaseUrl = formData.get('apiBaseUrl') as string
   const authUrl = formData.get('authUrl') as string
   const apiToken = formData.get('apiToken') as string
+  const telnaPcrApiKey = formData.get('telnaPcrApiKey') as string
   const environment = formData.get('environment') as string
   const priority = parseInt(formData.get('priority') as string) || 0
   const isDefaultFallback = formData.get('isDefaultFallback') === 'on'
@@ -302,6 +303,21 @@ export async function updateProvider(providerId: string, formData: FormData) {
   if (apiBaseUrl) update.apiBaseUrl = apiBaseUrl
   if (authUrl) update.authUrl = authUrl
   if (apiToken) update.apiToken = encryptToken(apiToken)
+
+  // Telna PCR uses a second static credential sent as the ApiKey header.
+  // A blank field preserves the existing encrypted value.
+  if (
+    existingProvider.code === 'TELNA' &&
+    telnaPcrApiKey?.trim()
+  ) {
+    const existingConfig =
+      (existingProvider.config as Record<string, unknown> | null) || {}
+
+    update.config = {
+      ...existingConfig,
+      telnaPcrApiKeyEncrypted: encryptToken(telnaPcrApiKey.trim()),
+    }
+  }
 
   await prisma.provider.update({ where: { id: providerId }, data: update })
 

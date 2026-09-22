@@ -3,7 +3,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const { mockGetServerSession } = vi.hoisted(() => ({ mockGetServerSession: vi.fn() }))
 const { mockPrisma } = vi.hoisted(() => ({
   mockPrisma: {
-    provider: { findUnique: vi.fn(), upsert: vi.fn(), updateMany: vi.fn() },
+    provider: {
+      findUnique: vi.fn(),
+      upsert: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+    },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
   },
 }))
@@ -23,7 +28,7 @@ vi.mock('@/lib/providers/connectors/connector-factory', () => ({
 }))
 
 import { prisma } from '@/lib/prisma'
-import { createProvider } from './providers'
+import { createProvider, updateProvider } from './providers'
 
 const mockP = vi.mocked(prisma)
 
@@ -160,5 +165,89 @@ describe('createProvider — AirHub canonical strategy invariant', () => {
         expect(upsertArg.create.adapterStrategy).toBe(strategy)
       }
     }
+  })
+})
+
+describe('updateProvider — Telna dual static credentials', () => {
+  const existingTelna = {
+    id: 'telna-1',
+    code: 'TELNA',
+    endpointMappings: {},
+    config: {
+      template: { provider: 'TELNA' },
+      telnaPcrApiKeyEncrypted: 'enc:existing-pcr-key',
+    },
+  }
+
+  beforeEach(() => {
+    mockGetServerSession.mockResolvedValue(adminSession())
+    mockP.provider.findUnique.mockResolvedValue(existingTelna as any)
+    mockP.provider.update.mockResolvedValue(existingTelna as any)
+    mockP.provider.updateMany.mockResolvedValue({ count: 0 } as any)
+    mockP.auditLog.create.mockResolvedValue({} as any)
+  })
+
+  it('encrypts and merges a replacement Telna PCR API key', async () => {
+    const fd = form({
+      name: 'Telna',
+      status: 'ACTIVE',
+      environment: 'production',
+      apiToken: 'new-primary-key-id',
+      telnaPcrApiKey: '  new-pcr-api-key  ',
+    })
+
+    await expect(updateProvider('telna-1', fd))
+      .rejects.toThrow(/REDIRECT/)
+
+    expect(mockP.provider.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'telna-1' },
+        data: expect.objectContaining({
+          apiToken: 'enc:new-primary-key-id',
+          config: expect.objectContaining({
+            template: { provider: 'TELNA' },
+            telnaPcrApiKeyEncrypted: 'enc:new-pcr-api-key',
+          }),
+        }),
+      }),
+    )
+  })
+
+  it('preserves both credentials when their fields are blank', async () => {
+    const fd = form({
+      name: 'Telna',
+      status: 'ACTIVE',
+      environment: 'production',
+      apiToken: '',
+      telnaPcrApiKey: '',
+    })
+
+    await expect(updateProvider('telna-1', fd))
+      .rejects.toThrow(/REDIRECT/)
+
+    const updateCall = mockP.provider.update.mock.calls.at(-1)?.[0]
+    expect(updateCall.data).not.toHaveProperty('apiToken')
+    expect(updateCall.data).not.toHaveProperty('config')
+  })
+
+  it('ignores the PCR field for non-Telna providers', async () => {
+    mockP.provider.findUnique.mockResolvedValue({
+      ...existingTelna,
+      id: 'airhub-1',
+      code: 'AIRHUB',
+    } as any)
+
+    const fd = form({
+      name: 'AirHub',
+      status: 'ACTIVE',
+      environment: 'staging',
+      telnaPcrApiKey: 'must-not-be-saved',
+    })
+
+    await expect(updateProvider('airhub-1', fd))
+      .rejects.toThrow(/REDIRECT/)
+
+    const updateCall = mockP.provider.update.mock.calls.at(-1)?.[0]
+    expect(updateCall.data).not.toHaveProperty('config')
   })
 })
