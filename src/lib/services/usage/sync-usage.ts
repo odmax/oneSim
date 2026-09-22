@@ -1,5 +1,19 @@
 import { prisma } from '@/lib/prisma'
 import { capabilitySupported, resolveUsageLookup, buildProviderConnector, mergeProviderPackageEsimId, isUsageLookupSkip, type SyncLookupEsim } from '@/lib/services/esims/sync-lookup'
+import { deriveDepletionStatus, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
+
+/**
+ * Canonicalize a provider-reported remaining-data value:
+ *  - null/undefined/NaN/Infinity -> null (unknown, never DEPLETED);
+ *  - any finite number is floored at 0 (a negative reported balance is treated
+ *    as exhausted and is never persisted as a negative value).
+ */
+export function normalizeDataRemainingMB(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  return Math.max(0, n)
+}
 
 export interface SyncUsageResult {
   success: boolean
@@ -65,23 +79,47 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
     if (usageResult.success && usageResult.data) {
       const d = usageResult.data
       const dataUsedMB = d.dataUsedMB
+      const dataTotalMB = (d as any).dataTotalMB
+      // Never persist negative remaining data; normalize before persistence AND
+      // depletion derivation.
+      const dataRemainingMB = normalizeDataRemainingMB((d as any).dataRemainingMB)
+      const providerStatusRaw = (d as any).status ? String((d as any).status) : undefined
+
+      // Canonical provider-neutral DEPLETED decision (single source of truth).
+      // A successful connector getUsage call is authoritative; an explicit
+      // provider status that means exhausted data also counts.
+      const depletion = deriveDepletionStatus(esim.status, {
+        dataRemainingMB,
+        snapshotValid: true,
+        providerExhausted: isProviderExhaustedStatus(providerStatusRaw ?? (d as any).providerStatus),
+      })
 
       await prisma.$transaction(async (tx) => {
         await tx.usageRecord.create({
           data: {
             esimId,
             dataUsedMB,
-            dataTotalMB: (d as any).dataTotalMB || null,
-            dataRemainingMB: (d as any).dataRemainingMB || null,
+            dataTotalMB: dataTotalMB || null,
+            dataRemainingMB,
             timestamp: d.timestamp ? new Date(d.timestamp) : new Date(),
           },
         })
 
         const updateData: any = { lastSyncAt: new Date(), lastUsageSyncAt: new Date() }
-        if (dataUsedMB !== undefined) updateData.dataUsedMB = dataUsedMB
-        if ((d as any).dataTotalMB !== undefined) updateData.dataTotalMB = (d as any).dataTotalMB
-        if ((d as any).dataRemainingMB !== undefined) updateData.dataRemainingMB = (d as any).dataRemainingMB
+        if (dataUsedMB !== undefined && esim.dataUsedMB !== dataUsedMB) updateData.dataUsedMB = dataUsedMB
+        if (dataTotalMB !== undefined && esim.dataTotalMB !== dataTotalMB) updateData.dataTotalMB = dataTotalMB
+        // Only a finite, normalized remaining value is persisted (never negative);
+        // unknown (null/NaN/Infinity) leaves the last known value untouched.
+        if (dataRemainingMB !== null && esim.dataRemainingMB !== dataRemainingMB) updateData.dataRemainingMB = dataRemainingMB
         if ((d as any).expiresAt) updateData.expiresAt = new Date((d as any).expiresAt)
+
+        // Preserve the ORIGINAL provider lifecycle status separately (never
+        // rewritten to DEPLETED). DEPLETED is our customer-visible derivation.
+        if (providerStatusRaw && esim.providerStatus !== providerStatusRaw) updateData.providerStatus = providerStatusRaw
+
+        // Customer-visible status only changes via the canonical decision;
+        // idempotent: no write when the status already matches.
+        if (depletion && esim.status !== depletion) updateData.status = depletion
 
         // Persist a provider-discovered package↔eSIM association id
         // (providerResponse.packageEsimId) WITHOUT overwriting existing keys, so
@@ -98,8 +136,9 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
       return {
         success: true,
         dataUsedMB,
-        dataTotalMB: (d as any).dataTotalMB,
-        dataRemainingMB: (d as any).dataRemainingMB,
+        dataTotalMB,
+        dataRemainingMB: dataRemainingMB ?? undefined,
+        status: depletion || esim.status,
       }
     }
 

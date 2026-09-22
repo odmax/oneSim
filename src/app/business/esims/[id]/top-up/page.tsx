@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
-import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { getEsimStatusLabel, isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
 import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 import TopUpForm from './TopUpForm'
 
@@ -27,8 +27,7 @@ export default async function BusinessTopUpPage({ params, searchParams }: { para
 
   if (!esim || esim.purchase.businessId !== session.user.businessId) redirect('/business/esims')
 
-  const allowedStatuses = ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING']
-  const canTopUp = allowedStatuses.includes(esim.status) && !!esim.iccid
+  const canTopUp = isTopUpEligibleStatus(esim.status) && !!esim.iccid
 
   // Find compatible top-up packages
   const originalPkg = esim.purchase.package

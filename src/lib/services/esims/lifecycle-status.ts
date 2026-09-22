@@ -46,8 +46,9 @@ const TERMINAL_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED']
  *  unrecognized provider report must never downgrade these to a "not yet
  *  active" provisioning state; they may still move to recognized authoritative
  *  terminal states (SUSPENDED/EXPIRED/FAILED/CANCELLED) or to ACTIVE via
- *  canonical evidence. */
-const PRESERVABLE_CURRENT_STATUSES = ['ACTIVE', 'INSTALLED', 'INSTALLING', 'SUSPENDED']
+ *  canonical evidence. DEPLETED is included: only the authoritative usage rule
+ *  (remaining data > 0) may move a depleted line back to ACTIVE. */
+const PRESERVABLE_CURRENT_STATUSES = ['ACTIVE', 'INSTALLED', 'INSTALLING', 'SUSPENDED', 'DEPLETED']
 
 /** Provider-reported statuses that represent device-level activation. */
 const DEVICE_ACTIVATION_SIGNALS = ['INSTALLED', 'ACTIVATED_ON_DEVICE', 'DEVICE_ACTIVATED', 'IN_USE', 'ONLINE', 'ATTACHED']
@@ -77,6 +78,22 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
     return { status: currentUpper, setActivatedAt: false, reason: 'preserve-terminal' }
   }
 
+  // 1b. Explicit provider "data exhausted" status → customer-visible DEPLETED,
+  //     even for providers WITHOUT usage lookup (e.g. AirHub, iBASIS that report
+  //     the exhausted lifecycle through status sync/webhooks/reconciliation).
+  //     Precedence: an already-expired or terminal/refunded line is never
+  //     converted to DEPLETED; an already-DEPLETED line stays DEPLETED
+  //     (idempotent). providerStatus keeps the raw provider value at the callers.
+  if (isProviderExhaustedStatus(providerNormalizedStatus)) {
+    if (currentUpper === 'DEPLETED') {
+      return { status: 'DEPLETED', setActivatedAt: false, reason: 'provider-exhausted-preserved' }
+    }
+    if ((DEPLETION_IMMUTABLE_STATUSES as string[]).includes(currentUpper)) {
+      return { status: currentUpper, setActivatedAt: false, reason: 'preserve-terminal-on-exhausted' }
+    }
+    return { status: 'DEPLETED', setActivatedAt: false, reason: 'provider-exhausted' }
+  }
+
   // 2. Monotonic guard: never regress from a state backed by OneSIM's own
   //    device/activation evidence (or from a provider suspension) to a "not
   //    yet active" provisioning state based on a weaker provider report.
@@ -91,6 +108,9 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
   //    PENDING_ACTIVATION / INSTALLING) up to INSTALLED, and is a no-op for a
   //    current INSTALLED.
   if (providerInstalledSignal || DEVICE_ACTIVATION_SIGNALS.includes(upper)) {
+    if (currentUpper === 'DEPLETED') {
+      return { status: 'DEPLETED', setActivatedAt: false, reason: 'depleted-preserved' }
+    }
     if (currentUpper === 'ACTIVE' || currentUpper === 'SUSPENDED') {
       return { status: currentUpper, setActivatedAt: false, reason: 'preserve-authoritative-on-installed-signal' }
     }
@@ -101,6 +121,12 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
   //    may provide VERIFIED network-attach evidence (providerNetworkAttachedSignal)
   //    that proves device activation without usage history.
   if (upper === 'ACTIVE') {
+    if (currentUpper === 'DEPLETED') {
+      // Ordinary provider ACTIVE status is NOT evidence of replenished data:
+      // a depleted eSIM returns to ACTIVE only via the authoritative usage rule
+      // (deriveDepletionStatus with remaining data > 0).
+      return { status: 'DEPLETED', setActivatedAt: false, reason: 'depleted-needs-authoritative-replenishment' }
+    }
     if (hasActivationHistory(activatedAt)) {
       return { status: 'ACTIVE', setActivatedAt: false, reason: 'already-activated' }
     }
@@ -155,4 +181,79 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
   }
 
   return { status: 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'unknown-provider-fallback' }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Provider-neutral DEPLETED status (customer-visible "data allowance exhausted").
+//
+// Only ONE canonical decision point: a depleted line is derived from AUTHORITATIVE
+// usage evidence (finite remaining data <= 0 on a valid snapshot) OR an explicit
+// provider status that unambiguously means exhausted data. It is never inferred
+// from missing/unknown remaining data, a failed usage request, total allowance
+// alone, or a provider lifecycle status of ACTIVE without usage evidence.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Provider statuses that unambiguously mean the data allowance is exhausted. */
+export const EXHAUSTED_PROVIDER_STATUSES = ['DEPLETED', 'EXHAUSTED', 'DATA_DEPLETED', 'OUT_OF_DATA'] as const
+
+export function isProviderExhaustedStatus(providerStatus?: string | null): boolean {
+  const upper = String(providerStatus || '').toUpperCase()
+  return (EXHAUSTED_PROVIDER_STATUSES as readonly string[]).includes(upper)
+}
+
+/** Irreversible/lifecycle-closed states a depleted line is NEVER derived from
+ *  (an EXPIRED eSIM must not become DEPLETED; FAILED/CANCELLED/REFUNDED are
+ *  already terminal for the customer). */
+const DEPLETION_IMMUTABLE_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED', 'REFUNDED']
+
+export interface DepletionEvidence {
+  /** dataRemainingMB from an authoritative usage snapshot (null = unknown). */
+  dataRemainingMB?: number | null
+  /** True only when the provider/connector considered the snapshot valid. */
+  snapshotValid?: boolean
+  /** Explicit provider status that unambiguously means exhausted data. */
+  providerExhausted?: boolean
+}
+
+/**
+ * Canonical provider-neutral DEPLETED transition.
+ *
+ * Returns:
+ *  - 'DEPLETED'  status change (remaining <= 0 on a valid snapshot, or an
+ *                explicit exhausted provider status) unless the current status
+ *                is already DEPLETED (no-op → idempotent);
+ *  - 'ACTIVE'    when a DEPLETED line is replenished by an authoritative
+ *                snapshot with remaining data > 0 (top-up reactivation);
+ *  - null        no status change (idempotent / insufficient evidence).
+ *
+ * Negative remaining values are treated safely as depleted (clamped for the
+ * decision). EXPIRED/FAILED/CANCELLED/REFUNDED are never converted to DEPLETED.
+ */
+export function deriveDepletionStatus(
+  currentStatus: string | null | undefined,
+  evidence: DepletionEvidence,
+): 'DEPLETED' | 'ACTIVE' | null {
+  const current = String(currentStatus || 'PENDING').toUpperCase()
+  if (DEPLETION_IMMUTABLE_STATUSES.includes(current)) return null
+
+  const remaining = evidence.dataRemainingMB
+  const numericDepleted =
+    evidence.snapshotValid === true &&
+    typeof remaining === 'number' &&
+    Number.isFinite(remaining) &&
+    remaining <= 0
+
+  if (numericDepleted || evidence.providerExhausted === true) {
+    return current === 'DEPLETED' ? null : 'DEPLETED'
+  }
+
+  const replenished =
+    typeof remaining === 'number' &&
+    Number.isFinite(remaining) &&
+    remaining > 0 &&
+    evidence.snapshotValid === true
+
+  if (current === 'DEPLETED' && replenished) return 'ACTIVE'
+
+  return null
 }

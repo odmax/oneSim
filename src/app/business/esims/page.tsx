@@ -8,7 +8,7 @@ import { getPackageDisplayName, getPackageDataGB, isPackageArchived } from '@/li
 import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
-import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { getEsimStatusLabel, isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
 
 function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } | null {
   if (!raw) return null
@@ -137,7 +137,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                               packageName={snapName}
                               whatsAppUrl={whatsAppUrl}
                             />
-                            {['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && esim.iccid && (
+                            {isTopUpEligibleStatus(esim.status) && esim.iccid && (
                               <Link href={`/business/esims/${esim.id}/top-up`} className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Top Up</Link>
                             )}
                             <form action={syncEsimStatusAction.bind(null, esim.id)}>

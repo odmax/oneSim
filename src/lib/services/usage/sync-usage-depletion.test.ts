@@ -1,0 +1,192 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+const mocks = vi.hoisted(() => ({
+  findUnique: vi.fn(),
+  usageRecordCreate: vi.fn(),
+  esimUpdate: vi.fn().mockResolvedValue({}),
+  connectorGetUsage: vi.fn(),
+  capabilitySupported: vi.fn(),
+  resolveUsageLookup: vi.fn(),
+  buildProviderConnector: vi.fn(),
+  mergeProviderPackageEsimId: vi.fn(),
+  isUsageLookupSkip: vi.fn(),
+}))
+
+vi.mock('@/lib/prisma', () => ({
+  prisma: {
+    eSIM: { findUnique: mocks.findUnique },
+    $transaction: (fn: any) => fn({
+      usageRecord: { create: mocks.usageRecordCreate },
+      eSIM: { update: mocks.esimUpdate },
+    }),
+  },
+}))
+
+vi.mock('@/lib/services/esims/sync-lookup', () => ({
+  capabilitySupported: mocks.capabilitySupported,
+  resolveUsageLookup: mocks.resolveUsageLookup,
+  buildProviderConnector: mocks.buildProviderConnector,
+  mergeProviderPackageEsimId: mocks.mergeProviderPackageEsimId,
+  isUsageLookupSkip: mocks.isUsageLookupSkip,
+}))
+
+import { syncESIMUsage, normalizeDataRemainingMB } from './sync-usage'
+
+function esimRow(overrides: Record<string, any> = {}): any {
+  return {
+    id: 'esim-1',
+    status: 'ACTIVE',
+    dataUsedMB: 0,
+    dataRemainingMB: 500,
+    dataTotalMB: 500,
+    providerStatus: null,
+    providerResponse: null,
+    purchase: { package: { providerId: 'prov-airhub' } },
+    ...overrides,
+  }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mocks.capabilitySupported.mockReturnValue(true)
+  mocks.resolveUsageLookup.mockReturnValue({ ok: true, identifier: 'ICCID-1' })
+  mocks.buildProviderConnector.mockReturnValue({ getUsage: mocks.connectorGetUsage })
+  mocks.mergeProviderPackageEsimId.mockReturnValue(undefined)
+  mocks.isUsageLookupSkip.mockReturnValue(false)
+})
+
+describe('syncESIMUsage — canonical DEPLETED persistence', () => {
+  it('remaining = 0 results in DEPLETED', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 400, dataTotalMB: 500, dataRemainingMB: 0 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('DEPLETED')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.status).toBe('DEPLETED')
+    expect(data.dataRemainingMB).toBe(0)
+  })
+
+  it('preserves original provider lifecycle status in providerStatus while setting DEPLETED', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 500, dataTotalMB: 500, dataRemainingMB: 0, status: 'ACTIVE' } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('DEPLETED')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.status).toBe('DEPLETED')
+    expect(data.providerStatus).toBe('ACTIVE') // raw provider lifecycle preserved, not overwritten
+  })
+
+  it('explicit EXHAUSTED provider status normalizes to DEPLETED even without numeric remaining', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 100, status: 'EXHAUSTED' } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('DEPLETED')
+    expect(mocks.esimUpdate.mock.calls[0][0].data.status).toBe('DEPLETED')
+  })
+
+  it('EXPIRED eSIM remains EXPIRED even when remaining = 0', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'EXPIRED' }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 500, dataTotalMB: 500, dataRemainingMB: 0 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('EXPIRED')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.status).toBeUndefined()
+  })
+
+  it('DEPLETED with authoritative remaining > 0 returns to ACTIVE (top-up reactivation)', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'DEPLETED', dataRemainingMB: 0 }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 300, dataTotalMB: 500, dataRemainingMB: 200 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('ACTIVE')
+    expect(mocks.esimUpdate.mock.calls[0][0].data.status).toBe('ACTIVE')
+  })
+
+  it('repeated identical depletion sync is idempotent (no status write)', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'DEPLETED', dataRemainingMB: 0 }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 500, dataTotalMB: 500, dataRemainingMB: 0 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('DEPLETED')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.status).toBeUndefined()
+  })
+
+  it('missing/unknown remaining data never results in DEPLETED', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 100 } })
+    await syncESIMUsage('esim-1')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.status).toBeUndefined()
+  })
+
+  it('usage failure preserves the existing status', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: false, error: { code: 'UPSTREAM_ERROR', message: 'boom' } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.success).toBe(false)
+    expect(mocks.esimUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('normalizeDataRemainingMB — negative/NaN canonicalization', () => {
+  it('-1 persists as 0 and produces DEPLETED', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 500, dataTotalMB: 500, dataRemainingMB: -1 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.dataRemainingMB).toBe(0)
+    expect(r.status).toBe('DEPLETED')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.dataRemainingMB).toBe(0)
+    expect(mocks.usageRecordCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ dataRemainingMB: 0 }) }))
+  })
+
+  it('0 persists as 0 and produces DEPLETED', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 500, dataTotalMB: 500, dataRemainingMB: 0 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.dataRemainingMB).toBe(0)
+    expect(r.status).toBe('DEPLETED')
+    expect(mocks.esimUpdate.mock.calls[0][0].data.dataRemainingMB).toBe(0)
+  })
+
+  it('positive reported value remains unchanged', async () => {
+    expect(normalizeDataRemainingMB(250)).toBe(250)
+  })
+
+  it('null/missing/NaN/Infinity do not falsely produce DEPLETED and are not persisted', async () => {
+    for (const v of [null, undefined, NaN, Infinity, -Infinity, 'garbage']) {
+      expect(normalizeDataRemainingMB(v)).toBeNull()
+    }
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 100, dataTotalMB: 500, dataRemainingMB: NaN } })
+    await syncESIMUsage('esim-1')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.status).toBeUndefined()
+    expect(data.dataRemainingMB).toBeUndefined()
+  })
+})
+
+describe('sync timestamp semantics — successful authoritative fetch', () => {
+  it('repeat identical snapshot: no lifecycle transition, timestamps advance, history recorded', async () => {
+    // First sync establishes DEPLETED.
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 500, dataTotalMB: 500, dataRemainingMB: 0 } })
+    await syncESIMUsage('esim-1')
+
+    // Second, identical snapshot against a row already DEPLETED at remaining 0
+    // carrying the post-first-sync usage values.
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'DEPLETED', dataRemainingMB: 0, dataUsedMB: 500, dataTotalMB: 500 }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 500, dataTotalMB: 500, dataRemainingMB: 0 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('DEPLETED')
+    const data = mocks.esimUpdate.mock.calls[mocks.esimUpdate.mock.calls.length - 1][0].data
+    // No false lifecycle transition and no usage-value rewrite:
+    expect(data.status).toBeUndefined()
+    expect(data.dataUsedMB).toBeUndefined()
+    expect(data.dataRemainingMB).toBeUndefined()
+    // Successful sync timestamps still advance (never appears stale):
+    expect(data.lastSyncAt).toBeInstanceOf(Date)
+    expect(data.lastUsageSyncAt).toBeInstanceOf(Date)
+    // History contract: each authoritative snapshot is recorded.
+    expect(mocks.usageRecordCreate).toHaveBeenCalledTimes(2)
+  })
+})

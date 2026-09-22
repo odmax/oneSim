@@ -83,8 +83,8 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
         },
         ESIM: {
           type: 'object', properties: {
-            id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string', enum: ['PENDING','PENDING_ACTIVATION','ACTIVE','SUSPENDED','EXPIRED','FAILED'] },
-            statusLabel: { type: 'string', enum: ['Ready to install','Active','Suspended','Expired','Failed'] },
+            id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string', enum: ['PENDING','PENDING_ACTIVATION','ACTIVE','SUSPENDED','DEPLETED','EXPIRED','FAILED'] },
+            statusLabel: { type: 'string', enum: ['Ready to install','Active','Suspended','Depleted','Expired','Failed'] },
             qrCodeUrl: { type: 'string' }, activationCode: { type: 'string' },
             activatedAt: { type: 'string', format: 'date-time' }, expiresAt: { type: 'string', format: 'date-time' },
             dataUsedMB: { type: 'integer' }, dataTotalMB: { type: 'integer' }, dataRemainingMB: { type: 'integer' },

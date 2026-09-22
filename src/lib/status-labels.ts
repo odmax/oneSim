@@ -23,6 +23,7 @@ export const ORDER_STATUS_LABELS: Record<string, StatusLabelStyle> = {
   INSTALLING: { label: 'Installing', dot: 'bg-sky-400', bg: 'bg-sky-50 text-sky-600' },
   INSTALLED: { label: 'Installed', dot: 'bg-teal-400', bg: 'bg-teal-50 text-teal-600' },
   ACTIVE: { label: 'Active', dot: 'bg-green-400', bg: 'bg-green-50 text-green-600' },
+  DEPLETED: { label: 'Depleted', dot: 'bg-red-400', bg: 'bg-red-50 text-red-600' },
   EXPIRED: { label: 'Expired', dot: 'bg-gray-400', bg: 'bg-gray-50 text-gray-500' },
   CANCELLED: { label: 'Cancelled', dot: 'bg-amber-400', bg: 'bg-amber-50 text-amber-600' },
   FAILED: { label: 'Failed', dot: 'bg-red-400', bg: 'bg-red-50 text-red-600' },

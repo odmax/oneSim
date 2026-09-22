@@ -139,7 +139,7 @@ const CHOICE_STATUS_GROUPS: Record<string, string[]> = {
   CANCELLED: ['cancelled', 'canceled'],
 }
 
-const MEANINGFUL_INTERNAL_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED']
+const MEANINGFUL_INTERNAL_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED', 'DEPLETED', 'EXHAUSTED', 'DATA_DEPLETED', 'OUT_OF_DATA']
 
 /** Legacy/placeholder Choice user_id values that must never be sent upstream. */
 const CHOICE_USER_ID_PLACEHOLDERS = ['onesim', 'default', 'choice', 'unknown', 'n/a', 'na', 'none', 'null', 'undefined']

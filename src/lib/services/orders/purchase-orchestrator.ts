@@ -16,6 +16,7 @@ import { resolvePackageBacking } from './package-backing-resolver'
 import { enqueueJob } from '@/lib/services/jobs/queue'
 import type { CreateOrderParams, CreateOrderResult } from './create-order'
 import { enforcePurchasePriceGuard } from '@/lib/pricing/purchase-price-guard'
+import { createPurchaseTiming, type PurchaseTiming } from './purchase-timing'
 
 function trace(correlationId: string | undefined, stage: string, status: string, extra?: Record<string, any>) {
   if (!correlationId) return
@@ -138,6 +139,9 @@ export class PurchaseOrchestrator {
   async executePurchase(request: PurchaseRequest): Promise<PurchaseResult> {
     const { businessId, userId, packageId, sku, packageCode, quantity, customer, callbackUrl, idempotencyKey, travelDate, correlationId } = request
     trace(correlationId, 'VALIDATION', 'START', { packageId, quantity, businessId })
+
+    // Structured purchase timing (redaction-safe; instrumentation never throws).
+    let timing: PurchaseTiming | undefined
 
     try {
 
@@ -444,6 +448,9 @@ export class PurchaseOrchestrator {
     await transitionOrder(orderId, 'CREATED')
     publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.CREATED }).catch(() => {})
 
+    timing = createPurchaseTiming({ orderId, providerCode: provider.code, operation: 'purchase', correlationId })
+    timing.start('orderCreated')
+
     // Step 11: Reserve wallet
     const reserve = await reserveWalletFunds(orderId, businessId, totalAmount)
     if (!reserve.success) {
@@ -452,6 +459,7 @@ export class PurchaseOrchestrator {
       return this.fail('WALLET_RESERVE_FAILED', reserve.error || 'Wallet reserve failed', true)
     }
     trace(correlationId, 'WALLET_RESERVE', 'SUCCESS')
+    timing.start('walletReserved')
     await transitionOrder(orderId, 'PAYMENT_RESERVED')
     await createTimelineEvent(orderId, { eventType: 'WALLET_RESERVED', message: `Reserved $${totalAmount}` })
 
@@ -516,13 +524,24 @@ export class PurchaseOrchestrator {
         return this.fail('DISPATCH_ENQUEUE_FAILED', 'Unable to start purchase processing. Please try again.', true)
       }
       trace(correlationId, 'PROVIDER_DISPATCH', 'ENQUEUED', { orderId })
+      timing.end('walletReserved')
+      timing.start('dispatch')
+      timing.end('dispatch')
+      timing.complete('async')
       return { success: true, orderId, status: 'PROCESSING', unitCost: unitPrice, totalCost: totalAmount, quantity, currency: pkg.currency || 'USD' }
     }
 
-    return await this.runDispatch(ctx)
+    timing.start('dispatch')
+    const dispatchResult = await this.runDispatch(ctx, timing)
+    timing.end('dispatch')
+    timing.complete('sync')
+    return dispatchResult
     } catch (e: any) {
       console.error(`[BUSINESS_PURCHASE_TRACE] correlationId=${correlationId} stage=UNCAUGHT_EXCEPTION name=${e.name} message=${e.message} stack=${e.stack?.substring(0, 300)}`)
       trace(correlationId, 'ACTION_RESULT', 'FAILED', { publicCode: 'purchase_failed', exception: e.name })
+      // One sanitized completion event for the orchestrator-owned error boundary
+      // (safe if timing was created earlier; no-op otherwise).
+      timing?.complete('error')
       return this.fail('INTERNAL_ERROR', e.message || 'Internal error', false)
     }
   }
@@ -531,7 +550,7 @@ export class PurchaseOrchestrator {
    * Execute provider dispatch for a prepared purchase (order created + wallet
    * reserved). Runs inline (sync) or in a background job. Provider-neutral.
    */
-  async runDispatch(ctx: PurchaseDispatchContext): Promise<PurchaseResult> {
+  async runDispatch(ctx: PurchaseDispatchContext, timing?: PurchaseTiming): Promise<PurchaseResult> {
     const { orderId, businessId, userId, providerId, providerName, planId, quantity, subscriber, totalAmount, displayName, packageId, currency, customerId, rankedProviders, travelDate, unitPrice, correlationId } = ctx
 
     // ── Durable exactly-once dispatch guard ──────────────────────────────
@@ -574,6 +593,7 @@ export class PurchaseOrchestrator {
 
     for (let attemptNum = 1; attemptNum <= 3; attemptNum++) {
       const attemptProviderPackageId = ctx.providerPackageByProviderId[currentProviderId] ?? ctx.providerPackageId
+      timing?.start(`providerAttempt${attemptNum}`)
 
       const result = await executeProviderAttempt({
         orderId, businessId, providerId: currentProviderId, providerName: currentProviderName,
@@ -582,6 +602,7 @@ export class PurchaseOrchestrator {
         customerId, rankedProviders, policy: 'PREFERRED',
         travelDate, providerPackageId: attemptProviderPackageId,
       })
+      timing?.end(`providerAttempt${attemptNum}`)
 
       if (result.success && (result.status === 'SUCCEEDED' || result.status === 'ALREADY_COMPLETE')) {
         trace(correlationId, 'PROVIDER_ATTEMPT', 'SUCCESS', { providerName: currentProviderName, attemptNum })

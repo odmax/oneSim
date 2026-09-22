@@ -47,6 +47,18 @@ export const SUSPENDABLE_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING', 
 /** Statuses that rule out top-up entirely. */
 export const TERMINAL_TOP_UP_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED', 'REFUNDED']
 
+/**
+ * Canonical top-up status eligibility (independent of provider capability).
+ * Preserves the existing product rule (ACTIVE / PENDING_ACTIVATION / PENDING)
+ * and adds DEPLETED — an exhausted eSIM must remain able to be refilled when
+ * the provider supports top-up. Every other status stays blocked.
+ */
+export const TOP_UP_ELIGIBLE_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING', 'DEPLETED']
+
+export function isTopUpEligibleStatus(status?: string | null): boolean {
+  return TOP_UP_ELIGIBLE_STATUSES.includes(String(status || '').toUpperCase())
+}
+
 function trimOrEmpty(value?: string | null): string {
   return value && String(value).trim() ? String(value).trim() : ''
 }
@@ -91,6 +103,8 @@ export function getEsimStatusLabel(status: string | null | undefined): EsimStatu
       return { label: 'Provisioning', tone: 'warn' }
     case 'SUSPENDED':
       return { label: 'Suspended', tone: 'warn' }
+    case 'DEPLETED':
+      return { label: 'Depleted', tone: 'danger' }
     case 'EXPIRED':
       return { label: 'Expired', tone: 'danger' }
     case 'FAILED':

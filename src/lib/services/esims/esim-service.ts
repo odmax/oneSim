@@ -3,6 +3,7 @@ import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
 import { createTimelineEvent } from '@/lib/services/orders/order-state-machine'
 import type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
 import { buildChoiceStatusLookup, hasChoiceIdentifier, extractChoiceImsiVersion } from './choice-lookup'
+import { isTopUpEligibleStatus, TOP_UP_ELIGIBLE_STATUSES } from '@/lib/providers/capabilities/esim-action-availability'
 
 export { buildChoiceStatusLookup, extractChoiceImsiVersion } from './choice-lookup'
 export type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
@@ -213,7 +214,7 @@ export async function topUpEsimWithWallet(esimId: string, businessId: string, us
   if (!esim) return { success: false, error: 'eSIM not found' }
   if (esim.purchase.businessId !== businessId) return { success: false, error: 'eSIM does not belong to this business' }
 
-  const allowed = ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING']
+  const allowed = TOP_UP_ELIGIBLE_STATUSES
   if (!allowed.includes(esim.status)) return { success: false, error: 'eSIM status does not allow top-up' }
 
   const topUpPkg = await prisma.eSIMPackage.findUnique({ where: { id: topUpPackageId } })

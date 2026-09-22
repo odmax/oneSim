@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
 import { reserveTopUpFunds, captureTopUpFundsUpToInTx, releaseTopUpFundsUpTo } from './wallet-actions'
 import { createTimelineEvent } from './order-state-machine'
+import { TOP_UP_ELIGIBLE_STATUSES } from '@/lib/providers/capabilities/esim-action-availability'
 
 export interface TopUpOrderParams {
   businessId: string
@@ -97,7 +98,7 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
   if (!esim) return { success: false, error: 'eSIM not found', errorStatus: 404 }
   if (esim.purchase.businessId !== businessId) return { success: false, error: 'eSIM does not belong to this business', errorStatus: 403 }
 
-  const allowedStatuses = ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING']
+  const allowedStatuses = TOP_UP_ELIGIBLE_STATUSES
   if (!allowedStatuses.includes(esim.status)) {
     return { success: false, error: 'eSIM status does not allow top-up', errorStatus: 400 }
   }
