@@ -38,7 +38,12 @@ describe('sync-policy — success cadence vs failure backoff', () => {
     expect(shouldStopRetrying(4)).toBe(false)
     expect(shouldStopRetrying(2, 'AUTH_FAILED')).toBe(true)
     expect(shouldStopRetrying(2, 'NOT_SUPPORTED')).toBe(true)
-    expect(shouldStopRetrying(2, 'PROVIDER_UNAVAILABLE')).toBe(true)
+    // PROVIDER_UNAVAILABLE is a transient/upstream condition — it must retry
+    // with bounded backoff and stop only on budget exhaustion, never after one
+    // failure. AUTH_FAILED / NOT_SUPPORTED stop immediately.
+    expect(shouldStopRetrying(2, 'PROVIDER_UNAVAILABLE')).toBe(false)
+    expect(shouldStopRetrying(2, 'NETWORK_ERROR')).toBe(false)
     expect(shouldStopRetrying(2, 'TIMEOUT')).toBe(false)
+    expect(shouldStopRetrying(2, 'NOT_FOUND')).toBe(false)
   })
 })

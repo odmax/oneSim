@@ -376,7 +376,12 @@ export class PurchaseOrchestrator {
     const displayName = pkg.displayName || pkg.name
     const packageSnapshot = { packageId: pkg.id, sku: pkg.sku, packageCode: pkg.packageCode, displayName, customerDescription: pkg.customerDescription || null, dataGB: pkg.dataGB, validityDays: pkg.validityDays, priceUSD: unitPrice, localPrice: parseFloat(pkg.localPrice.toString()), currency: pkg.currency || 'USD', source: pkg.source, providerId: pkg.providerId, providerPlanId: pkg.providerPlanId || null, providerName: pkg.providerName || null, purchasedAt: new Date().toISOString() }
 
+    // Structured purchase timing (redaction-safe; contiguous non-overlapping
+    // durations). orderId is assigned below and read at emission time.
+    timing = createPurchaseTiming({ orderId: undefined, providerCode: provider.code, operation: 'purchase', correlationId })
+
     // Step 10: Create order — use quote atomic flow when quoteReference provided
+    timing.start('orderCreated')
     const quotesRequired = process.env.PRICING_QUOTES_REQUIRED === 'true'
     let orderId: string
     if (request.quoteReference) {
@@ -448,10 +453,11 @@ export class PurchaseOrchestrator {
     await transitionOrder(orderId, 'CREATED')
     publishOrderLifecycleEvent({ orderId, eventType: ORDER_LIFECYCLE_EVENTS.CREATED }).catch(() => {})
 
-    timing = createPurchaseTiming({ orderId, providerCode: provider.code, operation: 'purchase', correlationId })
-    timing.start('orderCreated')
+    timing.meta.orderId = orderId
+    timing.end('orderCreated')
 
     // Step 11: Reserve wallet
+    timing.start('walletReserved')
     const reserve = await reserveWalletFunds(orderId, businessId, totalAmount)
     if (!reserve.success) {
       await failOrder(orderId, `Wallet reserve failed: ${reserve.error}`)
@@ -459,7 +465,7 @@ export class PurchaseOrchestrator {
       return this.fail('WALLET_RESERVE_FAILED', reserve.error || 'Wallet reserve failed', true)
     }
     trace(correlationId, 'WALLET_RESERVE', 'SUCCESS')
-    timing.start('walletReserved')
+    timing.end('walletReserved')
     await transitionOrder(orderId, 'PAYMENT_RESERVED')
     await createTimelineEvent(orderId, { eventType: 'WALLET_RESERVED', message: `Reserved $${totalAmount}` })
 
@@ -524,7 +530,6 @@ export class PurchaseOrchestrator {
         return this.fail('DISPATCH_ENQUEUE_FAILED', 'Unable to start purchase processing. Please try again.', true)
       }
       trace(correlationId, 'PROVIDER_DISPATCH', 'ENQUEUED', { orderId })
-      timing.end('walletReserved')
       timing.start('dispatch')
       timing.end('dispatch')
       timing.complete('async')

@@ -66,11 +66,11 @@ export async function reconcileExhaustedActivationJob(payload: any): Promise<voi
   await reconcileActivationOrder(payload.orderId, 'Activation polling exhausted max attempts — provider may have accepted the purchase; reconciliation required')
 }
 
-export async function executeProviderOperation(payload: any): Promise<{ completed: boolean; error?: string }> {
+export async function executeProviderOperation(payload: any, jobMeta?: { jobId?: string; runAt?: Date }): Promise<{ completed: boolean; error?: string }> {
   // Enqueued purchase dispatch (async purchase flow) → provider-neutral executor.
   if (payload?.operation === 'purchase') {
     const { executePurchaseDispatch } = await import('./purchase-execution')
-    return executePurchaseDispatch(payload)
+    return executePurchaseDispatch(payload, jobMeta)
   }
 
   // ── Order-specific reconciliation ────────────────────────────────────

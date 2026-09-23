@@ -40,6 +40,21 @@ describe('purchase timing — structured elapsed-ms stages', () => {
     expect(e.stageMs.dispatch).toBe(25)
   })
 
+  it('stages are NON-OVERLAPPING durations that approximate totalMs (never cumulative checkpoints)', () => {
+    const { timing, events } = harness([0, 0, 20, 20, 35, 35, 50, 50])
+    timing.start('a'); timing.end('a')   // 20ms
+    timing.start('b'); timing.end('b')   // 15ms
+    timing.start('c'); timing.end('c')   // 15ms
+    timing.complete()
+    const e = events[0] as any
+    expect(e.stageMs.a).toBe(20)
+    expect(e.stageMs.b).toBe(15)
+    expect(e.stageMs.c).toBe(15)
+    const sum = e.stageMs.a + e.stageMs.b + e.stageMs.c
+    expect(sum).toBe(e.totalMs) // 50 == 50
+    expect(sum).toBeLessThanOrEqual(e.totalMs)
+  })
+
   it('emits exactly ONE structured completion event (no per-stage noise)', () => {
     const { timing, events } = harness([0, 0, 5, 5])
     timing.start('a'); timing.end('a'); timing.start('b'); timing.end('b')

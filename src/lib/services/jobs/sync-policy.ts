@@ -52,7 +52,41 @@ function retryBackoff(retryCount: number): number {
 }
 
 export function shouldStopRetrying(retryCount: number, lastErrorCode?: string): boolean {
+  // Budget exhaustion: never retry indefinitely.
   if (retryCount >= 5) return true
-  if (lastErrorCode && ['AUTH_FAILED', 'NOT_SUPPORTED', 'PROVIDER_UNAVAILABLE'].includes(lastErrorCode)) return true
+  // Immediate permanent stop ONLY for conditions that require administrative /
+  // provider-side correction or that the operation simply does not support.
+  // PROVIDER_UNAVAILABLE, NETWORK_ERROR, TIMEOUT, HTTP 429/5xx, NOT_FOUND etc.
+  // are NOT listed here — they use the bounded retry/backoff path and stop only
+  // when the retry budget above is exhausted.
+  if (lastErrorCode && ['AUTH_FAILED', 'NOT_SUPPORTED'].includes(lastErrorCode)) return true
   return false
+}
+
+/**
+ * Canonical RETRY vs STOP disposition for a failed automatic sync.
+ *
+ * RETRY → statusSyncRetryCount += 1 and a bounded-future nextSyncAt (backoff).
+ * STOP  → statusSyncRetryCount += 1 and nextSyncAt = null (the scheduler
+ *         exclusion marker: a null schedule is never selected and the backfill
+ *         only seeds rows that have NEVER failed, retryCount === 0, so a stopped
+ *         row never resurrects itself). A manual refresh resets retry state and
+ *         restores a normal schedule.
+ */
+export interface RetryDisposition {
+  nextRetryCount: number
+  stop: boolean
+  nextSyncAt: Date | null
+}
+
+export function nextStatusSyncDisposition(retryCount: number, lastErrorCode?: string): RetryDisposition {
+  const next = retryCount + 1
+  const stop = shouldStopRetrying(next, lastErrorCode)
+  return { nextRetryCount: next, stop, nextSyncAt: stop ? null : new Date(Date.now() + retryBackoff(next)) }
+}
+
+export function nextUsageSyncDisposition(retryCount: number): RetryDisposition {
+  const next = retryCount + 1
+  const stop = shouldStopRetrying(next)
+  return { nextRetryCount: next, stop, nextSyncAt: stop ? null : new Date(Date.now() + retryBackoff(next)) }
 }
