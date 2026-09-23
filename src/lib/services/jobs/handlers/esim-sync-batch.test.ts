@@ -18,7 +18,7 @@ vi.mock('../recurring-jobs', () => ({
 
 const { prisma } = await import('@/lib/prisma')
 const { buildConnectorFromProvider } = await import('@/lib/providers/connectors/connector-factory')
-const { executeStatusSynchronization, backfillEsimSyncSchedules } = await import('./esim-sync-batch')
+const { executeStatusSynchronization, executeUsageSynchronization, backfillEsimSyncSchedules } = await import('./esim-sync-batch')
 
 const mockPrisma = vi.mocked(prisma)
 const mockBuildConnector = vi.mocked(buildConnectorFromProvider)
@@ -392,5 +392,136 @@ describe('executeStatusSynchronization — null-schedule backfill runs inside th
     // then the due-batch selection runs
     expect(mockPrisma.eSIM.findMany).toHaveBeenCalled()
     expect(mockBuildConnector).not.toHaveBeenCalled()
+  })
+})
+
+describe('REFUNDED terminal exclusion — neither status nor usage sync can select a refunded eSIM', () => {
+  it('status batch selection excludes REFUNDED (and all terminal states)', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([])
+    await executeStatusSynchronization(10)
+    const statusSelection = mockPrisma.eSIM.findMany.mock.calls[0][0]
+    expect(statusSelection.where.status.notIn).toEqual(['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'])
+  })
+
+  it('usage batch selection only admits ACTIVE/INSTALLED/SUSPENDED (REFUNDED excluded)', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([])
+    await executeUsageSynchronization(10)
+    const usageSelection = mockPrisma.eSIM.findMany.mock.calls[0][0]
+    expect(usageSelection.where.status.in).toEqual(['ACTIVE', 'INSTALLED', 'SUSPENDED'])
+    expect(usageSelection.where.status.in).not.toContain('REFUNDED')
+  })
+
+  it('a REFUNDED row is never scheduled again by backfill (cleanup pass forces null schedules)', async () => {
+    await backfillEsimSyncSchedules()
+    const cleanupPass = mockPrisma.eSIM.updateMany.mock.calls[3][0]
+    expect(cleanupPass.where.status.in).toEqual(['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'])
+    expect(cleanupPass.data.statusNextSyncAt).toBeNull()
+  })
+})
+
+describe('SYNC_RETRY_EXHAUSTED — one deduplicated durable signal, no provider call at the stop guard', () => {
+  it('status pre-dispatch stop guard emits the alert with a MASKED ICCID and makes NO provider call', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ statusSyncRetryCount: 5, status: 'ACTIVE' })])
+    const connector = choiceConnector({ getStatus: vi.fn() })
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    const result = await executeStatusSynchronization(10)
+
+    expect(result.skipped).toBe(1)
+    expect(connector.getStatus).not.toHaveBeenCalled() // pre-dispatch guard never calls the provider
+    expect(mockPrisma.$executeRawUnsafe).toHaveBeenCalled()
+    const sql = String(mockPrisma.$executeRawUnsafe.mock.calls[0][0])
+    const alertArgs = mockPrisma.$executeRawUnsafe.mock.calls[0]
+    expect(alertArgs[2]).toBe('SYNC_RETRY_EXHAUSTED')
+    const alertMessage = alertArgs[4]
+    expect(alertMessage).toContain('status sync retries exhausted')
+    expect(alertMessage).toContain('8901••••4567') // masked ICCID
+    expect(alertMessage).not.toContain('89012345678901234567') // never full ICCID
+    // Identity uses the INTERNAL eSIM id (never an ICCID) + sync type.
+    expect(alertArgs[7]).toBe('ESIM')
+    expect(alertArgs[8]).toBe('esim-1')
+    expect(alertArgs[9]).toBe('status')
+    expect(sql).toContain('provider_alerts')
+  })
+
+  it('status failure custody stop emits the alert once the retry budget is exhausted', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ statusSyncRetryCount: 4, status: 'PENDING_ACTIVATION' })])
+    const connector = choiceConnector({ getStatus: vi.fn().mockResolvedValue({ success: false, error: { code: 'HTTP_500' } }) })
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    await executeStatusSynchronization(10)
+
+    expect(mockPrisma.$executeRawUnsafe).toHaveBeenCalled()
+    const alertArgs = mockPrisma.$executeRawUnsafe.mock.calls[0]
+    expect(alertArgs[2]).toBe('SYNC_RETRY_EXHAUSTED')
+    expect(alertArgs[7]).toBe('ESIM')
+    expect(alertArgs[8]).toBe('esim-1')
+    expect(alertArgs[9]).toBe('status')
+    // The stopped row persists a null schedule (never selected again).
+    const update = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(update.data.statusNextSyncAt).toBeNull()
+    expect(update.data.statusSyncRetryCount.increment).toBe(1)
+  })
+
+  it('usage pre-dispatch stop guard emits a usage-type exhausted alert without a provider call', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ usageSyncRetryCount: 5, status: 'ACTIVE' })])
+    const connector = choiceConnector({ getUsage: vi.fn() })
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    const result = await executeUsageSynchronization(10)
+
+    expect(result.skipped).toBe(1)
+    expect(connector.getUsage).not.toHaveBeenCalled()
+    expect(mockPrisma.$executeRawUnsafe).toHaveBeenCalled()
+    const alertArgs = mockPrisma.$executeRawUnsafe.mock.calls[0]
+    expect(alertArgs[2]).toBe('SYNC_RETRY_EXHAUSTED')
+    expect(alertArgs[4]).toContain('usage sync retries exhausted')
+    expect(alertArgs[7]).toBe('ESIM')
+    expect(alertArgs[8]).toBe('esim-1')
+    expect(alertArgs[9]).toBe('usage') // sync type keeps usage distinct from status
+  })
+
+  it('status and usage exhaustion for the same eSIM emit DISTINCT alerts (dedupKey differs)', async () => {
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ statusSyncRetryCount: 5, status: 'ACTIVE' })])
+    mockBuildConnector.mockResolvedValue(choiceConnector({ getUsage: vi.fn() }) as any)
+    await executeStatusSynchronization(10)
+    const statusArgs = mockPrisma.$executeRawUnsafe.mock.calls[0]
+
+    vi.clearAllMocks()
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ usageSyncRetryCount: 5, status: 'ACTIVE' })])
+    mockPrisma.$executeRawUnsafe.mockResolvedValue(1 as any)
+    mockBuildConnector.mockResolvedValue(choiceConnector({ getUsage: vi.fn() }) as any)
+    await executeUsageSynchronization(10)
+    const usageArgs = mockPrisma.$executeRawUnsafe.mock.calls[0]
+
+    expect(statusArgs.slice(7)).not.toEqual(usageArgs.slice(7))
+  })
+
+  it('an exhausted row that later syncs successfully resolves ONLY its own + sync-type alert', async () => {
+    // Status success after prior failures (retry > 0 but not yet stopped) →
+    // resolves (provider, ESIM, status).
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ statusSyncRetryCount: 3, status: 'PENDING_ACTIVATION' })])
+    mockBuildConnector.mockResolvedValue(choiceConnector({
+      getStatus: vi.fn().mockResolvedValue({ success: true, data: { status: 'PENDING_ACTIVATION', providerStatus: 'pending' } }),
+    }) as any)
+    await executeStatusSynchronization(10)
+    const resolveCall = mockPrisma.$executeRawUnsafe.mock.calls[0]
+    expect(String(resolveCall[0])).toContain('UPDATE provider_alerts')
+    expect(resolveCall[1]).toBe('p-1')
+    expect(resolveCall[2]).toBe('SYNC_RETRY_EXHAUSTED')
+    expect(resolveCall[4]).toBe('esim-1')
+    expect(resolveCall[5]).toBe('status')
+
+    // Usage recovery resolves its OWN dedupKey — never status.
+    vi.clearAllMocks()
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ usageSyncRetryCount: 3, status: 'ACTIVE' })])
+    mockPrisma.$executeRawUnsafe.mockResolvedValue(0 as any)
+    mockBuildConnector.mockResolvedValue(choiceConnector({
+      getUsage: vi.fn().mockResolvedValue({ success: true, data: { dataUsedMB: 10, dataTotalMB: 500, dataRemainingMB: 490 } }),
+    }) as any)
+    await executeUsageSynchronization(10)
+    const usageResolve = mockPrisma.$executeRawUnsafe.mock.calls[0]
+    expect(String(usageResolve[0])).toContain('UPDATE provider_alerts')
+    expect(usageResolve[5]).toBe('usage')
   })
 })

@@ -13,6 +13,12 @@ import {
   getRegionForCountry,
 } from '@/lib/analytics/filters'
 
+// Canonical "completed / revenue-earning" order statuses. Legacy rows may still
+// carry the historical "COMPLETED" alias, so it is retained for continuity;
+// all new orders use the canonical FULFILLED / PARTIALLY_FULFILLED states.
+const REVENUE_ORDER_STATUSES = ['FULFILLED', 'PARTIALLY_FULFILLED', 'COMPLETED']
+const REVENUE_ORDER_SQL = "('FULFILLED','PARTIALLY_FULFILLED','COMPLETED')"
+
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
@@ -22,8 +28,8 @@ export async function GET(req: NextRequest) {
   const searchParams = Object.fromEntries(req.nextUrl.searchParams.entries())
   const filters = parseFilters(searchParams as any)
 
-  const dateRange = computeDateRange(filters)
-  const purchaseWhere: any = { status: 'COMPLETED' }
+const dateRange = computeDateRange(filters)
+  const purchaseWhere: any = { status: { in: REVENUE_ORDER_STATUSES } }
   if (dateRange.from) purchaseWhere.createdAt = { ...purchaseWhere.createdAt, gte: dateRange.from }
   if (dateRange.to) purchaseWhere.createdAt = { ...purchaseWhere.createdAt, lte: dateRange.to }
   if (filters.businessId) purchaseWhere.businessId = filters.businessId
@@ -38,8 +44,8 @@ export async function GET(req: NextRequest) {
 
     Promise.all([
       prisma.eSIM.count({ where: { status: 'ACTIVE' } }),
-      prisma.eSIM.count({ where: { status: 'PENDING_ACTIVATION' } }),
-      prisma.eSIM.count({ where: { status: { in: ['FAILED', 'ACTIVATION_FAILED'] } } }),
+prisma.eSIM.count({ where: { status: 'PENDING_ACTIVATION' } }),
+      prisma.eSIM.count({ where: { status: 'FAILED' } }),
       prisma.eSIM.count(),
     ]),
 
@@ -50,7 +56,7 @@ export async function GET(req: NextRequest) {
       FROM "esim_purchases" p
       LEFT JOIN "esims" e ON e."purchaseId" = p."id"
       LEFT JOIN "customers" c ON c."id" = e."customerId"
-      WHERE p."status" = 'COMPLETED'
+      WHERE p."status" IN ${REVENUE_ORDER_SQL}
       GROUP BY c."country"
       ORDER BY COUNT(*) DESC
       LIMIT 50
@@ -60,8 +66,8 @@ export async function GET(req: NextRequest) {
       SELECT COALESCE(prov."name", pkg."providerName", 'CUSTOM') as provider_name,
         COUNT(DISTINCT pu."id") as orders,
         COALESCE(SUM(pu."totalAmount")::text, '0') as revenue,
-        COUNT(DISTINCT e."id") FILTER (WHERE e."status" = 'ACTIVE') as active,
-        COUNT(DISTINCT e."id") FILTER (WHERE e."status" IN ('FAILED','ACTIVATION_FAILED')) as failed
+COUNT(DISTINCT e."id") FILTER (WHERE e."status" = 'ACTIVE') as active,
+        COUNT(DISTINCT e."id") FILTER (WHERE e."status" = 'FAILED') as failed
       FROM "esim_purchases" pu
       JOIN "esim_packages" pkg ON pkg."id" = pu."packageId"
       LEFT JOIN "esims" e ON e."purchaseId" = pu."id"
@@ -78,7 +84,7 @@ export async function GET(req: NextRequest) {
         pkg."priceUSD"::text as retail_price,
         pkg."costPriceUSD"::text as cost_price
       FROM "esim_packages" pkg
-      LEFT JOIN "esim_purchases" pu ON pu."packageId" = pkg."id" AND pu."status" = 'COMPLETED'
+      LEFT JOIN "esim_purchases" pu ON pu."packageId" = pkg."id" AND pu."status" IN ${REVENUE_ORDER_SQL}
       GROUP BY pkg."id", pkg."name", pkg."priceUSD", pkg."costPriceUSD"
       HAVING COUNT(DISTINCT pu."id") > 0
       ORDER BY revenue DESC

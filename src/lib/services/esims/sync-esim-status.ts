@@ -2,7 +2,10 @@ import { prisma } from '@/lib/prisma'
 import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
 import { getStatusNextSync, getUsageNextSync } from '@/lib/services/jobs/sync-policy'
 import { capabilitySupported, resolveStatusLookup, buildProviderConnector } from '@/lib/services/esims/sync-lookup'
+import { resolveProviderAlert } from '@/lib/services/operations/provider-alerts'
 import type { StatusResultEvidence } from '@/lib/providers/connectors/connector-interface'
+
+const SYNC_RETRY_EXHAUSTED = 'SYNC_RETRY_EXHAUSTED' as const
 
 export interface SyncStatusResult {
   success: boolean
@@ -129,6 +132,11 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   }
 
   await prisma.eSIM.update({ where: { id: esimId }, data: updateData })
+
+  // A successful refresh is the authoritative recovery for an exhausted STATUS
+  // budget: close ONLY this eSIM's STATUS exhaustion. It must never resolve
+  // another eSIM's alert or this eSIM's USAGE exhaustion.
+  resolveProviderAlert(providerId, SYNC_RETRY_EXHAUSTED, { resourceType: 'ESIM', resourceId: esimId, dedupKey: 'status' })
 
   return {
     success: true,

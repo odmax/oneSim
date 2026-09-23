@@ -126,6 +126,7 @@ export async function POST(req: NextRequest, { params }: { params: { provider: s
   const event = await prisma.providerWebhookEvent.create({
     data: {
       providerType: providerCode,
+      providerId: provider.id,
       eventType: payload.event || payload.type || 'RECEIVED',
       externalEventId: eventId || null,
       iccid: payload.iccid || null,
@@ -145,11 +146,15 @@ export async function POST(req: NextRequest, { params }: { params: { provider: s
   const { normalizeProviderWebhook } = await import('@/lib/services/webhooks/provider-webhook-processor')
 
   const normalized = normalizeProviderWebhook(providerCode, payload)
+  // Provider statuses are case-insensitive across normalizers (Choice emits
+  // uppercase canonical values; iBASIS preserves provider lower-case). Compare
+  // on the uppercased value so every connector maps to the same disposition.
+  const normalizedStatus = String(normalized.providerStatus || '').toUpperCase()
   processProviderWebhook(provider.id, {
     eventId: computedId,
     eventType: normalized.eventType || 'RECEIVED',
-    status: normalized.providerStatus === 'active' || normalized.providerStatus === 'completed'
-      ? 'COMPLETED' : normalized.providerStatus === 'failed' || normalized.providerStatus === 'error'
+    status: normalizedStatus === 'ACTIVE' || normalizedStatus === 'COMPLETED'
+      ? 'COMPLETED' : normalizedStatus === 'FAILED' || normalizedStatus === 'ERROR' || normalizedStatus === 'REJECTED'
         ? 'FAILED' : 'PENDING' as any,
     // Map BOTH reference fields: providerReference carries the provider-side
     // reservation/fulfillment id; orderReference carries OUR internal orderId

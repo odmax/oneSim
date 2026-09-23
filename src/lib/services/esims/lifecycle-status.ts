@@ -35,11 +35,15 @@ export interface LifecycleResult {
  * Canonical provider-terminal lifecycle states. Once the canonical engine maps
  * a provider report into one of these, the eSIM must never be pulled back out by
  * a later weaker, unrecognized, or ambiguous report (e.g. an unverified ACTIVE
- * claim, a device-installed signal, a PENDING report, or an unknown value).
- * Legitimate recovery flows operate above this engine and rewrite the row
- * directly, so no in-engine exit is needed.
+ * claim, a device-installed signal, a PENDING report, an exhausted/usage report,
+ * or an unknown value). REFUNDED is terminal exactly like EXPIRED / FAILED /
+ * CANCELLED: a refunded eSIM is lifecycle-closed and must never be reactivated
+ * to DEPLETED, ACTIVE, INSTALLED or any other non-terminal state by provider
+ * status, usage synchronization, webhook processing or device-installed
+ * evidence. Legitimate recovery flows operate above this engine and rewrite the
+ * row directly, so no in-engine exit is needed.
  */
-const TERMINAL_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED']
+const TERMINAL_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED', 'REFUNDED']
 
 /** Lifecycle states backed by OneSIM's own device/activation evidence (or a
  *  provider suspension that has no legitimate silent exit). A weaker or

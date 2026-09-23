@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { upsertProviderAlert, resolveProviderAlert } from './provider-alerts'
+import { isProviderMonitored } from './provider-monitoring-policy'
 
 export type ProviderHealth = 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE' | 'RECOVERING' | 'UNKNOWN'
 
@@ -20,6 +21,82 @@ export interface HealthScore {
   activeAlerts: number
 }
 
+export interface LowBalanceThresholds {
+  /** ProviderWallet.lowBalanceThreshold — highest precedence. */
+  walletThreshold?: number | string | null
+  /** provider.config.lowBalanceThreshold — second precedence. */
+  configLowThreshold?: number | string | null
+  /** provider.config.balanceThreshold — third precedence. */
+  configBalanceThreshold?: number | string | null
+  /** ProviderWallet.currency — compatibility guard against comparing currencies. */
+  walletCurrency?: string | null
+}
+
+const BALANCE_SNAPSHOT_STALE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Deterministic LOW_PROVIDER_BALANCE evaluation.
+ *
+ * Threshold precedence (never inventing a default):
+ *   1. ProviderWallet.lowBalanceThreshold (when a provider-wallet row exists)
+ *   2. provider.config.lowBalanceThreshold
+ *   3. provider.config.balanceThreshold
+ *   4. none configured ⇒ no alert.
+ *
+ * Authoritative value: provider.config.balanceSnapshot with a numeric balance
+ * and success !== false, and not older than 24h. Missing/failed/stale data is
+ * NEVER treated as zero and never opens an alert. When a wallet currency and a
+ * snapshot currency are both known and differ, balances are not compared (the
+ * units are incompatible) so no alert opens.
+ */
+export function evaluateLowBalanceAlert(
+  balanceSnapshot: unknown,
+  thresholds: LowBalanceThresholds,
+): { alert: boolean; reason: string | null; thresholdSource: 'wallet' | 'configLow' | 'configBalance' | null } {
+  const snap = balanceSnapshot && typeof balanceSnapshot === 'object' ? balanceSnapshot as Record<string, unknown> : null
+  const rawBalance = snap?.balance
+  const balance =
+    typeof rawBalance === 'number'
+      ? (Number.isFinite(rawBalance) ? rawBalance : null)
+      : typeof rawBalance === 'string' && /^-?\d+(\.\d+)?$/.test(rawBalance.trim())
+        ? parseFloat(rawBalance)
+        : null
+
+  // Authoritative = numeric balance, provider fetch OK, and snapshot not stale.
+  const fetchedAt = snap?.fetchedAt
+  const fetchedMs = fetchedAt ? new Date(String(fetchedAt)).getTime() : NaN
+  const stale = Number.isFinite(fetchedMs) && Date.now() - fetchedMs > BALANCE_SNAPSHOT_STALE_MS
+  const authoritative = balance != null && snap?.success !== false && !stale
+
+  const resolveThreshold = (): { value: number; source: 'wallet' | 'configLow' | 'configBalance' } | null => {
+    const candidates: Array<[unknown, 'wallet' | 'configLow' | 'configBalance']> = [
+      [thresholds.walletThreshold, 'wallet'],
+      [thresholds.configLowThreshold, 'configLow'],
+      [thresholds.configBalanceThreshold, 'configBalance'],
+    ]
+    for (const [raw, source] of candidates) {
+      if (raw != null && Number.isFinite(Number(raw))) return { value: Number(raw), source }
+    }
+    return null
+  }
+  const threshold = resolveThreshold()
+  if (authoritative !== true) return { alert: false, reason: null, thresholdSource: threshold?.source ?? null }
+  if (!threshold) return { alert: false, reason: null, thresholdSource: null }
+
+  // Currency compatibility: never compare a ProviderWallet currency against a
+  // snapshot in a different currency.
+  const snapshotCurrency = snap?.currency ? String(snap.currency).toLowerCase() : null
+  const walletCurrency = thresholds.walletCurrency ? String(thresholds.walletCurrency).toLowerCase() : null
+  if (snapshotCurrency && walletCurrency && snapshotCurrency !== walletCurrency) {
+    return { alert: false, reason: null, thresholdSource: threshold.source }
+  }
+
+  if (balance! < threshold.value) {
+    return { alert: true, reason: `Balance ${balance} below threshold ${threshold.value}`, thresholdSource: threshold.source }
+  }
+  return { alert: false, reason: null, thresholdSource: threshold.source }
+}
+
 export async function computeProviderHealth(providerId: string): Promise<HealthScore> {
   const p = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!p) return healthZero()
@@ -30,7 +107,16 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
   const cfg = (p.config as any) || {}
   const caps = (p.enabledCapabilities || []) as string[]
   const reasons: string[] = []
-  const operational = ['ACTIVE', 'DEGRADED', 'TESTING'].includes(p.status)
+  const operational = isProviderMonitored(p.status)
+
+  // Non-operational providers (INACTIVE / MAINTENANCE / ARCHIVED) must never
+  // raise operational alerts: a disabled provider or one in planned maintenance
+  // has no credentials by design, its catalog is intentionally stale, and its
+  // failure windows are expected noise. For those providers every alert code is
+  // RESOLVED instead of upserted so stale alerts do not linger after a status
+  // change while no NEW signal is ever fabricated.
+  const alertOrResolve = (code: string, severity: 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL', message: string): Promise<void> =>
+    operational ? upsertProviderAlert(providerId, { code, severity, message }) : resolveProviderAlert(providerId, code)
 
   // 1. Auth (20 points)
   let authScore = 20
@@ -39,7 +125,7 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
   else if (p.lastFailedConnection && (!p.lastSuccessfulConnection || p.lastFailedConnection > p.lastSuccessfulConnection)) { authScore = 5; authReason = 'Recent auth failure' }
   else if (p.errorCount && p.errorCount > 5) { authScore = 10; authReason = `${p.errorCount} errors` }
 
-  if (authScore < 10) await upsertProviderAlert(providerId, { code: 'PROVIDER_AUTH_FAILED', severity: 'ERROR', message: authReason })
+  if (authScore < 10) await alertOrResolve('PROVIDER_AUTH_FAILED', 'ERROR', authReason)
   else await resolveProviderAlert(providerId, 'PROVIDER_AUTH_FAILED')
 
   // 2. Purchase success (25 points)
@@ -49,7 +135,10 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
   })
   const last1h = recentAttempts.filter(a => a.startedAt >= h1)
   const succ = recentAttempts.filter(a => a.status === 'SUCCEEDED').length
-  const fail = recentAttempts.filter(a => a.status === 'FAILED').length
+  // Permanent failures only: transient RETRYABLE failures are expected noise on
+  // the way to the bounded retry budget and must not trip a permanent-failure
+  // alert. Legacy rows without a classification are treated as permanent.
+  const fail = recentAttempts.filter(a => a.status === 'FAILED' && a.retryClassification !== 'RETRYABLE').length
   const total = recentAttempts.length
   const failureRate = total > 0 ? fail / total : 0
   let purchaseScore = 25
@@ -57,7 +146,7 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
   if (failureRate > 0.5) { purchaseScore = 8; purchaseReason = `${Math.round(failureRate * 100)}% failure rate` }
   else if (failureRate > 0.2) { purchaseScore = 16; purchaseReason = `${Math.round(failureRate * 100)}% failure rate` }
 
-  if (failureRate > 0.3 && total >= 5) await upsertProviderAlert(providerId, { code: 'PROVIDER_HIGH_FAILURE_RATE', severity: 'ERROR', message: `${Math.round(failureRate * 100)}% (${fail}/${total})` })
+  if (failureRate > 0.3 && total >= 5) await alertOrResolve('PROVIDER_HIGH_FAILURE_RATE', 'ERROR', `${Math.round(failureRate * 100)}% (${fail}/${total})`)
   else await resolveProviderAlert(providerId, 'PROVIDER_HIGH_FAILURE_RATE')
 
   // 3. API availability (15 points) — with latency check
@@ -79,7 +168,7 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
   const latencyTrigger = cfg.latencyTriggerMs || 3000
   const latencyRecover = cfg.latencyRecoverMs || 2000
   if (apiTotal >= 5 && avgLatency > latencyTrigger) {
-    await upsertProviderAlert(providerId, { code: 'PROVIDER_HIGH_LATENCY', severity: 'WARNING', message: `Avg ${avgLatency}ms (threshold ${latencyTrigger}ms)` })
+    await alertOrResolve('PROVIDER_HIGH_LATENCY', 'WARNING', `Avg ${avgLatency}ms (threshold ${latencyTrigger}ms)`)
     if (apiScore > 10) apiScore = Math.max(8, apiScore - 3)
   } else if (avgLatency > 0 && avgLatency <= latencyRecover) {
     await resolveProviderAlert(providerId, 'PROVIDER_HIGH_LATENCY')
@@ -93,7 +182,7 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
   if (circuitState === 'OPEN') { circuitScore = 0; reasons.push('Circuit breaker OPEN') }
   else if (circuitState === 'HALF_OPEN') { circuitScore = 5 }
 
-  if (circuitState === 'OPEN') await upsertProviderAlert(providerId, { code: 'CIRCUIT_OPEN', severity: 'CRITICAL', message: 'Circuit breaker is OPEN' })
+  if (circuitState === 'OPEN') await alertOrResolve('CIRCUIT_OPEN', 'CRITICAL', 'Circuit breaker is OPEN')
   else await resolveProviderAlert(providerId, 'CIRCUIT_OPEN')
 
   // 5. Catalog (10 points)
@@ -104,11 +193,11 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
   else if (staleHours > 48) { catalogScore = 3; reasons.push('Catalog stale >2 days') }
   else if (staleHours > 24) { catalogScore = 6; reasons.push('Catalog stale >1 day') }
 
-  if (staleHours > 48) await upsertProviderAlert(providerId, { code: 'CATALOG_STALE', severity: 'WARNING', message: `Last sync: ${p.lastSyncAt?.toISOString().slice(0, 10) || 'never'}` })
+  if (staleHours > 48) await alertOrResolve('CATALOG_STALE', 'WARNING', `Last sync: ${p.lastSyncAt?.toISOString().slice(0, 10) || 'never'}`)
   else await resolveProviderAlert(providerId, 'CATALOG_STALE')
 
   // 6. Balance/Inventory (10 points) — extended
-  const balance = cfg.balanceSnapshot || {}
+  const balanceSnap = cfg.balanceSnapshot || {}
   let balanceScore = 10
   let balanceReason = 'OK'
 
@@ -123,24 +212,49 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
       `SELECT COUNT(*)::int FROM esims e JOIN esim_purchases ep ON e."purchaseId"=ep.id JOIN esim_packages pk ON ep."packageId"=pk.id WHERE pk."providerId"=$1 AND e.status NOT IN ('EXPIRED','CANCELLED','REFUNDED')`, providerId
     ).catch(() => [{ count: 0 }])
     const avail = availableInventory[0]?.count || 0
-    if (avail === 0) { balanceScore = 0; balanceReason = 'Inventory exhausted'; await upsertProviderAlert(providerId, { code: 'INVENTORY_EXHAUSTED', severity: 'CRITICAL', message: 'No SIM inventory available' }) }
-    else if (avail < 5) { balanceScore = 3; balanceReason = `Low inventory (${avail})`; await upsertProviderAlert(providerId, { code: 'INVENTORY_LOW', severity: 'WARNING', message: `Only ${avail} SIMs available` }) }
+    if (avail === 0) { balanceScore = 0; balanceReason = 'Inventory exhausted'; await alertOrResolve('INVENTORY_EXHAUSTED', 'CRITICAL', 'No SIM inventory available') }
+    else if (avail < 5) { balanceScore = 3; balanceReason = `Low inventory (${avail})`; await alertOrResolve('INVENTORY_LOW', 'WARNING', `Only ${avail} SIMs available`) }
     else { await resolveProviderAlert(providerId, 'INVENTORY_EXHAUSTED'); await resolveProviderAlert(providerId, 'INVENTORY_LOW') }
-  } else if (balance.latestError) {
-    balanceScore = 3; balanceReason = balance.latestError?.substring(0, 60)
-    await upsertProviderAlert(providerId, { code: 'LOW_PROVIDER_BALANCE', severity: 'WARNING', message: balanceReason })
-  } else if (!balance.balance && caps.includes('BALANCE')) {
-    balanceScore = 5; balanceReason = 'Unknown'
   } else {
-    await resolveProviderAlert(providerId, 'LOW_PROVIDER_BALANCE')
+    // Authoritative provider balance snapshot (provider.config.balanceSnapshot
+    // written by provider-balance.ts) + deterministic threshold precedence:
+    // ProviderWallet.lowBalanceThreshold > config.lowBalanceThreshold >
+    // config.balanceThreshold. Missing/failed/stale data is never zero and no
+    // default threshold is invented. The wallet lookup is keyed by this provider
+    // only — provider/account isolation preserved. NO provider call is made.
+    const wallet = await prisma.providerWallet.findUnique({ where: { providerId } }).catch(() => null)
+    const lowBalance = evaluateLowBalanceAlert(balanceSnap, {
+      walletThreshold: wallet?.lowBalanceThreshold ?? null,
+      configLowThreshold: cfg.lowBalanceThreshold,
+      configBalanceThreshold: cfg.balanceThreshold,
+      walletCurrency: wallet?.currency ?? null,
+    })
+    if (lowBalance.alert) {
+      balanceScore = 3
+      balanceReason = lowBalance.reason!
+      await alertOrResolve('LOW_PROVIDER_BALANCE', 'WARNING', lowBalance.reason!)
+    } else {
+      await resolveProviderAlert(providerId, 'LOW_PROVIDER_BALANCE')
+      if (balanceSnap?.balance == null && caps.includes('BALANCE')) {
+        balanceScore = 5; balanceReason = 'Unknown'
+      }
+    }
   }
 
-  // 7. Webhook/sync (10 points)
-  const webhookFails = await prisma.providerWebhookEvent.count({ where: { providerId, status: 'FAILED' } }).catch(() => 0)
+  // 7. Webhook/sync (10 points) — bounded unresolved/retry backlog, NOT an
+  // all-time cumulative failure count. A backlog is provider events from the
+  // last 24h that are still unprocessed (RECEIVED) or errored (FAILED).
+  const webhookBacklog = await prisma.providerWebhookEvent.count({
+    where: {
+      providerId,
+      receivedAt: { gte: new Date(now.getTime() - 86400000) },
+      status: { in: ['RECEIVED', 'FAILED'] },
+    },
+  }).catch(() => 0)
   let webhookScore = 10
   let webhookReason = 'OK'
-  if (webhookFails > 10) { webhookScore = 3; webhookReason = `${webhookFails} failures`; await upsertProviderAlert(providerId, { code: 'WEBHOOK_BACKLOG', severity: 'WARNING', message: `${webhookFails} webhook failures` }) }
-  else if (webhookFails > 0) { webhookScore = 6; webhookReason = `${webhookFails} failures` }
+  if (webhookBacklog > 10) { webhookScore = 3; webhookReason = `${webhookBacklog} unresolved`; await alertOrResolve('WEBHOOK_BACKLOG', 'WARNING', `${webhookBacklog} unresolved webhook events in last 24h`) }
+  else if (webhookBacklog > 0) { webhookScore = 6; webhookReason = `${webhookBacklog} unresolved` }
   else { await resolveProviderAlert(providerId, 'WEBHOOK_BACKLOG') }
 
   // Stuck orders detection
@@ -153,17 +267,17 @@ export async function computeProviderHealth(providerId: string): Promise<HealthS
   }).catch(() => 0)
 
   const reconciling = await prisma.eSIMPurchase.count({
-    where: { package: { providerId }, status: 'RECONCILIATION_REQUIRED' },
+    where: { package: { providerId }, status: 'PROVIDER_RECONCILIATION' },
   }).catch(() => 0)
 
   if (stuckOrders > 0) {
     reasons.push(`${stuckOrders} stuck orders`)
-    await upsertProviderAlert(providerId, { code: 'STUCK_ORDER', severity: 'WARNING', message: `${stuckOrders} orders stuck > 10 min` })
+    await alertOrResolve('STUCK_ORDER', 'WARNING', `${stuckOrders} orders stuck > 10 min`)
   } else { await resolveProviderAlert(providerId, 'STUCK_ORDER') }
 
   if (reconciling > 0) {
     reasons.push(`${reconciling} reconciling orders`)
-    await upsertProviderAlert(providerId, { code: 'RECONCILIATION_BACKLOG', severity: 'WARNING', message: `${reconciling} orders need reconciliation` })
+    await alertOrResolve('RECONCILIATION_BACKLOG', 'WARNING', `${reconciling} orders need reconciliation`)
   } else { await resolveProviderAlert(providerId, 'RECONCILIATION_BACKLOG') }
 
   const healthTotal = authScore + purchaseScore + apiScore + circuitScore + catalogScore + balanceScore + webhookScore

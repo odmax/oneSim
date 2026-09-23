@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { deriveUsageMetrics } from '@/lib/esim/usage-metrics'
+import { adminEsimStatusBadge } from '@/lib/status-badges'
 
 export default async function AdminEsimUsagePage({ params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions)
@@ -42,7 +43,7 @@ export default async function AdminEsimUsagePage({ params }: { params: { id: str
             <dl className="space-y-3 text-sm">
               <div className="flex justify-between"><dt className="text-gray-500">Business</dt><dd className="font-medium text-gray-900">{esim.purchase.business.name}</dd></div>
               <div className="flex justify-between"><dt className="text-gray-500">Package</dt><dd className="font-medium text-gray-900">{esim.packageName || esim.purchase.package.name}</dd></div>
-              <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className="inline-flex rounded-full px-2 py-0.5 text-xs font-semibold bg-green-100 text-green-800">{esim.status}</span></dd></div>
+              <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${adminEsimStatusBadge(esim.status).className}`}>{adminEsimStatusBadge(esim.status).label}</span></dd></div>
               <div className="flex justify-between"><dt className="text-gray-500">Total Data</dt><dd className="font-medium text-gray-900">{current.total > 0 ? `${(current.total / 1024).toFixed(2)} GB` : '—'}</dd></div>
               <div className="flex justify-between"><dt className="text-gray-500">Data Used</dt><dd className="font-medium text-gray-900">{(current.used / 1024).toFixed(2)} GB</dd></div>
               <div className="flex justify-between"><dt className="text-gray-500">Data Remaining</dt><dd className={`font-medium ${current.remaining > 0 ? 'text-emerald-600' : 'text-red-600'}`}>{Math.max(0, current.remaining / 1024).toFixed(2)} GB</dd></div>

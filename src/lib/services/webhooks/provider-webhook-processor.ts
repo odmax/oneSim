@@ -206,6 +206,16 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
         break
       }
 
+      case 'PROVIDER_ERROR': {
+        // A provider-declared failure is NOT an authoritative canonical status:
+        // it may be transient and the eSIM row can hold stronger evidence. Never
+        // write FAILED from the event name — record the event as IGNORED with a
+        // durable reason and preserve the canonical status unchanged.
+        updateData.status = 'IGNORED'
+        updateData.errorMessage = 'Provider error event — canonical eSIM status preserved'
+        break
+      }
+
       default: {
         updateData.status = 'IGNORED'
         updateData.errorMessage = 'Unrecognized event type'
@@ -213,12 +223,13 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
       }
     }
 
+    const finalStatus = updateData.status || 'PROCESSED'
     await prisma.providerWebhookEvent.update({
       where: { id: eventId },
-      data: { ...updateData, status: 'PROCESSED', processedAt: now, esimId, businessId },
+      data: { ...updateData, status: finalStatus, processedAt: now, esimId, businessId },
     })
 
-    return { success: true, status: 'PROCESSED' }
+    return { success: true, status: finalStatus }
   } catch (error: any) {
     await prisma.providerWebhookEvent.update({
       where: { id: eventId },
@@ -242,9 +253,18 @@ export async function receiveProviderWebhook(providerType: string, payload: any)
     }
   }
 
+  // Persist the provider association (when resolvable by code) so provider-scoped
+  // operational alerts (e.g. WEBHOOK_BACKLOG) can measure this provider's events.
+  let providerId: string | null = null
+  try {
+    const provider = await prisma.provider.findFirst({ where: { code: providerType.toUpperCase() }, select: { id: true } })
+    providerId = provider?.id || null
+  } catch {}
+
   const event = await prisma.providerWebhookEvent.create({
     data: {
       providerType: providerType.toUpperCase(),
+      providerId,
       eventType: normalized.eventType,
       externalEventId: normalized.externalEventId || null,
       iccid: normalized.iccid || null,

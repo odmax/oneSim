@@ -1,5 +1,6 @@
 import { providerSupports, type CapabilityProvider } from './registry'
 import { buildChoiceStatusLookup, hasChoiceIdentifier } from '@/lib/services/esims/choice-lookup'
+import { ESIM_STATUS_META } from '@/lib/status-constants'
 
 export interface EsimActionState {
   visible: boolean
@@ -89,33 +90,17 @@ export interface EsimStatusLabel {
  * as ACTIVE — it maps to its own "ready to install" state.
  * ACTIVE means "Active" (not "Activated on device" — device activation requires
  * explicit evidence per deriveEsimLifecycleStatus).
+ *
+ * Labels/tones come from the shared ESIM_STATUS_META so the UI helper and the
+ * API/OpenAPI contracts never drift. Every canonical status has a stable label
+ * and tone — only a truly empty value falls back to "Unknown".
  */
 export function getEsimStatusLabel(status: string | null | undefined): EsimStatusLabel {
   const s = status || ''
-  switch (s.toUpperCase()) {
-    case 'ACTIVE':
-      return { label: 'Active', tone: 'success' }
-    case 'PENDING_ACTIVATION':
-      return { label: 'Ready to install', tone: 'warn' }
-    case 'INSTALLED':
-      return { label: 'Installed on device', tone: 'success' }
-    case 'PENDING':
-      return { label: 'Provisioning', tone: 'warn' }
-    case 'SUSPENDED':
-      return { label: 'Suspended', tone: 'warn' }
-    case 'DEPLETED':
-      return { label: 'Depleted', tone: 'danger' }
-    case 'EXPIRED':
-      return { label: 'Expired', tone: 'danger' }
-    case 'FAILED':
-      return { label: 'Failed', tone: 'danger' }
-    case 'CANCELLED':
-      return { label: 'Cancelled', tone: 'danger' }
-    case 'REFUNDED':
-      return { label: 'Refunded', tone: 'danger' }
-    default:
-      return { label: s || 'Unknown', tone: 'neutral' }
-  }
+  const key = s.toUpperCase()
+  const meta = ESIM_STATUS_META[key]
+  if (meta) return { label: meta.label, tone: meta.tone }
+  return { label: s || 'Unknown', tone: 'neutral' }
 }
 
 /**

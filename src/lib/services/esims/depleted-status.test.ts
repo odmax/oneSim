@@ -81,6 +81,20 @@ describe('deriveDepletionStatus — canonical provider-neutral rule', () => {
   })
 })
 
+describe('REFUNDED terminal precedence in depletion derivation', () => {
+  it('REFUNDED + remaining data zero remains REFUNDED (never DEPLETED)', () => {
+    expect(deriveDepletionStatus('REFUNDED', { dataRemainingMB: 0, snapshotValid: true })).toBeNull()
+  })
+
+  it('REFUNDED + explicit exhausted provider status remains REFUNDED (never DEPLETED)', () => {
+    expect(deriveDepletionStatus('REFUNDED', { providerExhausted: true })).toBeNull()
+  })
+
+  it('REFUNDED + remaining data positive remains REFUNDED (never ACTIVE/replenished)', () => {
+    expect(deriveDepletionStatus('REFUNDED', { dataRemainingMB: 512, snapshotValid: true })).toBeNull()
+  })
+})
+
 describe('presentation and eligibility', () => {
   it('12: UI status label returns "Depleted" with danger tone', () => {
     expect(getEsimStatusLabel('DEPLETED')).toEqual({ label: 'Depleted', tone: 'danger' })

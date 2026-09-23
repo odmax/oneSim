@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import crypto from 'crypto'
 import { enqueueJob } from '@/lib/services/jobs/queue'
+import { maskIccid } from '@/lib/providers/mappers/ibasis-sim-mapper'
 
 function generateDeliveryId(): string {
   return 'del_' + crypto.randomBytes(16).toString('hex')
@@ -161,6 +162,35 @@ export async function sendWebhook(
   return { delivered: results.length, results }
 }
 
+/**
+ * Builds the legacy webhook payload with MASKED ICCIDs. This channel is
+ * superseded by src/lib/services/business-webhooks/dispatcher.ts (which delivers
+ * caller-supplied data to the buying business). It remains compatible with the
+ * wire shape (event/timestamp/data) but no longer leaks full eSIM identifiers.
+ */
+export function buildPurchaseWebhookPayload(
+  eventType: WebhookEvent,
+  purchase: any,
+  extraPayload: Record<string, any> = {},
+): Record<string, any> {
+  return {
+    event: eventType,
+    timestamp: new Date().toISOString(),
+    data: {
+      orderId: purchase.id,
+      status: purchase.status,
+      packageName: purchase.package.name,
+      quantity: purchase.quantity,
+      totalAmount: purchase.totalAmount.toString(),
+      esims: purchase.esims.map((e: any) => ({
+        iccid: maskIccid(e.iccid),
+        status: e.status,
+      })),
+      ...extraPayload,
+    },
+  }
+}
+
 export async function sendWebhookForPurchase(
   eventType: WebhookEvent,
   purchaseId: string,
@@ -177,22 +207,7 @@ export async function sendWebhookForPurchase(
 
   if (!purchase) return
 
-  const payload: Record<string, any> = {
-    event: eventType,
-    timestamp: new Date().toISOString(),
-    data: {
-      orderId: purchase.id,
-      status: purchase.status,
-      packageName: purchase.package.name,
-      quantity: purchase.quantity,
-      totalAmount: purchase.totalAmount.toString(),
-      esims: purchase.esims.map((e) => ({
-        iccid: e.iccid,
-        status: e.status,
-      })),
-      ...extraPayload,
-    },
-  }
+  const payload = buildPurchaseWebhookPayload(eventType, purchase, extraPayload)
 
   // Send to configured webhook endpoints
   await sendWebhook(eventType, purchase.business.id, payload)

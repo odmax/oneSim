@@ -4,6 +4,7 @@ import { claimEsimForSync } from '../recurring-jobs'
 import type { IProviderConnector } from '@/lib/providers/connectors/connector-interface'
 import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
 import { capabilitySupported, resolveStatusLookup, resolveUsageLookup, buildProviderConnector, mergeProviderPackageEsimId, isUsageLookupSkip, type SyncLookupEsim } from '@/lib/services/esims/sync-lookup'
+import { upsertProviderAlert, resolveProviderAlert } from '@/lib/services/operations/provider-alerts'
 
 async function getConnector(providerId: string): Promise<IProviderConnector | null> {
   return buildProviderConnector(providerId)
@@ -12,6 +13,30 @@ async function getConnector(providerId: string): Promise<IProviderConnector | nu
 function maskIccid(iccid: string | null | undefined): string {
   if (!iccid) return ''
   return iccid.length <= 8 ? '****' : `${iccid.slice(0, 4)}••••${iccid.slice(-4)}`
+}
+
+const SYNC_RETRY_EXHAUSTED = 'SYNC_RETRY_EXHAUSTED' as const
+
+/**
+ * One deduplicated durable operational signal when an eSIM's automatic sync
+ * retry budget is exhausted. Scoped to (provider, eSIM identity, sync type) so
+ * status/usage and different eSIMs never merge, and one eSIM's recovery never
+ * clears another's. resourceId is the INTERNAL eSIM id; only a masked ICCID
+ * appears in the human-readable message.
+ */
+function emitSyncExhaustedAlert(providerId: string | undefined | null, syncType: 'status' | 'usage', esimId: string, iccid: string | null | undefined): void {
+  if (!providerId) return
+  upsertProviderAlert(providerId, {
+    code: SYNC_RETRY_EXHAUSTED,
+    severity: 'WARNING',
+    message: `${syncType} sync retries exhausted for eSIM ${maskIccid(iccid)}`,
+  }, { resourceType: 'ESIM', resourceId: esimId, dedupKey: syncType })
+}
+
+/** Resolve ONLY this eSIM's + sync-type exhaustion on a successful authoritative refresh. */
+function resolveSyncExhaustedAlert(providerId: string | undefined | null, syncType: 'status' | 'usage', esimId: string): void {
+  if (!providerId) return
+  resolveProviderAlert(providerId, SYNC_RETRY_EXHAUSTED, { resourceType: 'ESIM', resourceId: esimId, dedupKey: syncType })
 }
 
 /** Backfill null sync schedules for existing eSIMs. Idempotent.
@@ -73,6 +98,9 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
     if (shouldStopRetrying(esim.statusSyncRetryCount)) {
       console.log(`[ESIM_STATUS_SYNC_STOPPED] providerId=${esim.purchase?.package?.providerId ?? '?'} esimId=${esim.id} retryCount=${esim.statusSyncRetryCount}`)
       await prisma.eSIM.update({ where: { id: esim.id }, data: { statusNextSyncAt: null, lastStatusSyncAt: new Date() } })
+      // One durable operational signal per provider+eSIM+sync type (deduplicated);
+      // never a provider call at this guard.
+      emitSyncExhaustedAlert(esim.purchase?.package?.providerId, 'status', esim.id, esim.iccid)
       skipped++
       continue
     }
@@ -152,11 +180,15 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
           }
         }
         await prisma.eSIM.update({ where: { id: esim.id }, data: updateData })
+        // Authoritative success closes this eSIM's STATUS exhaustion only (when
+        // it had previously been in retry — otherwise there is nothing to close).
+        if (esim.statusSyncRetryCount > 0) resolveSyncExhaustedAlert(providerId, 'status', esim.id)
         updated++
       } else {
         const errCode = result.error?.code || 'UNKNOWN'
         const disp = nextStatusSyncDisposition(esim.statusSyncRetryCount, errCode)
         console.log(`[ESIM_STATUS_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=${errCode} retryCount=${disp.nextRetryCount} stopRetrying=${disp.stop}`)
+        if (disp.stop) emitSyncExhaustedAlert(providerId, 'status', esim.id, esim.iccid)
         await prisma.eSIM.update({
           where: { id: esim.id },
           data: {
@@ -170,6 +202,7 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
     } catch (e: any) {
       const disp = nextStatusSyncDisposition(esim.statusSyncRetryCount, 'THROWN')
       console.log(`[ESIM_STATUS_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=THROWN retryCount=${disp.nextRetryCount} stopRetrying=${disp.stop}`)
+      if (disp.stop) emitSyncExhaustedAlert(providerId, 'status', esim.id, esim.iccid)
       await prisma.eSIM.update({ where: { id: esim.id }, data: { statusSyncRetryCount: { increment: 1 }, lastStatusSyncAt: new Date(), statusNextSyncAt: disp.nextSyncAt } })
       failed++
     }
@@ -201,6 +234,9 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
     if (shouldStopRetrying(esim.usageSyncRetryCount)) {
       console.log(`[ESIM_USAGE_SYNC_STOPPED] providerId=${esim.purchase?.package?.providerId ?? '?'} esimId=${esim.id} retryCount=${esim.usageSyncRetryCount}`)
       await prisma.eSIM.update({ where: { id: esim.id }, data: { usageNextSyncAt: null, lastUsageSyncAt: new Date() } })
+      // Usage exhaustion is covered by the same deduplicated operational alert,
+      // scoped to (provider, eSIM, usage) so it never merges with status.
+      emitSyncExhaustedAlert(esim.purchase?.package?.providerId, 'usage', esim.id, esim.iccid)
       skipped++
       continue
     }
@@ -257,6 +293,8 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
         // overwriting existing providerResponse keys (fast path next time).
         if (mergedProviderResponse) updateData.providerResponse = mergedProviderResponse
         await prisma.eSIM.update({ where: { id: esim.id }, data: updateData })
+        // Authoritative usage success closes this eSIM's USAGE exhaustion only.
+        if (esim.usageSyncRetryCount > 0) resolveSyncExhaustedAlert(providerId, 'usage', esim.id)
         updated++
       } else if (isUsageLookupSkip(result.error?.code)) {
         // No safe usage identifier (no/ambiguous association) → clean skip,
@@ -267,6 +305,7 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
       } else {
         const disp = nextUsageSyncDisposition(esim.usageSyncRetryCount)
         console.log(`[ESIM_USAGE_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=${result.error?.code || 'UNKNOWN'} retryCount=${disp.nextRetryCount} stopRetrying=${disp.stop}`)
+        if (disp.stop) emitSyncExhaustedAlert(providerId, 'usage', esim.id, esim.iccid)
         await prisma.eSIM.update({
           where: { id: esim.id },
           data: {
@@ -280,6 +319,7 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
     } catch (e: any) {
       const disp = nextUsageSyncDisposition(esim.usageSyncRetryCount)
       console.log(`[ESIM_USAGE_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=THROWN retryCount=${disp.nextRetryCount} stopRetrying=${disp.stop}`)
+      if (disp.stop) emitSyncExhaustedAlert(providerId, 'usage', esim.id, esim.iccid)
       await prisma.eSIM.update({ where: { id: esim.id }, data: { usageSyncRetryCount: { increment: 1 }, lastUsageSyncAt: new Date(), usageNextSyncAt: disp.nextSyncAt } })
       failed++
     }

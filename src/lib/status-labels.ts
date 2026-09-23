@@ -30,6 +30,9 @@ export const ORDER_STATUS_LABELS: Record<string, StatusLabelStyle> = {
   REFUNDED: { label: 'Refunded', dot: 'bg-rose-400', bg: 'bg-rose-50 text-rose-600' },
   PROVIDER_RECONCILIATION: { label: 'Reconciling', dot: 'bg-purple-400', bg: 'bg-purple-50 text-purple-700' },
   PARTIALLY_FULFILLED: { label: 'Partial', dot: 'bg-orange-400', bg: 'bg-orange-50 text-orange-700' },
+  // Transient async-response and legacy order statuses the API can surface.
+  PROCESSING: { label: 'Processing', dot: 'bg-blue-400', bg: 'bg-blue-50 text-blue-600' },
+  PENDING: { label: 'Pending', dot: 'bg-gray-400', bg: 'bg-gray-50 text-gray-600' },
 }
 
 export function orderStatusLabel(status: string): StatusLabelStyle {

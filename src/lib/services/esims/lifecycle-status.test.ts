@@ -580,20 +580,57 @@ describe('deriveEsimLifecycleStatus — Phase 1 hardening transition matrix', ()
     expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ONLINE', currentStatus: 'CANCELLED', providerInstalledSignal: true })).status).toBe('CANCELLED')
   })
 
-  // ── REFUNDED (money/business state — not lifecycle-sticky; semantics unchanged)
-  it('92. REFUNDED + unknown provider value → PENDING_ACTIVATION (characterized, unchanged)', () => {
+  // ── REFUNDED (canonical terminal — never resurrected) ────
+  it('92. REFUNDED + unknown provider value preserves REFUNDED', () => {
     const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'UNKNOWN_STATE', currentStatus: 'REFUNDED' }))
-    expect(r.status).toBe('PENDING_ACTIVATION')
-    expect(r.reason).toBe('unknown-provider-fallback')
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
   })
 
-  it('93. REFUNDED + ACTIVE without evidence → PENDING_ACTIVATION (characterized, unchanged)', () => {
+  it('93. REFUNDED + ACTIVE (with or without evidence) preserves REFUNDED', () => {
     const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ACTIVE', currentStatus: 'REFUNDED', dataUsedMB: 0, activatedAt: null }))
-    expect(r.status).toBe('PENDING_ACTIVATION')
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
+    const withEvidence = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ACTIVE', currentStatus: 'REFUNDED', dataUsedMB: 500, activatedAt: new Date('2026-01-01'), providerNetworkAttachedSignal: true }))
+    expect(withEvidence.status).toBe('REFUNDED')
   })
 
-  it('94. REFUNDED + provider FAILED → FAILED (engine does not treat REFUNDED as terminal; unchanged)', () => {
-    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'FAILED', currentStatus: 'REFUNDED' })).status).toBe('FAILED')
+  it('94. REFUNDED + provider FAILED preserves REFUNDED (REFUNDED is terminal; provider errors cannot re-classify it)', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'FAILED', currentStatus: 'REFUNDED' }))
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
+  })
+
+  it('95. REFUNDED + explicit exhausted/DEPLETED provider status preserves REFUNDED', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'DEPLETED', currentStatus: 'REFUNDED' }))
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
+  })
+
+  it('96. REFUNDED + device-installed signal preserves REFUNDED', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'INSTALLED', currentStatus: 'REFUNDED', providerInstalledSignal: true }))
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
+    for (const s of ['ONLINE', 'IN_USE', 'ACTIVATED_ON_DEVICE', 'DEVICE_ACTIVATED', 'ATTACHED']) {
+      expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: s, currentStatus: 'REFUNDED' })).status).toBe('REFUNDED')
+    }
+  })
+
+  it('97. REFUNDED + weaker provisioning value preserves REFUNDED', () => {
+    for (const s of ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'QUEUED', 'RESERVED']) {
+      expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: s, currentStatus: 'REFUNDED' })).status).toBe('REFUNDED')
+    }
+  })
+
+  it('98. REFUNDED is sticky: no provider report or evidence can move it to a non-terminal state', () => {
+    const currents = ['REFUNDED']
+    const providers = ['PENDING', 'PROCESSING', 'PROVISIONING', 'QUEUED', 'RESERVED', 'ACTIVE', 'INSTALLED', 'IN_USE', 'ONLINE', 'ATTACHED', 'SUSPENDED', 'DISABLED', 'EXPIRED', 'EXPIRING', 'FAILED', 'ERROR', 'REJECTED', 'DEPLETED', 'EXHAUSTED', 'DATA_DEPLETED', 'OUT_OF_DATA', 'SOMETHING_NEW']
+    for (const current of currents) {
+      for (const provider of providers) {
+        const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: provider, currentStatus: current, providerInstalledSignal: true, dataUsedMB: 500, activatedAt: new Date('2026-01-01') }))
+        expect(r.status).toBe('REFUNDED')
+      }
+    }
   })
 
   // ── Invariant 6: the engine never emits PROCESSING ──────

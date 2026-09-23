@@ -1,7 +1,14 @@
 import { NextResponse } from 'next/server'
+import {
+  ESIM_LIFECYCLE_STATUSES,
+  ESIM_STATUS_META,
+  ORDER_API_STATUSES,
+} from '@/lib/status-constants'
 
 const BASE_URL = process.env.API_BASE_URL || 'https://api.onesim.africa'
 const SANDBOX_URL = process.env.API_SANDBOX_URL || 'https://sandbox.onesim.africa'
+
+const ESIM_STATUS_LABELS = ESIM_LIFECYCLE_STATUSES.map((s) => ESIM_STATUS_META[s].label)
 
 export function GET() {
   const spec: any = {
@@ -64,7 +71,7 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
         Order: {
           type: 'object', required: ['id', 'status', 'quantity', 'unitCost', 'totalCost', 'currency', 'createdAt'],
           properties: {
-            id: { type: 'string' }, status: { type: 'string', enum: ['CREATED','PAYMENT_RESERVED','PENDING_PROVIDER','PROVIDER_ACCEPTED','RESERVED','FULFILLING','PARTIALLY_FULFILLED','FULFILLED','PROVIDER_RECONCILIATION','FAILED','CANCELLED','REFUNDED'] },
+            id: { type: 'string' }, status: { type: 'string', enum: [...ORDER_API_STATUSES] },
             quantity: { type: 'integer' }, unitCost: { type: 'number' }, totalCost: { type: 'number' }, currency: { type: 'string' },
             fulfilledQuantity: { type: 'integer' }, failedQuantity: { type: 'integer' },
             callbackUrl: { type: 'string', nullable: true }, travelDate: { type: 'string', nullable: true },
@@ -74,7 +81,7 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
             }},
             esims: { type: 'array', items: { type: 'object', properties: {
               id: { type: 'string' }, iccid: { type: 'string' }, imsi: { type: 'string' },
-              status: { type: 'string' }, expiresAt: { type: 'string' },
+              status: { type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES] }, expiresAt: { type: 'string' },
               dataUsedMB: { type: 'integer' }, dataRemainingMB: { type: 'integer' },
             }}},
             createdAt: { type: 'string', format: 'date-time' },
@@ -83,8 +90,8 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
         },
         ESIM: {
           type: 'object', properties: {
-            id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string', enum: ['PENDING','PENDING_ACTIVATION','ACTIVE','SUSPENDED','DEPLETED','EXPIRED','FAILED'] },
-            statusLabel: { type: 'string', enum: ['Ready to install','Active','Suspended','Depleted','Expired','Failed'] },
+            id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES] },
+            statusLabel: { type: 'string', enum: [...ESIM_STATUS_LABELS] },
             qrCodeUrl: { type: 'string' }, activationCode: { type: 'string' },
             activatedAt: { type: 'string', format: 'date-time' }, expiresAt: { type: 'string', format: 'date-time' },
             dataUsedMB: { type: 'integer' }, dataTotalMB: { type: 'integer' }, dataRemainingMB: { type: 'integer' },
@@ -121,9 +128,9 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
           responses: {
             '200': { description: 'Order created (may be processing)', content: { 'application/json': { schema: { type: 'object', properties: {
               success: { type: 'boolean' },
-              order: { type: 'object', properties: { id: { type: 'string' }, status: { type: 'string' }, quantity: { type: 'integer' }, unitCost: { type: 'number' }, totalCost: { type: 'number' }, currency: { type: 'string' }, createdAt: { type: 'string' } } },
+              order: { type: 'object', properties: { id: { type: 'string' }, status: { type: 'string', enum: [...ORDER_API_STATUSES] }, quantity: { type: 'integer' }, unitCost: { type: 'number' }, totalCost: { type: 'number' }, currency: { type: 'string' }, createdAt: { type: 'string' } } },
               package: { $ref: '#/components/schemas/Package' },
-              esims: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string' }, activationCode: { type: 'string' }, qrCodeUrl: { type: 'string' }, expiresAt: { type: 'string' } } } },
+              esims: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES] }, activationCode: { type: 'string' }, qrCodeUrl: { type: 'string' }, expiresAt: { type: 'string' } } } },
               wallet: { type: 'object', properties: { deducted: { type: 'number' }, currency: { type: 'string' } } },
             } } } } },
             '400': { description: 'Invalid request', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },

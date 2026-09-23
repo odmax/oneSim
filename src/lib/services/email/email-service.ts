@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { maskIccid } from '@/lib/providers/mappers/ibasis-sim-mapper'
 
 export interface EmailPayload {
   to: string
@@ -18,16 +19,24 @@ const NOTIFICATION_EMAILS: Record<string, { subject: string; template: string }>
   invoice_generated: { subject: 'New Invoice from OneSIM Africa', template: 'invoice-generated' },
 }
 
-function renderTemplate(templateName: string, data: Record<string, any>): string {
+export function renderTemplate(templateName: string, data: Record<string, any>): string {
+  // Sensitive identifiers are masked before rendering: activation codes and
+  // full ICCIDs must never be written into emails that may be persisted by the
+  // mail/log service. The customer portal remains the source of full details.
+  const maskedToken = (v: unknown): string => {
+    const s = String(v || '')
+    return s.length <= 4 ? '••••' : `••••${s.slice(-4)}`
+  }
+
   const templates: Record<string, (d: Record<string, any>) => string> = {
     'qr-ready': (d) => `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:20px">
 <h2 style="color:#059669">Your eSIM is Ready!</h2>
 <p>Hi ${d.customerName || 'there'},</p>
 <p>Your eSIM for <strong>${d.packageName || 'your plan'}</strong> is ready to install.</p>
 ${d.qrCodeUrl ? `<p>Scan this QR code to install:</p><p><img src="${d.qrCodeUrl}" style="width:200px;height:200px;border:1px solid #ddd;border-radius:8px" /></p>` : ''}
-${d.activationCode ? `<p>Or enter this activation code manually: <code style="background:#f3f4f6;padding:4px 8px;border-radius:4px;font-size:14px">${d.activationCode}</code></p>` : ''}
+${d.activationCode ? `<p>Or enter the activation code ending in <code style="background:#f3f4f6;padding:4px 8px;border-radius:4px;font-size:14px">${maskedToken(d.activationCode)}</code>. Full details are in your OneSIM portal.</p>` : ''}
 <p style="color:#6b7280;font-size:12px">Open Settings → Cellular → Add eSIM to install.</p>
-<p style="color:#6b7280;font-size:12px">ICCID: ${d.iccid || ''}</p>
+<p style="color:#6b7280;font-size:12px">ICCID: ${d.iccid ? maskIccid(d.iccid) : ''}</p>
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
 <p style="color:#9ca3af;font-size:11px">OneSIM Africa — ${d.businessName || ''}</p>
 </div>`,

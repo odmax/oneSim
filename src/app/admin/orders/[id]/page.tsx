@@ -5,18 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { retryFailedOrder, cancelOrder, refundOrder } from '@/lib/actions/order-actions'
 import { UsageBar, UsageSummary } from '@/components/admin/esims/UsageBar'
-
-const STATUS_COLORS: Record<string, string> = {
-  CREATED: 'bg-gray-100 text-gray-700', PAYMENT_RESERVED: 'bg-blue-100 text-blue-700',
-  PENDING_PROVIDER: 'bg-amber-100 text-amber-700', PROVIDER_ACCEPTED: 'bg-cyan-100 text-cyan-700',
-  RESERVED: 'bg-purple-100 text-purple-700', FULFILLING: 'bg-indigo-100 text-indigo-700',
-  FULFILLED: 'bg-emerald-100 text-emerald-700', INSTALLING: 'bg-sky-100 text-sky-700',
-  INSTALLED: 'bg-teal-100 text-teal-700', ACTIVE: 'bg-green-100 text-green-700',
-  EXPIRED: 'bg-gray-100 text-gray-700', CANCELLED: 'bg-amber-100 text-amber-700',
-  FAILED: 'bg-red-100 text-red-700', REFUNDED: 'bg-rose-100 text-rose-700',
-  PROVIDER_RECONCILIATION: 'bg-purple-50 text-purple-700',
-  PARTIALLY_FULFILLED: 'bg-amber-50 text-amber-700',
-}
+import { adminOrderStatusBadge, adminEsimStatusBadge } from '@/lib/status-badges'
 
 export default async function AdminOrderDetailPage({ params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions)
@@ -66,8 +55,8 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
           <h2 className="text-2xl font-bold text-gray-900">Order #{order.id.slice(-8)}</h2>
           <p className="text-sm text-gray-500">{new Date(order.createdAt).toLocaleString()}</p>
         </div>
-        <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ${STATUS_COLORS[order.status] || 'bg-gray-100 text-gray-700'}`}>
-          {order.status}
+        <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ${adminOrderStatusBadge(order.status).className}`}>
+          {adminOrderStatusBadge(order.status).label}
         </span>
       </div>
       <div className="mt-2">
@@ -97,7 +86,7 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
               {esim.imsi && <div className="flex justify-between"><dt className="text-gray-500">IMSI</dt><dd className="font-mono text-xs text-gray-900">{esim.imsi}</dd></div>}
               {esim.activationCode && <div className="flex justify-between"><dt className="text-gray-500">Activation Code</dt><dd className="font-mono text-xs text-gray-900 break-all">{esim.activationCode}</dd></div>}
               {esim.qrCodeUrl && <div className="flex justify-between"><dt className="text-gray-500">QR Code</dt><dd><a href={esim.qrCodeUrl} target="_blank" className="text-xs text-cyan-600 hover:underline">Open QR</a></dd></div>}
-              <div className="flex justify-between"><dt className="text-gray-500">eSIM Status</dt><dd className="font-medium text-gray-900">{esim.status}</dd></div>
+              <div className="flex justify-between"><dt className="text-gray-500">eSIM Status</dt><dd className="font-medium text-gray-900">{adminEsimStatusBadge(esim.status).label}</dd></div>
               {esim.expiresAt && <div className="flex justify-between"><dt className="text-gray-500">Expires</dt><dd className="text-sm text-gray-600">{new Date(esim.expiresAt).toLocaleDateString()}</dd></div>}
               {esim.lastUsageSyncAt ? <div className="flex justify-between"><dt className="text-gray-500">Usage Refreshed</dt><dd className="text-xs text-gray-500">{new Date(esim.lastUsageSyncAt).toLocaleString()}</dd></div> : null}
               <div className="pt-2">

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     eSIM: { findUnique: vi.fn(), update: vi.fn() },
+    $executeRawUnsafe: vi.fn().mockResolvedValue(0),
   },
 }))
 
@@ -481,5 +482,45 @@ describe('iBASIS deactivated lifecycle semantics through the shared engine (term
     expect(result.statusChanged).toBe(false)
     const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
     expect(updateCall.data.status).toBeUndefined()
+  })
+
+  it('stored REFUNDED + provider ACTIVE report stays REFUNDED (status sync cannot reactivate)', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'REFUNDED' }) as any)
+    mockBuildConnector.mockResolvedValue(statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', evidence: { networkAttached: true }, rawMetadata: { networkAttached: true } },
+      }),
+    }) as any)
+
+    const result = await syncESIMStatus('esim-1')
+
+    expect(result.status).toBe('REFUNDED')
+    expect(result.statusChanged).toBe(false)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+    expect(updateCall.data.statusNextSyncAt).toBeInstanceOf(Date) // refresh still re-schedules cadence
+  })
+
+  it('a successful manual refresh resolves ONLY this eSIM’s STATUS exhaustion', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'ACTIVE', statusSyncRetryCount: 3 }) as any)
+    mockBuildConnector.mockResolvedValue(statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', evidence: { networkAttached: true }, rawMetadata: { networkAttached: true } },
+      }),
+    }) as any)
+
+    await syncESIMStatus('esim-1')
+
+    expect(mockPrisma.$executeRawUnsafe).toHaveBeenCalled()
+    const [sql, providerId, code, resourceType, resourceId, dedupKey] = mockPrisma.$executeRawUnsafe.mock.calls[0]
+    expect(String(sql)).toContain('UPDATE provider_alerts')
+    expect(String(sql)).toContain('"resolvedAt" IS NULL AND "resourceType"=$3 AND "resourceId"=$4 AND "dedupKey"=$5')
+    expect(providerId).toBe('p-1')
+    expect(code).toBe('SYNC_RETRY_EXHAUSTED')
+    expect(resourceType).toBe('ESIM')
+    expect(resourceId).toBe('esim-1') // internal eSIM id — never an ICCID
+    expect(dedupKey).toBe('status') // status recovery never clears usage exhaustion
   })
 })

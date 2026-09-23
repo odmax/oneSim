@@ -785,6 +785,13 @@ model UsageAlert {
 
   esim ESIM @relation(fields: [esimId], references: [id], onDelete: Cascade)
 
+  /// NOTE: a PARTIAL unique index (esimId, alertType) WHERE "acknowledgedAt"
+  /// IS NULL exists on usage_alerts (`usage_alerts_esim_type_unresolved`) and is
+  /// relied on by the atomic race-safe insert in
+  /// src/lib/services/usage/usage-alert-store.ts. Prisma cannot model partial
+  /// indexes, so it is intentionally unrepresented here and must NEVER be
+  /// dropped by any generated migration.
+
   @@index([esimId, createdAt])
   @@map("usage_alerts")
 }
@@ -1418,15 +1425,21 @@ model ProviderAlert {
   recommendedAction String?
   occurrenceCount   Int       @default(1)
   metadata          Json?
+  /// Optional resource identity for per-resource dedup/recovery (e.g. eSIM-level
+  /// sync exhaustion). Empty strings = provider-wide alert (legacy semantics).
+  resourceType      String?
+  resourceId        String?
+  dedupKey          String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @default(now())
 
-  /// NOTE: the migration also creates a PARTIAL unique index
-  /// (providerId, code) WHERE "resolvedAt" IS NULL
-  /// (`provider_alerts_provider_code_unresolved`) relied on by
+  /// NOTE: the migration creates the PARTIAL unique index
+  /// (providerId, code, resourceType, resourceId, dedupKey) WHERE "resolvedAt"
+  /// IS NULL (`provider_alerts_provider_code_unresolved`) relied on by
   /// upsertProviderAlert `ON CONFLICT ... WHERE "resolvedAt" IS NULL`.
   /// Prisma cannot model partial indexes, so it is intentionally unrepresented
-  /// here and must NEVER be dropped by any generated migration.
+  /// here (backfilled to empty strings, never NULL) and must NEVER be dropped
+  /// by any generated migration.
   @@index([providerId])
   @@map("provider_alerts")
 }
