@@ -4,7 +4,9 @@ import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
-import { getEsimStatusLabel, isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
+import { isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
+import { deriveEsimCustomerDisplayStatus } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 import TopUpForm from './TopUpForm'
 
@@ -95,7 +97,23 @@ export default async function BusinessTopUpPage({ params, searchParams }: { para
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-gray-500">Status</dt>
-              <dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${esim.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{getEsimStatusLabel(esim.status).label}</span></dd>
+              <dd>{(() => {
+                const display = deriveEsimCustomerDisplayStatus({
+                  status: esim.status,
+                  installationStatus: esim.installationStatus,
+                  hasUsableInstallData: hasUsableInstallData(esim),
+                  activatedAt: esim.activatedAt,
+                  activationDetectedAt: esim.activationDetectedAt,
+                  dataUsedMB: esim.dataUsedMB,
+                })
+                const toneClass = {
+                  success: 'bg-emerald-100 text-emerald-800',
+                  warn: 'bg-amber-100 text-amber-800',
+                  danger: 'bg-red-100 text-red-800',
+                  neutral: 'bg-gray-100 text-gray-800',
+                }[display.tone] || 'bg-amber-100 text-amber-800'
+                return <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${toneClass}`}>{display.label}</span>
+              })()}</dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-gray-500">Package</dt>

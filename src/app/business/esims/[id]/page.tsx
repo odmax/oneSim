@@ -112,14 +112,13 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
           <dl className="space-y-1">
             <DetailRow label="ICCID" value={esim.iccid} mono />
             {esim.imsi && <DetailRow label="IMSI" value={esim.imsi} mono />}
-            <div className="flex justify-between py-1.5">
-              <dt className="text-xs text-gray-500">Status</dt>
-              <dd className="flex flex-col items-end gap-1">
-                <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses}`}>{lifecycle.serviceLabel}</span>
-                <span className="inline-flex items-center gap-1 text-xs text-gray-400">
-                  Setup: <span className="font-medium text-gray-600">{lifecycle.setupLabel}</span>
-                </span>
-              </dd>
+            <div className="flex justify-between items-center py-1.5">
+              <dt className="text-xs text-gray-500">Service status</dt>
+              <dd><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses}`}>{lifecycle.serviceLabel}</span></dd>
+            </div>
+            <div className="flex justify-between items-center py-1.5">
+              <dt className="text-xs text-gray-500">Setup status</dt>
+              <dd className="text-xs font-medium text-gray-900 text-right">{lifecycle.setupLabel}</dd>
             </div>
             {esim.lastStatusSyncAt && <DetailRow label="Last Updated" value={timeAgo(esim.lastStatusSyncAt)} />}
             <div className="flex justify-between py-1.5">

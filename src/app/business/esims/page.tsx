@@ -9,7 +9,7 @@ import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
-import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { deriveEsimCustomerDisplayStatus } from '@/lib/esim/lifecycle-presentation'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } | null {
@@ -23,6 +23,7 @@ function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } 
   } catch { return null }
 }
 
+/** One clear customer summary status badge (Service + Setup collapsed). */
 function StatusPill({ title, label, tone }: { title?: string; label: string; tone: string }) {
   const styles: Record<string, { bg: string; dot: string }> = {
     success: { bg: 'bg-emerald-50 text-emerald-600', dot: 'bg-emerald-400' },
@@ -39,8 +40,8 @@ function StatusPill({ title, label, tone }: { title?: string; label: string; ton
   )
 }
 
-/** Two-axis presentation: Service + Setup. */
-function LifecyclePills({ status, installationStatus, hasInstallData, activatedAt, activationDetectedAt, dataUsedMB }: {
+/** Single summary status derived from canonical + persisted setup evidence. */
+function CustomerStatusBadge({ status, installationStatus, hasInstallData, activatedAt, activationDetectedAt, dataUsedMB }: {
   status: string
   installationStatus?: string | null
   hasInstallData: boolean
@@ -48,16 +49,11 @@ function LifecyclePills({ status, installationStatus, hasInstallData, activatedA
   activationDetectedAt?: Date | string | null
   dataUsedMB?: number | null
 }) {
-  const p = deriveEsimLifecyclePresentation({
+  const display = deriveEsimCustomerDisplayStatus({
     status, installationStatus, hasUsableInstallData: hasInstallData,
     activatedAt, activationDetectedAt, dataUsedMB,
   })
-  return (
-    <div className="flex flex-col items-start gap-1">
-      <StatusPill title="Service status" label={p.serviceLabel} tone={p.serviceTone} />
-      <StatusPill title="Setup status" label={p.setupLabel} tone={p.setupTone} />
-    </div>
-  )
+  return <StatusPill title={display.label} label={display.label} tone={display.tone} />
 }
 
 export default async function ESIMsPage({ searchParams }: { searchParams: { success?: string; error?: string } }) {
@@ -134,7 +130,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                         {archived && <span className="ml-1.5 text-xs text-amber-500">(discontinued)</span>}
                       </td>
                       <td className="whitespace-nowrap px-5 py-4">
-                        <LifecyclePills
+                        <CustomerStatusBadge
                           status={esim.status}
                           installationStatus={esim.installationStatus}
                           hasInstallData={hasUsableInstallData({ activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl, qrCode: esim.qrCode, smdpAddress: esim.smdpAddress, matchingId: esim.matchingId })}

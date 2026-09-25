@@ -5,7 +5,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { deriveUsageMetrics, getUsageStaleness, usageUsedLabel, usageRemainingLabel } from '@/lib/esim/usage-metrics'
 import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
-import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { deriveEsimCustomerDisplayStatus } from '@/lib/esim/lifecycle-presentation'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 function UsagePill({ value, total }: { value: number; total: number }) {
@@ -18,6 +18,7 @@ function UsagePill({ value, total }: { value: number; total: number }) {
   )
 }
 
+/** One clear customer summary status badge (Service + Setup collapsed). */
 function StatusPill({ title, label, tone }: { title?: string; label: string; tone: string }) {
   const toneClasses: Record<string, string> = {
     success: 'bg-emerald-50 text-emerald-600',
@@ -39,9 +40,9 @@ function StatusPill({ title, label, tone }: { title?: string; label: string; ton
   )
 }
 
-/** Two-axis presentation for the usage table: Service + Setup. */
-function LifecyclePills({ esim }: { esim: any }) {
-  const p = deriveEsimLifecyclePresentation({
+/** Single summary status badge for the usage table (Service + Setup collapsed). */
+function CustomerStatusBadge({ esim }: { esim: any }) {
+  const display = deriveEsimCustomerDisplayStatus({
     status: esim.status,
     installationStatus: esim.installationStatus,
     hasUsableInstallData: hasUsableInstallData(esim),
@@ -49,12 +50,7 @@ function LifecyclePills({ esim }: { esim: any }) {
     activationDetectedAt: esim.activationDetectedAt,
     dataUsedMB: esim.dataUsedMB,
   })
-  return (
-    <div className="flex flex-col items-start gap-1">
-      <StatusPill title="Service status" label={p.serviceLabel} tone={p.serviceTone} />
-      <StatusPill title="Setup status" label={p.setupLabel} tone={p.setupTone} />
-    </div>
-  )
+  return <StatusPill title={display.label} label={display.label} tone={display.tone} />
 }
 
 export default async function BusinessUsagePage({ searchParams }: { searchParams: { status?: string; search?: string; customerId?: string; packageId?: string } }) {
@@ -222,7 +218,7 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
                       {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '—'}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4">
-                      <LifecyclePills esim={esim} />
+                      <CustomerStatusBadge esim={esim} />
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-xs text-gray-400">
                       {esim.lastUsageSyncAt ? (

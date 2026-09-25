@@ -101,10 +101,10 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
                 dataUsedMB: esim.dataUsedMB,
               }).setupLabel
               return (
-                <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd className="flex flex-col items-end gap-1">
-                  <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${toneClasses}`}>{label}</span>
-                  <span className="text-xs text-gray-500">Setup: {setupLabel}</span>
-                </dd></div>
+                <>
+                  <div className="flex justify-between"><dt className="text-gray-500">Service status</dt><dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${toneClasses}`}>{label}</span></dd></div>
+                  <div className="flex justify-between"><dt className="text-gray-500">Setup status</dt><dd className="text-sm font-medium text-gray-900">{setupLabel}</dd></div>
+                </>
               )
             })()}
             {esim.providerStatus && <div className="flex justify-between"><dt className="text-gray-500">Provider Status</dt><dd className="font-medium text-gray-900">{esim.providerStatus}</dd></div>}

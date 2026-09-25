@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { deriveEsimLifecyclePresentation, deriveEsimLifecyclePresentationFromRow } from './lifecycle-presentation'
+import {
+  deriveEsimLifecyclePresentation,
+  deriveEsimLifecyclePresentationFromRow,
+  deriveEsimCustomerDisplayStatus,
+  deriveEsimCustomerDisplayStatusFromRow,
+} from './lifecycle-presentation'
 
 describe('service axis — canonical service labels (provider-neutral)', () => {
   it('PENDING_ACTIVATION makes its service label Provisioned (never the whole "Ready to install")', () => {
@@ -122,5 +127,100 @@ describe('deriveEsimLifecyclePresentationFromRow — safe persisted fields only'
     const p = deriveEsimLifecyclePresentationFromRow({ status: row.status, installationStatus: row.installationStatus, hasUsableInstallData: false, dataUsedMB: row.dataUsedMB })
     expect(JSON.stringify(p)).not.toContain('ACTIVE')
     expect(p.serviceLabel).toBe('Provisioned')
+  })
+})
+
+describe('deriveEsimCustomerDisplayStatus — single customer summary badge', () => {
+  const readyRow = { status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }
+  const preparingRow = { status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }
+  const unknownRow = { status: 'PENDING_ACTIVATION', dataUsedMB: 0 }
+
+  it('Provisioned + Ready to install → one "Ready to install" badge', () => {
+    const d = deriveEsimCustomerDisplayStatus(readyRow)
+    expect(d.label).toBe('Ready to install')
+    expect(d.tone).toBe('warn')
+    expect(d.status).toBe('PENDING_ACTIVATION')
+  })
+
+  it('Provisioned + Preparing → Preparing', () => {
+    expect(deriveEsimCustomerDisplayStatus(preparingRow).label).toBe('Preparing')
+  })
+
+  it('Provisioned + Unknown/null → Provisioned', () => {
+    const d = deriveEsimCustomerDisplayStatus(unknownRow)
+    expect(d.label).toBe('Provisioned')
+    expect(d.tone).toBe('warn')
+  })
+
+  it('Provisioned + Installation failed → Installation failed (dominant over Provisioned)', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'FAILED', hasUsableInstallData: false, dataUsedMB: 0 })
+    expect(d.label).toBe('Installation failed')
+    expect(d.tone).toBe('danger')
+  })
+
+  it('Provisioned + Installation unavailable → Installation unavailable', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'NOT_SUPPORTED', hasUsableInstallData: false, dataUsedMB: 0 })
+    expect(d.label).toBe('Installation unavailable')
+    expect(d.tone).toBe('warn')
+  })
+
+  it('Active + Installed → one "Active" badge (no second Installed badge)', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'ACTIVE', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 256 })
+    expect(d.label).toBe('Active')
+    expect(d.tone).toBe('success')
+  })
+
+  it('Active + Installing → Active (service dominates setup)', () => {
+    expect(deriveEsimCustomerDisplayStatus({ status: 'ACTIVE', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }).label).toBe('Active')
+  })
+
+  it('Depleted + Installed → Depleted', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'DEPLETED', installationStatus: 'READY', hasUsableInstallData: true, activatedAt: new Date('2026-01-01'), dataUsedMB: 1024 })
+    expect(d.label).toBe('Depleted')
+    expect(d.tone).toBe('danger')
+  })
+
+  it('Suspended + any setup → Suspended', () => {
+    expect(deriveEsimCustomerDisplayStatus({ status: 'SUSPENDED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Suspended')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'SUSPENDED', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }).label).toBe('Suspended')
+  })
+
+  it('Expired + any setup → Expired', () => {
+    expect(deriveEsimCustomerDisplayStatus({ status: 'EXPIRED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Expired')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'EXPIRED', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }).label).toBe('Expired')
+  })
+
+  it('Failed / Cancelled / Refunded dominate setup', () => {
+    expect(deriveEsimCustomerDisplayStatus({ status: 'FAILED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Failed')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'CANCELLED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Cancelled')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'REFUNDED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Refunded')
+  })
+
+  it('never returns Active for PENDING_ACTIVATION solely from install data', () => {
+    // QR + install data + READY setup on a pending line still cannot be Active.
+    const d = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true, qrCode: undefined, dataUsedMB: 0 })
+    expect(d.label).not.toBe('Active')
+    expect(d.status).toBe('PENDING_ACTIVATION')
+
+    // Even with a QR/activatedAt hint, a non-ACTIVE canonical status stays
+    // Provisioned (the display helper never self-derives Active).
+    const withEvidence = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true, activatedAt: new Date('2026-01-01') })
+    expect(withEvidence.label).not.toBe('Active')
+    expect(withEvidence.label).toBe('Provisioned')
+  })
+
+  it('is deterministic and never mutates input', () => {
+    const input = { ...readyRow }
+    const a = deriveEsimCustomerDisplayStatus(input)
+    const b = deriveEsimCustomerDisplayStatus(input)
+    expect(a).toEqual(b)
+    expect(input.status).toBe('PENDING_ACTIVATION')
+    expect(input.installationStatus).toBe('READY')
+  })
+
+  it('deriveEsimCustomerDisplayStatusFromRow matches the direct helper', () => {
+    const row = { status: 'ACTIVE', installationStatus: 'READY', hasUsableInstallData: true, activatedAt: new Date('2026-01-01'), dataUsedMB: 512 }
+    expect(deriveEsimCustomerDisplayStatusFromRow(row).label).toBe('Active')
+    expect(deriveEsimCustomerDisplayStatusFromRow(row)).toEqual(deriveEsimCustomerDisplayStatus(row))
   })
 })

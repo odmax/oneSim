@@ -6,7 +6,8 @@ import Link from 'next/link'
 import { assignESIM, sendToCustomer } from '@/lib/actions/esim'
 import CopyButton from '@/components/CopyButton'
 import { customerStatusLabel, installStatusLabel } from '@/lib/status-labels'
-import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { deriveEsimCustomerDisplayStatus } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 export default async function CustomerDetailPage({
   params,
@@ -213,13 +214,27 @@ export default async function CustomerDetailPage({
                             </span>
                           </td>
                           <td className="whitespace-nowrap py-3">
-                            <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
-                              esim.status === 'ACTIVE' ? 'bg-green-100 text-green-800' :
-                              esim.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' :
-                              'bg-red-100 text-red-800'
-                            }`}>
-                              {getEsimStatusLabel(esim.status).label}
-                            </span>
+                            {(() => {
+                              const display = deriveEsimCustomerDisplayStatus({
+                                status: esim.status,
+                                installationStatus: esim.installationStatus,
+                                hasUsableInstallData: hasUsableInstallData(esim),
+                                activatedAt: esim.activatedAt,
+                                activationDetectedAt: esim.activationDetectedAt,
+                                dataUsedMB: esim.dataUsedMB,
+                              })
+                              const toneClass = {
+                                success: 'bg-green-100 text-green-800',
+                                warn: 'bg-yellow-100 text-yellow-800',
+                                danger: 'bg-red-100 text-red-800',
+                                neutral: 'bg-gray-100 text-gray-800',
+                              }[display.tone] || 'bg-gray-100 text-gray-800'
+                              return (
+                                <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${toneClass}`}>
+                                  {display.label}
+                                </span>
+                              )
+                            })()}
                           </td>
                           <td className="py-3">
                             <div className="text-sm text-gray-900">

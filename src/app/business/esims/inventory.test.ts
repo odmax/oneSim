@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
+import fs from 'fs'
+import path from 'path'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 import { buildPackageSearchText } from '@/lib/packages/search-text'
+import { deriveEsimCustomerDisplayStatus } from '@/lib/esim/lifecycle-presentation'
 
 describe('business eSIM status labels (via centralized helper)', () => {
   it('labels PENDING_ACTIVATION as "Provisioned" not "Ready to install" or "Activated on device"', () => {
@@ -128,6 +131,81 @@ describe('QR action visibility rules', () => {
     // QrCodeButton returns null when hasQR is false — no provider call
     const esim = { qrCodeUrl: null, activationCode: null }
     expect(!(esim.qrCodeUrl || esim.activationCode)).toBe(true)
+  })
+})
+
+describe('business eSIM inventory — single summary status badge', () => {
+  const pagePath = path.join(process.cwd(), 'src/app/business/esims/page.tsx')
+
+  it('renders exactly one status badge per eSIM (no stacked Service + Setup badges)', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    // The inventory uses the single summary helper, not the two-axis presentation.
+    expect(content).toContain('deriveEsimCustomerDisplayStatus')
+    expect(content).not.toContain('deriveEsimLifecyclePresentation')
+    // There is exactly one CustomerStatusBadge component rendered per row.
+    const defined = (content.match(/function CustomerStatusBadge/g) || []).length
+    const renderedCells = (content.match(/<CustomerStatusBadge/g) || []).length
+    expect(defined).toBe(1)
+    expect(renderedCells).toBe(1)
+    // No two stacked unlabelled pills remain.
+    expect(content).not.toContain('Service status')
+    expect(content).not.toContain('Setup status')
+  })
+
+  it('Active + Installed inventory row shows Active and no separate Installed badge', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'ACTIVE', installationStatus: 'READY', hasUsableInstallData: true, activatedAt: new Date('2026-01-01'), dataUsedMB: 512 })
+    expect(d.label).toBe('Active')
+    // A single summary badge means no second "Installed" pill is rendered.
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).not.toContain('Installed')
+  })
+
+  it('Provisioned + Ready row shows Ready to install and no separate Provisioned badge', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
+    expect(d.label).toBe('Ready to install')
+    // The summary string must be what the single pill renders (not "Provisioned").
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).not.toContain('Provisioned')
+  })
+
+  it('preserves QR/top-up/refresh/share/copy-details actions', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).toContain('QrCodeButton')
+    expect(content).toContain('isTopUpEligibleStatus')
+    expect(content).toContain('syncEsimStatusAction')
+    expect(content).toContain('ShareActions')
+    expect(content).toContain('CopyButton')
+  })
+})
+
+describe('business eSIM detail page — labelled two-axis status', () => {
+  it('detail page labels Service status and Setup status explicitly', () => {
+    const content = fs.readFileSync(path.join(process.cwd(), 'src/app/business/esims/[id]/page.tsx'), 'utf8')
+    expect(content).toContain('Service status')
+    expect(content).toContain('Setup status')
+    expect(content).toContain('deriveEsimLifecyclePresentation')
+  })
+})
+
+describe('compact eSIM summary surfaces — one-badge helper', () => {
+  it('customers detail uses the single summary helper (not raw service label)', () => {
+    const content = fs.readFileSync(path.join(process.cwd(), 'src/app/business/customers/[id]/page.tsx'), 'utf8')
+    expect(content).toContain('deriveEsimCustomerDisplayStatus')
+    expect(content).not.toContain('getEsimStatusLabel')
+  })
+
+  it('business top-up summary card uses the single summary helper', () => {
+    const content = fs.readFileSync(path.join(process.cwd(), 'src/app/business/esims/[id]/top-up/page.tsx'), 'utf8')
+    expect(content).toContain('deriveEsimCustomerDisplayStatus')
+    expect(content).not.toContain('getEsimStatusLabel')
+  })
+
+  it('usage list uses the single summary helper, not stacked two-axis pills', () => {
+    const content = fs.readFileSync(path.join(process.cwd(), 'src/app/business/esim-usage/page.tsx'), 'utf8')
+    expect(content).toContain('deriveEsimCustomerDisplayStatus')
+    expect(content).not.toContain('deriveEsimLifecyclePresentation')
+    expect(content).not.toContain('Service status')
+    expect(content).not.toContain('Setup status')
   })
 })
 

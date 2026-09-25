@@ -150,3 +150,94 @@ export function deriveEsimLifecyclePresentationFromRow(esim: {
     dataUsedMB: esim.dataUsedMB,
   })
 }
+
+/**
+ * Single customer-facing summary status badge for compact/list surfaces.
+ *
+ * Detail surfaces keep the full two-axis presentation; summary/list surfaces
+ * must show ONE clear status. This helper is deterministic and provider-neutral:
+ *   - terminal/service-impacting statuses always dominate (REFUNDED, CANCELLED,
+ *     FAILED, EXPIRED, SUSPENDED, DEPLETED);
+ *   - an ACTIVE service always displays `Active` regardless of setup state;
+ *   - a provisioned eSIM (PENDING_ACTIVATION) maps its setup state to the most
+ *     actionable customer status (Ready to install / Installing / Installation
+ *     failed / Installation unavailable / Preparing / Provisioned);
+ *   - other non-terminal provisioning states keep their established
+ *     customer-safe service labels.
+ *
+ * It NEVER infers `Active` from QR availability, install data, a raw provider
+ * ACTIVE claim or any setup evidence when the canonical lifecycle has not yet
+ * derived ACTIVE. Presentation-only — never mutates lifecycle state.
+ */
+export interface EsimCustomerDisplayStatus {
+  /** Canonical stored oneSIM service status that produced the summary (never a synthetic value). */
+  status: string
+  label: string
+  tone: StatusTone
+}
+
+/** Service-impacting statuses that always dominate the summary badge. */
+const SERVICE_DOMINANT_STATUSES = ['REFUNDED', 'CANCELLED', 'FAILED', 'EXPIRED', 'SUSPENDED', 'DEPLETED']
+
+export function deriveEsimCustomerDisplayStatus(input: LifecyclePresentationInput): EsimCustomerDisplayStatus {
+  const service = deriveServiceAxis(input.status)
+  const setup = deriveSetupAxis(input)
+  const status = String(input.status || '').toUpperCase() || 'UNKNOWN'
+
+  // 1. Terminal / service-impacting statuses always dominate setup.
+  if (SERVICE_DOMINANT_STATUSES.includes(status)) {
+    return { status, label: service.serviceLabel, tone: service.serviceTone }
+  }
+
+  // 2. Active service dominates — a single `Active` badge, never a second
+  //    `Installed` badge on summary/list views.
+  if (status === 'ACTIVE' || status === 'INSTALLED') {
+    return { status, label: service.serviceLabel, tone: service.serviceTone }
+  }
+
+  // 3. Provisioned / setup flow — the setup state is the most actionable truth.
+  if (status === 'PENDING_ACTIVATION') {
+    switch (setup.setupStatus) {
+      case 'READY_TO_INSTALL':
+        return { status, label: 'Ready to install', tone: 'warn' }
+      case 'INSTALLING':
+        return { status, label: 'Installing', tone: 'warn' }
+      case 'INSTALLATION_FAILED':
+        return { status, label: 'Installation failed', tone: 'danger' }
+      case 'INSTALLATION_UNAVAILABLE':
+        return { status, label: 'Installation unavailable', tone: 'warn' }
+      case 'PREPARING':
+        return { status, label: 'Preparing', tone: 'warn' }
+      case 'INSTALLED':
+        // Setup reports installed, but the canonical lifecycle has NOT derived
+        // ACTIVE. Presentation never infers Active from install/QR/usage
+        // evidence alone — show Provisioned.
+        return { status, label: 'Provisioned', tone: 'warn' }
+      case 'UNKNOWN':
+      default:
+        return { status, label: 'Provisioned', tone: 'warn' }
+    }
+  }
+
+  // 4. Other non-terminal provisioning states keep established service labels.
+  return { status, label: service.serviceLabel, tone: service.serviceTone }
+}
+
+/** Convenience: derive the customer summary status from a persisted eSIM row. */
+export function deriveEsimCustomerDisplayStatusFromRow(esim: {
+  status?: string | null
+  installationStatus?: string | null
+  hasUsableInstallData?: boolean
+  activatedAt?: Date | string | null
+  activationDetectedAt?: Date | string | null
+  dataUsedMB?: number | null
+}): EsimCustomerDisplayStatus {
+  return deriveEsimCustomerDisplayStatus({
+    status: esim.status,
+    installationStatus: esim.installationStatus,
+    hasUsableInstallData: esim.hasUsableInstallData,
+    activatedAt: esim.activatedAt,
+    activationDetectedAt: esim.activationDetectedAt,
+    dataUsedMB: esim.dataUsedMB,
+  })
+}
