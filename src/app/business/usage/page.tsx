@@ -3,7 +3,7 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { generateUsageReport } from '@/lib/actions/usage'
-import { deriveUsageMetrics } from '@/lib/esim/usage-metrics'
+import { deriveUsageMetrics, getUsageStaleness } from '@/lib/esim/usage-metrics'
 
 export default async function UsagePage({
   searchParams
@@ -66,10 +66,12 @@ export default async function UsagePage({
   })
 
   // CURRENT usage derives from canonical ESIM snapshot columns; UsageRecord is
-  // HISTORICAL (see "Recent Usage Records"). "Total Data Used" is the sum of
-  // the current snapshot usage — never a reconstruction from historical rows.
+  // HISTORICAL (see "Recent Usage Records"). "Total Data Used" sums only eSIMs
+  // with a KNOWN used value — an eSIM without a snapshot must never contribute
+  // a fabricated zero (which would overstate "Remaining Data").
   const totalDataSold = esims.reduce((sum, esim) => sum + (esim.purchase.package.dataGB * 1024), 0)
-  const totalDataUsed = esims.reduce((sum, esim) => sum + (esim.dataUsedMB || 0), 0)
+  const usageKnownEsims = esims.filter((esim) => esim.dataUsedMB != null)
+  const totalDataUsed = usageKnownEsims.reduce((sum, esim) => sum + esim.dataUsedMB, 0)
   const remainingData = totalDataSold - totalDataUsed
   const activeEsims = esims.filter(e => e.status === 'ACTIVE').length
 
@@ -186,8 +188,9 @@ export default async function UsagePage({
             >
               <option value="">All Statuses</option>
               <option value="ACTIVE">Active</option>
-              <option value="PENDING">Pending</option>
-              <option value="INACTIVE">Inactive</option>
+              <option value="PENDING_ACTIVATION">Pending</option>
+              <option value="DEPLETED">Depleted</option>
+              <option value="SUSPENDED">Suspended</option>
               <option value="EXPIRED">Expired</option>
             </select>
           </div>
@@ -227,6 +230,7 @@ export default async function UsagePage({
             <div className="divide-y">
               {esims.map((esim) => {
                 const current = deriveUsageMetrics(esim.dataUsedMB, esim.dataTotalMB, esim.dataRemainingMB)
+                const staleness = getUsageStaleness(esim.lastUsageSyncAt)
                 return (
                   <div key={esim.id} className="p-4 hover:bg-gray-50">
                     <div className="mb-2 flex items-center justify-between">
@@ -240,10 +244,10 @@ export default async function UsagePage({
                         {current.hasSnapshot ? (
                           <>
                             <p className="text-sm font-medium text-gray-900">
-                              {(current.used / 1024).toFixed(2)} / {current.total > 0 ? `${(current.total / 1024).toFixed(2)}` : '—'} GB
+                              {current.usedKnown ? `${(current.used / 1024).toFixed(2)}` : '—'} / {current.total > 0 ? `${(current.total / 1024).toFixed(2)}` : '—'} GB
                             </p>
                             <p className="text-xs text-gray-500">
-                              {current.total > 0 ? `${((current.used / current.total) * 100).toFixed(1)}% used` : '—'}
+                              {current.usedKnown && current.total > 0 ? `${((current.used / current.total) * 100).toFixed(1)}% used` : '—'}
                             </p>
                           </>
                         ) : (
@@ -251,7 +255,7 @@ export default async function UsagePage({
                         )}
                       </div>
                     </div>
-                    {current.hasSnapshot && current.total > 0 ? (
+                    {current.hasSnapshot && current.usedKnown && current.total > 0 ? (
                       <div className="h-2 overflow-hidden rounded-full bg-gray-200">
                         <div
                           className="h-full rounded-full bg-cyan-600"
@@ -259,6 +263,11 @@ export default async function UsagePage({
                         />
                       </div>
                     ) : null}
+                    {esim.lastUsageSyncAt && (
+                      <p className={`mt-2 text-[10px] ${staleness.stale ? 'text-orange-500' : 'text-gray-400'}`}>
+                        {staleness.stale ? 'Last sync stale — shows last-known data' : 'Live data synced'} {new Date(esim.lastUsageSyncAt).toLocaleDateString()}
+                      </p>
+                    )}
                   </div>
                 )
               })}

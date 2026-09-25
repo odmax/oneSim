@@ -280,3 +280,47 @@ describe('processProviderWebhookEvent â€” canonical lifecycle arbitration (D1)',
     expect(mockPrisma.eSIM.update).toHaveBeenCalledTimes(1)
   })
 })
+describe('USAGE_UPDATED — zero preservation + canonical depletion via webhook', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('remaining 0 persists zero and derives DEPLETED', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901', dataUsedMB: 1024, dataTotalMB: 1024, dataRemainingMB: 0 } } })
+    await process(event, makeEsim({ status: 'ACTIVE' }))
+    const u = lastEsimUpdate()
+    expect(u.dataRemainingMB).toBe(0)
+    expect(u.dataUsedMB).toBe(1024)
+    expect(u.status).toBe('DEPLETED')
+    expect(mockPrisma.usageRecord.create).toHaveBeenCalledTimes(1)
+    const rec = mockPrisma.usageRecord.create.mock.calls[0][0].data
+    expect(rec.dataRemainingMB).toBe(0)
+    expect(rec.dataUsedMB).toBe(1024)
+  })
+
+  it('missing usage fields do NOT create a history record or fabricate zero', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901' } } })
+    await process(event, makeEsim({ status: 'ACTIVE' }))
+    const u = lastEsimUpdate()
+    expect(u.dataUsedMB).toBeUndefined()
+    expect(u.dataRemainingMB).toBeUndefined()
+    expect(u.status).toBeUndefined()
+    expect(mockPrisma.usageRecord.create).not.toHaveBeenCalled()
+  })
+
+  it('Choice threshold notice with used 0 preserves zero and remaining = total', async () => {
+    const event = makeEvent({ providerType: 'CHOICE', payload: { body: { command: 'imsi_usage_threshold_notice', threshold_code: '6', quantity_used: '0', maximum_units: '1024', max_qty_type: 'MB', imsi: '310150123456789' } } })
+    await process(event, makeEsim({ status: 'ACTIVE' }))
+    const u = lastEsimUpdate()
+    expect(u.dataUsedMB).toBe(0)
+    expect(u.dataRemainingMB).toBe(1024)
+    expect(u.status).toBeUndefined()
+  })
+
+  it('Choice threshold notice fully used derives DEPLETED with remaining 0', async () => {
+    const event = makeEvent({ providerType: 'CHOICE', payload: { body: { command: 'imsi_usage_threshold_notice', threshold_code: '6', quantity_used: '1024', maximum_units: '1024', max_qty_type: 'MB', imsi: '310150123456789' } } })
+    await process(event, makeEsim({ status: 'ACTIVE' }))
+    expect(lastEsimUpdate().dataRemainingMB).toBe(0)
+    expect(lastEsimUpdate().status).toBe('DEPLETED')
+  })
+})

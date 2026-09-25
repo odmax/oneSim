@@ -3,8 +3,9 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { deriveUsageMetrics } from '@/lib/esim/usage-metrics'
+import { deriveUsageMetrics, getUsageStaleness, usageUsedLabel, usageRemainingLabel } from '@/lib/esim/usage-metrics'
 import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
+import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 
 function UsagePill({ value, total }: { value: number; total: number }) {
   const pct = total > 0 ? Math.round((value / total) * 100) : 0
@@ -17,19 +18,23 @@ function UsagePill({ value, total }: { value: number; total: number }) {
 }
 
 function StatusPill({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    ACTIVE: 'bg-emerald-50 text-emerald-600',
-    PENDING_ACTIVATION: 'bg-amber-50 text-amber-600',
-    PENDING: 'bg-amber-50 text-amber-600',
-    FAILED: 'bg-red-50 text-red-600',
-    EXPIRED: 'bg-red-50 text-red-600',
-    INACTIVE: 'bg-gray-50 text-gray-500',
-    SUSPENDED: 'bg-orange-50 text-orange-600',
+  const { label, tone } = getEsimStatusLabel(status)
+  const toneClasses: Record<string, string> = {
+    success: 'bg-emerald-50 text-emerald-600',
+    warn: 'bg-amber-50 text-amber-600',
+    danger: 'bg-red-50 text-red-600',
+    neutral: 'bg-gray-50 text-gray-600',
+  }
+  const dotClasses: Record<string, string> = {
+    success: 'bg-emerald-400',
+    warn: 'bg-amber-400',
+    danger: 'bg-red-400',
+    neutral: 'bg-gray-400',
   }
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[status] || 'bg-gray-50 text-gray-600'}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${status === 'ACTIVE' ? 'bg-emerald-400' : status === 'FAILED' || status === 'EXPIRED' ? 'bg-red-400' : status === 'SUSPENDED' ? 'bg-orange-400' : 'bg-amber-400'}`} />
-      {status}
+    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${toneClasses[tone] || 'bg-gray-50 text-gray-600'}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${dotClasses[tone] || 'bg-amber-400'}`} />
+      {label}
     </span>
   )
 }
@@ -69,12 +74,14 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
   ])
 
   // CURRENT usage derives from the canonical ESIM snapshot columns; UsageRecord
-  // is historical. eSIMs without a snapshot are UNKNOWN, never shown as 0 MB.
-  const totalDataUsed = esims.reduce((sum, e) => sum + (e.dataUsedMB || 0), 0)
+  // is historical. eSIMs without a snapshot are UNKNOWN, never shown as 0 MB;
+  // a stored numeric zero is a real zero and counted as known-zero usage.
+  const usageKnownEsims = esims.filter((e) => e.dataUsedMB != null)
+  const totalDataUsed = usageKnownEsims.reduce((sum, e) => sum + e.dataUsedMB, 0)
   const activeCount = esims.filter((e) => e.status === 'ACTIVE').length
   const expiringSoon = esims.filter((e) => e.expiresAt && e.expiresAt < new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) && e.expiresAt > new Date()).length
   const hasSnapshot = (e: any) => e.dataTotalMB != null || e.dataRemainingMB != null
-  const zeroUsage = esims.filter((e) => hasSnapshot(e) && !e.dataUsedMB).length
+  const zeroUsage = esims.filter((e) => hasSnapshot(e) && e.dataUsedMB === 0).length
   const unknownUsage = esims.filter((e) => !hasSnapshot(e)).length
 
   const uniquePkgs = packages.map((p) => p.package).filter((p, i, arr) => arr.findIndex((x) => x.id === p.id) === i)
@@ -109,8 +116,8 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
           <p className="mt-1 text-2xl font-bold text-gray-500">{unknownUsage}<span className="text-sm font-normal text-gray-400 ml-1">no snapshot</span></p>
         </div>
         <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Avg per eSIM</p>
-          <p className="mt-1 text-2xl font-bold text-gray-900">{esims.length > 0 ? Math.round(totalDataUsed / esims.length) : 0} <span className="text-sm font-normal text-gray-500">MB</span></p>
+          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Avg per eSIM (known usage)</p>
+          <p className="mt-1 text-2xl font-bold text-gray-900">{usageKnownEsims.length > 0 ? Math.round(totalDataUsed / usageKnownEsims.length) : 0} <span className="text-sm font-normal text-gray-500">MB</span></p>
         </div>
       </div>
 
@@ -127,6 +134,7 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
               <option value="">All</option>
               <option value="ACTIVE">Active</option>
               <option value="PENDING_ACTIVATION">Pending</option>
+              <option value="DEPLETED">Depleted</option>
               <option value="EXPIRED">Expired</option>
               <option value="SUSPENDED">Suspended</option>
             </select>
@@ -166,6 +174,7 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
                 <tr><td colSpan={9} className="px-5 py-12 text-center text-sm text-gray-400">No eSIMs found matching your filters.</td></tr>
               ) : esims.map((esim) => {
                 const current = deriveUsageMetrics(esim.dataUsedMB, esim.dataTotalMB, esim.dataRemainingMB)
+                const staleness = getUsageStaleness(esim.lastUsageSyncAt)
                 return (
                   <tr key={esim.id} className="hover:bg-gray-50/50 transition-colors">
                     <td className="whitespace-nowrap px-5 py-4 text-sm">
@@ -183,13 +192,13 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
                       {sanitizePublicText(esim.purchase.package.displayName || esim.purchase.package.name, null, esim.purchase.package.providerName) || esim.purchase.package.displayName || esim.purchase.package.name}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-900">
-                      {current.hasSnapshot ? `${(current.used / 1024).toFixed(2)} GB` : 'Usage unavailable'}
+                      {usageUsedLabel(current)}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-900">
-                      {current.hasSnapshot ? `${Math.max(0, current.remaining / 1024).toFixed(2)} GB` : '—'}
+                      {usageRemainingLabel(current)}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4">
-                      {current.hasSnapshot && current.total > 0 ? <UsagePill value={current.used} total={current.total} /> : <span className="text-xs text-gray-400">—</span>}
+                      {current.hasSnapshot && current.usedKnown && current.total > 0 ? <UsagePill value={current.used} total={current.total} /> : <span className="text-xs text-gray-400">—</span>}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
                       {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '—'}
@@ -198,7 +207,11 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
                       <StatusPill status={esim.status} />
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-xs text-gray-400">
-                      {esim.lastUsageSyncAt ? new Date(esim.lastUsageSyncAt).toLocaleDateString() : 'Never'}
+                      {esim.lastUsageSyncAt ? (
+                        <span className={staleness.stale ? 'text-orange-500' : 'text-gray-400'} title={staleness.stale ? 'Data may be out of date (last-known)' : 'Fresh'}>
+                          {new Date(esim.lastUsageSyncAt).toLocaleDateString()}{staleness.stale ? ' (stale)' : ''}
+                        </span>
+                      ) : 'Never'}
                     </td>
                   </tr>
                 )

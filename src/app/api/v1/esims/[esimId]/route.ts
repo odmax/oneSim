@@ -10,6 +10,7 @@ import { getActivationInstructions } from '@/lib/esim/activation-instructions'
 import { buildInstallationPresentation } from '@/lib/esim/installation-data'
 import { getPackageDisplayName, getPackageDataGB, PurchaseSnapshot } from '@/lib/packages/snapshot-utils'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { esimUsageSnapshotValues } from '@/lib/api/esim-usage-serialize'
 import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 
 export async function GET(
@@ -42,7 +43,9 @@ export async function GET(
   }
 
   const safeEsim = stripEsimProviderFields(esim)
-  const dataUsedMB = esim.dataUsedMB || esim.usageRecords.reduce((sum, r) => sum + r.dataUsedMB, 0)
+  // The snapshot used value is authoritative as stored — a real zero is a real
+  // zero and must never be replaced by a reconstructed history aggregate.
+  const { dataUsedMB } = esimUsageSnapshotValues(esim)
   // Canonical installation model: classify image vs LPA payload vs manual.
   const install = buildInstallationPresentation({
     activationCode: esim.activationCode,

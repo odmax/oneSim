@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { normalizeChoiceWebhook } from '@/lib/providers/webhooks/choice-webhook-normalizer'
-import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
+import { deriveEsimLifecycleStatus, deriveDepletionStatus, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
 
 export interface NormalizedWebhookEvent {
   providerType: string
@@ -68,9 +68,11 @@ function normalizeGeneric(payload: any, providerType: string): NormalizedWebhook
   else if (eLower.includes('error') || eLower.includes('fail')) eventType = 'PROVIDER_ERROR'
 
   const usage = payload.usage || payload.usageData || {}
-  const dataUsedMB = payload.dataUsedMB || usage.usedMB || undefined
-  const dataTotalMB = payload.dataTotalMB || usage.totalMB || undefined
-  const dataRemainingMB = payload.dataRemainingMB || usage.remainingMB || undefined
+  // Nullish access preserves a legitimate numeric zero; a genuinely missing
+  // value stays undefined (unknown) and is never mistaken for a real zero.
+  const dataUsedMB = payload.dataUsedMB ?? usage.usedMB ?? undefined
+  const dataTotalMB = payload.dataTotalMB ?? usage.totalMB ?? undefined
+  const dataRemainingMB = payload.dataRemainingMB ?? usage.remainingMB ?? undefined
 
   const externalId = `${providerType}:${event}:${payload.iccid || payload.imsi || ''}:${payload.timestamp || ''}`
 
@@ -178,22 +180,45 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
       }
 
       case 'USAGE_UPDATED': {
-        const usageData: any = { lastSyncAt: now, lastStatusSyncAt: now }
+        const usageData: any = { lastSyncAt: now, lastStatusSyncAt: now, lastUsageSyncAt: now, lastUsageAt: now }
         if (normalized.dataUsedMB != null) usageData.dataUsedMB = normalized.dataUsedMB
         if (normalized.dataTotalMB != null) usageData.dataTotalMB = normalized.dataTotalMB
         if (normalized.dataRemainingMB != null) usageData.dataRemainingMB = normalized.dataRemainingMB
         if (normalized.usageDate) usageData.lastUsageAt = new Date(normalized.usageDate)
+
+        // A webhook reporting authoritative remaining zero is capable of deriving
+        // DEPLETED (same canonical engine as scheduled/manual sync). Missing or
+        // unknown remaining never implies depletion; terminal states are never
+        // rewritten.
+        const existing = await prisma.eSIM.findUnique({ where: { id: esimId }, select: { status: true, providerStatus: true } })
+        const providerStatusRaw = String(normalized.providerStatus || '')
+        const remainingNum =
+          normalized.dataRemainingMB != null && Number.isFinite(Number(normalized.dataRemainingMB))
+            ? Number(normalized.dataRemainingMB)
+            : undefined
+        const depletion = deriveDepletionStatus(existing?.status || 'PENDING_ACTIVATION', {
+          dataRemainingMB: remainingNum,
+          snapshotValid: remainingNum != null,
+          providerExhausted: isProviderExhaustedStatus(providerStatusRaw || undefined),
+        })
+        if (depletion && existing?.status !== depletion) usageData.status = depletion
+        if (providerStatusRaw && existing?.providerStatus !== providerStatusRaw) usageData.providerStatus = providerStatusRaw
+
         await prisma.eSIM.update({ where: { id: esimId }, data: usageData })
 
-        await prisma.usageRecord.create({
-          data: {
-            esimId,
-            dataUsedMB: normalized.dataUsedMB || 0,
-            dataTotalMB: normalized.dataTotalMB || null,
-            dataRemainingMB: normalized.dataRemainingMB || null,
-            timestamp: normalized.usageDate ? new Date(normalized.usageDate) : now,
-          },
-        })
+        // History record only when an authoritative value exists; a real zero is
+        // preserved and a missing value is never fabricated as 0.
+        if (normalized.dataUsedMB != null || normalized.dataTotalMB != null || normalized.dataRemainingMB != null) {
+          await prisma.usageRecord.create({
+            data: {
+              esimId,
+              dataUsedMB: normalized.dataUsedMB ?? 0,
+              dataTotalMB: normalized.dataTotalMB ?? null,
+              dataRemainingMB: normalized.dataRemainingMB ?? null,
+              timestamp: normalized.usageDate ? new Date(normalized.usageDate) : now,
+            },
+          })
+        }
         break
       }
 

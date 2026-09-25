@@ -19,28 +19,29 @@ export function UsageBar({ dataUsedMB, dataTotalMB, dataRemainingMB, label }: {
     )
   }
 
-  const { used, total, remaining, percentage } = metrics
+  const { used, total, remaining, percentage, usedKnown, remainingKnown } = metrics
   const usageGB = (used / 1024).toFixed(2)
   const totalGB = (total / 1024).toFixed(2)
   const remainingGB = (remaining / 1024).toFixed(2)
 
   const barColor = percentage >= 90 ? 'bg-red-500' : percentage >= 70 ? 'bg-amber-500' : 'bg-emerald-500'
+  const showBar = usedKnown && total > 0
 
   return (
     <div className="space-y-1">
       {label && <p className="text-xs font-medium text-gray-500">{label}</p>}
       <div className="flex items-center justify-between text-sm">
-        <span className="font-medium text-gray-900">{usageGB} GB</span>
+        <span className="font-medium text-gray-900">{usedKnown ? `${usageGB} GB` : '—'}</span>
         {total > 0 && <span className="text-xs text-gray-400">of {totalGB} GB</span>}
       </div>
-      {total > 0 && (
+      {showBar && (
         <div className="h-2 w-full rounded-full bg-gray-100">
           <div className={`h-2 rounded-full ${barColor} transition-all`} style={{ width: `${Math.min(percentage, 100)}%` }} />
         </div>
       )}
       <div className="flex justify-between text-xs text-gray-400">
-        <span>{percentage}% used</span>
-        <span>{remainingGB} GB remaining</span>
+        <span>{usedKnown ? `${percentage}% used` : '—'}</span>
+        <span>{remainingKnown ? `${remainingGB} GB remaining` : (usedKnown && total > 0 ? `${remainingGB} GB remaining` : '—')}</span>
       </div>
     </div>
   )
@@ -59,6 +60,8 @@ export function UsageSummary({ dataUsedMB, dataTotalMB, dataRemainingMB, lastUsa
   const used = metrics.used
   const total = metrics.total
   const remaining = metrics.remaining
+  const { usedKnown, remainingKnown } = metrics
+  const hasRemaining = remainingKnown || (usedKnown && total > 0)
 
   const isExpired = status === 'EXPIRED'
   const expiredSoon = expiresAt && !isExpired && new Date(expiresAt).getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000
@@ -71,7 +74,7 @@ export function UsageSummary({ dataUsedMB, dataTotalMB, dataRemainingMB, lastUsa
           <>
             <div className="flex justify-between">
               <dt className="text-gray-500">Data Used</dt>
-              <dd className="font-medium text-gray-900">{(used / 1024).toFixed(2)} GB</dd>
+              <dd className="font-medium text-gray-900">{usedKnown ? `${(used / 1024).toFixed(2)} GB` : '—'}</dd>
             </div>
             {total > 0 && (
               <div className="flex justify-between">
@@ -82,7 +85,7 @@ export function UsageSummary({ dataUsedMB, dataTotalMB, dataRemainingMB, lastUsa
             <div className="flex justify-between">
               <dt className="text-gray-500">Remaining</dt>
               <dd className={`font-medium ${remaining <= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                {Math.max(0, remaining / 1024).toFixed(2)} GB
+                {hasRemaining ? `${Math.max(0, remaining / 1024).toFixed(2)} GB` : '—'}
               </dd>
             </div>
           </>

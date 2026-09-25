@@ -188,11 +188,17 @@ export class HeaderTokenRestConnector extends RestCatalogConnector {
   async getUsage(iccid: string): Promise<ConnectorResult<UsageResult>> {
     const { data, error } = await fetchJson(this.baseUrl(`/api/v1/subscriptions/${iccid}/usage`), { headers: this.headers })
     if (error) return { success: false, error }
+    // Missing usage must remain unavailable rather than being fabricated as zero.
+    const used =
+      data.data_used_mb ?? data.dataUsedMB ?? data.used_mb ?? data.usedMB ?? null
+    if (used == null || !Number.isFinite(Number(used))) {
+      return { success: false, error: { code: 'DATA_UNAVAILABLE', message: 'No usage data returned for subscription' } }
+    }
     return {
       success: true,
       data: {
         iccid,
-        dataUsedMB: data.data_used_mb || data.dataUsedMB || 0,
+        dataUsedMB: Number(used),
         timestamp: data.timestamp || new Date().toISOString(),
       },
     }

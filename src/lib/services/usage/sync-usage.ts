@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { capabilitySupported, resolveUsageLookup, buildProviderConnector, mergeProviderPackageEsimId, isUsageLookupSkip, type SyncLookupEsim } from '@/lib/services/esims/sync-lookup'
 import { deriveDepletionStatus, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
+import { getUsageNextSync } from '@/lib/services/jobs/sync-policy'
 
 /**
  * Canonicalize a provider-reported remaining-data value:
@@ -95,15 +96,19 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
       })
 
       await prisma.$transaction(async (tx) => {
-        await tx.usageRecord.create({
-          data: {
-            esimId,
-            dataUsedMB,
-            dataTotalMB: dataTotalMB || null,
-            dataRemainingMB,
-            timestamp: d.timestamp ? new Date(d.timestamp) : new Date(),
-          },
-        })
+        // A history record is created only when at least one authoritative value
+        // was returned; a missing used value stays unknown (never fabricated as 0).
+        if (dataUsedMB != null || dataTotalMB != null || dataRemainingMB != null) {
+          await tx.usageRecord.create({
+            data: {
+              esimId,
+              dataUsedMB: dataUsedMB ?? 0,
+              dataTotalMB: dataTotalMB ?? null,
+              dataRemainingMB,
+              timestamp: d.timestamp ? new Date(d.timestamp) : new Date(),
+            },
+          })
+        }
 
         const updateData: any = { lastSyncAt: new Date(), lastUsageSyncAt: new Date() }
         if (dataUsedMB !== undefined && esim.dataUsedMB !== dataUsedMB) updateData.dataUsedMB = dataUsedMB
@@ -120,6 +125,10 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
         // Customer-visible status only changes via the canonical decision;
         // idempotent: no write when the status already matches.
         if (depletion && esim.status !== depletion) updateData.status = depletion
+
+        // Keep the recurring scheduler on the canonical cadence (DEPLETED gets a
+        // conservative 24 h recheck) after every authoritative result.
+        updateData.usageNextSyncAt = getUsageNextSync(depletion || esim.status, 0)
 
         // Persist a provider-discovered package↔eSIM association id
         // (providerResponse.packageEsimId) WITHOUT overwriting existing keys, so

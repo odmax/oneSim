@@ -246,8 +246,8 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
           status: 'COMPLETED',
           completedAt: new Date(),
           providerReference: topUpData.providerReference || null,
-          dataAddedMB: dataAddedMB || null,
-          validityDaysAdded: validityDaysAdded || null,
+          dataAddedMB: dataAddedMB ?? null,
+          validityDaysAdded: validityDaysAdded ?? null,
           providerResponse: topUpData as any,
         },
       })
@@ -259,8 +259,13 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
       } else if (validityDaysAdded) {
         updateData.expiresAt = new Date(Date.now() + validityDaysAdded * 24 * 60 * 60 * 1000)
       }
-      if (topUpData.newDataTotalMB) updateData.dataTotalMB = topUpData.newDataTotalMB
-      if (topUpData.newDataRemainingMB) updateData.dataRemainingMB = topUpData.newDataRemainingMB
+      // Preserve a legitimate zero returned after a top-up (a real 0 remaining
+      // must never keep a stale value), while a provider that omits the field
+      // leaves the existing value untouched. The eSIM status is NOT changed
+      // here: a depleted line stays DEPLETED until an authoritative remaining >
+      // 0 snapshot arrives through the canonical depletion engine.
+      if (topUpData.newDataTotalMB != null) updateData.dataTotalMB = topUpData.newDataTotalMB
+      if (topUpData.newDataRemainingMB != null) updateData.dataRemainingMB = topUpData.newDataRemainingMB
 
       if (Object.keys(updateData).length > 0) {
         await tx.eSIM.update({ where: { id: esimId }, data: updateData })
@@ -328,8 +333,8 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
       status: 'COMPLETED',
       amount,
       currency,
-      dataAddedMB: dataAddedMB || undefined,
-      validityDaysAdded: validityDaysAdded || undefined,
+      dataAddedMB: dataAddedMB ?? undefined,
+      validityDaysAdded: validityDaysAdded ?? undefined,
     }
   } catch (error: any) {
     // Provider succeeded but local completion failed — the reservation is KEPT

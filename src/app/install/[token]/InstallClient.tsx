@@ -34,8 +34,12 @@ export default function InstallClient({ esim, token }: { esim: any; token: strin
     }
   }
 
-  const remaining = status.dataRemainingMB ?? (status.dataTotalMB - status.dataUsedMB)
-  const usagePct = status.dataTotalMB > 0 ? Math.round((status.dataUsedMB / status.dataTotalMB) * 100) : 0
+  const remaining = status.dataRemainingMB != null
+    ? status.dataRemainingMB
+    : (status.dataTotalMB != null && status.dataUsedMB != null ? Math.max(0, status.dataTotalMB - status.dataUsedMB) : null)
+  const usagePct = status.dataTotalMB != null && status.dataTotalMB > 0 && status.dataUsedMB != null
+    ? Math.round((status.dataUsedMB / status.dataTotalMB) * 100)
+    : null
 
   const StatusBadge = ({ s }: { s: string }) => {
     const colors: Record<string, string> = {
@@ -146,14 +150,30 @@ export default function InstallClient({ esim, token }: { esim: any; token: strin
         {/* Data Usage */}
         <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm space-y-3">
           <h2 className="text-sm font-semibold text-gray-900">Data Usage</h2>
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-sm text-gray-500">{((status.dataUsedMB || 0) / 1024).toFixed(2)} GB used</span>
-            <span className="text-sm text-gray-500">{Math.max(0, remaining / 1024).toFixed(2)} GB remaining</span>
-          </div>
-          <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden">
-            <div className={`h-full rounded-full transition-all ${usagePct > 80 ? 'bg-red-400' : usagePct > 50 ? 'bg-amber-400' : 'bg-emerald-400'}`} style={{ width: `${Math.min(usagePct, 100)}%` }} />
-          </div>
-          {status.lastUsageAt && <p className="text-xs text-gray-400">Last usage: {new Date(status.lastUsageAt).toLocaleDateString()}</p>}
+          {status.hasUsageSnapshot ? (
+            <>
+              {usagePct !== null ? (
+                <>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm text-gray-500">{((status.dataUsedMB || 0) / 1024).toFixed(2)} GB used</span>
+                    <span className="text-sm text-gray-500">{Math.max(0, (remaining || 0) / 1024).toFixed(2)} GB remaining</span>
+                  </div>
+                  <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all ${usagePct > 80 ? 'bg-red-400' : usagePct > 50 ? 'bg-amber-400' : 'bg-emerald-400'}`} style={{ width: `${Math.min(usagePct, 100)}%` }} />
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm text-gray-500">{status.dataUsedMB != null ? `${(status.dataUsedMB / 1024).toFixed(2)} GB used` : '— used'}</span>
+                  <span className="text-sm text-gray-500">{remaining != null ? `${Math.max(0, remaining / 1024).toFixed(2)} GB remaining` : '— remaining'}</span>
+                </div>
+              )}
+              {status.lastUsageSyncAt && <p className="text-xs text-gray-400">Last usage sync: {new Date(status.lastUsageSyncAt).toLocaleDateString()}</p>}
+              {status.lastUsageAt && !status.lastUsageSyncAt && <p className="text-xs text-gray-400">Last usage: {new Date(status.lastUsageAt).toLocaleDateString()}</p>}
+            </>
+          ) : (
+            <p className="text-sm text-gray-500">Usage unavailable from provider</p>
+          )}
         </div>
 
         {/* Actions */}

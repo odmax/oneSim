@@ -38,6 +38,10 @@ function getUsageBaseInterval(status: string): number {
       return 6 * 3600 * 1000
     case 'SUSPENDED':
       return 24 * 3600 * 1000
+    case 'DEPLETED':
+      // Conservative recheck: a depleted eSIM must be re-verified so a genuine
+      // top-up can restore ACTIVE automatically, but never polled tightly.
+      return 24 * 3600 * 1000
     default:
       return 0 // no polling for PENDING/FAILED/EXPIRED etc.
   }

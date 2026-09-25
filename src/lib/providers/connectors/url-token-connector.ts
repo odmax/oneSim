@@ -1400,8 +1400,8 @@ export class UrlTokenConnector extends RestCatalogConnector {
           validityDaysAdded,
           status: json.status || 'COMPLETED',
           newExpiry: json.expiry_date || json.expires_at || undefined,
-          newDataTotalMB: json.data_total_mb || json.dataTotalMB || undefined,
-          newDataRemainingMB: json.data_remaining_mb || json.dataRemainingMB || undefined,
+          newDataTotalMB: json.data_total_mb ?? json.dataTotalMB ?? undefined,
+          newDataRemainingMB: json.data_remaining_mb ?? json.dataRemainingMB ?? undefined,
         },
       }
     } catch (e: any) {

@@ -127,6 +127,36 @@ describe('syncESIMUsage — canonical DEPLETED persistence', () => {
   })
 })
 
+describe('usage history + zero preservation', () => {
+  it('UsageRecord preserves an authoritative total of zero', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow())
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 0, dataTotalMB: 0, dataRemainingMB: 0 } })
+    await syncESIMUsage('esim-1')
+    const rec = mocks.usageRecordCreate.mock.calls[0][0].data
+    expect(rec.dataTotalMB).toBe(0)
+    expect(rec.dataUsedMB).toBe(0)
+    expect(rec.dataRemainingMB).toBe(0)
+  })
+
+  it('a missing used value stays unknown — never fabricated as 0 on the eSIM snapshot', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ dataUsedMB: 400 }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataRemainingMB: 100, dataTotalMB: 500 } })
+    await syncESIMUsage('esim-1')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect('dataUsedMB' in data).toBe(false)
+  })
+
+  it('a successful authoritative fetch reschedules DEPLETED on the conservative cadence', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'DEPLETED', dataRemainingMB: 0 }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 500, dataTotalMB: 500, dataRemainingMB: 0 } })
+    await syncESIMUsage('esim-1')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    const next = (data.usageNextSyncAt as Date).getTime()
+    expect(next - Date.now()).toBeGreaterThanOrEqual(23 * 3600 * 1000)
+    expect(next - Date.now()).toBeLessThan(25 * 3600 * 1000)
+  })
+})
+
 describe('normalizeDataRemainingMB — negative/NaN canonicalization', () => {
   it('-1 persists as 0 and produces DEPLETED', async () => {
     mocks.findUnique.mockResolvedValue(esimRow())

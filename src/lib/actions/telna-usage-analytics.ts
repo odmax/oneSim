@@ -184,7 +184,6 @@ export async function telnaSyncBalances(esimId: string) {
       esimId,
       dataUsedMB: 0,
       dataRemainingMB: mapped.dataRemainingMB ?? undefined,
-      dataTotalMB: mapped.dataRemainingMB ?? undefined,
       timestamp: mapped.timestamp ? new Date(mapped.timestamp) : new Date(),
       rawData: mapped.rawData as any,
     },

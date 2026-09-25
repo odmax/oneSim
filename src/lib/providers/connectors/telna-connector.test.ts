@@ -5008,3 +5008,47 @@ describe('Telna reconcileAmbiguousPurchase â€” read-only exact package correlati
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 })
+
+describe('TelnaConnector getUsage — unknown total vs preserved zero (zero-value semantics)', () => {
+  function json(data: unknown, status = 200) {
+    return { ok: status >= 200 && status < 300, status, json: async () => data, text: async () => JSON.stringify(data) } as any
+  }
+
+  beforeEach(() => {
+    vi.mocked(prisma.provider.findUnique).mockResolvedValue(mockProvider())
+  })
+
+  it('remaining supplied but total allowance unknown -> dataUsedMB stays undefined (never fabricated 0)', async () => {
+    const fetchSpy = vi.fn()
+      // exact package read: remaining 100 MB, but no template allowance number
+      .mockResolvedValueOnce(json({ data: { id: 'EXACT', status: 'ACTIVE', data_usage_remaining: 104857600, package_template: { id: 5555 } } }))
+      // template allowance read fails -> total stays unknown
+      .mockResolvedValueOnce(json({ error: 'no_template' }, 500))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await connector.getUsage({ iccid: '8944501234567890123', providerSubscriptionId: 'EXACT' })
+    expect(r.success).toBe(true)
+    expect(r.data?.dataRemainingMB).toBe(100)
+    expect(r.data?.dataTotalMB).toBeUndefined()
+    expect(r.data?.dataUsedMB).toBeUndefined() // never 0 when total is unknown
+    // No provider request beyond the documented package + template reads.
+    expect(fetchSpy.mock.calls.length).toBe(2)
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/v2.1/pcr/packages/EXACT')
+    expect(String(fetchSpy.mock.calls[1][0])).toContain('/v2.1/pcr/package-templates/5555')
+  })
+
+  it('a legitimate remaining value of 0 remains 0 (total known)', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { id: 'EXACT', status: 'ACTIVE', data_usage_remaining: 0, package_template: { id: 42, data_usage_allowance: 2147483648 } } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const r = await connector.getUsage({ iccid: '8944501234567890123', providerSubscriptionId: 'EXACT' })
+    expect(r.success).toBe(true)
+    expect(r.data?.dataRemainingMB).toBe(0)
+    expect(r.data?.dataTotalMB).toBe(2048)
+    expect(r.data?.dataUsedMB).toBe(2048)
+    expect(fetchSpy.mock.calls.length).toBe(1)
+  })
+})

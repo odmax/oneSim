@@ -222,3 +222,31 @@ describe('F2 â€” no double provider charge / double debit on retry', () => {
     expect(mockCaptureUpToInTx).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('F3 — authoritative zero after top-up', () => {
+  it('preserves newDataRemainingMB 0 and does NOT change eSIM status (no silent activation)', async () => {
+    adapter.topUpESIM.mockResolvedValue({ success: true, data: { providerReference: 'ref-1', newDataTotalMB: 0, newDataRemainingMB: 0 } })
+    const result = await createTopUpOrder({ businessId: 'biz-1', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1 })
+    expect(result.success).toBe(true)
+    const esimUpdate = txMock.eSIM.update.mock.calls.find((c: any) => c[0].where?.id === 'esim-1')
+    expect(esimUpdate).toBeDefined()
+    const data = esimUpdate![0].data
+    // authoritative zero is preserved on the snapshot
+    expect(data.dataRemainingMB).toBe(0)
+    expect(data.dataTotalMB).toBe(0)
+    // status is decided only by the canonical depletion engine — a top-up may
+    // never silently activate a depleted eSIM
+    expect(data.status).toBeUndefined()
+  })
+
+  it('leaves remaining/total untouched when the provider omits them (no status write)', async () => {
+    adapter.topUpESIM.mockResolvedValue({ success: true, data: { providerReference: 'ref-1' } })
+    await createTopUpOrder({ businessId: 'biz-1', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1 })
+    const esimUpdate = txMock.eSIM.update.mock.calls.find((c: any) => c[0].where?.id === 'esim-1')
+    expect(esimUpdate).toBeDefined()
+    const data = esimUpdate![0].data
+    expect(data.dataRemainingMB).toBeUndefined()
+    expect(data.dataTotalMB).toBeUndefined()
+    expect(data.status).toBeUndefined()
+  })
+})

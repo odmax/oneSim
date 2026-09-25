@@ -65,7 +65,10 @@ export interface ActivateESIMResult {
 
 export interface UsageResult {
   iccid: string
-  dataUsedMB: number
+  /** Used allowance in MB (normalized). Absent when the provider did not return
+   *  an authoritative used value — callers must treat absence as UNKNOWN, never
+   *  invent a zero. */
+  dataUsedMB?: number
   timestamp?: string
   /** Total allowance in MB (normalized). Additive — non-Choice providers may omit it. */
   dataTotalMB?: number

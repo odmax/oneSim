@@ -1132,7 +1132,9 @@ export class TelnaConnector implements IProviderConnector {
       success: true,
       data: {
         iccid,
-        dataUsedMB: usedMB != null ? Math.round(usedMB) : 0,
+        // A missing total allowance never fabricates a used value — unknown used
+        // stays undefined so it is never presented as zero.
+        dataUsedMB: usedMB != null ? Math.round(usedMB) : undefined,
         dataTotalMB: totalMB != null ? Math.round(totalMB) : undefined,
         dataRemainingMB: Math.round(remainingMB),
         expiresAt: packageInstance.expiry_date ? String(packageInstance.expiry_date) : undefined,

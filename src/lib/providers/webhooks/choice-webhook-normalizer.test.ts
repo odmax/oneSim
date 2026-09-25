@@ -235,3 +235,47 @@ describe('normalizeChoiceWebhook', () => {
     })
   })
 })
+
+describe('normalizeChoiceWebhook — zero-value preservation', () => {
+  it('preserves a legitimate used/total/remaining of zero', () => {
+    const result = normalizeChoiceWebhook({
+      command: 'imsi_usage_threshold_notice',
+      threshold_code: 6,
+      quantity_used: '0',
+      maximum_units: '0',
+      max_qty_type: 'MB',
+      imsi: '310410123456789',
+    })
+    expect(result.eventType).toBe('USAGE_UPDATED')
+    expect(result.dataUsedMB).toBe(0)
+    expect(result.dataTotalMB).toBe(0)
+  })
+
+  it('derives remaining = total when used is zero (total must not collapse to undefined)', () => {
+    const result = normalizeChoiceWebhook({
+      command: 'imsi_usage_threshold_notice',
+      threshold_code: 6,
+      quantity_used: '0',
+      maximum_units: '1024',
+      max_qty_type: 'MB',
+      imsi: '310410123456789',
+    })
+    expect(result.dataUsedMB).toBe(0)
+    expect(result.dataTotalMB).toBe(1024)
+    expect(result.dataRemainingMB).toBe(1024)
+  })
+
+  it('preserves a computed remaining of zero when fully used', () => {
+    const result = normalizeChoiceWebhook({
+      command: 'imsi_usage_threshold_notice',
+      threshold_code: 6,
+      quantity_used: '1024',
+      maximum_units: '1024',
+      max_qty_type: 'MB',
+      imsi: '310410123456789',
+    })
+    expect(result.dataUsedMB).toBe(1024)
+    expect(result.dataTotalMB).toBe(1024)
+    expect(result.dataRemainingMB).toBe(0)
+  })
+})
