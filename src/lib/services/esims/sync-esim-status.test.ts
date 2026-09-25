@@ -111,6 +111,43 @@ describe('syncESIMStatus — canonical evidence pipeline (root-cause fix)', () =
     expect(updateCall.data.usageNextSyncAt.getTime() - Date.now()).toBeGreaterThanOrEqual(sixHours - 5000)
   })
 
+  it('connector-confirmed authoritative activatedAt (e.g. iBASIS) + ACTIVE promotes PENDING → ACTIVE and persists the timestamp', async () => {
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', rawStatus: 'active', activatedAt: '2026-07-02T00:00:00Z', rawMetadata: { source: 'subscription' } },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    const result = await syncESIMStatus('esim-1')
+
+    expect(result.status).toBe('ACTIVE')
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBe('ACTIVE')
+    expect(updateCall.data.activatedAt).toEqual(new Date('2026-07-02T00:00:00Z'))
+    expect(updateCall.data.activationDetectedAt).toBeInstanceOf(Date)
+  })
+
+  it('raw ACTIVE without any activation evidence (no timestamp, no usage) does NOT promote a pending eSIM', async () => {
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', rawStatus: 'active', rawMetadata: { source: 'package-only' } },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    const result = await syncESIMStatus('esim-1')
+
+    expect(result.status).toBe('PENDING_ACTIVATION')
+    // Persistence only writes a status when it changed; a weak ACTIVE claim
+    // leaves PENDING_ACTIVATION untouched (no fabrication, no activation).
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+    expect(updateCall.data.activatedAt).toBeUndefined()
+  })
+
   it('does NOT seed usageNextSyncAt when the connector does not declare usage lookup', async () => {
     const connector = statusConnector({
       capabilities: { statusLookup: true, usageLookup: false },

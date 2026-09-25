@@ -12,6 +12,7 @@
 
 import { derivePublicSku } from '@/lib/catalog/public-sku'
 import { derivePublicPackagePresentation, sanitizePublicText } from '@/lib/catalog/public-package-presentation'
+import { publicEsimLifecycleFields } from '@/lib/api/esim-usage-serialize'
 
 /* -------------------------------------------------------------------------- */
 /*  Package DTO                                                               */
@@ -117,6 +118,10 @@ export type PublicOrderEsimDTO = {
   iccid: string
   imsi: string | null
   status: string
+  serviceStatus: string
+  serviceStatusLabel: string
+  installationStatus: string | null
+  installationStatusLabel: string
   expiresAt: string | null
   dataUsedMB: number | null
   dataRemainingMB: number | null
@@ -177,6 +182,7 @@ function serializePublicOrderEsim(e: any): PublicOrderEsimDTO {
     iccid: e.iccid,
     imsi: e.imsi ?? null,
     status: e.status,
+    ...publicEsimLifecycleFields(e),
     expiresAt: e.expiresAt?.toISOString?.() ?? e.expiresAt ?? null,
     dataUsedMB: e.dataUsedMB ?? null,
     dataRemainingMB: e.dataRemainingMB ?? null,
@@ -193,6 +199,10 @@ export type PublicEsimDetailDTO = {
   imsi: string | null
   status: string
   statusLabel: string
+  serviceStatus: string
+  serviceStatusLabel: string
+  installationStatus: string | null
+  installationStatusLabel: string
   qrCodeUrl: string | null
   qrCode: string | null
   qrPayload: string | null
@@ -253,6 +263,10 @@ export type PublicUsageEsimDTO = {
   iccid: string
   imsi: string | null
   status: string
+  serviceStatus: string
+  serviceStatusLabel: string
+  installationStatus: string | null
+  installationStatusLabel: string
   expiresAt: string | null
   dataUsedMB: number | null
   dataRemainingMB: number | null
@@ -268,6 +282,7 @@ export function serializePublicUsageEsim(e: any): PublicUsageEsimDTO {
     iccid: e.iccid,
     imsi: e.imsi ?? null,
     status: e.status,
+    ...publicEsimLifecycleFields(e),
     expiresAt: e.expiresAt?.toISOString?.() ?? null,
     dataUsedMB: e.dataUsedMB ?? null,
     dataRemainingMB: e.dataRemainingMB ?? null,

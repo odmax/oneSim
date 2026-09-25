@@ -34,7 +34,7 @@ export interface EsimStatusMeta {
 /** Customer-safe label + visual tone for every canonical eSIM lifecycle status. */
 export const ESIM_STATUS_META: Record<string, EsimStatusMeta> = {
   ACTIVE: { label: 'Active', tone: 'success' },
-  PENDING_ACTIVATION: { label: 'Ready to install', tone: 'warn' },
+  PENDING_ACTIVATION: { label: 'Provisioned', tone: 'warn' },
   INSTALLED: { label: 'Installed on device', tone: 'success' },
   PENDING: { label: 'Provisioning', tone: 'warn' },
   PROCESSING: { label: 'Provisioning', tone: 'warn' },

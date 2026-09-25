@@ -10,7 +10,7 @@ import { getActivationInstructions } from '@/lib/esim/activation-instructions'
 import { buildInstallationPresentation } from '@/lib/esim/installation-data'
 import { getPackageDisplayName, getPackageDataGB, PurchaseSnapshot } from '@/lib/packages/snapshot-utils'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
-import { esimUsageSnapshotValues } from '@/lib/api/esim-usage-serialize'
+import { esimUsageSnapshotValues, publicEsimLifecycleFields } from '@/lib/api/esim-usage-serialize'
 import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 
 export async function GET(
@@ -81,8 +81,9 @@ const snap = (esim.packageSnapshot || esim.purchase.packageSnapshot) as Purchase
       id: safeEsim.id,
       iccid: safeEsim.iccid,
       imsi: safeEsim.imsi || undefined,
-      status: esim.status,
+status: esim.status,
       statusLabel: getEsimStatusLabel(esim.status).label,
+      ...publicEsimLifecycleFields(esim),
       qrCodeUrl: install.qrImageUrl,
       qrCode: install.qrPayload,
       qrPayload: install.qrPayload,

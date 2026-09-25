@@ -8,7 +8,9 @@ import { getPackageDisplayName, getPackageDataGB, isPackageArchived } from '@/li
 import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
-import { getEsimStatusLabel, isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
+import { isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } | null {
   if (!raw) return null
@@ -21,8 +23,7 @@ function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } 
   } catch { return null }
 }
 
-function StatusPill({ status }: { status: string }) {
-  const { label, tone } = getEsimStatusLabel(status)
+function StatusPill({ title, label, tone }: { title?: string; label: string; tone: string }) {
   const styles: Record<string, { bg: string; dot: string }> = {
     success: { bg: 'bg-emerald-50 text-emerald-600', dot: 'bg-emerald-400' },
     warn: { bg: 'bg-amber-50 text-amber-600', dot: 'bg-amber-400' },
@@ -31,10 +32,31 @@ function StatusPill({ status }: { status: string }) {
   }
   const s = styles[tone] || styles.neutral
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${s.bg}`}>
+    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${s.bg}`} title={title}>
       <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
       {label}
     </span>
+  )
+}
+
+/** Two-axis presentation: Service + Setup. */
+function LifecyclePills({ status, installationStatus, hasInstallData, activatedAt, activationDetectedAt, dataUsedMB }: {
+  status: string
+  installationStatus?: string | null
+  hasInstallData: boolean
+  activatedAt?: Date | string | null
+  activationDetectedAt?: Date | string | null
+  dataUsedMB?: number | null
+}) {
+  const p = deriveEsimLifecyclePresentation({
+    status, installationStatus, hasUsableInstallData: hasInstallData,
+    activatedAt, activationDetectedAt, dataUsedMB,
+  })
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <StatusPill title="Service status" label={p.serviceLabel} tone={p.serviceTone} />
+      <StatusPill title="Setup status" label={p.setupLabel} tone={p.setupTone} />
+    </div>
   )
 }
 
@@ -112,7 +134,14 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                         {archived && <span className="ml-1.5 text-xs text-amber-500">(discontinued)</span>}
                       </td>
                       <td className="whitespace-nowrap px-5 py-4">
-                        <StatusPill status={esim.status} />
+                        <LifecyclePills
+                          status={esim.status}
+                          installationStatus={esim.installationStatus}
+                          hasInstallData={hasUsableInstallData({ activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl, qrCode: esim.qrCode, smdpAddress: esim.smdpAddress, matchingId: esim.matchingId })}
+                          activatedAt={esim.activatedAt}
+                          activationDetectedAt={esim.activationDetectedAt}
+                          dataUsedMB={esim.dataUsedMB}
+                        />
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
                         {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '\u2014'}

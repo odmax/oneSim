@@ -2,7 +2,7 @@ import { prisma } from '@/lib/prisma'
 import { getStatusNextSync, getUsageNextSync, shouldStopRetrying, nextStatusSyncDisposition, nextUsageSyncDisposition } from '../sync-policy'
 import { claimEsimForSync } from '../recurring-jobs'
 import type { IProviderConnector } from '@/lib/providers/connectors/connector-interface'
-import { deriveEsimLifecycleStatus, deriveDepletionStatus, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
+import { deriveEsimLifecycleStatus, deriveDepletionStatus, deriveUsageActivation, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
 import { capabilitySupported, resolveStatusLookup, resolveUsageLookup, buildProviderConnector, mergeProviderPackageEsimId, isUsageLookupSkip, type SyncLookupEsim } from '@/lib/services/esims/sync-lookup'
 import { normalizeDataRemainingMB } from '@/lib/services/usage/sync-usage'
 import { upsertProviderAlert, resolveProviderAlert } from '@/lib/services/operations/provider-alerts'
@@ -147,12 +147,15 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
         const providerStatus = result.data.status
         // Forward verified connector evidence (network attach / device install)
         // so the lifecycle engine promotes ACTIVE/INSTALLED identically to the
-        // single-sync path — no duplicated normalization logic.
+        // single-sync path — no duplicated normalization logic. A connector-
+        // confirmed authoritative activation timestamp (e.g. iBASIS) counts as
+        // activation history.
+        const connectorActivatedAt = result.data.activatedAt ? new Date(result.data.activatedAt) : undefined
         const lifecycle = deriveEsimLifecycleStatus({
           providerNormalizedStatus: providerStatus,
           currentStatus: esim.status,
           dataUsedMB: esim.dataUsedMB || 0,
-          activatedAt: esim.activatedAt,
+          activatedAt: connectorActivatedAt || (esim as any).activatedAt || null,
           providerInstalledSignal: result.data.evidence?.deviceInstalled,
           providerNetworkAttachedSignal: result.data.evidence?.networkAttached,
         })
@@ -175,8 +178,11 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
             evidenceObservedAt: new Date().toISOString(),
           },
         }
-        if (lifecycle.setActivatedAt && !esim.activatedAt) {
-          updateData.activatedAt = new Date()
+        if (lifecycle.setActivatedAt && !(esim as any).activatedAt) {
+          updateData.activatedAt = connectorActivatedAt || new Date()
+          updateData.activationDetectedAt = new Date()
+        } else if (connectorActivatedAt && !(esim as any).activatedAt && (newStatus === 'ACTIVE' || newStatus === 'INSTALLED')) {
+          updateData.activatedAt = connectorActivatedAt
           updateData.activationDetectedAt = new Date()
         }
         // Usage polling handoff: prove ACTIVE/INSTALLED + usageLookup support →
@@ -306,7 +312,18 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
           snapshotValid: true,
           providerExhausted: isProviderExhaustedStatus(data.status ?? data.providerStatus),
         })
-        const effectiveStatus = depletion || esim.status
+        // Canonical PENDING → ACTIVE promotion from authoritative usage evidence
+        // (identical to syncESIMUsage and the USAGE_UPDATED webhook). Zero used,
+        // missing or invalid usage are never activation evidence.
+        const activation = deriveUsageActivation({
+          currentStatus: esim.status,
+          dataUsedMB: dataUsedMB == null ? undefined : Number(dataUsedMB),
+          activatedAt: esim.activatedAt ?? null,
+        })
+        // DEPLETED (depletion) takes precedence over usage-activation when the
+        // snapshot reports exhausted remaining data; otherwise a pending line
+        // with real usage promotes to ACTIVE.
+        const effectiveStatus = depletion || (activation.status !== esim.status ? activation.status : esim.status)
         const mergedProviderResponse = mergeProviderPackageEsimId(esim.providerResponse, data.providerPackageEsimId)
         const updateData: any = {
           ...(dataUsedMB !== undefined && esim.dataUsedMB !== dataUsedMB ? { dataUsedMB: Math.round(dataUsedMB) } : {}),
@@ -317,7 +334,12 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
           usageNextSyncAt: getUsageNextSync(effectiveStatus, 0),
           usageSyncRetryCount: 0,
         }
-        if (depletion && esim.status !== depletion) updateData.status = depletion
+        if (effectiveStatus !== esim.status) updateData.status = effectiveStatus
+        // Activation timestamps are set only through the canonical engine flag.
+        if (effectiveStatus === 'ACTIVE' && activation.setActivatedAt && !esim.activatedAt) {
+          updateData.activatedAt = new Date()
+          updateData.activationDetectedAt = new Date()
+        }
         if ((data as any).expiresAt) updateData.expiresAt = new Date((data as any).expiresAt)
         if (data.status && esim.providerStatus !== String(data.status)) updateData.providerStatus = String(data.status)
         if (mergedProviderResponse) updateData.providerResponse = mergedProviderResponse

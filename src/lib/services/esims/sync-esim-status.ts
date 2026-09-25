@@ -62,12 +62,17 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   let providerStatus: string | undefined
   let evidence: StatusResultEvidence | undefined
   let sanitizedRawMetadata: Record<string, unknown> | undefined
+  let connectorActivatedAt: Date | undefined
 
   try {
     const statusResult = await connector.getStatus(lookup.identifier)
     if (statusResult.success && statusResult.data) {
       providerStatus = statusResult.data.status
       evidence = statusResult.data.evidence
+      if (statusResult.data.activatedAt) {
+        const t = new Date(statusResult.data.activatedAt)
+        if (!Number.isNaN(t.getTime())) connectorActivatedAt = t
+      }
       if (statusResult.data.rawMetadata && typeof statusResult.data.rawMetadata === 'object') {
         sanitizedRawMetadata = statusResult.data.rawMetadata as Record<string, unknown>
       }
@@ -83,12 +88,15 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   // Canonical evidence-aware lifecycle derivation (monotonic, never regress).
   // Verified connector evidence (network attach / device install) is forwarded
   // so the lifecycle engine can promote ACTIVE/INSTALLED without a
-  // provider-name branch.
+  // provider-name branch. A connector-confirmed authoritative activation
+  // timestamp (e.g. iBASIS) counts as activation history, so a provider ACTIVE
+  // + confirmed activation timestamp may promote while a raw ACTIVE claim alone
+  // never does.
   const lifecycle = deriveEsimLifecycleStatus({
     providerNormalizedStatus: providerStatus || 'UNKNOWN',
     currentStatus: esim.status,
     dataUsedMB: esim.dataUsedMB || 0,
-    activatedAt: esim.activatedAt,
+    activatedAt: connectorActivatedAt || esim.activatedAt,
     providerInstalledSignal: evidence?.deviceInstalled,
     providerNetworkAttachedSignal: evidence?.networkAttached,
   })
@@ -106,7 +114,12 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   }
 
   if (lifecycle.setActivatedAt && !esim.activatedAt) {
-    updateData.activatedAt = new Date()
+    updateData.activatedAt = connectorActivatedAt || new Date()
+    updateData.activationDetectedAt = new Date()
+  } else if (connectorActivatedAt && !esim.activatedAt && (lifecycle.status === 'ACTIVE' || lifecycle.status === 'INSTALLED')) {
+    // Connector-confirmed authoritative activation timestamp that the canonical
+    // engine accepted as activation history — persist it so it is not lost.
+    updateData.activatedAt = connectorActivatedAt
     updateData.activationDetectedAt = new Date()
   }
 

@@ -280,7 +280,7 @@ describe('processProviderWebhookEvent — canonical lifecycle arbitration (D1)',
     expect(mockPrisma.eSIM.update).toHaveBeenCalledTimes(1)
   })
 })
-describe('USAGE_UPDATED � zero preservation + canonical depletion via webhook', () => {
+describe('USAGE_UPDATED � zero preservation + canonical depletion via webhook', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -317,10 +317,36 @@ describe('USAGE_UPDATED � zero preservation + canonical depletion via webhook', 
     expect(u.status).toBeUndefined()
   })
 
-  it('Choice threshold notice fully used derives DEPLETED with remaining 0', async () => {
+it('Choice threshold notice fully used derives DEPLETED with remaining 0', async () => {
     const event = makeEvent({ providerType: 'CHOICE', payload: { body: { command: 'imsi_usage_threshold_notice', threshold_code: '6', quantity_used: '1024', maximum_units: '1024', max_qty_type: 'MB', imsi: '310150123456789' } } })
     await process(event, makeEsim({ status: 'ACTIVE' }))
     expect(lastEsimUpdate().dataRemainingMB).toBe(0)
     expect(lastEsimUpdate().status).toBe('DEPLETED')
+  })
+
+  it('authoritative usage > 0 promotes PENDING_ACTIVATION → ACTIVE via canonical activation (webhook parity)', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901', dataUsedMB: 128, dataTotalMB: 1024, dataRemainingMB: 896 } } })
+    await process(event, makeEsim({ status: 'PENDING_ACTIVATION', activatedAt: null }))
+    const u = lastEsimUpdate()
+    expect(u.status).toBe('ACTIVE')
+    expect(u.activatedAt).toBeInstanceOf(Date)
+    expect(u.activationDetectedAt).toBeInstanceOf(Date)
+  })
+
+  it('authoritative usage = 0 does NOT promote PENDING → ACTIVE (zero is valid but not activation evidence)', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901', dataUsedMB: 0, dataTotalMB: 1024, dataRemainingMB: 1024 } } })
+    await process(event, makeEsim({ status: 'PENDING_ACTIVATION', activatedAt: null }))
+    const u = lastEsimUpdate()
+    expect(u.dataUsedMB).toBe(0)
+    expect(u.status).toBeUndefined()
+    expect(u.activatedAt).toBeUndefined()
+  })
+
+  it('missing usage does NOT promote PENDING → ACTIVE', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901' } } })
+    await process(event, makeEsim({ status: 'PENDING_ACTIVATION', activatedAt: null }))
+    const u = lastEsimUpdate()
+    expect(u.status).toBeUndefined()
+    expect(u.activatedAt).toBeUndefined()
   })
 })

@@ -261,3 +261,46 @@ export function deriveDepletionStatus(
 
   return null
 }
+
+export interface UsageActivationInput {
+  /** Current stored canonical status. */
+  currentStatus?: string | null
+  /** Authoritative finite used value from a successful snapshot (0 = no evidence). */
+  dataUsedMB?: number | null
+  activatedAt?: Date | null | undefined
+}
+
+export interface UsageActivationResult {
+  /** 'ACTIVE' when a pending eSIM is promoted by real usage; otherwise the unchanged current status. */
+  status: string
+  /** True when this promotion should set/update activatedAt. */
+  setActivatedAt: boolean
+  /** reason for the decision (for logs/audit). */
+  reason: string
+}
+
+/**
+ * Canonical PENDING → ACTIVE promotion from AUTHORITATIVE usage evidence.
+ *
+ * The single decision point shared by the scheduled usage sync, the manual
+ * usage refresh and authoritative USAGE_UPDATED webhooks. Provenance rules:
+ *   - promotes only PENDING / PENDING_ACTIVATION rows (a DEPLETED row is
+ *     restored by `deriveDepletionStatus`, never here);
+ *   - a finite authoritative `dataUsedMB > 0` is the ONLY activation evidence;
+ *   - a real zero-used snapshot is valid but is NOT activation evidence;
+ *   - missing / non-finite / stale usage is NOT activation evidence;
+ *   - terminal statuses are never touched here (DEPLETION_IMMUTABLE_STATUSES
+ *     and the engine's terminal one-way guard apply at the callers).
+ * Activation timestamps are set only through the returned flag (the caller
+ * persists via the canonical engine semantics).
+ */
+export function deriveUsageActivation(input: UsageActivationInput): UsageActivationResult {
+  const current = String(input.currentStatus || '').toUpperCase()
+  const used = input.dataUsedMB
+  const hasUsageEvidence = typeof used === 'number' && Number.isFinite(used) && used > 0
+
+  if ((current === 'PENDING' || current === 'PENDING_ACTIVATION') && hasUsageEvidence) {
+    return { status: 'ACTIVE', setActivatedAt: !hasActivationHistory(input.activatedAt), reason: 'usage-evidence-activation' }
+  }
+  return { status: current || 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'no-usage-activation-evidence' }
+}

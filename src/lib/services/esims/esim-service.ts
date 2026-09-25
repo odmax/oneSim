@@ -90,28 +90,22 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
     return { success: false, error: result.error || 'Usage sync failed' }
   }
 
-  // Re-read the persisted snapshot and apply canonical first-usage activation
-  // evidence (positive per-eSIM usage may promote PENDING_ACTIVATION → ACTIVE).
+  // The canonical usage sync already promoted PENDING → ACTIVE (via
+  // deriveUsageActivation) and persisted activation timestamps; re-read the
+  // snapshot to build the timeline + return shape — never a direct status write.
   const fresh = await prisma.eSIM.findUnique({ where: { id: esimId } })
   const dataUsedMB = result.dataUsedMB ?? 0
   const dataTotalMB = result.dataTotalMB
   const dataRemainingMB = result.dataRemainingMB
 
-  const hadNoUsage = (esim.dataUsedMB || 0) <= 0
-  const nowHasUsage = dataUsedMB > 0
-  const firstActivation = hadNoUsage && nowHasUsage && !esim.activatedAt
-  const shouldPromoteToActive = hadNoUsage && nowHasUsage && (esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING')
+  const firstActivation = !esim.activatedAt && Boolean(fresh?.activatedAt)
+  const promotedToActive = !(esim.status === 'ACTIVE') && (fresh?.status === 'ACTIVE' || result.status === 'ACTIVE')
 
-  await prisma.eSIM.update({
-    where: { id: esimId },
-    data: {
-      ...(firstActivation ? { activatedAt: new Date() } : {}),
-      ...(shouldPromoteToActive ? { status: 'ACTIVE' } : {}),
-    },
-  })
-
-  if (firstActivation) {
-    await createTimelineEvent(esim.purchaseId, { eventType: 'ESIM_ACTIVATED', message: `eSIM ${esim.iccid.slice(-8)} activated — first usage detected (${dataUsedMB}MB)` })
+  if (firstActivation || promotedToActive) {
+    await createTimelineEvent(esim.purchaseId, {
+      eventType: 'ESIM_ACTIVATED',
+      message: `eSIM ${esim.iccid.slice(-8)} activated — first usage detected (${dataUsedMB}MB)`,
+    })
   }
   await createTimelineEvent(esim.purchaseId, { eventType: 'USAGE_REFRESHED', message: `Usage synced: ${dataUsedMB}MB used` })
 
@@ -119,7 +113,7 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
 
   return {
     success: true,
-    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: fresh?.expiresAt || esim.expiresAt || undefined, status: shouldPromoteToActive ? 'ACTIVE' : fresh?.status || esim.status },
+    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: fresh?.expiresAt || esim.expiresAt || undefined, status: result.status || fresh?.status || esim.status },
   }
 }
 

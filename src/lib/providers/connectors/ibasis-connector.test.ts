@@ -1228,7 +1228,7 @@ expect(createArg.data.iccid).toBe(ICCID)
       expect(fetchSpy).toHaveBeenCalledTimes(1)
     })
 
-    it('maps a FAILED provider status through', async () => {
+it('maps a FAILED provider status through', async () => {
       fetchSpy.mockResolvedValue(mockFetchSuccess({ status: 'failed', subscription_id: 'sub-1' }, 200))
       fetchSpy.mockResolvedValueOnce(
         mockFetchSuccess({ id: 'sub-1', status: 'failed', devices: [{ device: ICCID, type: 'iccid' }] }, 200),
@@ -1237,6 +1237,55 @@ expect(createArg.data.iccid).toBe(ICCID)
       expect(result.success).toBe(true)
       expect(result.data?.status).toBe('FAILED')
       expect(result.data?.iccids).toEqual([ICCID])
+    })
+
+    it('propagates the confirmed authoritative activation timestamp when the subscription mapper detects it', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ status: 'completed', subscription_id: 'sub-1' }, 200))
+        .mockResolvedValueOnce(
+          mockFetchSuccess(
+            {
+              id: 'sub-1',
+              subscriber: '9',
+              plan: '1GB_TEST_PLAN',
+              status: 'active',
+              devices: [{ device: ICCID, type: 'iccid' }],
+              activated_at: '2026-07-02T00:00:00Z',
+            },
+            200,
+          ),
+        )
+
+      const result = await connector.getStatus('act-4')
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      // The canonical engine treats a confirmed activation timestamp as
+      // activation history so a provider ACTIVE + timestamp may promote — while
+      // a raw subscription ACTIVE alone (no timestamp) never does.
+      expect(result.data?.activatedAt).toBe('2026-07-02T00:00:00Z')
+      expect(result.data?.rawStatus).toBe('active')
+    })
+
+    it('does NOT fabricate an activation timestamp when the provider omits it', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(mockFetchSuccess({ status: 'completed', subscription_id: 'sub-1' }, 200))
+        .mockResolvedValueOnce(
+          mockFetchSuccess(
+            {
+              id: 'sub-1',
+              subscriber: '9',
+              plan: '1GB_TEST_PLAN',
+              status: 'active',
+              devices: [{ device: ICCID, type: 'iccid' }],
+            },
+            200,
+          ),
+        )
+
+      const result = await connector.getStatus('act-5')
+      expect(result.success).toBe(true)
+      expect(result.data?.status).toBe('ACTIVE')
+      expect(result.data?.activatedAt).toBeUndefined()
     })
   })
 

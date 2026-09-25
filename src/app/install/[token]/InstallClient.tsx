@@ -53,10 +53,17 @@ export default function InstallClient({ esim, token }: { esim: any; token: strin
     return (
       <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium ${colors[s] || 'bg-gray-100 text-gray-700'}`}>
         <span className={`h-2 w-2 rounded-full ${s === 'ACTIVE' ? 'bg-emerald-400' : s === 'PENDING_ACTIVATION' || s === 'PENDING' ? 'bg-amber-400' : 'bg-red-400'}`} />
-        {status.statusLabel || s}
+        {status.serviceLabel || status.statusLabel || s}
       </span>
     )
   }
+
+  const SetupBadge = () => (
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-600">
+      <span className="h-2 w-2 rounded-full bg-gray-400" />
+      Setup: {status.setupLabel || 'Unknown'}
+    </span>
+  )
 
   // Step-by-step install instructions
   const steps = [
@@ -73,6 +80,7 @@ export default function InstallClient({ esim, token }: { esim: any; token: strin
           <div className="text-3xl font-bold text-emerald-600">OneSim</div>
           <h1 className="text-xl font-semibold text-gray-900">Install Your eSIM</h1>
           <StatusBadge s={status.status} />
+          <SetupBadge />
         </div>
 
         {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}

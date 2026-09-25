@@ -2,6 +2,8 @@ import { prisma } from '@/lib/prisma'
 import { notFound } from 'next/navigation'
 import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import InstallClient from './InstallClient'
 
 export default async function InstallPage({ params }: { params: { token: string } }) {
@@ -36,12 +38,27 @@ export default async function InstallPage({ params }: { params: { token: string 
 
   // Build safe display data (no provider internals). A missing usage snapshot is
   // UNKNOWN — never a fabricated zero or a package-allowance fallback.
+  // Two-axis customer presentation (Service + Setup). Raw provider status is
+  // never exposed to the installing customer.
+  const lifecycle = deriveEsimLifecyclePresentation({
+    status: esim.status,
+    installationStatus: esim.installationStatus,
+    hasUsableInstallData: hasUsableInstallData(esim),
+    activatedAt: esim.activatedAt,
+    activationDetectedAt: esim.activationDetectedAt,
+    dataUsedMB: esim.dataUsedMB,
+  })
+
   const display = {
     id: esim.id,
     iccid: esim.iccid,
     imsi: esim.imsi || null,
     status: esim.status,
     statusLabel: getEsimStatusLabel(esim.status).label,
+    serviceStatus: lifecycle.serviceStatus,
+    serviceLabel: lifecycle.serviceLabel,
+    setupStatus: lifecycle.setupStatus,
+    setupLabel: lifecycle.setupLabel,
     activationCode: esim.activationCode || null,
     qrCodeUrl: esim.qrCodeUrl || null,
     expiresAt: esim.expiresAt?.toISOString() || null,

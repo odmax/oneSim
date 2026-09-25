@@ -247,6 +247,7 @@ export async function executeProviderAttempt(input: ActivationInput): Promise<{ 
     await completeProviderOperation({
       orderId, businessId, providerId, providerRef: providerOrderId || '', providerName: providerName || provider.name,
       totalAmount, iccids, userId: order.userId || undefined,
+      providerStatus, // the real connector result status (never a fabricated ACTIVE)
       packageSnapshot: order.packageSnapshot as any, packageName: order.packageName || '',
       packageDataGB: order.packageDataGB ?? undefined, packageValidityDays: order.packageValidityDays ?? undefined,
       ...installData,

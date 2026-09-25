@@ -5,7 +5,8 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { deriveUsageMetrics, getUsageStaleness, usageUsedLabel, usageRemainingLabel } from '@/lib/esim/usage-metrics'
 import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
-import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 function UsagePill({ value, total }: { value: number; total: number }) {
   const pct = total > 0 ? Math.round((value / total) * 100) : 0
@@ -17,8 +18,7 @@ function UsagePill({ value, total }: { value: number; total: number }) {
   )
 }
 
-function StatusPill({ status }: { status: string }) {
-  const { label, tone } = getEsimStatusLabel(status)
+function StatusPill({ title, label, tone }: { title?: string; label: string; tone: string }) {
   const toneClasses: Record<string, string> = {
     success: 'bg-emerald-50 text-emerald-600',
     warn: 'bg-amber-50 text-amber-600',
@@ -32,10 +32,28 @@ function StatusPill({ status }: { status: string }) {
     neutral: 'bg-gray-400',
   }
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${toneClasses[tone] || 'bg-gray-50 text-gray-600'}`}>
+    <span title={title} className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${toneClasses[tone] || 'bg-gray-50 text-gray-600'}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${dotClasses[tone] || 'bg-amber-400'}`} />
       {label}
     </span>
+  )
+}
+
+/** Two-axis presentation for the usage table: Service + Setup. */
+function LifecyclePills({ esim }: { esim: any }) {
+  const p = deriveEsimLifecyclePresentation({
+    status: esim.status,
+    installationStatus: esim.installationStatus,
+    hasUsableInstallData: hasUsableInstallData(esim),
+    activatedAt: esim.activatedAt,
+    activationDetectedAt: esim.activationDetectedAt,
+    dataUsedMB: esim.dataUsedMB,
+  })
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <StatusPill title="Service status" label={p.serviceLabel} tone={p.serviceTone} />
+      <StatusPill title="Setup status" label={p.setupLabel} tone={p.setupTone} />
+    </div>
   )
 }
 
@@ -204,7 +222,7 @@ export default async function BusinessUsagePage({ searchParams }: { searchParams
                       {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '—'}
                     </td>
                     <td className="whitespace-nowrap px-5 py-4">
-                      <StatusPill status={esim.status} />
+                      <LifecyclePills esim={esim} />
                     </td>
                     <td className="whitespace-nowrap px-5 py-4 text-xs text-gray-400">
                       {esim.lastUsageSyncAt ? (

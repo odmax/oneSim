@@ -9,6 +9,7 @@ import { UsageSummary } from '@/components/admin/esims/UsageBar'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { QrImage } from '@/components/business/QrImage'
 import { getEsimStatusLabel, isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
 import { syncEsimStatusAction } from '@/lib/actions/esim'
 import { refreshEsimQrCodeAction } from '@/lib/actions/esim-sync'
 import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
@@ -74,6 +75,16 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
   const install = buildInstallationPresentation(installFields)
   const lpa = safeProviderLPA(esim.providerResponse)
   const displaySmdp = install.smdpAddress || lpa?.smdpAddress
+  // Two-axis customer presentation (Service + Setup). Raw provider status is
+  // never exposed to business users.
+  const lifecycle = deriveEsimLifecyclePresentation({
+    status: esim.status,
+    installationStatus: esim.installationStatus,
+    hasUsableInstallData: hasInstallData,
+    activatedAt: esim.activatedAt,
+    activationDetectedAt: esim.activationDetectedAt,
+    dataUsedMB: esim.dataUsedMB,
+  })
 
   return (
     <div className="space-y-6">
@@ -103,7 +114,12 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
             {esim.imsi && <DetailRow label="IMSI" value={esim.imsi} mono />}
             <div className="flex justify-between py-1.5">
               <dt className="text-xs text-gray-500">Status</dt>
-              <dd><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses}`}>{statusLabel.label}</span></dd>
+              <dd className="flex flex-col items-end gap-1">
+                <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses}`}>{lifecycle.serviceLabel}</span>
+                <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+                  Setup: <span className="font-medium text-gray-600">{lifecycle.setupLabel}</span>
+                </span>
+              </dd>
             </div>
             {esim.lastStatusSyncAt && <DetailRow label="Last Updated" value={timeAgo(esim.lastStatusSyncAt)} />}
             <div className="flex justify-between py-1.5">

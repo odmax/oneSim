@@ -1,3 +1,6 @@
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
+
 /**
  * Shared, safe public serialization for eSIM usage snapshots.
  *
@@ -6,7 +9,8 @@
  * aggregate. Missing (`null`) values stay null — a client can tell "no usage
  * known" from "zero usage". `lastUsageSyncAt` is a safe operational timestamp
  * (the last SUCCESSFUL usage fetch) and is exposed as-is; provider credentials,
- * configuration and raw provider fields are never included here.
+ * configuration and raw provider fields (including providerStatus) are never
+ * included here.
  */
 
 export function esimUsageSnapshotValues(esim: any): { dataUsedMB: number | null; dataTotalMB: number | null; dataRemainingMB: number | null } {
@@ -21,6 +25,29 @@ export function esimUsageSnapshotValues(esim: any): { dataUsedMB: number | null;
   }
 }
 
+/**
+ * Public two-axis lifecycle presentation built from safe persisted fields only.
+ * Raw provider status is never exposed. `installationStatus` is the canonical
+ * stored column value; `installationStatusLabel` is the customer-facing setup
+ * label derived from it and the persisted activation evidence.
+ */
+export function publicEsimLifecycleFields(esim: any) {
+  const presentation = deriveEsimLifecyclePresentation({
+    status: esim?.status,
+    installationStatus: esim?.installationStatus,
+    hasUsableInstallData: hasUsableInstallData(esim || null),
+    activatedAt: esim?.activatedAt,
+    activationDetectedAt: esim?.activationDetectedAt,
+    dataUsedMB: esim?.dataUsedMB,
+  })
+  return {
+    serviceStatus: presentation.serviceStatus,
+    serviceStatusLabel: presentation.serviceLabel,
+    installationStatus: esim?.installationStatus ?? null,
+    installationStatusLabel: presentation.setupLabel,
+  }
+}
+
 /** Public eSIM usage-detail payload for GET /api/v1/esims/{esimId}/usage. */
 export function serializePublicEsimUsageDetail(esim: any) {
   const { dataUsedMB, dataTotalMB, dataRemainingMB } = esimUsageSnapshotValues(esim)
@@ -29,6 +56,7 @@ export function serializePublicEsimUsageDetail(esim: any) {
     iccid: esim.iccid,
     imsi: esim.imsi ?? null,
     status: esim.status,
+    ...publicEsimLifecycleFields(esim),
     expiresAt: esim.expiresAt?.toISOString?.() ?? null,
     dataUsedMB,
     dataRemainingMB,

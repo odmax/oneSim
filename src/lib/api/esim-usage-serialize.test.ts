@@ -45,5 +45,19 @@ describe('serializePublicEsimUsageDetail — safe public usage payload', () => {
     expect(serialized).not.toContain('providerSubscriptionId')
     expect(serialized).not.toContain('secret')
     expect(serialized).not.toContain('apiKey')
+    expect(serialized).not.toContain('providerStatus')
+  })
+
+  it('returns normalized service/setup fields (provider-neutral)', () => {
+    const out = serializePublicEsimUsageDetail({
+      id: 'e1', iccid: '89012345678901234567', status: 'PENDING_ACTIVATION', installationStatus: 'READY',
+      activatedAt: null, activationDetectedAt: null, dataUsedMB: 0,
+      qrCodeUrl: 'https://qr.example', activationCode: null, qrCode: null, smdpAddress: null, matchingId: null,
+    })
+    expect(out.status).toBe('PENDING_ACTIVATION')
+    expect(out.serviceStatus).toBe('PENDING_ACTIVATION')
+    expect(out.serviceStatusLabel).toBe('Provisioned')
+    expect(out.installationStatus).toBe('READY')
+    expect(out.installationStatusLabel).toBe('Ready to install')
   })
 })

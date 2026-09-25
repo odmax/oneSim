@@ -23,17 +23,26 @@ export async function completeProviderOperation(params: {
   smdpAddress?: string | null
   matchingId?: string | null
   rawMetadata?: any
+  /** The real connector result status/raw status when the provider supplied
+   *  one. NEVER a fabricated ACTIVE and NEVER inferred from oneSIM's canonical
+   *  status. When absent, a truthful internal fallback `PROVISIONED` is
+   *  persisted so the raw provider-status column never lies. */
+  providerStatus?: string | null
 }) {
-  const { orderId, businessId, providerId, providerRef, providerName, totalAmount, iccids, userId, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays, qrCodeUrl, qrCode, activationCode, smdpAddress, matchingId, rawMetadata } = params
+  const { orderId, businessId, providerId, providerRef, providerName, totalAmount, iccids, userId, packageSnapshot, packageName, packageDataGB, packageValidityDays, validityDays, qrCodeUrl, qrCode, activationCode, smdpAddress, matchingId, rawMetadata, providerStatus } = params
 
   const order = await prisma.eSIMPurchase.findUnique({ where: { id: orderId } })
   if (!order) return { success: false, error: 'Order not found' }
   if (order.status === 'FULFILLED') return { success: true, alreadyDone: true }
 
+  // Truthful raw provider status: the connector's real result when supplied,
+  // otherwise the internal `PROVISIONED` marker. Never a fabricated ACTIVE.
+  const rawProviderStatus = providerStatus && String(providerStatus).trim() ? String(providerStatus).trim() : 'PROVISIONED'
+
   const providerResult: ProviderFulfillmentResult = {
     iccids,
     providerFulfillId: providerRef,
-    providerStatus: 'ACTIVE',
+    providerStatus: rawProviderStatus,
     ...(qrCodeUrl ? { qrCodeUrl } : {}),
     ...(qrCode ? { qrCode } : {}),
     ...(activationCode ? { activationCode } : {}),

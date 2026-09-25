@@ -292,7 +292,7 @@ describe('executeUsageSynchronization â€” capability gate + isolation', () => {
     expect(mockPrisma.usageRecord.create.mock.calls[0][0].data.dataUsedMB).toBe(500)
   })
 
-  it('persists a discovered packageEsimId into providerResponse (preserving existing keys)', async () => {
+it('persists a discovered packageEsimId into providerResponse (preserving existing keys)', async () => {
     const { executeUsageSynchronization } = await import('./esim-sync-batch')
     mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ providerResponse: { providerEsimId: 'esim-uuid-1' } })])
     mockBuildConnector.mockResolvedValue({
@@ -305,6 +305,56 @@ describe('executeUsageSynchronization â€” capability gate + isolation', () => {
     expect(result.updated).toBe(1)
     const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
     expect(updateCall.data.providerResponse).toEqual({ providerEsimId: 'esim-uuid-1', packageEsimId: 'assoc-uuid-9' })
+  })
+
+  it('authoritative usage > 0 promotes PENDING_ACTIVATION â†’ ACTIVE via canonical activation (scheduled path parity)', async () => {
+    const { executeUsageSynchronization } = await import('./esim-sync-batch')
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ status: 'PENDING_ACTIVATION', activatedAt: null })])
+    mockBuildConnector.mockResolvedValue({
+      capabilities: { usageLookup: true },
+      getUsage: vi.fn().mockResolvedValue({ success: true, data: { iccid: '89012345678901234567', dataUsedMB: 256, dataTotalMB: 1024, dataRemainingMB: 768, status: 'ACTIVE' } }),
+    } as any)
+
+    const result = await executeUsageSynchronization(10)
+    expect(result.updated).toBe(1)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBe('ACTIVE')
+    expect(updateCall.data.activatedAt).toBeInstanceOf(Date)
+    expect(updateCall.data.activationDetectedAt).toBeInstanceOf(Date)
+    // Raw provider lifecycle preserved separately (never rewritten to the
+    // canonical ACTIVE derivation); here providerStatus stays unchanged because
+    // the esim row already carries ACTIVE from its own status lookup.
+    expect(updateCall.data.providerStatus).toBeUndefined()
+  })
+
+  it('zero-used snapshot (valid) does NOT promote PENDING â†’ ACTIVE', async () => {
+    const { executeUsageSynchronization } = await import('./esim-sync-batch')
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ status: 'PENDING_ACTIVATION', activatedAt: null })])
+    mockBuildConnector.mockResolvedValue({
+      capabilities: { usageLookup: true },
+      getUsage: vi.fn().mockResolvedValue({ success: true, data: { iccid: '89012345678901234567', dataUsedMB: 0, dataTotalMB: 1024, dataRemainingMB: 1024 } }),
+    } as any)
+
+    const result = await executeUsageSynchronization(10)
+    expect(result.updated).toBe(1)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+    expect(updateCall.data.activatedAt).toBeUndefined()
+  })
+
+  it('missing/invalid usage does NOT promote PENDING â†’ ACTIVE', async () => {
+    const { executeUsageSynchronization } = await import('./esim-sync-batch')
+    mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ status: 'PENDING_ACTIVATION', activatedAt: null })])
+    mockBuildConnector.mockResolvedValue({
+      capabilities: { usageLookup: true },
+      getUsage: vi.fn().mockResolvedValue({ success: true, data: { iccid: '89012345678901234567' } }),
+    } as any)
+
+    const result = await executeUsageSynchronization(10)
+    expect(result.updated).toBe(1)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+    expect(updateCall.data.activatedAt).toBeUndefined()
   })
 
   it('treats an ambiguous association as a clean skip (no retry failure)', async () => {
@@ -536,7 +586,7 @@ describe('SYNC_RETRY_EXHAUSTED â€” one deduplicated durable signal, no provider 
   })
 })
 
-describe('executeUsageSynchronization — canonical depletion + scheduler recovery', () => {
+describe('executeUsageSynchronization ï¿½ canonical depletion + scheduler recovery', () => {
   function usageConnector(getUsage: any) {
     return { capabilities: { usageLookup: true }, getUsage } as any
   }
@@ -599,7 +649,7 @@ describe('executeUsageSynchronization — canonical depletion + scheduler recovery
     expect(data.dataRemainingMB).toBeUndefined()
   })
 
-  it('NaN/Infinity remaining is treated as unknown — status unchanged', async () => {
+  it('NaN/Infinity remaining is treated as unknown ï¿½ status unchanged', async () => {
     mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ status: 'ACTIVE' })])
     mockBuildConnector.mockResolvedValue(usageConnector(
       vi.fn().mockResolvedValue({ success: true, data: { iccid: 'x', dataUsedMB: 0, dataRemainingMB: Number.POSITIVE_INFINITY } }),
@@ -621,7 +671,7 @@ describe('executeUsageSynchronization — canonical depletion + scheduler recovery
     }
   })
 
-  it('7. a missing used value stays unknown — never fabricated as 0', async () => {
+  it('7. a missing used value stays unknown ï¿½ never fabricated as 0', async () => {
     mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ status: 'ACTIVE', dataUsedMB: 100 })])
     mockBuildConnector.mockResolvedValue(usageConnector(
       vi.fn().mockResolvedValue({ success: true, data: { iccid: 'x', dataTotalMB: 1024, dataRemainingMB: 924 } }),
@@ -675,7 +725,7 @@ describe('executeUsageSynchronization — canonical depletion + scheduler recovery
   })
 })
 
-describe('backfillEsimSyncSchedules — DEPLETED re-seed safety (never resurrect exhausted rows)', () => {
+describe('backfillEsimSyncSchedules ï¿½ DEPLETED re-seed safety (never resurrect exhausted rows)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockPrisma.eSIM.updateMany.mockResolvedValue({ count: 0 })

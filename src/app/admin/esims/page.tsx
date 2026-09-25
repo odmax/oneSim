@@ -5,6 +5,8 @@ import { redirect } from 'next/navigation'
 import EsimActions from '@/components/EsimActions'
 import { getPackageDisplayName } from '@/lib/packages/snapshot-utils'
 import { adminEsimStatusBadge } from '@/lib/status-badges'
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 export default async function AdminESIMsPage({
   searchParams
@@ -147,6 +149,9 @@ export default async function AdminESIMsPage({
                 Status
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                Setup
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                 Provider Status
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
@@ -200,6 +205,18 @@ export default async function AdminESIMsPage({
                 <td className="whitespace-nowrap px-6 py-4">
                   <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${adminEsimStatusBadge(esim.status).className}`}>
                     {adminEsimStatusBadge(esim.status).label}
+                  </span>
+                </td>
+                <td className="whitespace-nowrap px-6 py-4">
+                  <span className="inline-flex rounded-full px-2 text-xs font-semibold leading-5 bg-gray-100 text-gray-700">
+                    {deriveEsimLifecyclePresentation({
+                      status: esim.status,
+                      installationStatus: esim.installationStatus,
+                      hasUsableInstallData: hasUsableInstallData(esim),
+                      activatedAt: esim.activatedAt,
+                      activationDetectedAt: esim.activationDetectedAt,
+                      dataUsedMB: esim.dataUsedMB,
+                    }).setupLabel}
                   </span>
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">

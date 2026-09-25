@@ -306,7 +306,7 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
           providerResult: {
             iccids: pollingResult.iccids || [],
             providerFulfillId: pollingResult.providerRef || order.providerFulfillId || undefined,
-            providerStatus: 'ACTIVE',
+            providerStatus: pollingResult.providerStatus || undefined,
           },
           userId: order.userId,
         })
@@ -379,7 +379,7 @@ export async function recoverOrder(orderId: string): Promise<RecoverOrderResult>
 // Polling + Redispatch helpers
 // ─────────────────────────────────────────────
 
-async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; stillProcessing: boolean; status: string; error?: string; iccids?: string[]; providerRef?: string }> {
+async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; stillProcessing: boolean; status: string; error?: string; iccids?: string[]; providerRef?: string; providerStatus?: string }> {
   try {
     if (!order.providerId) return { fulfilled: false, stillProcessing: false, status: order.status, error: 'No provider linked' }
     const provider = await prisma.provider.findUnique({ where: { id: order.providerId } })
@@ -432,7 +432,7 @@ async function pollProviderForOrder(order: any): Promise<{ fulfilled: boolean; s
     const isTerminal = hasIdentity && ['ACTIVE', 'FULFILLED', 'COMPLETED', 'INSTALLED'].includes(status.toUpperCase())
     const isPending = ['PENDING', 'PROCESSING', 'PENDING_ACTIVATION', 'RESERVED', 'QUEUED'].includes(status.toUpperCase())
 
-    if (isTerminal) return { fulfilled: true, status: 'FULFILLED', stillProcessing: false, iccids, providerRef: ref }
+    if (isTerminal) return { fulfilled: true, status: 'FULFILLED', stillProcessing: false, iccids, providerRef: ref, providerStatus: status.toUpperCase() || undefined }
     if (isPending) return { fulfilled: false, status: order.status, stillProcessing: true }
 
     return { fulfilled: false, stillProcessing: false, status: order.status, error: hasIdentity ? `Unknown polling status: ${status}` : `No ICCID identity yet (status: ${status})` }

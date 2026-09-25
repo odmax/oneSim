@@ -157,6 +157,7 @@ export async function executeProviderOperation(payload: any, jobMeta?: { jobId?:
           orderId, businessId: businessId || order.businessId, providerId: provider.id,
           providerRef, providerName: provider.name, totalAmount: totalAmount || Number(order.totalAmount),
           iccids: providerIccids, userId: order.userId || undefined,
+          providerStatus, // the real connector-reported status (never a fabricated ACTIVE)
           packageSnapshot: (order.packageSnapshot as any) ?? undefined,
           packageName: order.packageName || undefined,
           packageDataGB: order.packageDataGB ?? undefined,

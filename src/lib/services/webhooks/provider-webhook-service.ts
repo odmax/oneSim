@@ -48,6 +48,7 @@ export async function processProviderWebhook(providerId: string, event: Normaliz
         providerName: providerName || provider.name,
         totalAmount, userId: match.userId || undefined,
         iccids: event.iccids || [],
+        providerStatus: event.status, // the real provider-reported completion status (never a fabricated ACTIVE)
         ...installData,
         packageSnapshot: (match.packageSnapshot as any) ?? undefined,
         packageName: match.packageName || undefined,

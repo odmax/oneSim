@@ -10,6 +10,17 @@ const SANDBOX_URL = process.env.API_SANDBOX_URL || 'https://sandbox.onesim.afric
 
 const ESIM_STATUS_LABELS = ESIM_LIFECYCLE_STATUSES.map((s) => ESIM_STATUS_META[s].label)
 
+/** Customer-safe setup-axis labels (derived; never raw provider vocabulary). */
+const ESIM_SETUP_LABELS = [
+  'Ready to install',
+  'Installing',
+  'Installed',
+  'Preparing',
+  'Installation failed',
+  'Installation unavailable',
+  'Unknown',
+] as const
+
 export function GET() {
   const spec: any = {
     openapi: '3.1.0',
@@ -80,8 +91,16 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
               validityDays: { type: 'integer' }, priceUSD: { type: 'number' }, currency: { type: 'string' },
             }},
             esims: { type: 'array', items: { type: 'object', properties: {
-              id: { type: 'string' }, iccid: { type: 'string' }, imsi: { type: 'string' },
-              status: { type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES] }, expiresAt: { type: 'string' },
+              id: { type: 'string' }, iccid: { type: 'string' }, imsi: { type: 'string', nullable: true },
+              status: {
+                type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES],
+                description: 'Canonical stored oneSIM service status (e.g. `PENDING_ACTIVATION` remains possible).',
+              },
+              serviceStatus: { type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES], description: 'Canonical service status (alias of `status`).' },
+              serviceStatusLabel: { type: 'string', enum: [...ESIM_STATUS_LABELS], description: 'Customer-facing service label (e.g. `Provisioned` for PENDING_ACTIVATION).' },
+              installationStatus: { type: 'string', nullable: true, description: 'Stored installation/setup state or null when unknown.' },
+              installationStatusLabel: { type: 'string', enum: [...ESIM_SETUP_LABELS], description: 'Customer-facing setup label (Ready to install / Preparing / Installing / Installed / failure / unavailable / Unknown).' },
+              expiresAt: { type: 'string' },
               dataUsedMB: { type: 'integer' }, dataRemainingMB: { type: 'integer' },
             }}},
             createdAt: { type: 'string', format: 'date-time' },
@@ -90,13 +109,65 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
         },
         ESIM: {
           type: 'object', properties: {
-            id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES] },
-            statusLabel: { type: 'string', enum: [...ESIM_STATUS_LABELS] },
+            id: { type: 'string' }, iccid: { type: 'string' },
+            status: {
+              type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES],
+              description: 'Canonical stored oneSIM service status. `PENDING_ACTIVATION` remains a possible raw canonical value (the stored enum is unchanged) — its customer-facing label is `Provisioned`.',
+            },
+            statusLabel: {
+              type: 'string', enum: [...ESIM_STATUS_LABELS],
+              description: 'Customer-facing service label derived from the canonical `status`. `PENDING_ACTIVATION` renders as `Provisioned`.',
+            },
+            serviceStatus: {
+              type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES],
+              description: 'Canonical service status (alias of `status`). Raw provider status is never exposed.',
+            },
+            serviceStatusLabel: {
+              type: 'string', enum: [...ESIM_STATUS_LABELS],
+              description: 'Customer-facing service label (alias of `statusLabel`).',
+            },
+            installationStatus: {
+              type: 'string', nullable: true,
+              description: 'Stored installation/setup state (READY/PENDING/FAILED/STALE/NOT_SUPPORTED/NOT_RECOVERABLE/INSTALLING...). Nullable when unknown.',
+            },
+            installationStatusLabel: {
+              type: 'string', enum: [...ESIM_SETUP_LABELS],
+              description: 'Customer-facing setup label: Ready to install / Preparing / Installing / Installed / Installation failed / Installation unavailable / Unknown. `Ready to install` appears only when usable installation data exists; authoritative activation evidence (network attach, activation timestamp, real usage) renders `Installed`.',
+            },
             qrCodeUrl: { type: 'string' }, activationCode: { type: 'string' },
             activatedAt: { type: 'string', format: 'date-time' }, expiresAt: { type: 'string', format: 'date-time' },
             dataUsedMB: { type: 'integer' }, dataTotalMB: { type: 'integer' }, dataRemainingMB: { type: 'integer' },
             package: { $ref: '#/components/schemas/Package' },
             lastUsageAt: { type: 'string', format: 'date-time' },
+          },
+          example: {
+            id: 'esim_abc123', iccid: '89012345••••4321',
+            status: 'PENDING_ACTIVATION',
+            statusLabel: 'Provisioned',
+            serviceStatus: 'PENDING_ACTIVATION',
+            serviceStatusLabel: 'Provisioned',
+            installationStatus: 'READY',
+            installationStatusLabel: 'Ready to install',
+            activatedAt: null, expiresAt: '2026-10-01T00:00:00Z',
+            dataUsedMB: 0, dataTotalMB: 1024, dataRemainingMB: 1024,
+          },
+          'x-axes-examples': {
+            'Provisioned + Ready to install': {
+              summary: 'Provisioned service with usable installation data',
+              value: { status: 'PENDING_ACTIVATION', statusLabel: 'Provisioned', serviceStatus: 'PENDING_ACTIVATION', serviceStatusLabel: 'Provisioned', installationStatus: 'READY', installationStatusLabel: 'Ready to install' },
+            },
+            'Active + Installed': {
+              summary: 'Activated service that is installed on a device',
+              value: { status: 'ACTIVE', statusLabel: 'Active', serviceStatus: 'ACTIVE', serviceStatusLabel: 'Active', installationStatus: 'READY', installationStatusLabel: 'Installed' },
+            },
+            'Depleted + Installed': {
+              summary: 'Depleted allowance on an installed eSIM',
+              value: { status: 'DEPLETED', statusLabel: 'Depleted', serviceStatus: 'DEPLETED', serviceStatusLabel: 'Depleted', installationStatus: 'READY', installationStatusLabel: 'Installed' },
+            },
+            'Provisioned + Preparing or Unknown': {
+              summary: 'Provisioned service while installation data is still being prepared (or unknown)',
+              value: { status: 'PENDING_ACTIVATION', statusLabel: 'Provisioned', serviceStatus: 'PENDING_ACTIVATION', serviceStatusLabel: 'Provisioned', installationStatus: 'PENDING', installationStatusLabel: 'Preparing' },
+            },
           },
         },
         Customer: {

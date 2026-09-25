@@ -121,17 +121,18 @@ describe('refreshEsimUsage (canonical delegation)', () => {
     expect(result.data?.dataUsedMB).toBe(512)
   })
 
-  it('first positive usage promotes PENDING_ACTIVATION → ACTIVE (activation evidence)', async () => {
+  it('first positive usage promotes PENDING_ACTIVATION → ACTIVE via the canonical usage sync (no direct status write)', async () => {
     mockPrisma.eSIM.findUnique
-      .mockResolvedValueOnce(makeEsim({ status: 'PENDING_ACTIVATION', dataUsedMB: 0 }))
-      .mockResolvedValueOnce({ status: 'ACTIVE' })
+      .mockResolvedValueOnce(makeEsim({ purchaseId: 'order-1', status: 'PENDING_ACTIVATION', dataUsedMB: 0, activatedAt: null }))
+      .mockResolvedValueOnce({ id: 'esim-1', status: 'ACTIVE', activatedAt: new Date() })
     mockPrisma.eSIM.update.mockResolvedValue({} as any)
+    vi.mocked(mockSyncESIMUsage).mockResolvedValue({ success: true, status: 'ACTIVE', dataUsedMB: 2048, dataTotalMB: 1024, dataRemainingMB: 512 })
 
     const result = await refreshEsimUsage('esim-1')
     expect(result.data?.status).toBe('ACTIVE')
-    const updateData = mockPrisma.eSIM.update.mock.calls[0][0].data
-    expect(updateData.status).toBe('ACTIVE')
-    expect(updateData.activatedAt).toBeInstanceOf(Date)
+    // The canonical usage sync owns the status promotion — refreshEsimUsage only
+    // re-reads and reports the persisted outcome.
+    expect(mockCreateTimeline).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'ESIM_ACTIVATED' }))
   })
 
   it('maps a capability-not-supported skip to a client-safe error (never a provider call)', async () => {
@@ -164,7 +165,7 @@ describe('refreshEsimUsage (canonical delegation)', () => {
     const result = await refreshEsimUsage('esim-1')
     expect(result.data?.status).toBe('ACTIVE')
     // No status regression write from usage.
-    expect(mockPrisma.eSIM.update.mock.calls[0][0].data.status).toBeUndefined()
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
   })
 })
 

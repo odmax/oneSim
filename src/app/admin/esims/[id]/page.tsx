@@ -9,6 +9,8 @@ import { getPackageDisplayName, getPackageDataGB, getPackageValidityDays } from 
 import { UsageSummary } from '@/components/admin/esims/UsageBar'
 import { EsimActionsBar } from '@/components/admin/esims/EsimActionsBar'
 import { getEsimActionAvailability, getUsagePanelState, getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import { providerSupports } from '@/lib/providers/capabilities/registry'
 import { getSafeProviderResponseForDisplay } from '@/lib/esim/provider-response-display'
 
@@ -90,8 +92,19 @@ export default async function AdminEsimDetailPage({ params, searchParams }: { pa
             {(() => {
               const { label, tone } = getEsimStatusLabel(esim.status)
               const toneClasses = tone === 'success' ? 'bg-green-100 text-green-800' : tone === 'warn' ? 'bg-yellow-100 text-yellow-800' : tone === 'danger' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'
+              const setupLabel = deriveEsimLifecyclePresentation({
+                status: esim.status,
+                installationStatus: esim.installationStatus,
+                hasUsableInstallData: hasUsableInstallData(esim),
+                activatedAt: esim.activatedAt,
+                activationDetectedAt: esim.activationDetectedAt,
+                dataUsedMB: esim.dataUsedMB,
+              }).setupLabel
               return (
-                <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${toneClasses}`}>{label}</span></dd></div>
+                <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd className="flex flex-col items-end gap-1">
+                  <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${toneClasses}`}>{label}</span>
+                  <span className="text-xs text-gray-500">Setup: {setupLabel}</span>
+                </dd></div>
               )
             })()}
             {esim.providerStatus && <div className="flex justify-between"><dt className="text-gray-500">Provider Status</dt><dd className="font-medium text-gray-900">{esim.providerStatus}</dd></div>}

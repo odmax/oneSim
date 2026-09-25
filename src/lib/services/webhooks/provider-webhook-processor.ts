@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { normalizeChoiceWebhook } from '@/lib/providers/webhooks/choice-webhook-normalizer'
-import { deriveEsimLifecycleStatus, deriveDepletionStatus, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
+import { deriveEsimLifecycleStatus, deriveDepletionStatus, deriveUsageActivation, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
 
 export interface NormalizedWebhookEvent {
   providerType: string
@@ -190,7 +190,7 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
         // DEPLETED (same canonical engine as scheduled/manual sync). Missing or
         // unknown remaining never implies depletion; terminal states are never
         // rewritten.
-        const existing = await prisma.eSIM.findUnique({ where: { id: esimId }, select: { status: true, providerStatus: true } })
+        const existing = await prisma.eSIM.findUnique({ where: { id: esimId }, select: { status: true, providerStatus: true, activatedAt: true } })
         const providerStatusRaw = String(normalized.providerStatus || '')
         const remainingNum =
           normalized.dataRemainingMB != null && Number.isFinite(Number(normalized.dataRemainingMB))
@@ -201,7 +201,20 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
           snapshotValid: remainingNum != null,
           providerExhausted: isProviderExhaustedStatus(providerStatusRaw || undefined),
         })
-        if (depletion && existing?.status !== depletion) usageData.status = depletion
+        // Canonical PENDING → ACTIVE promotion from authoritative usage evidence
+        // (identical to scheduled/manual usage sync). A positive used value is
+        // activation evidence; zero/missing is not.
+        const activation = deriveUsageActivation({
+          currentStatus: existing?.status || 'PENDING_ACTIVATION',
+          dataUsedMB: normalized.dataUsedMB == null ? undefined : Number(normalized.dataUsedMB),
+          activatedAt: existing?.activatedAt ?? null,
+        })
+        const targetStatus = depletion || (activation.status !== (existing?.status || 'PENDING_ACTIVATION') ? activation.status : existing?.status || 'PENDING_ACTIVATION')
+        if (targetStatus !== (existing?.status || 'PENDING_ACTIVATION')) usageData.status = targetStatus
+        if (targetStatus === 'ACTIVE' && activation.setActivatedAt && existing && !existing.activatedAt) {
+          usageData.activatedAt = normalized.activatedAt ? new Date(normalized.activatedAt) : new Date()
+          usageData.activationDetectedAt = new Date()
+        }
         if (providerStatusRaw && existing?.providerStatus !== providerStatusRaw) usageData.providerStatus = providerStatusRaw
 
         await prisma.eSIM.update({ where: { id: esimId }, data: usageData })

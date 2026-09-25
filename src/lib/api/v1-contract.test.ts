@@ -12,6 +12,9 @@ import {
   serializePublicWebhook,
   findForbiddenFields,
 } from '@/lib/api/public-dto'
+import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { ESIM_LIFECYCLE_STATUSES } from '@/lib/status-constants'
+import { publicEsimLifecycleFields, serializePublicEsimUsageDetail } from '@/lib/api/esim-usage-serialize'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SECTION 1: Route filesystem completeness — filesystem vs documented surface
@@ -926,6 +929,67 @@ describe('API-CONTRACT-18: Public DTO serializers (unit tests)', () => {
     expect(json.lastUsage).not.toHaveProperty('rawData')
   })
 
+  it('serializePublicUsageEsim exposes two-axis lifecycle fields and never providerStatus', () => {
+    const fake = {
+      id: 'e_1', iccid: '8901234', status: 'PENDING_ACTIVATION',
+      installationStatus: 'READY',
+      activationCode: 'LPA:1$smdp.example.com$mid-1', qrCodeUrl: null, qrCode: null, smdpAddress: null, matchingId: null,
+      activatedAt: null, activationDetectedAt: null,
+      dataUsedMB: 0,
+      providerStatus: 'ACTIVE', providerResponse: { token: 'x' },
+      purchase: { package: { id: 'pkg_1', displayName: 'US 5GB', name: 'US 5GB', dataGB: 5, validityDays: 30 } },
+    }
+    const json: any = JSON.parse(JSON.stringify(serializePublicUsageEsim(fake)))
+    const leaks = findForbiddenFields(json)
+    expect(leaks).toEqual([])
+    expect(json.status).toBe('PENDING_ACTIVATION')
+    expect(json.serviceStatus).toBe('PENDING_ACTIVATION')
+    expect(json.serviceStatusLabel).toBe('Provisioned')
+    expect(json.installationStatus).toBe('READY')
+    expect(json.installationStatusLabel).toBe('Ready to install')
+    expect(JSON.stringify(json)).not.toContain('providerStatus')
+    expect(JSON.stringify(json)).not.toContain('providerResponse')
+  })
+
+  it('serializePublicOrder eSIM representation exposes two-axis fields and never providerStatus', () => {
+    const fake = {
+      id: 'ord_1', status: 'FULFILLED', quantity: 1,
+      totalAmount: { toString: () => '19.99' },
+      createdAt: new Date('2025-01-01'), updatedAt: new Date('2025-01-02'),
+      fulfilledQuantity: 1, failedQuantity: 0,
+      callbackUrl: null, resolvedTravelDate: null, requestedTravelDate: null,
+      packageSnapshot: { packageId: 'pkg_1', displayName: 'US 5GB', dataGB: 5, validityDays: 30, priceUSD: 19.99, currency: 'USD' },
+      packageName: null, packageDataGB: null, packageValidityDays: null,
+      packageUnitPrice: null, packageCurrency: null,
+      package: { id: 'pkg_1', displayName: 'US 5GB', name: 'US 5GB', dataGB: 5, validityDays: 30, priceUSD: { toString: () => '19.99' }, currency: 'USD' },
+      esims: [{
+        id: 'e_1', iccid: '8901234', status: 'PENDING_ACTIVATION',
+        installationStatus: 'PENDING', activatedAt: null, activationDetectedAt: null, dataUsedMB: 0,
+        providerStatus: 'ACTIVE', providerResponse: { token: 'x' },
+      }],
+    }
+    const json: any = JSON.parse(JSON.stringify(serializePublicOrder(fake)))
+    const leaks = findForbiddenFields(json)
+    expect(leaks).toEqual([])
+    const e = json.esims[0]
+    expect(e.status).toBe('PENDING_ACTIVATION')
+    expect(e.serviceStatus).toBe('PENDING_ACTIVATION')
+    expect(e.serviceStatusLabel).toBe('Provisioned')
+    expect(e.installationStatus).toBe('PENDING')
+    expect(e.installationStatusLabel).toBe('Preparing')
+    expect(JSON.stringify(json)).not.toContain('providerStatus')
+  })
+
+  it('raw canonical status is preserved while statusLabel changes for PENDING_ACTIVATION', () => {
+    // The stored enum value never changes: PENDING_ACTIVATION stays the raw
+    // canonical status. Only the human-readable label is now 'Provisioned'.
+    expect('PENDING_ACTIVATION').toBe('PENDING_ACTIVATION')
+    const label = getEsimStatusLabel('PENDING_ACTIVATION')
+    expect(label.label).toBe('Provisioned')
+    expect(ESIM_LIFECYCLE_STATUSES).toContain('PENDING_ACTIVATION')
+    expect(ESIM_LIFECYCLE_STATUSES).not.toContain('PROVISIONED')
+  })
+
   it('serializePublicWalletTransaction uses allowlist', () => {
     const fake = {
       id: 'tx_1', type: 'PURCHASE', amount: { toString: () => '-19.99' },
@@ -1030,6 +1094,53 @@ describe('API-CONTRACT-19: Route serialization path enforcement', () => {
   it('eSIM detail route serializes usage records', () => {
     const content = fs.readFileSync('src/app/api/v1/esims/[esimId]/route.ts', 'utf8')
     expect(content).toContain('serializePublicUsageRecord')
+  })
+
+  it('public eSIM detail never exposes providerStatus (privacy boundary)', () => {
+    const fields = publicEsimLifecycleFields({ status: 'PENDING_ACTIVATION', providerStatus: 'ACTIVE', providerResponse: { token: 'x' } })
+    expect(JSON.stringify(fields)).not.toContain('providerStatus')
+    expect(fields).not.toHaveProperty('providerStatus')
+    // The eSIM detail route must not emit provider status or providerResponse.
+    const content = fs.readFileSync('src/app/api/v1/esims/[esimId]/route.ts', 'utf8')
+    expect(content).not.toContain('providerStatus')
+    expect(content).not.toContain('providerResponse')
+  })
+
+  it('public eSIM usage never exposes providerStatus (privacy boundary)', () => {
+    const out = serializePublicEsimUsageDetail({ id: 'e1', iccid: '89012345678901234567', status: 'ACTIVE', providerStatus: 'ACTIVE', providerResponse: { token: 'x' }, providerActivationId: 'act-1' })
+    const json = JSON.stringify(out)
+    expect(json).not.toContain('providerStatus')
+    expect(json).not.toContain('providerResponse')
+    expect(json).not.toContain('providerActivationId')
+  })
+
+  it('order eSIM DTO never exposes providerStatus (privacy boundary)', () => {
+    const result = serializePublicOrder({
+      id: 'ord_1', status: 'FULFILLED', quantity: 1,
+      totalAmount: { toString: () => '19.99' },
+      createdAt: new Date('2025-01-01'), updatedAt: new Date('2025-01-02'),
+      fulfilledQuantity: 1, failedQuantity: 0,
+      callbackUrl: null, resolvedTravelDate: null, requestedTravelDate: null,
+      packageSnapshot: { packageId: 'pkg_1', displayName: 'US 5GB', dataGB: 5, validityDays: 30, priceUSD: 19.99, currency: 'USD' },
+      packageName: null, packageDataGB: null, packageValidityDays: null,
+      packageUnitPrice: null, packageCurrency: null,
+      package: { id: 'pkg_1', displayName: 'US 5GB', name: 'US 5GB', dataGB: 5, validityDays: 30, priceUSD: { toString: () => '19.99' }, currency: 'USD' },
+      esims: [{ id: 'e_1', iccid: '8901234', status: 'ACTIVE', providerStatus: 'ACTIVE', providerResponse: { token: 'x' } }],
+    })
+    expect(JSON.stringify(result)).not.toContain('providerStatus')
+    expect(JSON.stringify(result)).not.toContain('providerResponse')
+  })
+
+  it('business lifecycle webhook payload never exposes providerStatus (privacy boundary)', () => {
+    // src/lib/services/orders/create-order.ts builds `esim.provisioned` webhook
+    // payloads from the canonical presentation helper — it must not carry raw
+    // provider status or provider vocabulary.
+    const content = fs.readFileSync('src/lib/services/orders/create-order.ts', 'utf8')
+    expect(content).toContain('deriveEsimLifecyclePresentation')
+    expect(content).not.toContain('providerStatus')
+    // The payload mapper only emits id/iccid + normalized service/setup fields.
+    expect(content).toContain('serviceStatus')
+    expect(content).toContain('installationStatusLabel')
   })
 
   it('eSIM usage route imports and uses serializePublicUsageRecord', () => {

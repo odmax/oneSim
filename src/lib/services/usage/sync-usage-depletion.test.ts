@@ -125,6 +125,48 @@ describe('syncESIMUsage — canonical DEPLETED persistence', () => {
     expect(r.success).toBe(false)
     expect(mocks.esimUpdate).not.toHaveBeenCalled()
   })
+
+  it('authoritative usage > 0 promotes PENDING_ACTIVATION → ACTIVE via canonical activation (manual path parity)', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'PENDING_ACTIVATION', providerStatus: 'ACTIVE', dataUsedMB: 0, dataRemainingMB: null }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 128, dataTotalMB: 1024, dataRemainingMB: 896 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('ACTIVE')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.status).toBe('ACTIVE')
+    expect(data.activatedAt).toBeInstanceOf(Date)
+    expect(data.activationDetectedAt).toBeInstanceOf(Date)
+    // The raw stored provider lifecycle is preserved (not overwritten to ACTIVE
+    // by the usage sync when the usage payload carries no status).
+    expect(data.providerStatus).toBeUndefined()
+  })
+
+  it('zero-used snapshot (valid) does NOT promote PENDING → ACTIVE', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'PENDING_ACTIVATION', dataUsedMB: 0, dataRemainingMB: null }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 0, dataTotalMB: 1024, dataRemainingMB: 1024 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('PENDING_ACTIVATION')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.status).toBeUndefined()
+    expect(data.activatedAt).toBeUndefined()
+  })
+
+  it('missing usage does NOT promote PENDING → ACTIVE', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'PENDING_ACTIVATION', dataUsedMB: 0, dataRemainingMB: null }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataRemainingMB: null, status: 'ACTIVE' } })
+    const r = await syncESIMUsage('esim-1')
+    // Missing remaining is unknown (never DEPLETED); missing used is unknown
+    // (never activation evidence). PENDING_ACTIVATION stays.
+    expect(r.status).toBe('PENDING_ACTIVATION')
+  })
+
+  it('PENDING with dataRemaining 0 on a valid snapshot → DEPLETED (depletion precedence over activation)', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'PENDING_ACTIVATION', dataUsedMB: 0, dataRemainingMB: null }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 100, dataTotalMB: 100, dataRemainingMB: 0 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.status).toBe('DEPLETED')
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.status).toBe('DEPLETED')
+  })
 })
 
 describe('usage history + zero preservation', () => {

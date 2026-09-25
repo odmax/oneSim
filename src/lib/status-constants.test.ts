@@ -180,6 +180,63 @@ describe('OpenAPI Business API status consistency', () => {
     const postEsimStatus: string[] = spec.paths['/esims/order'].post.responses['200'].content['application/json'].schema.properties.esims.items.properties.status.enum
     expect(postEsimStatus).toEqual([...ESIM_LIFECYCLE_STATUSES])
   })
+
+  it('OpenAPI documents the two-axis lifecycle fields on ESIM and Order esims', async () => {
+    const res = GET()
+    const spec = await res.json()
+    const esim = spec.components.schemas.ESIM.properties
+    for (const key of ['status', 'statusLabel', 'serviceStatus', 'serviceStatusLabel', 'installationStatus', 'installationStatusLabel']) {
+      expect(esim).toHaveProperty(key)
+    }
+    expect(spec.components.schemas.ESIM.properties.serviceStatus.enum).toEqual([...ESIM_LIFECYCLE_STATUSES])
+    expect(spec.components.schemas.ESIM.properties.serviceStatusLabel.enum).toEqual(
+      ESIM_LIFECYCLE_STATUSES.map((s) => ESIM_STATUS_META[s].label),
+    )
+    const orderEsimItems = spec.components.schemas.Order.properties.esims.items.properties
+    for (const key of ['status', 'serviceStatus', 'serviceStatusLabel', 'installationStatus', 'installationStatusLabel']) {
+      expect(orderEsimItems).toHaveProperty(key)
+    }
+  })
+
+  it('OpenAPI two-axis ESIM schema never documents providerStatus or provider vocabulary', async () => {
+    const res = GET()
+    const spec = await res.json()
+    const esim = spec.components.schemas.ESIM.properties
+    expect(esim).not.toHaveProperty('providerStatus')
+    expect(esim).not.toHaveProperty('providerName')
+    expect(JSON.stringify(spec.components.schemas.ESIM)).not.toContain('providerStatus')
+  })
+
+  it('OpenAPI ESIM schema documents the four canonical two-axis examples', async () => {
+    const res = GET()
+    const spec = await res.json()
+    const examples = spec.components.schemas.ESIM['x-axes-examples']
+    expect(examples).toBeDefined()
+    const keys = Object.keys(examples)
+    expect(keys).toEqual([
+      'Provisioned + Ready to install',
+      'Active + Installed',
+      'Depleted + Installed',
+      'Provisioned + Preparing or Unknown',
+    ])
+    // The raw canonical status in every example stays a stored enum value
+    // (PENDING_ACTIVATION / ACTIVE / DEPLETED) — never a new PROVISIONED value.
+    for (const k of keys) {
+      expect(ESIM_LIFECYCLE_STATUSES).toContain(examples[k].value.status)
+    }
+    expect(examples['Depleted + Installed'].value.serviceStatusLabel).toBe('Depleted')
+    expect(examples['Active + Installed'].value.installationStatusLabel).toBe('Installed')
+    expect(examples['Provisioned + Ready to install'].value.installationStatusLabel).toBe('Ready to install')
+    expect(examples['Provisioned + Preparing or Unknown'].value.installationStatusLabel).toBe('Preparing')
+  })
+
+  it('OpenAPI ESIM.status still documents DEPLETED as a canonical value', async () => {
+    const res = GET()
+    const spec = await res.json()
+    const esimEnum: string[] = spec.components.schemas.ESIM.properties.status.enum
+    expect(esimEnum).toContain('DEPLETED')
+    expect(ESIM_STATUS_META.DEPLETED.label).toBe('Depleted')
+  })
 })
 
 describe('public DTO passthrough — the API surface never invents status values', () => {

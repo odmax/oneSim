@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { capabilitySupported, resolveUsageLookup, buildProviderConnector, mergeProviderPackageEsimId, isUsageLookupSkip, type SyncLookupEsim } from '@/lib/services/esims/sync-lookup'
-import { deriveDepletionStatus, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
+import { deriveDepletionStatus, deriveUsageActivation, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
 import { getUsageNextSync } from '@/lib/services/jobs/sync-policy'
 
 /**
@@ -95,6 +95,20 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
         providerExhausted: isProviderExhaustedStatus(providerStatusRaw ?? (d as any).providerStatus),
       })
 
+      // Canonical PENDING → ACTIVE promotion from authoritative usage evidence
+      // (same helper as the scheduled batch and USAGE_UPDATED webhook). A
+      // positive used value is activation evidence; zero/missing/stale is not.
+      const activation = deriveUsageActivation({
+        currentStatus: esim.status,
+        dataUsedMB: dataUsedMB == null ? undefined : Number(dataUsedMB),
+        activatedAt: esim.activatedAt ?? null,
+      })
+
+      // Precedence: DEPLETED (from `depletion`) wins over usage-activation when
+      // a snapshot reports exhausted remaining data; otherwise a pending line
+      // with real usage promotes to ACTIVE.
+      const targetStatus = depletion || (activation.status !== esim.status ? activation.status : esim.status)
+
       await prisma.$transaction(async (tx) => {
         // A history record is created only when at least one authoritative value
         // was returned; a missing used value stays unknown (never fabricated as 0).
@@ -123,12 +137,17 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
         if (providerStatusRaw && esim.providerStatus !== providerStatusRaw) updateData.providerStatus = providerStatusRaw
 
         // Customer-visible status only changes via the canonical decision;
-        // idempotent: no write when the status already matches.
-        if (depletion && esim.status !== depletion) updateData.status = depletion
+        // idempotent: no write when the status already matches. Canonical
+        // activation timestamps are set only through the engine flag.
+        if (targetStatus !== esim.status) updateData.status = targetStatus
+        if (targetStatus === 'ACTIVE' && activation.setActivatedAt && !esim.activatedAt) {
+          updateData.activatedAt = new Date()
+          updateData.activationDetectedAt = new Date()
+        }
 
         // Keep the recurring scheduler on the canonical cadence (DEPLETED gets a
         // conservative 24 h recheck) after every authoritative result.
-        updateData.usageNextSyncAt = getUsageNextSync(depletion || esim.status, 0)
+        updateData.usageNextSyncAt = getUsageNextSync(targetStatus, 0)
 
         // Persist a provider-discovered package↔eSIM association id
         // (providerResponse.packageEsimId) WITHOUT overwriting existing keys, so
@@ -147,7 +166,7 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
         dataUsedMB,
         dataTotalMB,
         dataRemainingMB: dataRemainingMB ?? undefined,
-        status: depletion || esim.status,
+        status: targetStatus,
       }
     }
 

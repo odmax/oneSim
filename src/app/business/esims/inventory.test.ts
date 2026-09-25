@@ -3,9 +3,10 @@ import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-ava
 import { buildPackageSearchText } from '@/lib/packages/search-text'
 
 describe('business eSIM status labels (via centralized helper)', () => {
-  it('labels PENDING_ACTIVATION as "Ready to install" not "Activated on device"', () => {
+  it('labels PENDING_ACTIVATION as "Provisioned" not "Ready to install" or "Activated on device"', () => {
     const label = getEsimStatusLabel('PENDING_ACTIVATION')
-    expect(label.label).toBe('Ready to install')
+    expect(label.label).toBe('Provisioned')
+    expect(label.label).not.toBe('Ready to install')
     expect(label.label).not.toBe('Activated on device')
   })
 

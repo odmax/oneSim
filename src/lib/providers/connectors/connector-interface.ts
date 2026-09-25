@@ -114,12 +114,21 @@ export interface StatusResult {
   iccid?: string
   /** Raw provider lifecycle value that produced `status`. */
   rawStatus?: string
-  /** Choice `imsi_version` returned by package_detail. */
+  /** Optional Choice `imsi_version` returned by package_detail. */
   imsiVersion?: string | number
   packageName?: string
   rateGroupStarttime?: string
   rateGroupExpire?: string
   expiresAt?: string
+  /**
+   * Optional authoritative activation timestamp (ISO 8601) a connector VERIFIED
+   * from provider data (e.g. iBASIS subscription `activated_at`). Used as
+   * activation history by the canonical engine — a provider ACTIVE claim with a
+   * confirmed activation timestamp may promote, while a raw ACTIVE claim alone
+   * never does. Only set when source semantics are confirmed by connector
+   * code/tests. Never inferred.
+   */
+  activatedAt?: string
   /** Canonical activation-evidence signals the connector verified (see StatusResultEvidence). */
   evidence?: StatusResultEvidence
   /** Optional canonical install data recovered during a status lookup (e.g.
