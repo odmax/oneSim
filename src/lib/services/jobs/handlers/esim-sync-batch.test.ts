@@ -420,20 +420,33 @@ describe('backfillEsimSyncSchedules — null-schedule pending/active backfill (a
     for (const t of TERMINAL_STATUSES) expect(pending).not.toContain(t)
   })
 
-  it('6. repeated backfill is idempotent (same guarded predicate, no extra writes)', async () => {
+it('6. repeated backfill is idempotent (same guarded predicate, no extra writes)', async () => {
     await backfillEsimSyncSchedules()
     await backfillEsimSyncSchedules()
-    expect(mockPrisma.eSIM.updateMany.mock.calls[0][0]).toEqual(mockPrisma.eSIM.updateMany.mock.calls[5][0])
-    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(10) // 5 per pass
+    expect(mockPrisma.eSIM.updateMany.mock.calls[0][0]).toEqual(mockPrisma.eSIM.updateMany.mock.calls[6][0])
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(12) // 6 per pass
   })
 
   it('7. backfill makes zero provider calls and zero wallet mutations', async () => {
     await backfillEsimSyncSchedules()
     expect(mockBuildConnector).not.toHaveBeenCalled()
     // The mocked prisma surface for this module exposes no wallet methods, so a
-    // wallet mutation could not be invoked; assert only the 5 expected eSIM
-    // schedule passes exist (pending + active/installed + usage + depleted + cleanup).
-    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(5)
+    // wallet mutation could not be invoked; assert only the 6 expected eSIM
+    // schedule passes exist (status pending + status active + usage active +
+    // usage pending + usage depleted + terminal cleanup).
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(6)
+  })
+
+  it('8. PENDING/PENDING_ACTIVATION null-schedule rows are seeded on a bounded 1h usage cadence', async () => {
+    await backfillEsimSyncSchedules()
+    const pendingUsagePass = mockPrisma.eSIM.updateMany.mock.calls[3][0]
+    expect(pendingUsagePass.where.usageNextSyncAt).toBeNull()
+    expect(pendingUsagePass.where.usageSyncRetryCount).toBe(0)
+    expect(pendingUsagePass.where.status.in).toContain('PENDING')
+    expect(pendingUsagePass.where.status.in).toContain('PENDING_ACTIVATION')
+    const d = (pendingUsagePass.data.usageNextSyncAt as Date).getTime()
+    expect(d - Date.now()).toBeGreaterThanOrEqual(59 * 60 * 1000)
+    expect(d - Date.now()).toBeLessThan(61 * 60 * 1000)
   })
 })
 
@@ -443,8 +456,8 @@ describe('executeStatusSynchronization — null-schedule backfill runs inside th
 
     await executeStatusSynchronization(10)
 
-    // The canonical handler performs the 5 backfill schedule passes first.
-    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(5)
+// The canonical handler performs the 6 backfill schedule passes first.
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(6)
     const pending = mockPrisma.eSIM.updateMany.mock.calls[0][0]
     expect(pending.where.statusNextSyncAt).toBeNull()
     expect(pending.where.status.in).toContain('PROCESSING')
@@ -463,17 +476,17 @@ describe('REFUNDED terminal exclusion — neither status nor usage sync can sele
     expect(statusSelection.where.status.notIn).toEqual(['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'])
   })
 
-  it('usage batch selection admits ACTIVE/INSTALLED/SUSPENDED/DEPLETED (REFUNDED excluded)', async () => {
+it('usage batch selection admits pending/active/installed/suspended/depleted (REFUNDED excluded)', async () => {
     mockPrisma.eSIM.findMany.mockResolvedValue([])
     await executeUsageSynchronization(10)
     const usageSelection = mockPrisma.eSIM.findMany.mock.calls[0][0]
-    expect(usageSelection.where.status.in).toEqual(['ACTIVE', 'INSTALLED', 'SUSPENDED', 'DEPLETED'])
+    expect(usageSelection.where.status.in).toEqual(['PENDING', 'PENDING_ACTIVATION', 'ACTIVE', 'INSTALLED', 'SUSPENDED', 'DEPLETED'])
     expect(usageSelection.where.status.in).not.toContain('REFUNDED')
   })
 
   it('a REFUNDED row is never scheduled again by backfill (cleanup pass forces null schedules)', async () => {
     await backfillEsimSyncSchedules()
-    const cleanupPass = mockPrisma.eSIM.updateMany.mock.calls[4][0]
+    const cleanupPass = mockPrisma.eSIM.updateMany.mock.calls[5][0]
     expect(cleanupPass.where.status.in).toEqual(['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'])
     expect(cleanupPass.data.statusNextSyncAt).toBeNull()
   })
@@ -681,13 +694,40 @@ describe('executeUsageSynchronization � canonical depletion + scheduler recove
     expect('dataUsedMB' in data).toBe(false) // unknown used is not written
   })
 
-  it('14. DEPLETED usage-capable rows are scheduler-eligible', async () => {
+it('14. DEPLETED usage-capable rows are scheduler-eligible', async () => {
     mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim({ status: 'DEPLETED', usageNextSyncAt: new Date(Date.now() - 1000) })])
     mockBuildConnector.mockResolvedValue(usageConnector(
       vi.fn().mockResolvedValue({ success: true, data: { iccid: 'x', dataUsedMB: 500, dataTotalMB: 500, dataRemainingMB: 0 } }),
     ))
     const result = await executeUsageSynchronization(10)
     expect(result.updated).toBe(1)
+  })
+
+  it('PENDING_ACTIVATION/PENDING rows are scheduler-eligible (installed-but-pending-first-usage fix)', async () => {
+    // This is the exact regression for the three affected staging ICCIDs: a
+    // provisioned line stuck at PENDING_ACTIVATION was never selected by the
+    // usage scheduler (status filter only allowed ACTIVE/INSTALLED/SUSPENDED/
+    // DEPLETED), so no usage was ever fetched and it could never auto-promote.
+    // The selection predicate now INCLUDES PENDING/PENDING_ACTIVATION so a
+    // usage-capable connector surfaces first-usage evidence.
+    const prismaWhereCalls: any[] = []
+    const originalFindMany = mockPrisma.eSIM.findMany.getMockImplementation()
+    mockPrisma.eSIM.findMany.mockImplementation(async (args) => {
+      prismaWhereCalls.push(args)
+      return [mockEsim({ status: 'PENDING_ACTIVATION', dataUsedMB: 0, dataRemainingMB: null, usageNextSyncAt: new Date(Date.now() - 1000) })]
+    })
+    mockBuildConnector.mockResolvedValue(usageConnector(
+      vi.fn().mockResolvedValue({ success: true, data: { iccid: 'x', dataUsedMB: 512, dataTotalMB: 1024, dataRemainingMB: 512 } }),
+    ))
+    const result = await executeUsageSynchronization(10)
+    const selected: string[] = prismaWhereCalls[0].where.status.in
+    expect(selected).toContain('PENDING_ACTIVATION')
+    expect(selected).toContain('PENDING')
+    expect(result.updated).toBe(1)
+    const data = lastUpdateData()
+    expect(data.status).toBe('ACTIVE')
+    expect(data.activatedAt).toBeInstanceOf(Date)
+    expect(String(originalFindMany)).toBeTruthy()
   })
 
   it('15. a successful positive snapshot reactivates a scheduled depleted row and reschedules 24h', async () => {
@@ -731,9 +771,9 @@ describe('backfillEsimSyncSchedules � DEPLETED re-seed safety (never resurrect
     mockPrisma.eSIM.updateMany.mockResolvedValue({ count: 0 })
   })
 
-  it('seeds never-exhausted DEPLETED rows on the conservative 24h cadence, guarded by retryCount === 0', async () => {
+it('seeds never-exhausted DEPLETED rows on the conservative 24h cadence, guarded by retryCount === 0', async () => {
     await backfillEsimSyncSchedules()
-    const depletedPass = mockPrisma.eSIM.updateMany.mock.calls[3][0]
+    const depletedPass = mockPrisma.eSIM.updateMany.mock.calls[4][0]
     expect(depletedPass.where.status).toBe('DEPLETED')
     expect(depletedPass.where.usageNextSyncAt).toBeNull()
     expect(depletedPass.where.usageSyncRetryCount).toBe(0) // eligibility = existing retry policy

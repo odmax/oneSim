@@ -125,6 +125,11 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
         }
 
         const updateData: any = { lastSyncAt: new Date(), lastUsageSyncAt: new Date() }
+        // A successful manual/authoritative refresh restores the retry budget
+        // (mirrors the status sync reset) so a row that had been STOPPED by
+        // retry exhaustion becomes scheduler-eligible again — otherwise the
+        // batch STOP guard (shouldStopRetrying) would immediately re-stop it.
+        updateData.usageSyncRetryCount = 0
         if (dataUsedMB !== undefined && esim.dataUsedMB !== dataUsedMB) updateData.dataUsedMB = dataUsedMB
         if (dataTotalMB !== undefined && esim.dataTotalMB !== dataTotalMB) updateData.dataTotalMB = dataTotalMB
         // Only a finite, normalized remaining value is persisted (never negative);

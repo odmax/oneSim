@@ -5,6 +5,7 @@ import {
   deriveEsimCustomerDisplayStatus,
   deriveEsimCustomerDisplayStatusFromRow,
 } from './lifecycle-presentation'
+import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
 
 describe('service axis — canonical service labels (provider-neutral)', () => {
   it('PENDING_ACTIVATION makes its service label Provisioned (never the whole "Ready to install")', () => {
@@ -222,5 +223,75 @@ describe('deriveEsimCustomerDisplayStatus — single customer summary badge', ()
     const row = { status: 'ACTIVE', installationStatus: 'READY', hasUsableInstallData: true, activatedAt: new Date('2026-01-01'), dataUsedMB: 512 }
     expect(deriveEsimCustomerDisplayStatusFromRow(row).label).toBe('Active')
     expect(deriveEsimCustomerDisplayStatusFromRow(row)).toEqual(deriveEsimCustomerDisplayStatus(row))
+  })
+})
+
+describe('canonical engine + customer badge pipeline (evidence-first activation)', () => {
+  it('network-attached evidence promotes PENDING_ACTIVATION → ACTIVE and the badge becomes Active', () => {
+    // Connector proves a verified network attach (e.g. Telna SIM in-service,
+    // US-Matrix DIAMETER_SUCCESS). The canonical engine promotes; the summary
+    // badge then renders one "Active" (never a second "Installed" badge).
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+      providerNetworkAttachedSignal: true,
+    })
+    expect(lifecycle.status).toBe('ACTIVE')
+    const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
+    expect(badge.label).toBe('Active')
+    // A summary badge has no secondary "Installed" component.
+    const serialized = JSON.stringify(badge)
+    expect(serialized).not.toContain('Installed')
+  })
+
+  it('device-installed evidence promotes PENDING → INSTALLED and the badge never says Ready to install', () => {
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'INSTALLED',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+      providerInstalledSignal: true,
+    })
+    expect(lifecycle.status).toBe('INSTALLED')
+    const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
+    expect(badge.label).not.toBe('Ready to install')
+    expect(badge.label).toBe('Installed on device')
+  })
+
+  it('provider raw ACTIVE without evidence remains Ready to install/Provisioned (never fabricated Active)', () => {
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+    })
+    expect(lifecycle.status).toBe('PENDING_ACTIVATION')
+    const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
+    expect(badge.label).toBe('Ready to install')
+    expect(badge.label).not.toBe('Active')
+  })
+
+  it('first usage (dataUsedMB > 0) activates a pending line and the badge becomes Active', () => {
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 256,
+      activatedAt: null,
+    })
+    expect(lifecycle.status).toBe('ACTIVE')
+    const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 256 })
+    expect(badge.label).toBe('Active')
+  })
+
+  it('dataUsedMB = 0 is valid usage but is not activation evidence', () => {
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+    })
+    expect(lifecycle.status).toBe('PENDING_ACTIVATION')
   })
 })

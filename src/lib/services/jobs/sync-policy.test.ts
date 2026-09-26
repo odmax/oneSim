@@ -33,6 +33,14 @@ describe('sync-policy — success cadence vs failure backoff', () => {
     expect(msUntil(getUsageNextSync('ACTIVE', 0))).toBeGreaterThanOrEqual(6 * 3600 * 1000 - 2000)
   })
 
+  it('usage success cadence for pending rows is bounded (1h) so first-usage activation is schedulable', () => {
+    for (const pending of ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'RESERVED']) {
+      const next = msUntil(getUsageNextSync(pending, 0))
+      expect(next, `usage next sync for ${pending}`).toBeGreaterThanOrEqual(59 * 60 * 1000 - 2000)
+      expect(next, `usage next sync for ${pending}`).toBeLessThan(61 * 60 * 1000)
+    }
+  })
+
   it('shouldStopRetrying stops at attempt 5 and on permanent error codes', () => {
     expect(shouldStopRetrying(5)).toBe(true)
     expect(shouldStopRetrying(4)).toBe(false)

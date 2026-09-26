@@ -126,6 +126,16 @@ describe('syncESIMUsage — canonical DEPLETED persistence', () => {
     expect(mocks.esimUpdate).not.toHaveBeenCalled()
   })
 
+  it('successful manual refresh resets the usage retry budget so a STOPPED row becomes scheduler-eligible again', async () => {
+    mocks.findUnique.mockResolvedValue(esimRow({ status: 'ACTIVE', usageSyncRetryCount: 5, usageNextSyncAt: null, dataUsedMB: 100 }))
+    mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 150, dataTotalMB: 500, dataRemainingMB: 350 } })
+    const r = await syncESIMUsage('esim-1')
+    expect(r.success).toBe(true)
+    const data = mocks.esimUpdate.mock.calls[0][0].data
+    expect(data.usageSyncRetryCount).toBe(0)
+    expect(data.usageNextSyncAt).toBeInstanceOf(Date)
+  })
+
   it('authoritative usage > 0 promotes PENDING_ACTIVATION → ACTIVE via canonical activation (manual path parity)', async () => {
     mocks.findUnique.mockResolvedValue(esimRow({ status: 'PENDING_ACTIVATION', providerStatus: 'ACTIVE', dataUsedMB: 0, dataRemainingMB: null }))
     mocks.connectorGetUsage.mockResolvedValue({ success: true, data: { dataUsedMB: 128, dataTotalMB: 1024, dataRemainingMB: 896 } })

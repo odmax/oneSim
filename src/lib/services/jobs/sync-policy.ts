@@ -34,6 +34,14 @@ function getBaseSyncInterval(status: string): number {
 
 function getUsageBaseInterval(status: string): number {
   switch (status) {
+    case 'PENDING': case 'PENDING_ACTIVATION': case 'PROCESSING': case 'PROVISIONING': case 'RESERVED':
+      // Provisioned/pending lines are polled on a BOUNDED interval so a
+      // usage-capable connector can surface first-usage activation evidence
+      // (PENDING_ACTIVATION → ACTIVE via deriveUsageActivation), but never hot-
+      // looped. Unsupported connectors are cleanly stopped by the capability
+      // gate (usageNextSyncAt = null), so this cadence never invokes providers
+      // that declare no usage lookup.
+      return 60 * 60 * 1000 // 1 hour
     case 'ACTIVE': case 'INSTALLED':
       return 6 * 3600 * 1000
     case 'SUSPENDED':
@@ -43,7 +51,7 @@ function getUsageBaseInterval(status: string): number {
       // top-up can restore ACTIVE automatically, but never polled tightly.
       return 24 * 3600 * 1000
     default:
-      return 0 // no polling for PENDING/FAILED/EXPIRED etc.
+      return 0 // no polling for FAILED/EXPIRED etc.
   }
 }
 

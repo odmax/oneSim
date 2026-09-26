@@ -63,6 +63,16 @@ export async function backfillEsimSyncSchedules(): Promise<void> {
     where: { usageNextSyncAt: null, usageSyncRetryCount: 0, status: { in: ['ACTIVE', 'INSTALLED'] }, dataTotalMB: null },
     data: { usageNextSyncAt: new Date(now.getTime() + 3600000) },
   }).catch(() => {})
+  // PENDING / PENDING_ACTIVATION rows that never started usage polling are
+  // seeded on a BOUNDED 1 h cadence so a provisioned-but-installed line on a
+  // usage-capable connector is picked up and can surface first-usage activation
+  // evidence. Unsupported connectors are cleanly stopped by the capability gate
+  // the first time they run, so this seed never causes provider calls for
+  // providers that declare no usage lookup.
+  await prisma.eSIM.updateMany({
+    where: { usageNextSyncAt: null, usageSyncRetryCount: 0, status: { in: ['PENDING', 'PENDING_ACTIVATION'] } },
+    data: { usageNextSyncAt: new Date(now.getTime() + 3600000) },
+  }).catch(() => {})
   // DEPLETED rows that never started usage polling are re-seeded on a
   // conservative cadence so a genuine top-up restores them automatically.
   await prisma.eSIM.updateMany({
@@ -229,12 +239,18 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
   const now = new Date()
   // DEPLETED is scheduler-eligible so a genuine top-up/replenishment can be
   // detected and the line restored to ACTIVE automatically (conservative 24 h
-  // cadence, see sync-policy getUsageBaseInterval). PENDING_ACTIVATION remains
-  // excluded — no scheduling until the line is provisioned/active.
+  // cadence, see sync-policy getUsageBaseInterval). PENDING_ACTIVATION and
+  // PENDING are ALSO scheduler-eligible at a BOUNDED cadence (1 h): a
+  // provisioned-but-not-yet-activated line on a usage-capable connector can
+  // surface real first-usage evidence (dataUsedMB > 0) so the canonical
+  // activation rule promotes it to ACTIVE — without this, an installed eSIM
+  // stuck at PENDING_ACTIVATION would never be usage-synced and could never
+  // progress automatically. Unsupported connectors are still cleanly skipped
+  // by the capability gate below (usageNextSyncAt = null).
   const esims = await prisma.eSIM.findMany({
     where: {
       usageNextSyncAt: { lte: now },
-      status: { in: ['ACTIVE', 'INSTALLED', 'SUSPENDED', 'DEPLETED'] },
+      status: { in: ['PENDING', 'PENDING_ACTIVATION', 'ACTIVE', 'INSTALLED', 'SUSPENDED', 'DEPLETED'] },
     },
     include: { purchase: { select: { package: { select: { providerId: true, providerPlanId: true, providerPackageId: true } } } } },
     take: batchSize,
