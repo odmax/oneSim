@@ -40,12 +40,42 @@ function resolveSyncExhaustedAlert(providerId: string | undefined | null, syncTy
   resolveProviderAlert(providerId, SYNC_RETRY_EXHAUSTED, { resourceType: 'ESIM', resourceId: esimId, dedupKey: syncType })
 }
 
+/**
+ * Canonical, LOCAL resolution of which providers effectively support usage
+ * lookup, from the connectors' own declared capabilities (usageLookup). This
+ * never performs a provider network call and never hard-codes provider
+ * identity — it builds each provider's connector once via the canonical
+ * connector factory and reads its declared capability. Providers whose
+ * connector is unavailable or does not declare usage lookup (e.g. AirHub,
+ * iBASIS, Telna Seamless, header-token/standard without usage wiring) are
+ * treated as NOT usage-capable.
+ */
+export async function resolveUsageCapableProviderIds(): Promise<string[]> {
+  const providers = await prisma.provider.findMany({ select: { id: true } }).catch(() => [])
+  const capable: string[] = []
+  for (const p of providers) {
+    try {
+      const connector = await buildProviderConnector(p.id)
+      if (connector && capabilitySupported(connector, 'usageLookup')) capable.push(p.id)
+    } catch {
+      // Connector build failure → conservatively NOT usage-capable.
+    }
+  }
+  return capable
+}
+
 /** Backfill null sync schedules for existing eSIMs. Idempotent.
  *
  *  SAFETY: only rows that have NEVER failed (retryCount === 0) are seeded. A
  *  null schedule on a row with retryCount > 0 is the canonical
  *  "retry exhausted / stopped" marker and must NEVER be resurrected here —
  *  otherwise a STOP disposes nothing and the provider keeps getting called.
+ *
+ *  USAGE SCHEDULES ARE CAPABILITY-AWARE: usage schedules are only seeded for
+ *  eSIMs whose provider is locally resolved as usage-capable. A recurring
+ *  cleanup pass also nulls any lingering usageNextSyncAt on providers that do
+ *  NOT declare usage lookup, so unsupported rows (e.g. AirHub) are never
+ *  re-selected or churned — they stay scheduled=null with "usage unavailable".
  */
 export async function backfillEsimSyncSchedules(): Promise<void> {
   const now = new Date()
@@ -59,26 +89,55 @@ export async function backfillEsimSyncSchedules(): Promise<void> {
     where: { statusNextSyncAt: null, statusSyncRetryCount: 0, status: { in: ['ACTIVE', 'INSTALLED', 'INSTALLING'] } },
     data: { statusNextSyncAt: new Date(now.getTime() + 3600000) },
   }).catch(() => {})
+
+  // Usage-capable providers (resolved locally from connector capabilities,
+  // never a provider network call).
+  const usageCapableProviderIds = await resolveUsageCapableProviderIds()
+  const capableIn = usageCapableProviderIds.length > 0 ? { in: usageCapableProviderIds } : undefined
+  // Capability-aware seed guard: with no usage-capable provider, every seed
+  // becomes a no-op (id guaranteed not to exist) so unsupported rows never get
+  // a schedule here.
+  const seedWhere = (extra: Record<string, unknown>) => ({
+    usageNextSyncAt: null,
+    usageSyncRetryCount: 0,
+    ...extra,
+    ...(capableIn ? { purchase: { package: { providerId: capableIn } } } : { id: '__NO_USAGE_CAPABLE_PROVIDER__' }),
+  })
+
   await prisma.eSIM.updateMany({
-    where: { usageNextSyncAt: null, usageSyncRetryCount: 0, status: { in: ['ACTIVE', 'INSTALLED'] }, dataTotalMB: null },
+    where: seedWhere({ status: { in: ['ACTIVE', 'INSTALLED'] }, dataTotalMB: null }),
     data: { usageNextSyncAt: new Date(now.getTime() + 3600000) },
   }).catch(() => {})
   // PENDING / PENDING_ACTIVATION rows that never started usage polling are
   // seeded on a BOUNDED 1 h cadence so a provisioned-but-installed line on a
   // usage-capable connector is picked up and can surface first-usage activation
-  // evidence. Unsupported connectors are cleanly stopped by the capability gate
-  // the first time they run, so this seed never causes provider calls for
-  // providers that declare no usage lookup.
+  // evidence. Unsupported providers are never seeded here.
   await prisma.eSIM.updateMany({
-    where: { usageNextSyncAt: null, usageSyncRetryCount: 0, status: { in: ['PENDING', 'PENDING_ACTIVATION'] } },
+    where: seedWhere({ status: { in: ['PENDING', 'PENDING_ACTIVATION'] } }),
     data: { usageNextSyncAt: new Date(now.getTime() + 3600000) },
   }).catch(() => {})
   // DEPLETED rows that never started usage polling are re-seeded on a
-  // conservative cadence so a genuine top-up restores them automatically.
+  // conservative cadence so a genuine top-up restores them automatically
+  // (usage-capable providers only).
   await prisma.eSIM.updateMany({
-    where: { usageNextSyncAt: null, usageSyncRetryCount: 0, status: 'DEPLETED' },
+    where: seedWhere({ status: 'DEPLETED' }),
     data: { usageNextSyncAt: new Date(now.getTime() + 24 * 3600000) },
   }).catch(() => {})
+
+  // Cleanup: clear lingering usage schedules on providers that do NOT declare
+  // usage lookup. Never touches lastUsageSyncAt, retry counts, or usage
+  // values. When NO provider is usage-capable this clears every non-terminal
+  // usageNextSyncAt (nothing is supported); otherwise it clears rows whose
+  // package provider is not in the usage-capable set.
+  await prisma.eSIM.updateMany({
+    where: {
+      usageNextSyncAt: { not: null },
+      status: { notIn: ['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'] },
+      ...(capableIn ? { NOT: { purchase: { package: { providerId: capableIn } } } } : {}),
+    },
+    data: { usageNextSyncAt: null },
+  }).catch(() => {})
+
   await prisma.eSIM.updateMany({
     where: { status: { in: ['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'] }, statusNextSyncAt: { not: null } },
     data: { statusNextSyncAt: null, usageNextSyncAt: null },

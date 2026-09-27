@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     eSIM: { findMany: vi.fn(), update: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-    provider: { findUnique: vi.fn() },
+    provider: { findUnique: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
     usageRecord: { create: vi.fn().mockResolvedValue({}) },
     $executeRawUnsafe: vi.fn().mockResolvedValue(1),
   },
@@ -69,6 +69,7 @@ beforeEach(() => {
   mockPrisma.eSIM.update.mockResolvedValue({})
   mockPrisma.eSIM.findMany.mockResolvedValue([mockEsim()])
   mockPrisma.provider.findUnique.mockResolvedValue(provider as any)
+  mockPrisma.provider.findMany.mockResolvedValue([{ id: 'p-1' }] as any)
   mockBuildConnector.mockResolvedValue(choiceConnector() as any)
 })
 
@@ -423,18 +424,25 @@ describe('backfillEsimSyncSchedules — null-schedule pending/active backfill (a
 it('6. repeated backfill is idempotent (same guarded predicate, no extra writes)', async () => {
     await backfillEsimSyncSchedules()
     await backfillEsimSyncSchedules()
-    expect(mockPrisma.eSIM.updateMany.mock.calls[0][0]).toEqual(mockPrisma.eSIM.updateMany.mock.calls[6][0])
-    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(12) // 6 per pass
+    expect(mockPrisma.eSIM.updateMany.mock.calls[0][0]).toEqual(mockPrisma.eSIM.updateMany.mock.calls[7][0])
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(14) // 7 per pass
   })
 
-  it('7. backfill makes zero provider calls and zero wallet mutations', async () => {
+  it('7. backfill makes zero provider REQUESTS and zero wallet mutations (connector built only locally for capability)', async () => {
     await backfillEsimSyncSchedules()
-    expect(mockBuildConnector).not.toHaveBeenCalled()
+    // The capability resolver builds connectors LOCALLY (never a network call),
+    // so exercising the connector factory is expected; what must NOT happen is a
+    // getStatus/getUsage provider request.
+    const built = mockBuildConnector.mock.results.map((r) => r.value)
+    for (const c of built) {
+      if (c && typeof c.getStatus === 'function') expect(c.getStatus).not.toHaveBeenCalled()
+      if (c && typeof c.getUsage === 'function') expect(c.getUsage).not.toHaveBeenCalled()
+    }
     // The mocked prisma surface for this module exposes no wallet methods, so a
-    // wallet mutation could not be invoked; assert only the 6 expected eSIM
+    // wallet mutation could not be invoked; assert only the 7 expected eSIM
     // schedule passes exist (status pending + status active + usage active +
-    // usage pending + usage depleted + terminal cleanup).
-    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(6)
+    // usage pending + usage depleted + usage cleanup + terminal cleanup).
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(7)
   })
 
   it('8. PENDING/PENDING_ACTIVATION null-schedule rows are seeded on a bounded 1h usage cadence', async () => {
@@ -448,6 +456,73 @@ it('6. repeated backfill is idempotent (same guarded predicate, no extra writes)
     expect(d - Date.now()).toBeGreaterThanOrEqual(59 * 60 * 1000)
     expect(d - Date.now()).toBeLessThan(61 * 60 * 1000)
   })
+
+  it('9. pending USAGE seed is capability-aware: it filters to capable providers and no-ops when none exist', async () => {
+    // With a connector declaring usageLookup=true, the seed carries the provider
+    // filter (not a hard-coded provider identity).
+    mockPrisma.provider.findMany.mockResolvedValue([{ id: 'p-1' }] as any)
+    mockBuildConnector.mockResolvedValue(choiceConnector() as any)
+    await backfillEsimSyncSchedules()
+    const seed = mockPrisma.eSIM.updateMany.mock.calls[3][0]
+    expect(seed.where.purchase.package.providerId.in).toContain('p-1')
+  })
+
+  it('10. backfill NEVER seeds pending usage for a usageLookup=false provider (e.g. AirHub)', async () => {
+    mockPrisma.provider.findMany.mockResolvedValue([{ id: 'p-airhub' }] as any)
+    mockBuildConnector.mockResolvedValue({ capabilities: { usageLookup: false }, getStatus: vi.fn(), getUsage: vi.fn() } as any)
+    await backfillEsimSyncSchedules()
+    // The pending-usage seed (call index 3) must be a no-op guard (no provider
+    // filter => id sentinel) so an unsupported row can never receive a schedule.
+    const seed = mockPrisma.eSIM.updateMany.mock.calls[3][0]
+    expect(seed.where.id).toBe('__NO_USAGE_CAPABLE_PROVIDER__')
+    expect(seed.where.purchase).toBeUndefined()
+    // No provider usage request was performed.
+    const built = mockBuildConnector.mock.results.map((r) => r.value)
+    for (const c of built) if (c && typeof c.getUsage === 'function') expect(c.getUsage).not.toHaveBeenCalled()
+  })
+
+  it('11. unsupported rows with an existing future/overdue usage schedule are cleared during backfill', async () => {
+    mockPrisma.provider.findMany.mockResolvedValue([{ id: 'p-airhub' }] as any)
+    mockBuildConnector.mockResolvedValue({ capabilities: { usageLookup: false }, getStatus: vi.fn(), getUsage: vi.fn() } as any)
+    await backfillEsimSyncSchedules()
+    // Cleanup pass (index 5) nulls lingering usageNextSyncAt for non-capable
+    // providers. It must not bump retry counts, advance lastUsageSyncAt, or
+    // overwrite stored usage values.
+    const cleanup = mockPrisma.eSIM.updateMany.mock.calls[5][0]
+    expect(cleanup.where.usageNextSyncAt).toEqual({ not: null })
+    expect(cleanup.where.status.notIn).toContain('FAILED')
+    expect(cleanup.data.usageNextSyncAt).toBeNull()
+    expect(cleanup.data).not.toHaveProperty('lastUsageSyncAt')
+    expect(cleanup.data).not.toHaveProperty('usageSyncRetryCount')
+    expect(cleanup.data).not.toHaveProperty('dataUsedMB')
+    expect(cleanup.data).not.toHaveProperty('dataRemainingMB')
+  })
+
+  it('12. repeated backfill does not resurrect a cleared unsupported schedule (stays null)', async () => {
+    mockPrisma.provider.findMany.mockResolvedValue([{ id: 'p-airhub' }] as any)
+    mockBuildConnector.mockResolvedValue({ capabilities: { usageLookup: false }, getStatus: vi.fn(), getUsage: vi.fn() } as any)
+    await backfillEsimSyncSchedules()
+    await backfillEsimSyncSchedules()
+    // Pass 1: pending seed no-ops, cleanup nulls. Pass 2 (offset 7): same order.
+    const pass1 = mockPrisma.eSIM.updateMany.mock.calls.slice(0, 7).map((c) => c[0])
+    const pass2 = mockPrisma.eSIM.updateMany.mock.calls.slice(7, 14).map((c) => c[0])
+    expect(pass1[3].where.id).toBe('__NO_USAGE_CAPABLE_PROVIDER__') // pending seed no-op
+    expect(pass1[5].data.usageNextSyncAt).toBeNull()                 // cleanup
+    expect(pass2[3].where.id).toBe('__NO_USAGE_CAPABLE_PROVIDER__')  // still never seeded
+    expect(pass2[5].data.usageNextSyncAt).toBeNull()                 // still cleaned
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(14)     // 7 per pass
+  })
+
+  it('13. capability resolution uses the declared connector capability, not hard-coded provider identity', async () => {
+    mockPrisma.provider.findMany.mockResolvedValue([{ id: 'p-choice-like' }] as any)
+    mockBuildConnector.mockResolvedValue(choiceConnector() as any)
+    await backfillEsimSyncSchedules()
+    const seed = mockPrisma.eSIM.updateMany.mock.calls[3][0]
+    expect(seed.where.purchase.package.providerId.in).toContain('p-choice-like')
+    // The provider row carries no capability claim; only the connector's
+    // usageLookup declaration drives inclusion.
+    expect(seed.where.purchase.package.providerId.in).not.toContain('AIRHUB')
+  })
 })
 
 describe('executeStatusSynchronization — null-schedule backfill runs inside the canonical handler (natural worker path)', () => {
@@ -456,15 +531,21 @@ describe('executeStatusSynchronization — null-schedule backfill runs inside th
 
     await executeStatusSynchronization(10)
 
-// The canonical handler performs the 6 backfill schedule passes first.
-    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(6)
+// The canonical handler performs the 7 backfill schedule passes first.
+    expect(mockPrisma.eSIM.updateMany).toHaveBeenCalledTimes(7)
     const pending = mockPrisma.eSIM.updateMany.mock.calls[0][0]
     expect(pending.where.statusNextSyncAt).toBeNull()
     expect(pending.where.status.in).toContain('PROCESSING')
     expect(pending.where.createdAt).toBeUndefined()
-    // then the due-batch selection runs
+// then the due-batch selection runs
     expect(mockPrisma.eSIM.findMany).toHaveBeenCalled()
-    expect(mockBuildConnector).not.toHaveBeenCalled()
+    // Backfill builds connectors LOCALLY for capability resolution (no network),
+    // but with zero due eSIMs no status/usage request is ever issued.
+    for (const r of mockBuildConnector.mock.results) {
+      const c = r.value
+      if (c && typeof c.getStatus === 'function') expect(c.getStatus).not.toHaveBeenCalled()
+      if (c && typeof c.getUsage === 'function') expect(c.getUsage).not.toHaveBeenCalled()
+    }
   })
 })
 
@@ -486,7 +567,7 @@ it('usage batch selection admits pending/active/installed/suspended/depleted (RE
 
   it('a REFUNDED row is never scheduled again by backfill (cleanup pass forces null schedules)', async () => {
     await backfillEsimSyncSchedules()
-    const cleanupPass = mockPrisma.eSIM.updateMany.mock.calls[5][0]
+    const cleanupPass = mockPrisma.eSIM.updateMany.mock.calls[6][0]
     expect(cleanupPass.where.status.in).toEqual(['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'])
     expect(cleanupPass.data.statusNextSyncAt).toBeNull()
   })
@@ -771,7 +852,7 @@ describe('backfillEsimSyncSchedules � DEPLETED re-seed safety (never resurrect
     mockPrisma.eSIM.updateMany.mockResolvedValue({ count: 0 })
   })
 
-it('seeds never-exhausted DEPLETED rows on the conservative 24h cadence, guarded by retryCount === 0', async () => {
+  it('seeds never-exhausted DEPLETED rows on the conservative 24h cadence, guarded by retryCount === 0', async () => {
     await backfillEsimSyncSchedules()
     const depletedPass = mockPrisma.eSIM.updateMany.mock.calls[4][0]
     expect(depletedPass.where.status).toBe('DEPLETED')
@@ -786,10 +867,14 @@ it('seeds never-exhausted DEPLETED rows on the conservative 24h cadence, guarded
     // The backfill predicate requires usageSyncRetryCount === 0; an exhausted row
     // carries usageSyncRetryCount >= 5, so the DEPLETED pass can never match it and
     // its persistent-stop (usageNextSyncAt = null, the certified exhaustion state)
-    // is preserved. Backfill never calls the provider at all.
+    // is preserved. Capability resolution builds connectors LOCALLY and never
+    // issues a provider request.
     await backfillEsimSyncSchedules()
-    const depletedPass = mockPrisma.eSIM.updateMany.mock.calls[3][0]
+    const depletedPass = mockPrisma.eSIM.updateMany.mock.calls[4][0]
     expect(depletedPass.where.usageSyncRetryCount).toBe(0)
-    expect(mockBuildConnector).not.toHaveBeenCalled()
+    for (const r of mockBuildConnector.mock.results) {
+      const c = r.value
+      if (c && typeof c.getUsage === 'function') expect(c.getUsage).not.toHaveBeenCalled()
+    }
   })
 })

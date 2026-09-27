@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   update: vi.fn().mockResolvedValue({}),
   findUnique: vi.fn(),
   providerFindUnique: vi.fn(),
+  providerFindMany: vi.fn(),
   claimEsimForSync: vi.fn(),
   capabilitySupported: vi.fn(),
   resolveStatusLookup: vi.fn(),
@@ -16,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     eSIM: { updateMany: mocks.updateMany, findMany: mocks.findMany, update: mocks.update, findUnique: mocks.findUnique },
-    provider: { findUnique: mocks.providerFindUnique },
+    provider: { findUnique: mocks.providerFindUnique, findMany: mocks.providerFindMany },
   },
 }))
 
@@ -54,6 +55,7 @@ beforeEach(() => {
   mocks.capabilitySupported.mockReturnValue(true)
   mocks.resolveStatusLookup.mockReturnValue({ ok: true, identifier: 'ICCID' })
   mocks.providerFindUnique.mockResolvedValue({ id: 'prov-1', status: 'ACTIVE', adapterStrategy: 'AIRHUB', type: 'AIRHUB' })
+  mocks.providerFindMany.mockResolvedValue([]) // no usage-capable providers → usage seeds are no-op guards
   mocks.buildProviderConnector.mockReturnValue({ getStatus: mocks.getStatus })
   mocks.updateMany.mockResolvedValue({ count: 0 })
 })
