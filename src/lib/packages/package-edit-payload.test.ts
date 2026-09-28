@@ -158,6 +158,34 @@ describe('buildSinglePackageEditPayload — idempotent fixed-price and markup up
     })
     expect(payload.data).toEqual({ sellingPrice: 50, pricingIntent: 'SELLING' })
   })
+
+  it('allows the same markup field to be replaced repeatedly (9 → 8 → 7)', () => {
+    const form = (markupPercent: string) => ({
+      costPrice: '35.9',
+      sellingPrice: '39.13',
+      sellingCurrency: 'USD',
+      markupPercent,
+      pricingMode: 'MARKUP_PERCENT',
+      publishStatus: '',
+      configurationStatus: '',
+      notes: '',
+      pricingIntent: 'MARKUP' as const,
+    })
+
+    const first = buildSinglePackageEditPayload({
+      ...publishedPkg,
+      costPrice: '35.9', sellingPrice: '39.13', markupPercent: '9',
+      publishStatus: null, configurationStatus: null, notes: null,
+    }, form('8'))
+    expect(first.data).toEqual({ markupPercent: 8, pricingIntent: 'MARKUP' })
+
+    const second = buildSinglePackageEditPayload({
+      ...publishedPkg,
+      costPrice: '35.9', sellingPrice: '38.77', markupPercent: '8',
+      publishStatus: null, configurationStatus: null, notes: null,
+    }, { ...form('7'), sellingPrice: '38.77' })
+    expect(second.data).toEqual({ markupPercent: 7, pricingIntent: 'MARKUP' })
+  })
 })
 
 describe('buildSinglePackageEditPayload — status changes', () => {

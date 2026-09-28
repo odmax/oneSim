@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { bulkConfigurePackages } from '@/lib/actions/bulk-configure'
 import { publishToCatalog, bulkSetPublishStatus, getPublishSummary } from '@/lib/actions/publish-packages'
@@ -62,12 +62,14 @@ interface Package {
   provider: { id: string; name: string; code: string } | null
 }
 
-export function BulkConfigTable({ initialPackages, total, page, totalPages, rules }: {
+export function BulkConfigTable({ initialPackages, total, page, totalPages, rules, providers, matchingIds }: {
   initialPackages: Package[]
   total: number
   page: number
   totalPages: number
+  matchingIds: string[]
   rules: RuleItem[]
+  providers: Array<{ id: string; name: string }>
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -82,6 +84,17 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<{ success?: boolean; status?: 'SUCCESS' | 'PARTIAL' | 'FAILED'; updated?: number; created?: number; skipped?: number; error?: string; skippedDetails?: { packageId: string; name: string; reason: string; failedStage?: string; readinessReasons?: string[] }[] } | null>(null)
   const [showApplyPanel, setShowApplyPanel] = useState(false)
+  // Keep an immediately current row snapshot after each save. A server
+  // refresh remains the source-of-truth reconciliation, but it is asynchronous
+  // and must not leave the next modal open/edit based on stale pricing values.
+  const [packages, setPackages] = useState(initialPackages)
+
+  useEffect(() => {
+    setPackages(initialPackages)
+    // Selection is page-scoped. Never carry hidden IDs into actions after a
+    // filter, state-tab, or pagination navigation changes the visible rows.
+    setSelected(new Set())
+  }, [initialPackages])
 
   // Form state
   const [costPrice, setCostPrice] = useState('')
@@ -94,6 +107,19 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
   const [configurationStatus, setConfigurationStatus] = useState('')
   const [tags, setTags] = useState('')
   const [notes, setNotes] = useState('')
+
+  const resetBulkForm = () => {
+    setCostPrice('')
+    setSellingPrice('')
+    setMarkupPercent('')
+    setPricingIntent('NONE')
+    setPricingMode('')
+    setSellingCurrency('')
+    setPublishStatus('')
+    setConfigurationStatus('')
+    setTags('')
+    setNotes('')
+  }
 
   // Canonical live preview: whichever dependent value is missing is derived
   // with the SAME shared helper the server uses (never a second formula).
@@ -108,10 +134,10 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
     : null
 
   const toggleAll = () => {
-    if (selected.size === initialPackages.length) {
+    if (selected.size === packages.length) {
       setSelected(new Set())
     } else {
-      setSelected(new Set(initialPackages.map(p => p.id)))
+      setSelected(new Set(packages.map(p => p.id)))
     }
   }
 
@@ -132,7 +158,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
     // First show summary
     const summary = await getPublishSummary(Array.from(selected))
     if (!summary || summary.total === 0) {
-      const allPkgs = initialPackages.filter(p => selected.has(p.id))
+      const allPkgs = packages.filter(p => selected.has(p.id))
       const missingCost = allPkgs.filter(p => !p.costPrice || Number(p.costPrice) <= 0)
       const missingSell = allPkgs.filter(p => !p.sellingPrice || Number(p.sellingPrice) <= 0)
       const notConfigured = allPkgs.filter(p => p.configurationStatus !== 'CONFIGURED' && p.configurationStatus !== 'AUTO_CONFIGURED')
@@ -185,6 +211,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
   }
 
   const openEdit = (pkg: Package) => {
+    setResult(null)
     setEditPkg(pkg)
     setEditForm({
       costPrice: pkg.costPrice?.toString() || '',
@@ -220,8 +247,18 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
     setSaving(true)
     try {
       const res = await updateSinglePackage(editPkg.id, data)
-      if (res.success || !editPkg) { closeEdit(); router.refresh() }
+      if (res.success) {
+        if (res.updatedPackage) {
+          setPackages(current => current.map(pkg => pkg.id === res.updatedPackage!.id
+            ? { ...pkg, ...res.updatedPackage }
+            : pkg))
+        }
+        closeEdit()
+        router.refresh()
+      }
       else { setResult({ success: false, error: res.error || 'Update failed', status: 'FAILED' }) }
+    } catch (error) {
+      setResult({ success: false, error: error instanceof Error ? error.message : 'Update failed' })
     } finally {
       setSaving(false)
     }
@@ -243,7 +280,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
   }
 
   const handleExport = () => {
-    const selectedPkgs = initialPackages.filter(p => selected.has(p.id))
+    const selectedPkgs = packages.filter(p => selected.has(p.id))
     if (selectedPkgs.length === 0) return
     const headers = ['Provider','Plan ID','Name','Country','Region','Data (GB)','Validity (Days)','Cost Price','Selling Price','Currency','Markup %','Config Status','Publish Status']
     const rows = selectedPkgs.map(p => [
@@ -295,15 +332,21 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
       return
     }
 
-    const res = await bulkConfigurePackages(params)
-    setResult(res)
+    try {
+      const res = await bulkConfigurePackages(params)
+      setResult(res)
 
-    if (res.success) {
-      setSelected(new Set())
-      setShowForm(false)
-      setTimeout(() => router.refresh(), 1500)
+      if (res.success) {
+        setSelected(new Set())
+        setShowForm(false)
+        resetBulkForm()
+        setTimeout(() => router.refresh(), 1500)
+      }
+    } catch (error) {
+      setResult({ success: false, error: error instanceof Error ? error.message : 'Bulk configuration failed' })
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   return (
@@ -522,6 +565,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
           <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-bold text-gray-900 mb-1">Configure Package</h3>
             <p className="text-sm text-gray-500 mb-4 truncate">{editPkg.provider?.name} — {editPkg.name}</p>
+            {result?.error && <p role="alert" className="mb-3 text-sm text-red-700">{result.error}</p>}
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Cost Price</label>
@@ -634,7 +678,16 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
       {showApplyPanel && (
         <ApplyRulePanel
           rules={rules}
+          providers={providers}
+          matchingIds={matchingIds}
           selectedIds={Array.from(selected)}
+          searchParamsFilters={{
+            providerId: searchParams.get('provider') || undefined,
+            country: searchParams.get('country') || undefined,
+            publishStatus: searchParams.get('publishStatus') || undefined,
+            configurationStatus: searchParams.get('configStatus') || undefined,
+            searchQuery: searchParams.get('search') || undefined,
+          }}
           onClose={() => setShowApplyPanel(false)}
           onApplied={() => { setSelected(new Set()); router.refresh() }}
         />
@@ -644,7 +697,7 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
           <thead className="bg-gray-50">
             <tr>
               <th className="px-3 py-3 w-10">
-                <input type="checkbox" onChange={toggleAll} checked={selected.size === initialPackages.length && initialPackages.length > 0}
+                <input type="checkbox" onChange={toggleAll} checked={selected.size === packages.length && packages.length > 0}
                   className="rounded border-gray-300 text-cyan-600 focus:ring-cyan-500" />
               </th>
               <th className="px-3 py-3 text-left text-xs font-medium uppercase text-gray-500">Provider</th>
@@ -663,9 +716,9 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
             </tr>
           </thead>
           <tbody className="divide-y">
-            {initialPackages.length === 0 ? (
+            {packages.length === 0 ? (
               <tr><td colSpan={14} className="px-4 py-12 text-center text-sm text-gray-400">No packages found.</td></tr>
-            ) : initialPackages.map(pkg => (
+            ) : packages.map(pkg => (
               <tr key={pkg.id} className={`hover:bg-gray-50 ${selected.has(pkg.id) ? 'bg-cyan-50' : ''}`}>
                 <td className="px-3 py-3">
                   <input type="checkbox" checked={selected.has(pkg.id)} onChange={() => toggleOne(pkg.id)}

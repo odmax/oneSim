@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { getApplyRulePreview, executeApplyRule } from '@/lib/actions/apply-rules-workflow'
 import type { ApplyRulePreview, ApplyRuleFilters } from '@/lib/actions/apply-rules-workflow'
 
@@ -12,7 +12,9 @@ interface Rule {
 }
 
 interface ApplyRulePanelProps {
+  matchingIds: string[]
   rules: Rule[]
+  providers: Array<{ id: string; name: string }>
   selectedIds: string[]
   searchParamsFilters?: Partial<ApplyRuleFilters>
   onClose: () => void
@@ -37,7 +39,7 @@ const SCOPE_DESCRIPTIONS: Record<Scope, string> = {
   search: 'All plans matching your current search filters',
 }
 
-export default function ApplyRulePanel({ rules, selectedIds, searchParamsFilters, onClose, onApplied }: ApplyRulePanelProps) {
+export default function ApplyRulePanel({ rules, providers, matchingIds, selectedIds, searchParamsFilters, onClose, onApplied }: ApplyRulePanelProps) {
   const activeRules = rules.filter(r => r.isActive)
 
   // Step 1
@@ -50,7 +52,6 @@ export default function ApplyRulePanel({ rules, selectedIds, searchParamsFilters
   const [showFilters, setShowFilters] = useState(false)
   const [filters, setFilters] = useState<ApplyRuleFilters>({
     hasCostPrice: true,
-    hasSellingPrice: true,
     includeArchived: false,
     includeHidden: false,
   })
@@ -73,11 +74,12 @@ export default function ApplyRulePanel({ rules, selectedIds, searchParamsFilters
     setPreview(null)
     setResult(null)
 
+    try {
     const res = await getApplyRulePreview(
       selectedRuleId,
       scope,
       scope === 'search' ? { ...filters, ...searchParamsFilters } : filters,
-      scope === 'selected' ? selectedIds : undefined,
+      scope === 'search' ? matchingIds : scope === 'selected' ? selectedIds : undefined,
     )
 
     setLoading(false)
@@ -86,24 +88,22 @@ export default function ApplyRulePanel({ rules, selectedIds, searchParamsFilters
     } else {
       setError(res.error || 'Failed to generate preview')
     }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Preview failed')
+    } finally { setLoading(false) }
   }
-
-  useEffect(() => {
-    if (canShowPreview) {
-      handlePreview()
-    }
-  }, [selectedRuleId, scope])
 
   const handleApply = async () => {
     if (!selectedRuleId || !preview || preview.matched === 0) return
     setExecuting(true)
     setError('')
 
+    try {
     const res = await executeApplyRule(
       selectedRuleId,
       scope,
       scope === 'search' ? { ...filters, ...searchParamsFilters } : filters,
-      scope === 'selected' ? selectedIds : undefined,
+      scope === 'search' ? matchingIds : scope === 'selected' ? selectedIds : undefined,
     )
 
     setExecuting(false)
@@ -113,10 +113,17 @@ export default function ApplyRulePanel({ rules, selectedIds, searchParamsFilters
     } else {
       setResult({ success: false, error: res.error })
     }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Rule application failed')
+    } finally { setExecuting(false) }
   }
 
   const updateFilter = (key: keyof ApplyRuleFilters, value: any) => {
     setFilters(prev => ({ ...prev, [key]: value }))
+    // Never allow an Apply action against a preview generated with older
+    // filters. The operator must regenerate the exact impact first.
+    setPreview(null)
+    setResult(null)
   }
 
   return (
@@ -131,7 +138,7 @@ export default function ApplyRulePanel({ rules, selectedIds, searchParamsFilters
           <button onClick={onClose} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600">&times;</button>
         </div>
 
-        <div className="p-6 space-y-6">
+        <fieldset disabled={loading || executing} className="p-6 space-y-6">
           {/* Step 1: Select Rule */}
           <div>
             <div className="flex items-center gap-2 mb-3">
@@ -216,7 +223,9 @@ export default function ApplyRulePanel({ rules, selectedIds, searchParamsFilters
                     <select value={filters.providerId || ''} onChange={e => updateFilter('providerId', e.target.value || undefined)}
                       className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none">
                       <option value="">All Providers</option>
-                      {rules.length > 0 && <option value="placeholder">(providers loaded per-rule)</option>}
+                      {providers.map(provider => (
+                        <option key={provider.id} value={provider.id}>{provider.name}</option>
+                      ))}
                     </select>
                   </div>
                   <div>
@@ -328,7 +337,7 @@ export default function ApplyRulePanel({ rules, selectedIds, searchParamsFilters
                 : result.error}
             </div>
           )}
-        </div>
+        </fieldset>
 
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t bg-gray-50 rounded-b-xl">
@@ -336,6 +345,15 @@ export default function ApplyRulePanel({ rules, selectedIds, searchParamsFilters
             Cancel
           </button>
           <div className="flex gap-2">
+            {!preview && canShowPreview && (
+              <button
+                onClick={handlePreview}
+                disabled={loading}
+                className="rounded-lg border border-cyan-300 bg-white px-5 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50 disabled:opacity-50"
+              >
+                {loading ? 'Generating...' : 'Generate Preview'}
+              </button>
+            )}
             {preview && (
               <button
                 onClick={handleApply}

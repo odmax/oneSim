@@ -95,7 +95,24 @@ export async function updateSinglePackage(packageId: string, data: {
   notes?: string
   /** What the administrator actually edited — authority for bidirectional pricing. */
   pricingIntent?: PricingMutationIntent
-}): Promise<{ success: boolean; error?: string; readinessReasons?: string[]; eligibilityReasons?: string[] }> {
+}): Promise<{
+  success: boolean
+  error?: string
+  readinessReasons?: string[]
+  eligibilityReasons?: string[]
+  /** Canonical values persisted by the pricing resolver, safe for client state. */
+  updatedPackage?: {
+    id: string
+    costPrice: string
+    sellingPrice: string | null
+    sellingCurrency: string | null
+    markupPercent: string | null
+    pricingMode: string | null
+    publishStatus: string | null
+    configurationStatus: string | null
+    notes: string | null
+  }
+}> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
 
@@ -183,7 +200,20 @@ export async function updateSinglePackage(packageId: string, data: {
     )
 
     await revalidateCatalogRoutes()
-    return { success: true }
+    return {
+      success: true,
+      updatedPackage: {
+        id: updated.id,
+        costPrice: updated.costPrice.toString(),
+        sellingPrice: updated.sellingPrice?.toString() ?? null,
+        sellingCurrency: updated.sellingCurrency,
+        markupPercent: updated.markupPercent?.toString() ?? null,
+        pricingMode: updated.pricingMode,
+        publishStatus: updated.publishStatus,
+        configurationStatus: updated.configurationStatus,
+        notes: updated.notes,
+      },
+    }
   } catch (e: any) {
     if (e.message === 'Package not found' || e.message === 'No fields to update') {
       return { success: false, error: e.message }

@@ -10,6 +10,7 @@ import { buildPortalExposureForRetail } from '@/lib/packages/customer-visibility
 import { computeCatalogStats } from '@/lib/packages/catalog-stats'
 import { PROVIDER_PACKAGE_STATE_LABELS, PROVIDER_PACKAGE_STATE_COLORS, type ProviderPackageAdminState } from '@/lib/packages/provider-package-state'
 import { buildProviderCatalogView } from '@/lib/packages/provider-catalog-pipeline'
+import { buildProviderCatalogWhere } from '@/lib/packages/provider-catalog-query'
 
 const ADMIN_STATES: ProviderPackageAdminState[] = ['READY', 'NEEDS_CONFIGURATION', 'NEEDS_PRICING', 'UNAVAILABLE_QUARANTINED', 'DRAFT_UNPUBLISHED', 'BLOCKED_OTHER']
 
@@ -23,37 +24,16 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
   const perm = await checkPermission(Permissions.MANAGE_PRODUCTS)
   if (!perm.allowed) redirect('/admin/unauthorized')
 
-  const page = parseInt(searchParams?.page || '1')
+  const requestedPage = Number.parseInt(searchParams?.page || '1', 10)
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1
   const limit = 50
 
-  const baseWhere: any = {}
-  const searchFilters: any[] = []
-
-  if (searchParams?.provider) baseWhere.providerId = searchParams.provider
-  if (searchParams?.publishStatus) baseWhere.publishStatus = searchParams.publishStatus
-  if (searchParams?.configStatus) baseWhere.configurationStatus = searchParams.configStatus
-  if (searchParams?.country) baseWhere.country = searchParams.country
   // NOTE: `state` is deliberately NOT part of the SQL where-clause. State is
   // computed with the canonical classifier over the COMPLETE matching
   // population; the filter and the tab counts come from that same classified
   // set (see buildProviderCatalogView). This removes all SQL approximation.
 
-  if (searchParams?.costFilter === 'missing') {
-    searchFilters.push({ costPrice: 0 })
-  }
-
-  if (searchParams?.search) {
-    searchFilters.push(
-      { name: { contains: searchParams.search, mode: 'insensitive' } },
-      { providerPlanId: { contains: searchParams.search, mode: 'insensitive' } },
-      { providerPlanCode: { contains: searchParams.search, mode: 'insensitive' } },
-    )
-  }
-
-  const where = {
-    ...baseWhere,
-    ...(searchFilters.length > 0 ? { OR: searchFilters } : {}),
-  }
+  const where = buildProviderCatalogWhere(searchParams || {})
 
   const rules = await prisma.packageConfigurationRule.findMany({
     orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
@@ -105,6 +85,15 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
   const exposureMap = await buildPortalExposureForRetail(retailForStats.map(p => ({ providerId: p.providerId, providerPackage: p.providerPackage?.providerId ? { providerId: p.providerPackage.providerId } : null })))
   const catalogStats = computeCatalogStats(retailForStats as any, exposureMap)
 
+  const stateLink = (state: string) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(searchParams || {})) {
+      if (value && key !== 'page' && key !== 'state') params.set(key, value)
+    }
+    if (state) params.set('state', state)
+    return `/admin/provider-catalog?${params}`
+  }
+
   const totalPages = view.totalPages
   const stats = {
     total: view.counts.total,
@@ -139,7 +128,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
             className="rounded-lg border border-amber-300 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-50">
             Health
           </Link>
-          <Link href="/admin/provider-catalog?configStatus=AUTO_CONFIGURED&publishStatus=READY"
+          <Link href="/admin/provider-catalog?state=READY"
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
             Ready to Publish
           </Link>
@@ -159,7 +148,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
         {ADMIN_STATES.map(state => (
           <Link
             key={state}
-            href={`/admin/provider-catalog?state=${state}`}
+            href={stateLink(state)}
             className={`rounded-full px-3 py-1 text-xs font-medium ${parsedState === state ? 'bg-gray-900 text-white' : `${PROVIDER_PACKAGE_STATE_COLORS[state]} hover:opacity-80`}`}
           >
             {PROVIDER_PACKAGE_STATE_LABELS[state]} ({view.counts[state]})
@@ -222,6 +211,8 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
       {/* Filters */}
       <div className="rounded-xl border bg-white p-4 shadow-sm">
         <form method="GET" action="/admin/provider-catalog" className="flex flex-wrap gap-3 items-end">
+          {parsedState && <input type="hidden" name="state" value={parsedState} />}
+          {searchParams?.costFilter && <input type="hidden" name="costFilter" value={searchParams.costFilter} />}
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">Search</label>
             <input type="text" name="search" defaultValue={searchParams?.search || ''} placeholder="Name, plan ID, SKU..."
@@ -263,7 +254,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
             </select>
           </div>
           <button type="submit" className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-700">Filter</button>
-          {(searchParams?.provider || searchParams?.publishStatus || searchParams?.configStatus || searchParams?.search || searchParams?.country) && (
+          {(searchParams?.provider || searchParams?.publishStatus || searchParams?.configStatus || searchParams?.search || searchParams?.country || searchParams?.costFilter || searchParams?.state) && (
             <Link href="/admin/provider-catalog" className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">Clear</Link>
           )}
         </form>
@@ -273,6 +264,8 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
       <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
         <BulkConfigTable
           rules={rules}
+          providers={providers}
+          matchingIds={view.orderedIds}
           initialPackages={view.pageRows.map(c => {
             const p = c.row as any
             const state: ProviderPackageAdminState = c.state
@@ -306,7 +299,7 @@ export default async function ProviderCatalogPage({ searchParams }: { searchPara
             }
           })}
           total={view.total}
-          page={page}
+          page={Math.min(page, Math.max(1, view.totalPages))}
           totalPages={totalPages}
         />
       </div>

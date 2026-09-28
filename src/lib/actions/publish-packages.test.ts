@@ -64,7 +64,7 @@ vi.mock('@/lib/services/catalog/publish-to-retail', () => ({
 
 import { getServerSession } from 'next-auth'
 import { prisma } from '@/lib/prisma'
-import { publishToCatalog, bulkSetPublishStatus } from './publish-packages'
+import { publishToCatalog, bulkSetPublishStatus, getPublishSummary } from './publish-packages'
 import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
 import { finalizeCatalogPackageConfiguration } from '@/lib/pricing/configuration-finalizer'
 
@@ -191,6 +191,24 @@ describe('publishToCatalog', () => {
     expect(mockPublishToRetail).toHaveBeenCalled()
   })
 
+  it('deactivates retail products when archiving as well as hiding', async () => {
+    let capturedTx: any = null
+    vi.mocked(prisma.$transaction).mockImplementation(async (cb: any) => {
+      capturedTx = {
+        providerPackage: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        eSIMPackage: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      }
+      await cb(capturedTx)
+    })
+
+    await bulkSetPublishStatus(['pp-1'], 'ARCHIVED')
+
+    expect(capturedTx.eSIMPackage.updateMany).toHaveBeenCalledWith({
+      where: { providerPackageId: { in: ['pp-1'] } },
+      data: { isActive: false },
+    })
+  })
+
   it('all packages blocked → status FAILED, success=false (never success=true when nothing published)', async () => {
     mockPublishToRetail.mockResolvedValue({ success: false, providerPackageId: 'pp-1', created: false, updated: false, publishStatusSet: false, ready: false, readinessReasons: ['Package not published (READY)'], error: 'Finalization failed', failedStage: 'FINALIZATION_FAILED' })
     const pp = makeProviderPackage()
@@ -238,6 +256,28 @@ describe('publishToCatalog', () => {
     expect(result.status).toBe('SUCCESS')
     expect(result.skipped).toBe(0)
     expect(result.created + (result.updated || 0)).toBe(2)
+  })
+})
+
+describe('getPublishSummary', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getServerSession).mockResolvedValue(mockSession as any)
+  })
+
+  it('counts only plans that pass the same basic publish gates', async () => {
+    vi.mocked(prisma.providerPackage.findMany).mockResolvedValue([
+      makeProviderPackage({ id: 'ready' }),
+      makeProviderPackage({ id: 'no-currency', sellingCurrency: null }),
+      makeProviderPackage({ id: 'unconfigured', configurationStatus: 'UNCONFIGURED', publishStatus: 'DRAFT' }),
+      makeProviderPackage({ id: 'no-price', sellingPrice: null }),
+    ] as any)
+
+    const summary = await getPublishSummary(['ready', 'no-currency', 'unconfigured', 'no-price'])
+
+    expect(summary?.total).toBe(1)
+    expect(summary?.minPrice).toBe(10)
+    expect(summary?.maxPrice).toBe(10)
   })
 })
 

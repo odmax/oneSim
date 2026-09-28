@@ -104,7 +104,7 @@ describe('updateSinglePackage', () => {
 
     const result = await updateSinglePackage('pp-1', { markupPercent: 30 })
 
-    expect(result).toEqual({ success: true })
+    expect(result).toMatchObject({ success: true })
     expect(mockSyncProviderPackageToPublishedProducts).toHaveBeenCalled()
   })
 
@@ -123,7 +123,7 @@ describe('updateSinglePackage', () => {
 
     const result = await updateSinglePackage('pp-1', { sellingPrice: 19.99 })
 
-    expect(result).toEqual({ success: true })
+    expect(result).toMatchObject({ success: true })
     expect(mockSyncProviderPackageToPublishedProducts).toHaveBeenCalled()
   })
 
@@ -231,7 +231,7 @@ describe('updateSinglePackage', () => {
     })
 
     const result = await updateSinglePackage('pp-1', { sellingPrice: 19.99 })
-    expect(result).toEqual({ success: true })
+    expect(result).toMatchObject({ success: true })
   })
 
   it('recalculates selling price from cost + markup when only markup is edited (bug: cost+markup with NULL selling)', async () => {
@@ -558,6 +558,56 @@ describe('updateSinglePackage — repeated editing (A twice / A then B), FIXED_P
     const r2 = await updateSinglePackage('pp-A', { sellingPrice: 17.5, pricingIntent: 'SELLING' })
     expect(r1.success).toBe(true)
     expect(r2.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
+  })
+
+  it('replaces markup repeatedly and returns each canonical persisted snapshot (9 → 8 → 7)', async () => {
+    const { prisma } = await import('@/lib/prisma') as any
+    let persisted: any = {
+      ...mockPackage,
+      id: 'pp-margin',
+      publishStatus: null,
+      configurationStatus: null,
+      pricingMode: 'MARKUP_PERCENT',
+      costPrice: { toString: () => '35.9' },
+      sellingPrice: { toString: () => '39.13' },
+      markupPercent: { toString: () => '9' },
+    }
+    const writes: any[] = []
+
+    prisma.$transaction.mockImplementation(async (cb: Function) => cb({
+      providerPackage: {
+        findUnique: vi.fn().mockImplementation(async () => persisted),
+        update: vi.fn().mockImplementation(async ({ data }: any) => {
+          writes.push(data)
+          const previousCost = persisted.costPrice.toString()
+          const previousSelling = persisted.sellingPrice?.toString() ?? null
+          const previousMarkup = persisted.markupPercent?.toString() ?? null
+          const nextCost = String(data.costPrice ?? previousCost)
+          const nextSelling = data.sellingPrice == null ? previousSelling : String(data.sellingPrice)
+          const nextMarkup = data.markupPercent == null ? previousMarkup : String(data.markupPercent)
+          persisted = {
+            ...persisted,
+            ...data,
+            costPrice: { toString: () => nextCost },
+            sellingPrice: nextSelling == null ? null : { toString: () => nextSelling },
+            markupPercent: nextMarkup == null ? null : { toString: () => nextMarkup },
+          }
+          return persisted
+        }),
+      },
+    }))
+
+    const first = await updateSinglePackage('pp-margin', { markupPercent: 8, pricingIntent: 'MARKUP' })
+    const second = await updateSinglePackage('pp-margin', { markupPercent: 7, pricingIntent: 'MARKUP' })
+
+    expect(first.success, first.error).toBe(true)
+    expect(first.updatedPackage?.markupPercent).toBe('8')
+    expect(first.updatedPackage?.sellingPrice).toBe('38.77')
+    expect(second.success).toBe(true)
+    expect(second.updatedPackage?.markupPercent).toBe('7')
+    expect(second.updatedPackage?.sellingPrice).toBe('38.41')
+    expect(writes.map(write => write.markupPercent)).toEqual([8, 7])
     expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
   })
 

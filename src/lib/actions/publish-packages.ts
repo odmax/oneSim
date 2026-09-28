@@ -206,7 +206,9 @@ export async function bulkSetPublishStatus(packageIds: string[], status: 'HIDDEN
 
     await tx.eSIMPackage.updateMany({
       where: { providerPackageId: { in: packageIds } },
-      data: { isActive: status === 'HIDDEN' ? false : undefined },
+      // Both hidden and archived provider packages must immediately disappear
+      // from customer surfaces. Never leave an archived retail row active.
+      data: { isActive: false },
     })
   })
 
@@ -222,9 +224,23 @@ export async function getPublishSummary(packageIds: string[]) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return null
 
-  const packages = await prisma.providerPackage.findMany({
-    where: { id: { in: packageIds }, sellingPrice: { gt: 0 }, costPrice: { gt: 0 } },
+  const candidates = await prisma.providerPackage.findMany({
+    where: { id: { in: packageIds } },
     include: { provider: { select: { id: true, name: true } } },
+  })
+
+  // Match the same pre-publication checks used by publishToCatalog so the
+  // confirmation count never promises plans that the action will skip.
+  const packages = candidates.filter(pkg => {
+    const selling = pkg.sellingPrice ? Number(pkg.sellingPrice) : 0
+    const cost = pkg.costPrice ? Number(pkg.costPrice) : 0
+    return cost > 0
+      && selling > 0
+      && !!pkg.sellingCurrency
+      && isPackagePublishEligible({
+        configurationStatus: pkg.configurationStatus || 'UNCONFIGURED',
+        publishStatus: pkg.publishStatus,
+      })
   })
 
   if (packages.length === 0) return { total: 0, providers: [], countries: [], minPrice: 0, maxPrice: 0 }
