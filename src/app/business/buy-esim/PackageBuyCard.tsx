@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { requestPurchaseQuote, executePurchase } from '@/lib/actions/purchase'
+import { clampQuantity } from '@/lib/packages/package-edit-payload'
 
 type FlowState = 'IDLE' | 'GETTING_QUOTE' | 'QUOTE_READY' | 'SUBMITTING' | 'ERROR'
 
@@ -32,6 +33,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
   const [quantity, setQuantity] = useState(1)
   const [travelDate, setTravelDate] = useState('')
   const [quoteRef, setQuoteRef] = useState<string | null>(null)
+  const [quotedQuantity, setQuotedQuantity] = useState<number | null>(null)
   const [quotedUnitPrice, setQuotedUnitPrice] = useState<number | null>(null)
   const [quotedTotal, setQuotedTotal] = useState<number | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
@@ -62,6 +64,9 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
       }
 
       setQuoteRef(result.quote.reference)
+      // Lock the quantity to the quoted quantity — the server prices checkout
+      // from the quote, so the displayed total must match the executed order.
+      setQuotedQuantity(result.quote.quantity ?? quantity)
       setQuotedUnitPrice(result.quote.unitPrice)
       setQuotedTotal(result.quote.totalAmount)
       setFlowState('QUOTE_READY')
@@ -82,7 +87,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
 
       const result = await executePurchase({
         packageId: pkg.id,
-        quantity,
+        quantity: quotedQuantity ?? quantity,
         quoteReference: quoteRef,
         idempotencyKey: newKey,
         travelDate: pkg.requiresTravelDate ? travelDate : undefined,
@@ -102,6 +107,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
     if (flowState === 'ERROR') {
       setFlowState('IDLE')
       setQuoteRef(null)
+      setQuotedQuantity(null)
       setQuotedTotal(null)
       setErrorMsg('')
     }
@@ -155,10 +161,10 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
             min="1"
             max="100"
             value={quantity}
-            onChange={(e) => setQuantity(Math.min(100, Math.max(1, parseInt(e.target.value) || 1)))}
+            onChange={(e) => setQuantity(clampQuantity(e.target.value))}
             className="mt-1 block w-full rounded-lg border border-gray-200 px-4 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-50"
             required
-            disabled={flowState !== 'IDLE' && flowState !== 'QUOTE_READY' && flowState !== 'ERROR'}
+            disabled={flowState !== 'IDLE'}
           />
         </div>
         {pkg.requiresTravelDate && (
@@ -174,7 +180,7 @@ export function PackageBuyCard({ pkg, walletBalance }: PackageBuyCardProps) {
               onChange={(e) => setTravelDate(e.target.value)}
               className="mt-1 block w-full rounded-lg border border-gray-200 px-4 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               required
-              disabled={flowState !== 'IDLE' && flowState !== 'QUOTE_READY' && flowState !== 'ERROR'}
+              disabled={flowState !== 'IDLE'}
             />
           </div>
         )}

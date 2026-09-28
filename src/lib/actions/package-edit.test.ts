@@ -395,16 +395,20 @@ describe('updateSinglePackage — explicit PUBLISHED intent (canonical publish c
     expect(state.txUpdate.publishStatus).toBe('READY')
   })
 
-  it('repeated PUBLISHED save is idempotent (retail handled by canonical service, no duplicate logic here)', async () => {
+  it('repeated PUBLISHED save of an already-published product is a plain edit (no re-publish)', async () => {
+    // Root cause of "the catalog can only be edited once": an already-PUBLISHED
+    // package that re-runs PUBLISHED intent re-fires the canonical publish
+    // pipeline (finalize → recalc-from-rules → new snapshot → republish),
+    // discarding the admin's new price or failing the margin guard. Repeated
+    // saves must be ordinary configuration edits.
     const before = { ...mockPackage, publishStatus: 'PUBLISHED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
     await setupEditTx(before)
-    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: false, updated: true, publishStatusSet: true, ready: true, readinessReasons: [] })
-    const r1 = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
-    const r2 = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    const r1 = await updateSinglePackage('pp-1', { sellingPrice: 8, publishStatus: 'PUBLISHED', pricingIntent: 'SELLING' })
+    const r2 = await updateSinglePackage('pp-1', { sellingPrice: 9, publishStatus: 'PUBLISHED', pricingIntent: 'SELLING' })
     expect(r1.success).toBe(true)
     expect(r2.success).toBe(true)
-    // Each PUBLISHED intent invokes the canonical gate exactly once.
-    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(2)
+    // Already-published edits never re-run the publication gate.
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
   })
 
   it('CONFIGURED + PUBLISHED intent → publication attempted', async () => {
@@ -508,14 +512,156 @@ describe('updateSinglePackage — explicit PUBLISHED intent (canonical publish c
     expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(2)
   })
 
-  it('existing PUBLISHED package price edit behavior is unaffected (no re-persist of status)', async () => {
+  it('existing PUBLISHED package price edit does NOT re-publish (repeated edit stays a plain update)', async () => {
     const before = { ...mockPackage, publishStatus: 'PUBLISHED', configurationStatus: 'CONFIGURED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '7.69' }, markupPercent: null }
     const state = await setupEditTx(before)
-    mockPublishProviderPackageToRetailCatalog.mockResolvedValue({ success: true, providerPackageId: 'pp-1', created: false, updated: true, publishStatusSet: true, ready: true, readinessReasons: [] })
-    const result = await updateSinglePackage('pp-1', { sellingPrice: 7.69, publishStatus: 'PUBLISHED' })
+    const result = await updateSinglePackage('pp-1', { sellingPrice: 8, publishStatus: 'PUBLISHED', pricingIntent: 'SELLING' })
     expect(result.success).toBe(true)
-    expect(mockPublishProviderPackageToRetailCatalog).toHaveBeenCalledTimes(1)
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
     expect(state.txUpdate.publishStatus).toBeUndefined()
-    expect(state.txUpdate.sellingPrice).toBe(7.69)
+    expect(state.txUpdate.sellingPrice).toBe(8)
+  })
+})
+
+describe('updateSinglePackage — repeated editing (A twice / A then B), FIXED_PRICE, decimal safety, retry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetServerSession.mockResolvedValue(mockSession)
+    mockSyncProviderPackageToPublishedProducts.mockResolvedValue(undefined)
+    mockRevalidateCatalogRoutes.mockResolvedValue(undefined)
+    mockRecordCatalogPriceSyncAudit.mockResolvedValue(undefined)
+  })
+
+  async function setupOpaquePg(pkg: any) {
+    const calls: any[] = []
+    const { prisma } = await import('@/lib/prisma') as any
+    prisma.providerPackage.findUnique.mockResolvedValue(pkg)
+    prisma.$transaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: {
+          findUnique: vi.fn().mockResolvedValue(pkg),
+          update: vi.fn().mockImplementation(async (arg: any) => {
+            calls.push(arg.data)
+            return { ...pkg, ...arg.data }
+          }),
+        },
+      }
+      return cb(tx)
+    })
+    return calls
+  }
+
+  it('product A edited twice keeps the latest persisted selling price', async () => {
+    const beforeA = { ...mockPackage, id: 'pp-A', publishStatus: 'PUBLISHED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '15.00' }, markupPercent: { toString: () => '20' } }
+    await setupOpaquePg(beforeA)
+    const r1 = await updateSinglePackage('pp-A', { sellingPrice: 16, pricingIntent: 'SELLING' })
+    const r2 = await updateSinglePackage('pp-A', { sellingPrice: 17.5, pricingIntent: 'SELLING' })
+    expect(r1.success).toBe(true)
+    expect(r2.success).toBe(true)
+    expect(mockPublishProviderPackageToRetailCatalog).not.toHaveBeenCalled()
+  })
+
+  it('editing product A then product B are independent updates (per-package state)', async () => {
+    const { prisma } = await import('@/lib/prisma') as any
+    const beforeA = { ...mockPackage, id: 'pp-A', publishStatus: 'PUBLISHED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '15.00' }, markupPercent: { toString: () => '20' } }
+    const beforeB = { ...mockPackage, id: 'pp-B', publishStatus: 'DRAFT', costPrice: { toString: () => '3.00' }, sellingPrice: { toString: () => '9.99' }, markupPercent: null }
+
+    const writes: Array<{ id: string; data: any }> = []
+    prisma.providerPackage.findUnique.mockImplementation(async ({ where }: any) => {
+      if (where.id === 'pp-A') return beforeA
+      if (where.id === 'pp-B') return beforeB
+      return null
+    })
+    prisma.$transaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: {
+          findUnique: prisma.providerPackage.findUnique,
+          update: vi.fn().mockImplementation(async (arg: any) => {
+            writes.push({ id: arg.where.id, data: arg.data })
+            return { ...(arg.where.id === 'pp-A' ? beforeA : beforeB), ...arg.data }
+          }),
+        },
+      }
+      return cb(tx)
+    })
+
+    const resA = await updateSinglePackage('pp-A', { sellingPrice: 16, pricingIntent: 'SELLING' })
+    const resB = await updateSinglePackage('pp-B', { sellingPrice: 10.5, pricingIntent: 'SELLING' })
+    expect(resA.success).toBe(true)
+    expect(resB.success).toBe(true)
+    expect(writes.length).toBe(2)
+    expect(writes[0].id).toBe('pp-A')
+    expect(writes[1].id).toBe('pp-B')
+    expect(writes[0].data.sellingPrice).toBe(16)
+    expect(writes[1].data.sellingPrice).toBe(10.5)
+  })
+
+  it('FIXED_PRICE selling edit succeeds with no cost (mode-aware validation)', async () => {
+    const before = { ...mockPackage, id: 'pp-F', publishStatus: 'PUBLISHED', pricingMode: 'FIXED_PRICE', costPrice: { toString: () => '0' }, sellingPrice: { toString: () => '21.49' }, markupPercent: { toString: () => '0' } }
+    const writes = await setupOpaquePg(before)
+    const res = await updateSinglePackage('pp-F', { sellingPrice: 22, pricingMode: 'FIXED_PRICE', pricingIntent: 'SELLING' })
+    expect(res.success).toBe(true)
+    expect(writes[writes.length - 1].sellingPrice).toBe(22)
+  })
+
+  it('comma-decimal persists exactly 21,49 → 21.49 (never 21 / 2149 / NaN)', async () => {
+    const before = { ...mockPackage, id: 'pp-D', publishStatus: 'PUBLISHED', costPrice: { toString: () => '5.00' }, sellingPrice: { toString: () => '21' }, markupPercent: null }
+    const writes = await setupOpaquePg(before)
+    const res = await updateSinglePackage('pp-D', { sellingPrice: 21.49, pricingIntent: 'SELLING' })
+    expect(res.success).toBe(true)
+    const last = writes[writes.length - 1]
+    expect(last.sellingPrice).toBe(21.49)
+    expect(last.sellingPrice).not.toBe(2149)
+    expect(last.sellingPrice).not.toBe(0)
+  })
+
+  it('failed save returns an error and a retry succeeds (retryable)', async () => {
+    const before = { ...mockPackage, id: 'pp-R', publishStatus: 'PUBLISHED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '15.00' }, markupPercent: { toString: () => '20' } }
+    const { prisma } = await import('@/lib/prisma') as any
+    let failNext = true
+    prisma.providerPackage.findUnique.mockResolvedValue(before)
+    prisma.$transaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: {
+          findUnique: vi.fn().mockResolvedValue(before),
+          update: vi.fn().mockImplementation(async (arg: any) => {
+            if (failNext) {
+              failNext = false
+              throw new Error('DB hiccup')
+            }
+            return { ...before, ...arg.data }
+          }),
+        },
+      }
+      return cb(tx)
+    })
+    const failed = await updateSinglePackage('pp-R', { sellingPrice: 16, pricingIntent: 'SELLING' })
+    expect(failed.success).toBe(false)
+    expect(failed.error).toContain('DB hiccup')
+    const retry = await updateSinglePackage('pp-R', { sellingPrice: 16, pricingIntent: 'SELLING' })
+    expect(retry.success).toBe(true)
+  })
+
+  it('cache revalidation fires after every successful save, never after a failure', async () => {
+    const before = { ...mockPackage, id: 'pp-C', publishStatus: 'PUBLISHED', costPrice: { toString: () => '7.00' }, sellingPrice: { toString: () => '15.00' }, markupPercent: { toString: () => '20' } }
+    const { prisma } = await import('@/lib/prisma') as any
+    let failOnce = true
+    prisma.providerPackage.findUnique.mockResolvedValue(before)
+    prisma.$transaction.mockImplementation(async (cb: Function) => {
+      const tx = {
+        providerPackage: {
+          findUnique: vi.fn().mockResolvedValue(before),
+          update: vi.fn().mockImplementation(async (arg: any) => {
+            if (failOnce) { failOnce = false; throw new Error('x') }
+            return { ...before, ...arg.data }
+          }),
+        },
+      }
+      return cb(tx)
+    })
+    await updateSinglePackage('pp-C', { sellingPrice: 16, pricingIntent: 'SELLING' })
+    const ok = await updateSinglePackage('pp-C', { sellingPrice: 17, pricingIntent: 'SELLING' })
+    expect(ok.success).toBe(true)
+    expect(mockRevalidateCatalogRoutes).toHaveBeenCalledTimes(1)
   })
 })

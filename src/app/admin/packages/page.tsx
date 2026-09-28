@@ -7,6 +7,8 @@ import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import PackageActions from '@/components/admin/packages/PackageActions'
 import { roundMoney, computeMarkupFromCostAndSell, computeMarginAmount, computeMarginFromCostAndSell } from '@/lib/pricing/pricing-engine'
 import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
+import { buildPortalExposureForRetail } from '@/lib/packages/customer-visibility'
+import { computeCatalogStats } from '@/lib/packages/catalog-stats'
 import { ProductCatalogFilters } from './ProductCatalogFilters'
 
 const PROVIDER_OPTIONS = [
@@ -77,11 +79,22 @@ export default async function AdminPackagesPage({
   const allRetail = await prisma.eSIMPackage.findMany({
     where: retailBase,
     include: {
-      providerPackage: { select: { publishStatus: true, costStatus: true, pricingStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true } },
+      providerPackage: { select: { publishStatus: true, costStatus: true, pricingStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true, providerId: true, isAvailable: true } },
       provider: { select: { status: true, enabledCapabilities: true, code: true, adapterStrategy: true } },
       providerBindings: {
         orderBy: { priority: 'asc' },
-        include: { providerPackage: { select: { id: true, providerId: true, provider: { select: { name: true } } } } },
+        select: {
+          id: true,
+          isActive: true,
+          providerPackage: {
+            select: {
+              id: true, providerId: true, publishStatus: true, configurationStatus: true,
+              pricingStatus: true, costStatus: true, activePriceSnapshotId: true,
+              sellingPrice: true, costPrice: true, isAvailable: true,
+              provider: { select: { id: true, name: true, status: true, enabledCapabilities: true, code: true } },
+            },
+          },
+        },
       },
       _count: { select: { purchases: true, topUpRecords: true } },
     },
@@ -110,6 +123,18 @@ export default async function AdminPackagesPage({
     }),
     _searchable: buildSearchable(pkg),
   }))
+
+  // CANONICAL CUSTOMER-VISIBILITY: the exact predicate the Business Buy eSIM
+  // catalog and client API use (operational readiness + price parity + portal
+  // exposure). "Operational Live" and "Customer-visible" are deliberately
+  // separate counts — a live product can be stale-priced or provider-paused and
+  // must not be shown to clients until repaired.
+  const exposureMap = await buildPortalExposureForRetail(
+    allRetail.map(p => ({ providerId: p.providerId, providerPackage: p.providerPackage?.providerId ? { providerId: p.providerPackage.providerId } : null })),
+  )
+  const catalogStats = computeCatalogStats(allRetail, exposureMap)
+  const customerVisibleCount = catalogStats.customerVisible
+  const customerVisibilityReasons = catalogStats.hiddenLiveReasons
 
   // Filter by tab
   let tabFiltered = packagesWithReadiness
@@ -199,7 +224,7 @@ export default async function AdminPackagesPage({
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Product Catalog</h2>
-          <p className="mt-1 text-sm text-gray-500">Customer-facing retail packages — these are the products business clients see</p>
+          <p className="mt-1 text-sm text-gray-500">Operational and customer-visible retail products — Operational Live is not necessarily client-visible</p>
         </div>
         <Link href="/admin/provider-catalog"
           className="rounded-lg border border-cyan-300 px-4 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-50">
@@ -208,12 +233,32 @@ export default async function AdminPackagesPage({
       </div>
 
       {/* Summary cards */}
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-2 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <SummaryCard label="Product Catalog" value={allRetail.length} color="text-blue-600" />
-        <SummaryCard label="Live Products" value={livePackages.length} color="text-emerald-600" />
+        <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+          <p className="text-xs font-medium text-gray-500">Operational Live</p>
+          <p className={`mt-1 text-2xl font-bold text-emerald-600`}>{livePackages.length}</p>
+          <p className="mt-1 text-[10px] text-gray-400">configured · publish-ready · not necessarily client-visible</p>
+        </div>
+        <div className="rounded-xl border border-cyan-100 bg-white p-4 shadow-sm">
+          <p className="text-xs font-medium text-gray-500">Customer Visible</p>
+          <p className={`mt-1 text-2xl font-bold text-cyan-600`}>{customerVisibleCount}</p>
+          <p className="mt-1 text-[10px] text-gray-400">matches Business Buy eSIM &amp; portal query</p>
+        </div>
         <SummaryCard label="Draft / Inactive" value={draftPackages.length} color="text-amber-600" />
         <SummaryCard label="Needs Pricing" value={needsPricingPackages.length} color="text-red-600" />
       </div>
+
+      {customerVisibilityReasons.length > 0 && (
+        <div className="mb-2 rounded-lg border border-cyan-200 bg-cyan-50 p-3 text-xs text-cyan-800">
+          <p className="font-semibold">Why operationally-live products are not customer-visible</p>
+          <ul className="mt-1 list-inside list-disc space-y-0.5">
+            {customerVisibilityReasons.map(r => (
+              <li key={r.reason}>{r.count}× {r.reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {searchParams?.error && (
         <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">{decodeURIComponent(searchParams.error)}</div>

@@ -38,7 +38,7 @@ export async function finalizeCatalogPackageConfiguration(
       id: true, costStatus: true, pricingStatus: true, publishStatus: true,
       configurationStatus: true, activePriceSnapshotId: true,
       sellingPrice: true, sellingCurrency: true, costPrice: true, adminCostPrice: true,
-      providerId: true,
+      providerId: true, isAvailable: true,
       provider: { select: { status: true, enabledCapabilities: true, code: true } },
     },
   })
@@ -64,6 +64,7 @@ export async function finalizeCatalogPackageConfiguration(
     select: {
       id: true, activePriceSnapshotId: true, costStatus: true, pricingStatus: true,
       publishStatus: true, configurationStatus: true, sellingPrice: true, costPrice: true,
+      isAvailable: true,
       provider: { select: { status: true, enabledCapabilities: true, code: true } },
     },
   })

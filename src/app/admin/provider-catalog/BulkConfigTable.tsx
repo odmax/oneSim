@@ -9,6 +9,8 @@ import { updateSinglePackage, undoLastRules } from '@/lib/actions/package-edit'
 import Link from 'next/link'
 import ApplyRulePanel from './ApplyRulePanel'
 import { markSellingPriceByPercent, computeMarkupFromCostAndSell, type PricingMutationIntent } from '@/lib/pricing/pricing-engine'
+import { buildSinglePackageEditPayload } from '@/lib/packages/package-edit-payload'
+import { parseDecimalInput } from '@/lib/packages/decimal-input'
 
 const PUBLISH_COLORS: Record<string, string> = {
   DRAFT: 'bg-gray-100 text-gray-600',
@@ -51,9 +53,13 @@ interface Package {
   configurationStatus: string | null
   publishStatus: string | null
   notes: string | null
-  provider: { id: string; name: string; code: string } | null
+  isAvailable?: boolean | null
   purchaseReady?: boolean
   readinessReasons?: string[]
+  state?: string
+  stateLabel?: string
+  stateColor?: string
+  provider: { id: string; name: string; code: string } | null
 }
 
 export function BulkConfigTable({ initialPackages, total, page, totalPages, rules }: {
@@ -199,25 +205,26 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
 
   const handleEditSave = async () => {
     if (!editPkg) return
+
+    // DELTA payload only: publishStatus is included solely when the operator
+    // actually changed it (never an implicit re-publish of an already live
+    // package), and prices are parsed locale-safely (21,49 → 21.49, never 21).
+    const { data, hasChanges, parsingIssues } = buildSinglePackageEditPayload(editPkg, editForm)
+
+    if (parsingIssues.length > 0) {
+      setResult({ success: false, error: `Invalid numeric input: ${parsingIssues.join(', ')}` })
+      return
+    }
+    if (!hasChanges) { closeEdit(); return }
+
     setSaving(true)
-    const data: any = {}
-    if (editForm.costPrice) data.costPrice = parseFloat(editForm.costPrice)
-    if (editForm.sellingPrice) data.sellingPrice = parseFloat(editForm.sellingPrice)
-    if (editForm.sellingCurrency) data.sellingCurrency = editForm.sellingCurrency
-    if (editForm.markupPercent) data.markupPercent = parseFloat(editForm.markupPercent)
-    if (editForm.pricingMode) data.pricingMode = editForm.pricingMode
-    if (editForm.publishStatus) data.publishStatus = editForm.publishStatus
-    if (editForm.configurationStatus) data.configurationStatus = editForm.configurationStatus
-    if (editForm.notes) data.notes = editForm.notes
-    // Authority: whichever pricing field the admin last edited. The server
-    // recalculates the dependent value from this — never inferred from non-null.
-    const intent = (editForm as any).pricingIntent as PricingMutationIntent | undefined
-    if (intent) data.pricingIntent = intent
-    if (Object.keys(data).length === 0) { setSaving(false); closeEdit(); return }
-    const res = await updateSinglePackage(editPkg.id, data)
-    setSaving(false)
-    if (res.success) { closeEdit(); router.refresh() }
-    else { setResult(res); closeEdit() }
+    try {
+      const res = await updateSinglePackage(editPkg.id, data)
+      if (res.success || !editPkg) { closeEdit(); router.refresh() }
+      else { setResult({ success: false, error: res.error || 'Update failed', status: 'FAILED' }) }
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleBulkHide = async () => {
@@ -257,10 +264,22 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
     setLoading(true)
     setResult(null)
 
+    const parsingIssues: string[] = []
+    const parseBulk = (raw: string, label: string): number | undefined => {
+      const t = raw.trim()
+      if (t === '') return undefined
+      const n = parseDecimalInput(t)
+      if (n === null) { parsingIssues.push(label); return undefined }
+      return n
+    }
+
     const params: any = { packageIds: Array.from(selected) }
-    if (costPrice) params.costPrice = parseFloat(costPrice)
-    if (sellingPrice) params.sellingPrice = parseFloat(sellingPrice)
-    if (markupPercent) params.markupPercent = parseFloat(markupPercent)
+    const bulkCost = parseBulk(costPrice, 'Cost Price')
+    const bulkSelling = parseBulk(sellingPrice, 'Selling Price')
+    const bulkMarkup = parseBulk(markupPercent, 'Markup %')
+    if (bulkCost !== undefined) params.costPrice = bulkCost
+    if (bulkSelling !== undefined) params.sellingPrice = bulkSelling
+    if (bulkMarkup !== undefined) params.markupPercent = bulkMarkup
     if (pricingMode) params.pricingMode = pricingMode
     if (sellingCurrency) params.sellingCurrency = sellingCurrency
     if (publishStatus) params.publishStatus = publishStatus
@@ -269,6 +288,12 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
     if (notes) params.notes = notes
     // Authority: the pricing field the admin last edited in the bulk form.
     if (pricingIntent !== 'NONE') params.pricingIntent = pricingIntent
+
+    if (parsingIssues.length > 0) {
+      setResult({ success: false, error: `Invalid numeric input: ${parsingIssues.join(', ')}` })
+      setLoading(false)
+      return
+    }
 
     const res = await bulkConfigurePackages(params)
     setResult(res)
@@ -679,6 +704,11 @@ export function BulkConfigTable({ initialPackages, total, page, totalPages, rule
                     <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium bg-emerald-100 text-emerald-700">Ready</span>
                   ) : (
                     <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium bg-red-100 text-red-600" title={(pkg.readinessReasons || []).join('; ')}>Blocked</span>
+                  )}
+                  {pkg.stateLabel && (
+                    <span className={`ml-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${pkg.stateColor || 'bg-gray-100 text-gray-600'}`} title={pkg.readinessReasons?.join('; ')}>
+                      {pkg.stateLabel}
+                    </span>
                   )}
                 </td>
                 <td className="px-3 py-3 text-center">

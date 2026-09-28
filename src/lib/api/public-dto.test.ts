@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { serializePublicPackage } from './public-dto'
+import { serializePublicPackage, findForbiddenFields } from './public-dto'
 
 const PROVIDER_TOKENS = ['AIRHUB', 'CHOICE', 'TELNA', 'IBASIS', '24MOBILECONNECT', 'USMATRIX', 'SECRET_PROVIDER_X']
 
@@ -51,5 +51,32 @@ describe('serializePublicPackage — public catalog provider neutrality', () => 
     const a = serializePublicPackage(leakedPkg('TELNA'), { country: 'GB' })
     const b = serializePublicPackage(leakedPkg('TELNA'), { country: 'GB' })
     expect(a.sku).toBe(b.sku)
+  })
+
+  it('never leaks pricing, cost, publish or snapshot fields to clients', () => {
+    const dto = serializePublicPackage(leakedPkg('CHOICE'), { country: 'ZA' })
+    expect(findForbiddenFields(dto).length).toBe(0)
+    expect(Object.keys(dto).sort()).toEqual(
+      ['id', 'sku', 'packageCode', 'displayName', 'name', 'customerDescription', 'description', 'dataGB', 'validityDays', 'unitPrice', 'currency', 'country', 'region', 'productType', 'isActive', 'requiresTravelDate', 'source'].sort(),
+    )
+    for (const forbidden of ['costPriceUSD', 'costStatus', 'pricingStatus', 'publishStatus', 'configurationStatus', 'activePriceSnapshotId', 'sellingPrice', 'markupPercent', 'providerRawData']) {
+      expect((dto as any)[forbidden]).toBeUndefined()
+    }
+  })
+
+  it('a package reachable only on a later render window still serializes identically (purchase/quote from later pages)', () => {
+    // 64 eligible products; window 3 starts at index 48. The DTO for that item
+    // is fully deterministic and carries the packageId the quote flow needs.
+    const deep = serializePublicPackage({ ...leakedPkg('AIRHUB'), id: 'id-049', priceUSD: 9.99 }, { country: 'NG' })
+    const direct = serializePublicPackage({ ...leakedPkg('AIRHUB'), id: 'id-049', priceUSD: 9.99 }, { country: 'NG' })
+    expect(deep).toEqual(direct)
+    expect(deep.id).toBe('id-049')
+    expect(deep.unitPrice).toBe(9.99)
+  })
+
+  it('serializePublicPackage is safe for packages that lack providerPackage geography', () => {
+    const dto = serializePublicPackage(leakedPkg('IBASIS'), null)
+    expect(dto.country).toBeNull()
+    expect(dto.region).toBeNull()
   })
 })
