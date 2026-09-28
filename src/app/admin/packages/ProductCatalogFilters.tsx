@@ -31,33 +31,40 @@ const SORT_OPTIONS = [
   { label: 'Validity: Longest', value: 'validity-desc' },
 ] as const
 
-function buildQuery(tab: string, overrides: Record<string, string>): string {
+function buildQuery(
+  view: string,
+  current: { search: string; provider: string; validity: string; sort: string },
+  overrides: Partial<{ search: string; provider: string; validity: string; sort: string }>,
+): string {
   const params = new URLSearchParams()
-  if (tab !== 'live') params.set('tab', tab)
-  const s = overrides.search !== undefined ? overrides.search : ''
+  if (view !== 'all') params.set('view', view)
+  const next = { ...current, ...overrides }
+  const s = next.search
   if (s) params.set('search', s)
-  const p = overrides.provider !== undefined ? overrides.provider : ''
+  const p = next.provider
   if (p) params.set('provider', p)
-  const v = overrides.validity !== undefined ? overrides.validity : ''
+  const v = next.validity
   if (v) params.set('validity', v)
+  if (next.sort && next.sort !== 'cheapest') params.set('sort', next.sort)
   const qs = params.toString()
   return qs ? `/admin/packages?${qs}` : '/admin/packages'
 }
 
 interface Props {
-  tab: string
+  view: string
   search: string
   provider: string
   validity: string
   sort: string
 }
 
-export function ProductCatalogFilters({ tab, search: initialSearch, provider: providerFilter, validity: validityStr, sort: sortParam }: Props) {
+export function ProductCatalogFilters({ view, search: initialSearch, provider: providerFilter, validity: validityStr, sort: sortParam }: Props) {
   const router = useRouter()
   const [searchInput, setSearchInput] = useState(initialSearch)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const current = { search: initialSearch, provider: providerFilter, validity: validityStr, sort: sortParam }
 
-  // Sync input when URL changes externally (e.g. tab change)
+  // Sync input when URL changes externally (e.g. card-view change)
   useEffect(() => {
     setSearchInput(initialSearch)
   }, [initialSearch])
@@ -67,7 +74,7 @@ export function ProductCatalogFilters({ tab, search: initialSearch, provider: pr
     setSearchInput(value)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      const url = buildQuery(tab, { search: value })
+      const url = buildQuery(view, current, { search: value })
       router.replace(url)
     }, 300)
   }
@@ -76,7 +83,7 @@ export function ProductCatalogFilters({ tab, search: initialSearch, provider: pr
   const clearSearch = () => {
     setSearchInput('')
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    const url = buildQuery(tab, { search: '' })
+    const url = buildQuery(view, current, { search: '' })
     router.replace(url)
   }
 
@@ -105,7 +112,7 @@ export function ProductCatalogFilters({ tab, search: initialSearch, provider: pr
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider w-14">Provider</span>
         {PROVIDER_OPTIONS.map(o => {
-          const href = buildQuery(tab, { provider: o.value })
+          const href = buildQuery(view, current, { provider: o.value })
           const active = (providerFilter || '') === o.value
           return <a key={o.value || 'all'} href={href} className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${active ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{o.label}</a>
         })}
@@ -115,7 +122,7 @@ export function ProductCatalogFilters({ tab, search: initialSearch, provider: pr
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider w-14">Validity</span>
         {VALIDITY_OPTIONS.map(o => {
-          const href = buildQuery(tab, { validity: o.days })
+          const href = buildQuery(view, current, { validity: o.days })
           const active = (validityStr || '') === o.days
           return <a key={o.days || 'all'} href={href} className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${active ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{o.label}</a>
         })}
@@ -125,7 +132,7 @@ export function ProductCatalogFilters({ tab, search: initialSearch, provider: pr
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider w-14">Sort</span>
         <form method="GET" action="/admin/packages" className="inline-flex items-center gap-1.5">
-          {tab !== 'live' && <input type="hidden" name="tab" value={tab} />}
+          {view !== 'all' && <input type="hidden" name="view" value={view} />}
           {initialSearch && <input type="hidden" name="search" value={initialSearch} />}
           {providerFilter && <input type="hidden" name="provider" value={providerFilter} />}
           {Boolean(validityStr) && <input type="hidden" name="validity" value={validityStr} />}
@@ -135,7 +142,7 @@ export function ProductCatalogFilters({ tab, search: initialSearch, provider: pr
           </select>
         </form>
         {(initialSearch || providerFilter || Boolean(validityStr)) && (
-          <a href={tab === 'live' ? '/admin/packages' : `/admin/packages?tab=${tab}`} className="ml-2 rounded-lg border border-gray-300 px-2.5 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-50">Clear Filters</a>
+          <a href={view === 'all' ? '/admin/packages' : `/admin/packages?view=${view}`} className="ml-2 rounded-lg border border-gray-300 px-2.5 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-50">Clear Filters</a>
         )}
       </div>
     </div>

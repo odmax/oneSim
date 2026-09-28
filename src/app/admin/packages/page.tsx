@@ -10,6 +10,7 @@ import { getPackagePurchaseReadiness } from '@/lib/packages/purchase-readiness'
 import { buildPortalExposureForRetail } from '@/lib/packages/customer-visibility'
 import { computeCatalogStats } from '@/lib/packages/catalog-stats'
 import { ProductCatalogFilters } from './ProductCatalogFilters'
+import { filterProductCatalogView, resolveProductCatalogView, type ProductCatalogView } from '@/lib/packages/product-catalog-view'
 
 const PROVIDER_OPTIONS = [
   { label: 'All', value: '' },
@@ -19,14 +20,6 @@ const PROVIDER_OPTIONS = [
   { label: 'Telna', value: 'TELNA' },
   { label: 'Custom', value: 'CUSTOM' },
 ] as const
-
-const TABS = [
-  { id: 'live', label: 'Live Products' },
-  { id: 'draft', label: 'Draft / Inactive' },
-  { id: 'needs-pricing', label: 'Needs Pricing' },
-] as const
-
-type TabId = (typeof TABS)[number]['id']
 
 function StatusBadge({ isActive, hiddenFromCatalog, purchaseReady }: { isActive: boolean; hiddenFromCatalog?: boolean; purchaseReady?: boolean }) {
   if (hiddenFromCatalog) {
@@ -41,19 +34,26 @@ function StatusBadge({ isActive, hiddenFromCatalog, purchaseReady }: { isActive:
   return <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-0.5 text-xs font-medium text-red-600">Blocked</span>
 }
 
-function SummaryCard({ label, value, color }: { label: string; value: number; color: string }) {
+function SummaryCard({ label, value, color, href, active, caption }: { label: string; value: number; color: string; href: string; active: boolean; caption?: string }) {
   return (
-    <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
+    <Link
+      href={href}
+      aria-current={active ? 'page' : undefined}
+      className={`rounded-xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-cyan-500/30 ${
+        active ? 'border-cyan-400 ring-2 ring-cyan-100' : 'border-gray-100'
+      }`}
+    >
       <p className="text-xs font-medium text-gray-500">{label}</p>
       <p className={`mt-1 text-2xl font-bold ${color}`}>{value}</p>
-    </div>
+      {caption && <p className="mt-1 text-[10px] text-gray-400">{caption}</p>}
+    </Link>
   )
 }
 
 export default async function AdminPackagesPage({
   searchParams,
 }: {
-  searchParams?: { error?: string; success?: string; tab?: string; search?: string; provider?: string; validity?: string; sort?: string }
+  searchParams?: { error?: string; success?: string; view?: string; tab?: string; search?: string; provider?: string; validity?: string; sort?: string }
 }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
@@ -61,7 +61,7 @@ export default async function AdminPackagesPage({
   const perm = await checkPermission(Permissions.MANAGE_PRODUCTS)
   if (!perm.allowed) redirect('/admin?error=unauthorized')
 
-  const tab: TabId = (TABS.some(t => t.id === searchParams?.tab) ? searchParams!.tab : 'live') as TabId
+  const view = resolveProductCatalogView(searchParams?.view, searchParams?.tab)
   const searchQuery = (searchParams?.search || '').trim()
   const providerFilter = (searchParams?.provider || '').toUpperCase()
   const validityFilter = parseInt(searchParams?.validity || '0') || 0
@@ -70,9 +70,6 @@ export default async function AdminPackagesPage({
   // Base retail packages query
   const retailBase: any = {
     source: { in: ['CATALOG_PRODUCT', 'MANUAL'] as string[] },
-    isActive: true,
-    hiddenFromCatalog: false,
-    archivedAt: null,
   }
 
   // All retail — for counts
@@ -98,7 +95,7 @@ export default async function AdminPackagesPage({
       },
       _count: { select: { purchases: true, topUpRecords: true } },
     },
-    orderBy: { priceUSD: 'asc' },
+    orderBy: [{ priceUSD: 'asc' }, { id: 'asc' }],
   })
 
   // Build searchable text for each package
@@ -136,20 +133,25 @@ export default async function AdminPackagesPage({
   const customerVisibleCount = catalogStats.customerVisible
   const customerVisibilityReasons = catalogStats.hiddenLiveReasons
 
-  // Filter by tab
-  let tabFiltered = packagesWithReadiness
-  if (tab === 'live') {
-    tabFiltered = packagesWithReadiness.filter(p => p._readiness.ready)
-  } else if (tab === 'draft') {
-    tabFiltered = packagesWithReadiness.filter(p => !p.isActive || p.hiddenFromCatalog || p.archivedAt ||
+  const operationalLiveIds = new Set(catalogStats.operationalLiveIds)
+  const customerVisibleIds = new Set(catalogStats.customerVisibleIds)
+  const draftInactiveIds = new Set(packagesWithReadiness
+    .filter(p => !p.isActive || p.hiddenFromCatalog || p.archivedAt ||
       (p.providerPackage?.publishStatus && p.providerPackage.publishStatus !== 'PUBLISHED'))
-  } else if (tab === 'needs-pricing') {
-    tabFiltered = packagesWithReadiness.filter(p => !p._readiness.ready &&
-      p.isActive && !p.hiddenFromCatalog && !p.archivedAt)
-  }
+    .map(p => p.id))
+  const needsPricingIds = new Set(packagesWithReadiness
+    .filter(p => !p._readiness.ready && !draftInactiveIds.has(p.id))
+    .map(p => p.id))
 
-  // Filtering pipeline: tab → search → provider → validity → sort
-  let filtered = tabFiltered
+  // Primary card view is evaluated against the complete population before
+  // secondary search/provider/validity filters and sorting.
+  const viewFiltered = filterProductCatalogView(packagesWithReadiness, view, {
+    operationalLiveIds,
+    customerVisibleIds,
+    draftInactiveIds,
+    needsPricingIds,
+  })
+  let filtered = viewFiltered
 
   // Search filter
   if (searchQuery) {
@@ -211,13 +213,16 @@ export default async function AdminPackagesPage({
   }
   const displayPackages = filtered
 
-  const livePackages = packagesWithReadiness.filter(p => p._readiness.ready)
-  const draftPackages = packagesWithReadiness.filter(p => !p.isActive || p.hiddenFromCatalog || p.archivedAt ||
-    (p.providerPackage?.publishStatus && p.providerPackage.publishStatus !== 'PUBLISHED'))
-  const needsPricingPackages = packagesWithReadiness.filter(p => !p._readiness.ready &&
-    p.isActive && !p.hiddenFromCatalog && !p.archivedAt)
-
-  const tabCounts: Record<string, number> = { live: livePackages.length, draft: draftPackages.length, 'needs-pricing': needsPricingPackages.length }
+  const cardHref = (targetView: ProductCatalogView, options?: { clearSearch?: boolean }) => {
+    const params = new URLSearchParams()
+    if (targetView !== 'all') params.set('view', targetView)
+    if (searchQuery && !options?.clearSearch) params.set('search', searchQuery)
+    if (providerFilter) params.set('provider', providerFilter)
+    if (validityFilter > 0) params.set('validity', String(validityFilter))
+    if (sortParam !== 'cheapest') params.set('sort', sortParam)
+    const query = params.toString()
+    return query ? `/admin/packages?${query}` : '/admin/packages'
+  }
 
   return (
     <div className="p-6">
@@ -234,19 +239,11 @@ export default async function AdminPackagesPage({
 
       {/* Summary cards */}
       <div className="mb-2 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <SummaryCard label="Product Catalog" value={allRetail.length} color="text-blue-600" />
-        <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-          <p className="text-xs font-medium text-gray-500">Operational Live</p>
-          <p className={`mt-1 text-2xl font-bold text-emerald-600`}>{livePackages.length}</p>
-          <p className="mt-1 text-[10px] text-gray-400">configured · publish-ready · not necessarily client-visible</p>
-        </div>
-        <div className="rounded-xl border border-cyan-100 bg-white p-4 shadow-sm">
-          <p className="text-xs font-medium text-gray-500">Customer Visible</p>
-          <p className={`mt-1 text-2xl font-bold text-cyan-600`}>{customerVisibleCount}</p>
-          <p className="mt-1 text-[10px] text-gray-400">matches Business Buy eSIM &amp; portal query</p>
-        </div>
-        <SummaryCard label="Draft / Inactive" value={draftPackages.length} color="text-amber-600" />
-        <SummaryCard label="Needs Pricing" value={needsPricingPackages.length} color="text-red-600" />
+        <SummaryCard label="Product Catalog" value={catalogStats.total} color="text-blue-600" href={cardHref('all')} active={view === 'all'} />
+        <SummaryCard label="Operational Live" value={catalogStats.operationalLive} color="text-emerald-600" href={cardHref('operational-live')} active={view === 'operational-live'} caption="configured · publish-ready · not necessarily client-visible" />
+        <SummaryCard label="Customer Visible" value={customerVisibleCount} color="text-cyan-600" href={cardHref('customer-visible')} active={view === 'customer-visible'} caption="matches Business Buy eSIM & portal query" />
+        <SummaryCard label="Draft / Inactive" value={catalogStats.draftInactive} color="text-amber-600" href={cardHref('draft-inactive')} active={view === 'draft-inactive'} />
+        <SummaryCard label="Needs Pricing" value={catalogStats.needsPricing} color="text-red-600" href={cardHref('needs-pricing')} active={view === 'needs-pricing'} />
       </div>
 
       {customerVisibilityReasons.length > 0 && (
@@ -269,46 +266,19 @@ export default async function AdminPackagesPage({
 
       {/* Search + Filters (Client Component) */}
       <ProductCatalogFilters
-        tab={tab}
+        view={view}
         search={searchQuery}
         provider={providerFilter}
         validity={String(validityFilter || '')}
         sort={sortParam}
       />
 
-      {/* Pill tabs */}
-      <div className="mb-6">
-        <nav className="inline-flex rounded-xl bg-gray-100 p-1">
-          {TABS.map((t) => {
-            const params = new URLSearchParams()
-            if (t.id !== 'live') params.set('tab', t.id)
-            if (searchQuery) params.set('search', searchQuery)
-            if (providerFilter) params.set('provider', providerFilter)
-            if (validityFilter > 0) params.set('validity', String(validityFilter))
-            const qs = params.toString()
-            const href = qs ? `/admin/packages?${qs}` : '/admin/packages'
-            const isActive = tab === t.id
-            return (
-              <Link
-                key={t.id}
-                href={href}
-                className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-                  isActive ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                {t.label} <span className={`ml-1 text-xs ${isActive ? 'text-gray-400' : 'text-gray-400'}`}>({tabCounts[t.id] || 0})</span>
-              </Link>
-            )
-          })}
-        </nav>
-      </div>
-
       {/* Result count */}
       {displayPackages.length > 0 && (
         <p className="mb-4 text-xs text-gray-400">
           {searchQuery
-            ? `Showing ${displayPackages.length} of ${tabFiltered.length} products matching "${searchQuery}"`
-            : `Showing ${displayPackages.length} of ${tabFiltered.length} products`}
+            ? `Showing ${displayPackages.length} of ${viewFiltered.length} products matching "${searchQuery}"`
+            : `Showing ${displayPackages.length} of ${viewFiltered.length} products`}
           {providerFilter && ` · ${providerFilter}`}
           {validityFilter > 0 && ` · ${validityFilter} Days`}
         </p>
@@ -319,7 +289,7 @@ export default async function AdminPackagesPage({
           {searchQuery ? (
             <>
               <p className="text-gray-500">No products match your search.</p>
-              <a href={`/admin/packages${tab !== 'live' ? `?tab=${tab}` : ''}`}
+              <a href={cardHref(view, { clearSearch: true })}
                 className="inline-block mt-4 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50">
                 Clear Search
               </a>
