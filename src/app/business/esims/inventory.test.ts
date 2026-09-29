@@ -160,9 +160,9 @@ describe('business eSIM inventory — single summary status badge', () => {
     expect(content).not.toContain('Installed')
   })
 
-  it('Provisioned + Ready row shows Ready to install and no separate Provisioned badge', () => {
+  it('Provisioned + Ready row shows Activation pending and no separate Provisioned badge', () => {
     const d = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
-    expect(d.label).toBe('Ready to install')
+    expect(d.label).toBe('Activation pending')
     // The summary string must be what the single pill renders (not "Provisioned").
     const content = fs.readFileSync(pagePath, 'utf8')
     expect(content).not.toContain('Provisioned')

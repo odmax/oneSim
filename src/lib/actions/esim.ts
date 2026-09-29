@@ -267,6 +267,12 @@ export async function syncEsimStatusAction(esimId: string) {
   revalidatePath('/business/esims')
 
   const basePath = isAdmin ? `/admin/esims/${esimId}` : '/business/esims'
+  if (result.skipped) {
+    const message = result.skipReason === 'STATUS_CAPABILITY_NOT_SUPPORTED'
+      ? 'Status refresh is unavailable for this eSIM.'
+      : 'Status could not be checked because its provider reference is unavailable.'
+    redirect(`${basePath}?error=${encodeURIComponent(message)}`)
+  }
   if (result.success) {
     if (result.activated) redirect(`${basePath}?success=activated`)
     redirect(`${basePath}?success=refreshed`)

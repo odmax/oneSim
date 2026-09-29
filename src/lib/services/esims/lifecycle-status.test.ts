@@ -1,5 +1,21 @@
 import { describe, it, expect } from 'vitest'
-import { deriveEsimLifecycleStatus, type LifecycleInput } from './lifecycle-status'
+import { deriveEsimLifecycleStatus, deriveUsageActivation, type LifecycleInput } from './lifecycle-status'
+
+describe('installation and service activation remain distinct across refreshes', () => {
+  it('install then ambiguous ACTIVE cannot manufacture activation history', () => {
+    const installed = deriveEsimLifecycleStatus({ providerNormalizedStatus: 'INSTALLED', currentStatus: 'PENDING_ACTIVATION', dataUsedMB: 0, providerInstalledSignal: true })
+    expect(installed.setActivatedAt).toBe(false)
+    const refreshed = deriveEsimLifecycleStatus({ providerNormalizedStatus: 'ACTIVE', currentStatus: installed.status, dataUsedMB: 0, activatedAt: null })
+    expect(refreshed.status).toBe('INSTALLED')
+    expect(refreshed.setActivatedAt).toBe(false)
+  })
+  it.each([0, null, NaN, Infinity])('installed with usage %s is not activated', (dataUsedMB) => {
+    expect(deriveUsageActivation({ currentStatus: 'INSTALLED', dataUsedMB }).status).toBe('INSTALLED')
+  })
+  it('first positive usage activates an installed eSIM', () => {
+    expect(deriveUsageActivation({ currentStatus: 'INSTALLED', dataUsedMB: 1, activatedAt: null })).toMatchObject({ status: 'ACTIVE', setActivatedAt: true })
+  })
+})
 
 function input(overrides: Partial<LifecycleInput> = {}): LifecycleInput {
   return {
@@ -40,17 +56,17 @@ describe('deriveEsimLifecycleStatus', () => {
     expect(r.reason).toBe('already-activated')
   })
 
-  it('5. explicit installed signal maps to INSTALLED and sets activatedAt', () => {
+  it('5. explicit installed signal maps to INSTALLED without fabricating activatedAt', () => {
     const r = deriveEsimLifecycleStatus(input({ providerInstalledSignal: true, activatedAt: null }))
     expect(r.status).toBe('INSTALLED')
-    expect(r.setActivatedAt).toBe(true)
+    expect(r.setActivatedAt).toBe(false)
     expect(r.reason).toBe('provider-installed-signal')
   })
 
   it('6. provider INSTALLED status maps to INSTALLED', () => {
     const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'installed', activatedAt: null }))
     expect(r.status).toBe('INSTALLED')
-    expect(r.setActivatedAt).toBe(true)
+    expect(r.setActivatedAt).toBe(false)
   })
 
   it('7. provider SUSPENDED maps to SUSPENDED', () => {

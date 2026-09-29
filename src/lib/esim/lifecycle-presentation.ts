@@ -160,7 +160,7 @@ export function deriveEsimLifecyclePresentationFromRow(esim: {
  *     FAILED, EXPIRED, SUSPENDED, DEPLETED);
  *   - an ACTIVE service always displays `Active` regardless of setup state;
  *   - a provisioned eSIM (PENDING_ACTIVATION) maps its setup state to the most
- *     actionable customer status (Ready to install / Installing / Installation
+ *     actionable customer status (Activation pending / Installing / Installation
  *     failed / Installation unavailable / Preparing / Provisioned);
  *   - other non-terminal provisioning states keep their established
  *     customer-safe service labels.
@@ -199,7 +199,9 @@ export function deriveEsimCustomerDisplayStatus(input: LifecyclePresentationInpu
   if (status === 'PENDING_ACTIVATION') {
     switch (setup.setupStatus) {
       case 'READY_TO_INSTALL':
-        return { status, label: 'Ready to install', tone: 'warn' }
+        // A QR code proves installation is possible, not that the device has
+        // not installed it. Some providers cannot report device installation.
+        return { status, label: 'Activation pending', tone: 'warn' }
       case 'INSTALLING':
         return { status, label: 'Installing', tone: 'warn' }
       case 'INSTALLATION_FAILED':

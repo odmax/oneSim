@@ -118,7 +118,9 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
     if (currentUpper === 'ACTIVE' || currentUpper === 'SUSPENDED') {
       return { status: currentUpper, setActivatedAt: false, reason: 'preserve-authoritative-on-installed-signal' }
     }
-    return { status: 'INSTALLED', setActivatedAt: !hasActivationHistory(activatedAt), reason: 'provider-installed-signal' }
+    // Installation alone must not create network-activation history. A later
+    // ambiguous ACTIVE response would otherwise reuse that fabricated proof.
+    return { status: 'INSTALLED', setActivatedAt: false, reason: 'provider-installed-signal' }
   }
 
   // 4. Provider says ACTIVE — check for usage/activation evidence. The connector
@@ -284,7 +286,7 @@ export interface UsageActivationResult {
  *
  * The single decision point shared by the scheduled usage sync, the manual
  * usage refresh and authoritative USAGE_UPDATED webhooks. Provenance rules:
- *   - promotes only PENDING / PENDING_ACTIVATION rows (a DEPLETED row is
+ *   - promotes PENDING / PENDING_ACTIVATION / INSTALLED rows (a DEPLETED row is
  *     restored by `deriveDepletionStatus`, never here);
  *   - a finite authoritative `dataUsedMB > 0` is the ONLY activation evidence;
  *   - a real zero-used snapshot is valid but is NOT activation evidence;
@@ -299,7 +301,7 @@ export function deriveUsageActivation(input: UsageActivationInput): UsageActivat
   const used = input.dataUsedMB
   const hasUsageEvidence = typeof used === 'number' && Number.isFinite(used) && used > 0
 
-  if ((current === 'PENDING' || current === 'PENDING_ACTIVATION') && hasUsageEvidence) {
+  if ((current === 'PENDING' || current === 'PENDING_ACTIVATION' || current === 'INSTALLED') && hasUsageEvidence) {
     return { status: 'ACTIVE', setActivatedAt: !hasActivationHistory(input.activatedAt), reason: 'usage-evidence-activation' }
   }
   return { status: current || 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'no-usage-activation-evidence' }

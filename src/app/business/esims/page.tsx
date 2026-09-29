@@ -11,6 +11,8 @@ import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
 import { deriveEsimCustomerDisplayStatus } from '@/lib/esim/lifecycle-presentation'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
+import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
+import { buildProviderConnector, capabilitySupported } from '@/lib/services/esims/sync-lookup'
 
 function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } | null {
   if (!raw) return null
@@ -66,6 +68,20 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
     orderBy: { createdAt: 'desc' },
   })
 
+  // Resolve once per provider, not once per eSIM. Portal exposure is permission
+  // to show an action; the connector must also implement it.
+  const providerIds = [...new Set(esims.map(esim => esim.purchase.package.providerId).filter((id): id is string => !!id))]
+  const providerActions = new Map(await Promise.all(providerIds.map(async providerId => {
+    const [exposure, connector] = await Promise.all([
+      getEsimClientCapabilities(providerId),
+      buildProviderConnector(providerId).catch(() => null),
+    ])
+    return [providerId, {
+      refresh: exposure.canRefreshStatus && !!connector && capabilitySupported(connector, 'statusLookup'),
+      topUp: exposure.canTopUp && connector?.capabilities?.topUp === true,
+    }] as const
+  })))
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -109,6 +125,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
               <tbody className="divide-y divide-gray-50">
                 {esims.map((esim) => {
                   const pkg = esim.purchase.package
+                  const actions = pkg.providerId ? providerActions.get(pkg.providerId) : undefined
                   const snapName = getPackageDisplayName(esim)
                   const snapData = getPackageDataGB(esim)
                   const archived = pkg ? isPackageArchived(pkg) : false
@@ -138,6 +155,9 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                           activationDetectedAt={esim.activationDetectedAt}
                           dataUsedMB={esim.dataUsedMB}
                         />
+                        <p className="mt-1 text-xs text-gray-500">
+                          {esim.lastStatusSyncAt ? `Last checked ${new Date(esim.lastStatusSyncAt).toISOString().replace('T', ' ').slice(0, 16)} UTC` : 'Status not yet checked'}
+                        </p>
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
                         {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '\u2014'}
@@ -162,12 +182,12 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                               packageName={snapName}
                               whatsAppUrl={whatsAppUrl}
                             />
-                            {isTopUpEligibleStatus(esim.status) && esim.iccid && (
+                            {actions?.topUp && isTopUpEligibleStatus(esim.status) && esim.iccid && (
                               <Link href={`/business/esims/${esim.id}/top-up`} className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Top Up</Link>
                             )}
-                            <form action={syncEsimStatusAction.bind(null, esim.id)}>
+                            {actions?.refresh ? <form action={syncEsimStatusAction.bind(null, esim.id)}>
                               <button type="submit" className="text-xs font-medium text-cyan-600 hover:text-cyan-700">Refresh Status</button>
-                            </form>
+                            </form> : <span className="text-xs text-gray-500">Status refresh unavailable</span>}
                             <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
                           </div>
                         </td>

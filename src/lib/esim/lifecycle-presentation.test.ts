@@ -136,9 +136,9 @@ describe('deriveEsimCustomerDisplayStatus — single customer summary badge', ()
   const preparingRow = { status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }
   const unknownRow = { status: 'PENDING_ACTIVATION', dataUsedMB: 0 }
 
-  it('Provisioned + Ready to install → one "Ready to install" badge', () => {
+  it('Provisioned + install details → one neutral-to-installation "Activation pending" badge', () => {
     const d = deriveEsimCustomerDisplayStatus(readyRow)
-    expect(d.label).toBe('Ready to install')
+    expect(d.label).toBe('Activation pending')
     expect(d.tone).toBe('warn')
     expect(d.status).toBe('PENDING_ACTIVATION')
   })
@@ -260,7 +260,7 @@ describe('canonical engine + customer badge pipeline (evidence-first activation)
     expect(badge.label).toBe('Installed on device')
   })
 
-  it('provider raw ACTIVE without evidence remains Ready to install/Provisioned (never fabricated Active)', () => {
+  it('provider raw ACTIVE without evidence remains Activation pending (never fabricated Active)', () => {
     const lifecycle = deriveEsimLifecycleStatus({
       providerNormalizedStatus: 'ACTIVE',
       currentStatus: 'PENDING_ACTIVATION',
@@ -269,7 +269,7 @@ describe('canonical engine + customer badge pipeline (evidence-first activation)
     })
     expect(lifecycle.status).toBe('PENDING_ACTIVATION')
     const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
-    expect(badge.label).toBe('Ready to install')
+    expect(badge.label).toBe('Activation pending')
     expect(badge.label).not.toBe('Active')
   })
 

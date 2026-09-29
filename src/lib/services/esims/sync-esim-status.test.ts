@@ -176,8 +176,9 @@ describe('syncESIMStatus — canonical evidence pipeline (root-cause fix)', () =
     expect(result.status).toBe('INSTALLED')
     const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
     expect(updateCall.data.status).toBe('INSTALLED')
-    expect(updateCall.data.activatedAt).toBeInstanceOf(Date)
-    expect(updateCall.data.activationDetectedAt).toBeInstanceOf(Date)
+    expect(updateCall.data.activatedAt).toBeUndefined()
+    expect(updateCall.data.activationDetectedAt).toBeUndefined()
+    expect(result.activated).toBe(false)
   })
 
   it('weak ACTIVE claim (no evidence) stays PENDING_ACTIVATION at the pending cadence', async () => {
