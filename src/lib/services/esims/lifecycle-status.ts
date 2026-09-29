@@ -17,6 +17,8 @@ export interface LifecycleInput {
   activatedAt: Date | null | undefined
   /** Optional explicit device-level evidence from the provider response. */
   providerInstalledSignal?: boolean
+  /** Provider-confirmed profile deletion from the target device/eUICC. */
+  providerProfileDeletedSignal?: boolean
   /** Optional VERIFIED network-attach evidence from the provider response.
    *  Only set when the connector proved a successful network attach for the
    *  exact target eSIM (never from a weak "package active" claim). */
@@ -70,7 +72,7 @@ function hasActivationHistory(activatedAt: Date | null | undefined): boolean {
 }
 
 export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResult {
-  const { providerNormalizedStatus, currentStatus, dataUsedMB, activatedAt, providerInstalledSignal, providerNetworkAttachedSignal } = input
+  const { providerNormalizedStatus, currentStatus, dataUsedMB, activatedAt, providerInstalledSignal, providerProfileDeletedSignal, providerNetworkAttachedSignal } = input
   const upper = providerNormalizedStatus.toUpperCase()
   const currentUpper = (currentStatus || '').toUpperCase()
 
@@ -96,6 +98,16 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
       return { status: currentUpper, setActivatedAt: false, reason: 'preserve-terminal-on-exhausted' }
     }
     return { status: 'DEPLETED', setActivatedAt: false, reason: 'provider-exhausted' }
+  }
+
+  // A confirmed profile deletion is current device-install evidence. It can
+  // clear an install-only state, but must not erase activation, suspension,
+  // depletion, or terminal service history.
+  if (providerProfileDeletedSignal && !providerNetworkAttachedSignal) {
+    if (currentUpper === 'INSTALLED') {
+      return { status: 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'provider-profile-deleted' }
+    }
+    return { status: currentUpper || 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'preserve-service-on-profile-delete' }
   }
 
   // 2. Monotonic guard: never regress from a state backed by OneSIM's own

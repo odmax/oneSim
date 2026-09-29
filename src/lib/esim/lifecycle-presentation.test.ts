@@ -59,6 +59,19 @@ describe('setup axis — Ready to install only with usable installation data', (
     expect(p.setupLabel).toBe('Preparing')
   })
 
+  it('Telna profile checkpoints show downloaded, installed, disabled, removed, and failed accurately', () => {
+    expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' }).label)
+      .toBe('Downloaded; not installed')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'INSTALLED', installationStatus: 'INSTALLED' }).label)
+      .toBe('Installed on device')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'INSTALLED', installationStatus: 'DISABLED' }).label)
+      .toBe('Installed, disabled on device')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'DELETED' }).label)
+      .toBe('Removed from device')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'FAILED' }).label)
+      .toBe('Installation failed')
+  })
+
   it('missing installation evidence → Unknown', () => {
     const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION' })
     expect(p.setupStatus).toBe('UNKNOWN')

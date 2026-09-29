@@ -100,6 +100,18 @@ export async function POST(req: NextRequest, { params }: { params: { provider: s
     payload = { raw: text }
   }
 
+  // Telna callback payloads carry lifecycle/usage data rather than an order
+  // completion object. Send them through the durable provider-webhook event
+  // processor so deduplication and the canonical eSIM lifecycle rules apply.
+  if (providerCode === 'TELNA') {
+    const { receiveProviderWebhook } = await import('@/lib/services/webhooks/provider-webhook-processor')
+    const result = await receiveProviderWebhook(providerCode, payload)
+    if (!result.success) {
+      return NextResponse.json({ status: result.status, eventId: result.eventId, error: result.error || 'Webhook processing failed' }, { status: 500 })
+    }
+    return NextResponse.json({ status: result.duplicate ? 'DUPLICATE' : result.status, eventId: result.eventId }, { status: 200 })
+  }
+
   // Extract event ID for idempotency
   const eventId = payload.event_id || payload.id || payload.externalEventId || payload.eventId || ''
   const computedId = `${providerCode}:${eventId || crypto.createHash('md5').update(JSON.stringify(payload)).digest('hex')}`

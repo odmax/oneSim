@@ -1,10 +1,11 @@
 import { prisma } from '@/lib/prisma'
 import { normalizeChoiceWebhook } from '@/lib/providers/webhooks/choice-webhook-normalizer'
+import { normalizeTelnaWebhook } from '@/lib/providers/webhooks/telna-webhook-normalizer'
 import { deriveEsimLifecycleStatus, deriveDepletionStatus, deriveUsageActivation, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
 
 export interface NormalizedWebhookEvent {
   providerType: string
-  eventType: 'ESIM_ACTIVATED' | 'USAGE_UPDATED' | 'ESIM_EXPIRED' | 'ESIM_SUSPENDED' | 'ESIM_RESUMED' | 'TOPUP_APPLIED' | 'PROVIDER_ERROR' | 'UNKNOWN'
+  eventType: 'ESIM_ACTIVATED' | 'ESIM_INSTALLED' | 'ESIM_PROFILE_DOWNLOADED' | 'ESIM_PROFILE_DISABLED' | 'ESIM_PROFILE_DELETED' | 'ESIM_INSTALLATION_FAILED' | 'USAGE_UPDATED' | 'ESIM_EXPIRED' | 'ESIM_SUSPENDED' | 'ESIM_RESUMED' | 'TOPUP_APPLIED' | 'PROVIDER_ERROR' | 'UNKNOWN'
   externalEventId?: string
   iccid?: string
   imsi?: string
@@ -15,12 +16,14 @@ export interface NormalizedWebhookEvent {
   dataTotalMB?: number
   dataRemainingMB?: number
   expiresAt?: string
+  installationStatus?: string
   raw?: any
 }
 
 const WEBHOOK_NORMALIZERS: Record<string, (payload: any) => NormalizedWebhookEvent> = {
   CHOICE: normalizeChoiceWebhook,
   IBASIS: normalizeIbasisWebhook,
+  TELNA: normalizeTelnaWebhook,
 }
 
 import { normalizeIbasisWebhook } from '@/lib/providers/webhooks/ibasis-webhook-normalizer'
@@ -28,7 +31,13 @@ import { normalizeIbasisWebhook } from '@/lib/providers/webhooks/ibasis-webhook-
 export function normalizeProviderWebhook(providerType: string, payload: any): NormalizedWebhookEvent {
   const normalizer = WEBHOOK_NORMALIZERS[providerType.toUpperCase()]
   if (normalizer) {
-    return normalizer(payload)
+    const normalized = normalizer(payload)
+    // Keep compatibility with older generic Telna callbacks while preferring
+    // the documented RSP / package payload shapes whenever they are present.
+    if (providerType.toUpperCase() === 'TELNA' && normalized.eventType === 'UNKNOWN' && (payload?.event || payload?.type)) {
+      return normalizeGeneric(payload, providerType)
+    }
+    return normalized
   }
   return normalizeGeneric(payload, providerType)
 }
@@ -93,11 +102,19 @@ function normalizeGeneric(payload: any, providerType: string): NormalizedWebhook
   }
 }
 
-export async function processProviderWebhookEvent(eventId: string): Promise<{ success: boolean; status: string; error?: string }> {
+export async function processProviderWebhookEvent(eventId: string, claimed = false): Promise<{ success: boolean; status: string; error?: string }> {
   const event = await prisma.providerWebhookEvent.findUnique({ where: { id: eventId } })
   if (!event) return { success: false, status: 'FAILED', error: 'Event not found' }
 
-  if (event.status !== 'RECEIVED') {
+  if ((event.status === 'RECEIVED' || event.status === 'FAILED') && !claimed) {
+    const claim = await prisma.providerWebhookEvent.updateMany({
+      where: { id: event.id, status: event.status },
+      data: { status: 'PROCESSING', errorMessage: null, processedAt: null },
+    })
+    if (claim.count !== 1) return { success: true, status: 'PROCESSING' }
+  } else if (event.status === 'PROCESSING' && !claimed) {
+    return { success: true, status: 'PROCESSING' }
+  } else if (event.status !== 'RECEIVED' && event.status !== 'PROCESSING' && !(claimed && event.status === 'FAILED')) {
     return { success: true, status: event.status }
   }
 
@@ -114,8 +131,20 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
       if (normalized.iccid) where.push({ iccid: normalized.iccid })
       if (normalized.imsi) where.push({ imsi: normalized.imsi })
 
-      const esim = where.length > 0
-        ? await prisma.eSIM.findFirst({ where: { OR: where }, include: { purchase: { select: { businessId: true } } } })
+      const providerOwnership = event.providerId
+        ? {
+            OR: [
+              { purchase: { providerId: event.providerId } },
+              { purchase: { package: { providerId: event.providerId } } },
+            ],
+          }
+        : {}
+      const telnaProviderMissing = event.providerType.toUpperCase() === 'TELNA' && !event.providerId
+      const esim = where.length > 0 && !telnaProviderMissing
+        ? await prisma.eSIM.findFirst({
+            where: { AND: [{ OR: where }, providerOwnership] },
+            include: { purchase: { select: { businessId: true, providerId: true, package: { select: { providerId: true } } } } },
+          })
         : null
 
       if (!esim) {
@@ -176,6 +205,83 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
           evidenceObservedAt: now.toISOString(),
         }
         await prisma.eSIM.update({ where: { id: esimId }, data: lifecycleWrite })
+        break
+      }
+
+      case 'ESIM_INSTALLED':
+      case 'ESIM_PROFILE_DISABLED': {
+        const existing = await prisma.eSIM.findUnique({ where: { id: esimId } })
+        const lifecycle = deriveEsimLifecycleStatus({
+          providerNormalizedStatus: 'INSTALLED',
+          currentStatus: existing?.status || 'PENDING_ACTIVATION',
+          dataUsedMB: existing?.dataUsedMB || 0,
+          activatedAt: existing?.activatedAt ?? null,
+          providerInstalledSignal: true,
+        })
+        const write: any = {
+          installationStatus: normalized.installationStatus || (normalized.eventType === 'ESIM_PROFILE_DISABLED' ? 'DISABLED' : 'INSTALLED'),
+          installationLastCheckedAt: now,
+          installationLastError: null,
+          lastSyncAt: now,
+          lastStatusSyncAt: now,
+          providerStatus: normalized.providerStatus || existing?.providerStatus,
+          providerResponse: {
+            ...(existing?.providerResponse && typeof existing.providerResponse === 'object' ? existing.providerResponse as Record<string, unknown> : {}),
+            telnaInstallationEvent: normalized.eventType,
+            evidence: lifecycle.reason,
+            evidenceObservedAt: now.toISOString(),
+          },
+        }
+        if (lifecycle.status !== existing?.status) write.status = lifecycle.status
+        await prisma.eSIM.update({ where: { id: esimId }, data: write })
+        break
+      }
+
+      case 'ESIM_PROFILE_DOWNLOADED':
+      case 'ESIM_INSTALLATION_FAILED': {
+        const existing = await prisma.eSIM.findUnique({ where: { id: esimId } })
+        await prisma.eSIM.update({
+          where: { id: esimId },
+          data: {
+            installationStatus: normalized.installationStatus || (normalized.eventType === 'ESIM_INSTALLATION_FAILED' ? 'FAILED' : 'DOWNLOADED'),
+            installationLastCheckedAt: now,
+            installationLastError: normalized.eventType === 'ESIM_INSTALLATION_FAILED' ? 'Telna reported an eSIM profile download or installation failure' : null,
+            providerStatus: normalized.providerStatus || existing?.providerStatus,
+            providerResponse: {
+              ...(existing?.providerResponse && typeof existing.providerResponse === 'object' ? existing.providerResponse as Record<string, unknown> : {}),
+              telnaInstallationEvent: normalized.eventType,
+              evidenceObservedAt: now.toISOString(),
+            },
+          },
+        })
+        break
+      }
+
+      case 'ESIM_PROFILE_DELETED': {
+        const existing = await prisma.eSIM.findUnique({ where: { id: esimId } })
+        const lifecycle = deriveEsimLifecycleStatus({
+          providerNormalizedStatus: 'PENDING_ACTIVATION',
+          currentStatus: existing?.status || 'PENDING_ACTIVATION',
+          dataUsedMB: existing?.dataUsedMB || 0,
+          activatedAt: existing?.activatedAt ?? null,
+          providerProfileDeletedSignal: true,
+        })
+        const write: any = {
+          installationStatus: 'DELETED',
+          installationLastCheckedAt: now,
+          installationLastError: null,
+          lastSyncAt: now,
+          lastStatusSyncAt: now,
+          providerStatus: normalized.providerStatus || existing?.providerStatus,
+          providerResponse: {
+            ...(existing?.providerResponse && typeof existing.providerResponse === 'object' ? existing.providerResponse as Record<string, unknown> : {}),
+            telnaInstallationEvent: normalized.eventType,
+            evidence: lifecycle.reason,
+            evidenceObservedAt: now.toISOString(),
+          },
+        }
+        if (lifecycle.status !== existing?.status) write.status = lifecycle.status
+        await prisma.eSIM.update({ where: { id: esimId }, data: write })
         break
       }
 
@@ -288,6 +394,23 @@ export async function receiveProviderWebhook(providerType: string, payload: any)
       if (existing.status === 'PROCESSED' || existing.status === 'IGNORED') {
         return { success: true, duplicate: true, status: existing.status }
       }
+      // Do not process an in-flight delivery twice: parallel callbacks can
+      // otherwise duplicate usage history writes. FAILED/RECEIVED rows are
+      // atomically claimed before their retry is processed.
+      if (existing.status === 'PROCESSING') {
+        return { success: true, duplicate: true, status: existing.status, eventId: existing.id }
+      }
+      if (existing.status === 'RECEIVED' || existing.status === 'FAILED') {
+        const claimed = await prisma.providerWebhookEvent.updateMany({
+          where: { id: existing.id, status: existing.status },
+          data: { status: 'PROCESSING', errorMessage: null, processedAt: null },
+        })
+        if (claimed.count !== 1) {
+          return { success: true, duplicate: true, status: 'PROCESSING', eventId: existing.id }
+        }
+        const result = await processProviderWebhookEvent(existing.id, true)
+        return { success: result.success, status: result.status, eventId: existing.id, error: result.error }
+      }
     }
   }
 
@@ -307,12 +430,12 @@ export async function receiveProviderWebhook(providerType: string, payload: any)
       externalEventId: normalized.externalEventId || null,
       iccid: normalized.iccid || null,
       imsi: normalized.imsi || null,
-      status: 'RECEIVED',
+      status: 'PROCESSING',
       payload: payload as any,
     },
   })
 
-  const result = await processProviderWebhookEvent(event.id)
+  const result = await processProviderWebhookEvent(event.id, true)
 
   return {
     success: result.success,

@@ -15,6 +15,16 @@ describe('installation and service activation remain distinct across refreshes',
   it('first positive usage activates an installed eSIM', () => {
     expect(deriveUsageActivation({ currentStatus: 'INSTALLED', dataUsedMB: 1, activatedAt: null })).toMatchObject({ status: 'ACTIVE', setActivatedAt: true })
   })
+  it('deleted profile clears install-only state but never masks verified network attach', () => {
+    expect(deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'PENDING_ACTIVATION', currentStatus: 'INSTALLED', dataUsedMB: 0,
+      activatedAt: null, providerProfileDeletedSignal: true,
+    }).status).toBe('PENDING_ACTIVATION')
+    expect(deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE', currentStatus: 'PENDING_ACTIVATION', dataUsedMB: 0,
+      activatedAt: null, providerProfileDeletedSignal: true, providerNetworkAttachedSignal: true,
+    }).status).toBe('ACTIVE')
+  })
 })
 
 function input(overrides: Partial<LifecycleInput> = {}): LifecycleInput {

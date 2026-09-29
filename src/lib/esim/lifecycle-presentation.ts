@@ -70,6 +70,15 @@ function deriveSetupAxis(input: LifecyclePresentationInput): Pick<EsimLifecycleP
   const usageKnown =
     typeof input.dataUsedMB === 'number' && Number.isFinite(input.dataUsedMB) && input.dataUsedMB > 0
 
+  // These current-device states override the historical fact that a profile
+  // was once installed, while leaving service lifecycle status on its own axis.
+  if (install === 'DISABLED') {
+    return setupPresentation('INSTALLED_DISABLED', 'Installed, disabled on device', 'warn')
+  }
+  if (install === 'DELETED') {
+    return setupPresentation('INSTALLATION_REMOVED', 'Removed from device', 'warn')
+  }
+
   // Authoritative oneSIM evidence implies the eSIM reached a device.
   //  - canonical INSTALLED is itself device-installed evidence;
   //  - canonical ACTIVE required activation evidence in the lifecycle engine;
@@ -92,6 +101,15 @@ function deriveSetupAxis(input: LifecyclePresentationInput): Pick<EsimLifecycleP
   // Explicit installation lifecycle values.
   if (install === 'INSTALLING' || status === 'INSTALLING') {
     return setupPresentation('INSTALLING', 'Installing', 'warn')
+  }
+  if (install === 'DOWNLOADED') {
+    return setupPresentation('DOWNLOADED', 'Downloaded; not installed', 'warn')
+  }
+  if (install === 'INSTALLED' || install === 'ENABLED') {
+    return setupPresentation('INSTALLED', 'Installed', 'success')
+  }
+  if (install === 'ERROR') {
+    return setupPresentation('INSTALLATION_FAILED', 'Installation failed', 'danger')
   }
   if (install === 'FAILED') {
     return setupPresentation('INSTALLATION_FAILED', 'Installation failed', 'danger')
@@ -192,6 +210,9 @@ export function deriveEsimCustomerDisplayStatus(input: LifecyclePresentationInpu
   // 2. Active service dominates — a single `Active` badge, never a second
   //    `Installed` badge on summary/list views.
   if (status === 'ACTIVE' || status === 'INSTALLED') {
+    if (status === 'INSTALLED' && setup.setupStatus === 'INSTALLED_DISABLED') {
+      return { status, label: setup.setupLabel, tone: setup.setupTone }
+    }
     return { status, label: service.serviceLabel, tone: service.serviceTone }
   }
 
@@ -208,6 +229,12 @@ export function deriveEsimCustomerDisplayStatus(input: LifecyclePresentationInpu
         return { status, label: 'Installation failed', tone: 'danger' }
       case 'INSTALLATION_UNAVAILABLE':
         return { status, label: 'Installation unavailable', tone: 'warn' }
+      case 'DOWNLOADED':
+        return { status, label: 'Downloaded; not installed', tone: 'warn' }
+      case 'INSTALLED_DISABLED':
+        return { status, label: 'Installed, disabled on device', tone: 'warn' }
+      case 'INSTALLATION_REMOVED':
+        return { status, label: 'Removed from device', tone: 'warn' }
       case 'PREPARING':
         return { status, label: 'Preparing', tone: 'warn' }
       case 'INSTALLED':

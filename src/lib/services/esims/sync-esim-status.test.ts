@@ -181,6 +181,32 @@ describe('syncESIMStatus — canonical evidence pipeline (root-cause fix)', () =
     expect(result.activated).toBe(false)
   })
 
+  it('Telna disabled profile is shown on install axis without becoming service SUSPENDED', async () => {
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({ success: true, data: {
+        status: 'INSTALLED', evidence: { deviceInstalled: true, installationStatus: 'DISABLED' },
+      } }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.status).toBe('INSTALLED')
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data).toMatchObject({ status: 'INSTALLED', installationStatus: 'DISABLED' })
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data.status).not.toBe('SUSPENDED')
+  })
+
+  it('confirmed deleted profile clears an install-only service state during polling', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'INSTALLED' }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({ success: true, data: {
+        status: 'PENDING_ACTIVATION', evidence: { installationStatus: 'DELETED' },
+      } }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.status).toBe('PENDING_ACTIVATION')
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data).toMatchObject({ status: 'PENDING_ACTIVATION', installationStatus: 'DELETED' })
+  })
+
   it('weak ACTIVE claim (no evidence) stays PENDING_ACTIVATION at the pending cadence', async () => {
     const connector = statusConnector({
       getStatus: vi.fn().mockResolvedValue({

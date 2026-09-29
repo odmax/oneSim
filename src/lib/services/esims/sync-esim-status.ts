@@ -98,6 +98,7 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
     dataUsedMB: esim.dataUsedMB || 0,
     activatedAt: connectorActivatedAt || esim.activatedAt,
     providerInstalledSignal: evidence?.deviceInstalled,
+    providerProfileDeletedSignal: evidence?.installationStatus === 'DELETED',
     providerNetworkAttachedSignal: evidence?.networkAttached,
   })
 
@@ -107,6 +108,15 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
     lastStatusSyncAt: new Date(),
     statusNextSyncAt: getStatusNextSync(lifecycle.status, 0),
     statusSyncRetryCount: 0,
+  }
+
+  // Installation checkpoints are a separate axis from service lifecycle:
+  // Telna's DOWNLOADED/DISABLED/DELETED profile states must not be written as
+  // ACTIVE/SUSPENDED/EXPIRED service states.
+  if (evidence?.installationStatus) {
+    updateData.installationStatus = evidence.installationStatus
+    updateData.installationLastCheckedAt = new Date()
+    updateData.installationLastError = evidence.installationStatus === 'FAILED' ? 'Provider reports profile installation error' : null
   }
 
   if (lifecycle.status !== esim.status) {

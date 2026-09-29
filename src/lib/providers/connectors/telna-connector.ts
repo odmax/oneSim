@@ -339,7 +339,7 @@ export class TelnaConnector implements IProviderConnector {
     balance: true, // getWallet
     inventory: true, // GET /sim-registries
     catalogSync: true, // syncPlans wired
-    webhooks: false,
+    webhooks: true, // Telna RSP profile and package status/usage callbacks are normalized by the provider webhook processor.
     // Provider-side custom package/template creation (POST /v2.1/pcr/package-templates)
     // is CONTRACT-SUPPORTED (implemented + correctly mapped). LIVE_MUTATION_VALIDATED
     // is NOT yet true — the generic Provider Catalog does not auto-invoke it and no
@@ -975,49 +975,64 @@ export class TelnaConnector implements IProviderConnector {
     // (a failed download/install or a profile no longer present), which is not
     // proof the subscription expired. They fall through to the weak branches
     // below so the canonical engine preserves any stronger stored state.
+    let installationStatus: string | undefined
+    if (profileState === 'INSTALLED') installationStatus = 'INSTALLED'
+    else if (profileState === 'ENABLED') installationStatus = 'ENABLED'
+    else if (profileState === 'DISABLED') installationStatus = 'DISABLED'
+    else if (profileState === 'DELETED') installationStatus = 'DELETED'
+    else if (profileState === 'ERROR') installationStatus = 'FAILED'
+    else if (profileState === 'DOWNLOADED') installationStatus = 'DOWNLOADED'
+    else if (profileState === 'RELEASED') installationStatus = 'READY'
+
     if (simStatus === 'TERMINATED') {
       // SIM TERMINATED = the physical eSIM is terminated at the provider —
       // strong terminal SIM evidence.
       status = 'EXPIRED'
-      evidence = { reason: 'telna-sim-terminated' }
+      evidence = { installationStatus, reason: 'telna-sim-terminated' }
     } else if (exactPackageStatus === 'TERMINATED') {
       // The exact GET /v2.1/pcr/packages/{package_id} record of the purchased
       // instance is TERMINATED — authoritative terminal evidence for it.
       status = 'EXPIRED'
-      evidence = { reason: 'telna-package-terminated' }
-    } else if (simStatus === 'SUSPENDED' || profileState === 'DISABLED') {
-      // SIM/profile locally suspended or disabled.
+      evidence = { installationStatus, reason: 'telna-package-terminated' }
+    } else if (simStatus === 'SUSPENDED') {
+      // Provider SIM suspension is service state. An eUICC DISABLED profile is
+      // only a local device setting and is handled on the installation axis.
       status = 'SUSPENDED'
-      evidence = { reason: 'telna-suspended-or-disabled' }
+      evidence = { installationStatus, reason: 'telna-sim-suspended' }
     } else if (simStatus === 'IN_SERVICE') {
       // IN_SERVICE SIM = has generated network traffic — strong network-use evidence.
       status = 'ACTIVE'
-      evidence = { networkAttached: true, reason: 'sim-in-service' }
-    } else if (profileState === 'INSTALLED' || profileState === 'ENABLED') {
+      evidence = { networkAttached: true, installationStatus, reason: 'sim-in-service' }
+    } else if (profileState === 'INSTALLED' || profileState === 'ENABLED' || profileState === 'DISABLED') {
       // Profile installed/enabled on device — device-install evidence, not network-active.
       status = 'INSTALLED'
-      evidence = { deviceInstalled: true, reason: 'euicc-installed-or-enabled' }
+      evidence = { deviceInstalled: true, installationStatus, reason: profileState === 'DISABLED' ? 'euicc-installed-locally-disabled' : 'euicc-installed-or-enabled' }
     } else if (exactPackageStatus === 'ACTIVE') {
       // Authoritative provider record from the exact GET /pcr/packages/{package_id}
       // read: the purchased package instance is ACTIVE at Telna. This is the
       // provider-owned status of record and wins even when one optional ICCID-keyed
       // read (sim-registry / euicc / package list) failed with a best-effort 400.
       status = 'ACTIVE'
-      evidence = { reason: 'packages-exact-active' }
+      evidence = { installationStatus, reason: 'packages-exact-active' }
     } else if ((profileState === 'RELEASED' || profileState === 'DOWNLOADED') && profileActivationCode) {
       // Profile provisioned with a usable activation code = the deliverable is in
       // hand (ready to install). The ICCID is the fulfillment identity; the
       // activation code is delivery data forwarded to finalization, never an
       // identity and never sufficient on its own.
       status = 'COMPLETED'
-      evidence = { reason: 'euicc-released-install-ready' }
+      evidence = { installationStatus, reason: 'euicc-released-install-ready' }
+    } else if (profileState === 'DELETED' || profileState === 'ERROR') {
+      // These are profile-delivery outcomes, not provider subscription failure
+      // or expiry. Keep service lifecycle pending while exposing setup outcome.
+      status = 'PENDING_ACTIVATION'
+      evidence = { installationStatus, reason: profileState === 'DELETED' ? 'euicc-profile-deleted' : 'euicc-profile-install-error' }
     } else if (simStatus === 'PRE_SERVICE' || profileState === 'RELEASED' || profileState === 'DOWNLOADED' || simStatus === 'WAITING_FOR_ASSIGNMENT') {
       // Ready / provisioned but not network-active.
       status = 'PENDING_ACTIVATION'
-      evidence = { reason: 'telna-ready-not-active' }
+      evidence = { installationStatus, reason: 'telna-ready-not-active' }
     } else {
       status = 'PENDING_ACTIVATION'
-      evidence = { reason: 'telna-no-strong-evidence' }
+      evidence = { installationStatus, reason: 'telna-no-strong-evidence' }
     }
 
     return {

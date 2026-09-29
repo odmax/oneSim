@@ -2434,16 +2434,15 @@ describe('TelnaConnector getStatus (documented PCR profile, read-only)', () => {
     expect(caps.installationLookupHistorical).toBe(true)
     // Package usage (data_usage_remaining bytes) + ICCID resolver.
     expect(caps.usageLookup).toBe(true)
-    // We still never claim purchase-time install or webhooks.
+    // Install-at-purchase is unsupported; provider webhooks are normalized externally.
     expect(caps.installationDataAtPurchase).not.toBe(true)
-    expect(caps.webhooks).toBe(false)
+    expect(caps.webhooks).toBe(true)
   })
 
-  it('paid add-ons (session/SMS/webhooks) stay capability-disabled on the standard account', () => {
+  it('paid session/SMS add-ons stay disabled while platform webhook ingestion is enabled', () => {
     const caps = new TelnaConnector('telna-provider-1', 'Telna').capabilities!
-    // SESSION (/v2.1/session-management/open-data-sessions) is a paid add-on — no
-    // connector method calls it, and it is not a required/usage source.
-    expect(caps.webhooks).toBe(false)
+    // The paid session surface is not required; provider webhooks are an external normalized integration.
+    expect(caps.webhooks).toBe(true)
     // Usage does not depend on the paid open-data-session surface.
     expect(caps.usageLookup).toBe(true)
   })
@@ -2917,7 +2916,7 @@ describe('TelnaConnector getStatus post-purchase contract (package-instance iden
     const result = await connector.getStatus(ICCID)
     expect(result.success).toBe(true)
     expect(result.data?.status).toBe('SUSPENDED')
-    expect(result.data?.evidence).toMatchObject({ reason: 'telna-suspended-or-disabled' })
+    expect(result.data?.evidence).toMatchObject({ reason: 'telna-sim-suspended' })
   })
 
   it('profile UNAVAILABLE cannot mask suspension evidence (SUSPENDED -> SUSPENDED)', async () => {
@@ -2930,7 +2929,7 @@ describe('TelnaConnector getStatus post-purchase contract (package-instance iden
     const result = await connector.getStatus(ICCID)
     expect(result.success).toBe(true)
     expect(result.data?.status).toBe('SUSPENDED')
-    expect(result.data?.evidence).toMatchObject({ reason: 'telna-suspended-or-disabled' })
+    expect(result.data?.evidence).toMatchObject({ reason: 'telna-sim-suspended' })
   })
 
   it('profile DELETED is not COMPLETED even with an activation_code present', async () => {
@@ -4306,14 +4305,14 @@ describe('Telna V2.1 � remaining standard endpoints + custom package creation 
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('capabilities: customPackageCreation true at connector-contract level; paid add-ons disabled', () => {
+  it('capabilities: webhook ingestion and customPackageCreation are contract-enabled; paid add-ons disabled', () => {
     const caps = new TelnaConnector('telna-provider-1', 'Telna').capabilities!
-    expect(caps.webhooks).toBe(false)
+    expect(caps.webhooks).toBe(true)
     expect(caps.customPackageCreation).toBe(true)
     expect(caps.usageLookup).toBe(true)
     expect(caps.statusLookup).toBe(true)
-    // Paid add-ons are not exposed as connector capabilities.
-    expect(caps.webhooks).toBe(false)
+    // Paid session add-ons remain unexposed; webhook ingestion is implemented externally.
+    expect(caps.webhooks).toBe(true)
   })
 
   it('getCustomPackageDefinition returns provider-owned options and documented fields, no credentials', async () => {
@@ -4663,6 +4662,32 @@ describe('Telna V2.1 live sim-registry contract (sim_status + numeric inventory/
     expect(result.success).toBe(true)
     expect(result.data?.status).toBe('PENDING_ACTIVATION')
   })
+
+  it('eUICC DISABLED means installed locally, not provider service SUSPENDED', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { iccid: 'DISABLED-ICCID', sim_status: 'pre-service' } }))
+      .mockResolvedValueOnce(json({ data: { iccid: 'DISABLED-ICCID', state: 'DISABLED' } }))
+      .mockResolvedValueOnce(json({ data: { total: 0, offset: 0, count: 0, packages: [] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus('DISABLED-ICCID')
+    expect(result.success).toBe(true)
+    expect(result.data?.status).toBe('INSTALLED')
+    expect(result.data?.evidence).toMatchObject({ deviceInstalled: true, installationStatus: 'DISABLED' })
+  })
+
+  it('preserves network service evidence alongside the disabled install state', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(json({ data: { iccid: 'IN-SERVICE-DISABLED', sim_status: 'in-service' } }))
+      .mockResolvedValueOnce(json({ data: { iccid: 'IN-SERVICE-DISABLED', state: 'DISABLED' } }))
+      .mockResolvedValueOnce(json({ data: { total: 0, offset: 0, count: 0, packages: [] } }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new TelnaConnector('telna-provider-1', 'Telna')
+    const result = await connector.getStatus('IN-SERVICE-DISABLED')
+    expect(result.data?.status).toBe('ACTIVE')
+    expect(result.data?.evidence).toMatchObject({ networkAttached: true, installationStatus: 'DISABLED' })
+  })
+
 })
 
 describe('Telna reconcileAmbiguousPurchase — read-only exact package correlation (C recovery)', () => {

@@ -102,6 +102,8 @@ export type StatusResultEvidence = {
   networkAttached?: boolean
   /** Verified profile installed/enabled on device (no network attach). */
   deviceInstalled?: boolean
+  /** Provider's current profile-install checkpoint, not service lifecycle. */
+  installationStatus?: string
   /** Provider event timestamp that produced the evidence (ISO 8601). */
   observedAt?: string
   /** Human-readable reason (sanitized, no credentials). */
