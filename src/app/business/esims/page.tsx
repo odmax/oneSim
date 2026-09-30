@@ -11,6 +11,7 @@ import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
 import { deriveEsimCustomerDisplayStatus } from '@/lib/esim/lifecycle-presentation'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
+import { EsimInventoryStatusFields } from '@/components/esim/EsimInventoryStatusFields'
 import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
 import { buildProviderConnector, capabilitySupported } from '@/lib/services/esims/sync-lookup'
 
@@ -155,9 +156,28 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                           activationDetectedAt={esim.activationDetectedAt}
                           dataUsedMB={esim.dataUsedMB}
                         />
-                        <p className="mt-1 text-xs text-gray-500">
-                          {esim.lastStatusSyncAt ? `Last checked ${new Date(esim.lastStatusSyncAt).toISOString().replace('T', ' ').slice(0, 16)} UTC` : 'Status not yet checked'}
-                        </p>
+                        <div className="mt-1.5">
+                          <EsimInventoryStatusFields esim={{
+                            status: esim.status,
+                            installationStatus: esim.installationStatus,
+                            installationLastError: esim.installationLastError,
+                            installationLastCheckedAt: esim.installationLastCheckedAt,
+                            activationCode: esim.activationCode,
+                            qrCodeUrl: esim.qrCodeUrl,
+                            qrCode: esim.qrCode,
+                            smdpAddress: esim.smdpAddress,
+                            matchingId: esim.matchingId,
+                            activatedAt: esim.activatedAt,
+                            activationDetectedAt: esim.activationDetectedAt,
+                            dataUsedMB: esim.dataUsedMB,
+                            dataTotalMB: esim.dataTotalMB,
+                            dataRemainingMB: esim.dataRemainingMB,
+                            lastStatusSyncAt: esim.lastStatusSyncAt,
+                            statusSyncRetryCount: esim.statusSyncRetryCount,
+                            statusNextSyncAt: esim.statusNextSyncAt,
+                            lastUsageSyncAt: esim.lastUsageSyncAt,
+                          }} />
+                        </div>
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
                         {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '\u2014'}

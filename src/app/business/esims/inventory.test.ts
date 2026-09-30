@@ -233,3 +233,38 @@ describe('search text for business packages', () => {
     expect(text).toContain('bw')
   })
 })
+
+describe('business eSIM inventory — provider-neutral inventory fields', () => {
+  const pagePath = path.join(process.cwd(), 'src/app/business/esims/page.tsx')
+
+  it('renders the shared provider-neutral inventory fields component', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).toContain('EsimInventoryStatusFields')
+  })
+
+  it('never renders raw provider status, raw payloads, or provider data columns', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).not.toContain('esim.providerStatus')
+    expect(content).not.toContain('providerRawData')
+    // providerResponse is read ONLY through the whitelist LPA extractor.
+    expect(content).toContain('safeProviderLPA(esim.providerResponse)')
+  })
+
+  it('the single summary badge stays in place (one CustomerStatusBadge per row)', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect((content.match(/<CustomerStatusBadge/g) || []).length).toBe(1)
+  })
+
+  it('provider neutrality: the inventory fields import is provider-safe', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).toContain("from '@/components/esim/EsimInventoryStatusFields'")
+  })
+
+  it('feeds installation-check, scheduler and usage-check fields', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).toContain('installationLastCheckedAt: esim.installationLastCheckedAt')
+    expect(content).toContain('statusNextSyncAt: esim.statusNextSyncAt')
+    expect(content).toContain('lastStatusSyncAt: esim.lastStatusSyncAt')
+    expect(content).toContain('lastUsageSyncAt: esim.lastUsageSyncAt')
+  })
+})

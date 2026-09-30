@@ -5,8 +5,8 @@ import { redirect } from 'next/navigation'
 import EsimActions from '@/components/EsimActions'
 import { getPackageDisplayName } from '@/lib/packages/snapshot-utils'
 import { adminEsimStatusBadge } from '@/lib/status-badges'
-import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
-import { hasUsableInstallData } from '@/lib/esim/installation-data'
+import { EsimInventoryStatusFields } from '@/components/esim/EsimInventoryStatusFields'
+import { ESIM_LIFECYCLE_STATUSES } from '@/lib/status-constants'
 
 export default async function AdminESIMsPage({
   searchParams
@@ -107,11 +107,9 @@ export default async function AdminESIMsPage({
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none"
             >
               <option value="">All Statuses</option>
-              <option value="ACTIVE">Active</option>
-              <option value="PENDING">Pending</option>
-              <option value="INACTIVE">Inactive</option>
-              <option value="EXPIRED">Expired</option>
-              <option value="SUSPENDED">Suspended</option>
+              {ESIM_LIFECYCLE_STATUSES.map((s) => (
+                <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
+              ))}
             </select>
           </div>
 
@@ -208,16 +206,29 @@ export default async function AdminESIMsPage({
                   </span>
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">
-                  <span className="inline-flex rounded-full px-2 text-xs font-semibold leading-5 bg-gray-100 text-gray-700">
-                    {deriveEsimLifecyclePresentation({
+                  <EsimInventoryStatusFields
+                    hideService
+                    esim={{
                       status: esim.status,
                       installationStatus: esim.installationStatus,
-                      hasUsableInstallData: hasUsableInstallData(esim),
+                      installationLastError: esim.installationLastError,
+                      installationLastCheckedAt: esim.installationLastCheckedAt,
+                      activationCode: esim.activationCode,
+                      qrCodeUrl: esim.qrCodeUrl,
+                      qrCode: esim.qrCode,
+                      smdpAddress: esim.smdpAddress,
+                      matchingId: esim.matchingId,
                       activatedAt: esim.activatedAt,
                       activationDetectedAt: esim.activationDetectedAt,
                       dataUsedMB: esim.dataUsedMB,
-                    }).setupLabel}
-                  </span>
+                      dataTotalMB: esim.dataTotalMB,
+                      dataRemainingMB: esim.dataRemainingMB,
+                      lastStatusSyncAt: esim.lastStatusSyncAt,
+                      statusSyncRetryCount: esim.statusSyncRetryCount,
+                      statusNextSyncAt: esim.statusNextSyncAt,
+                      lastUsageSyncAt: esim.lastUsageSyncAt,
+                    }}
+                  />
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">
                   {esim.providerStatus ? (
