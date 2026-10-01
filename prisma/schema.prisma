@@ -657,6 +657,13 @@ model ESIM {
   installationRetryCount    Int       @default(0)
   installationLastCheckedAt DateTime?
   installationLastError     String?
+  /// Customer-confirmed installation (durable). Separately recorded from provider
+  /// evidence: the timestamp's presence means the customer (or an authorized
+  /// admin) confirmed the eSIM was installed. Never overwritten by status/usage
+  /// syncs or provider webhooks; the actor is captured in AuditLog
+  /// (action=CUSTOMER_CONFIRMED_INSTALLED). Provider evidence stays in
+  /// installationStatus / providerStatus and always takes precedence at display.
+  customerConfirmedInstalledAt DateTime?
   /// Auto-sync scheduling
   statusNextSyncAt          DateTime?
   usageNextSyncAt           DateTime?

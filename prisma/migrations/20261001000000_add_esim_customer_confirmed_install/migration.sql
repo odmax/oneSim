@@ -1,0 +1,29 @@
+-- Durable customer-confirmed installation evidence on eSIM.
+--
+-- Adds a nullable timestamp whose PRESENCE means the customer (or an authorized
+-- admin) confirmed the eSIM was installed. This is SEPARATE from provider
+-- evidence: the existing installationStatus / providerStatus / status columns
+-- are never touched by this field, and the confirmation is never overwritten by
+-- status/usage syncs or provider webhooks (those services write only their own
+-- updateData fields).
+--
+-- Actor/audit: the confirm action writes a row to "audit_logs"
+-- (action = 'CUSTOMER_CONFIRMED_INSTALLED', entity = 'ESIM',
+-- entityId = <esim id>, userId = <actor>), so who/when is auditable without
+-- touching this timestamp.
+--
+-- Rollout order:
+--   1. Apply this ADDITIVE migration to STAGING first (adds a nullable column;
+--      fully backward compatible — existing writes/reads are unaffected).
+--   2. Deploy the APPLICATION IMAGE that reads the new column (inventory pages feed
+--      customerReportedInstalled = (customerConfirmedInstalledAt != null) into the
+--      shared resolver) and ships confirmEsimInstalledAction.
+--   3. Repeat the same order for production only after staging validation.
+--   4. Rollback: revert the application image first (the column is simply ignored),
+--      then DROP the column — provider evidence is unaffected either way and the
+--      AuditLog (CUSTOMER_CONFIRMED_INSTALLED) rows are retained.
+--
+-- NOT APPLIED during the implementation task — this file is created for review
+-- only; no database was touched.
+
+ALTER TABLE "esims" ADD COLUMN IF NOT EXISTS "customerConfirmedInstalledAt" TIMESTAMP(3);

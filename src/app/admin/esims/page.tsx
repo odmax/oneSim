@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import EsimActions from '@/components/EsimActions'
 import { getPackageDisplayName } from '@/lib/packages/snapshot-utils'
 import { EsimPrimaryStatusBadge } from '@/components/esim/EsimPrimaryStatusBadge'
+import { confirmEsimInstalledAction } from '@/lib/actions/esim-confirm-installed'
 import { ESIM_LIFECYCLE_STATUSES } from '@/lib/status-constants'
 
 export default async function AdminESIMsPage({
@@ -216,6 +217,7 @@ export default async function AdminESIMsPage({
                     statusSyncRetryCount: esim.statusSyncRetryCount,
                     statusNextSyncAt: esim.statusNextSyncAt,
                     lastUsageSyncAt: esim.lastUsageSyncAt,
+                    customerReportedInstalled: esim.customerConfirmedInstalledAt != null,
                   }} />
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">
@@ -251,6 +253,13 @@ export default async function AdminESIMsPage({
                 </td>
                 <td className="whitespace-nowrap px-6 py-4 text-sm">
                   <EsimActions esimId={esim.id} iccid={esim.iccid} providerActivationId={esim.providerActivationId} />
+                  {esim.customerConfirmedInstalledAt ? (
+                    <div className="mt-1 text-xs text-gray-500">Customer confirmed installed</div>
+                  ) : (
+                    <form action={async () => { await confirmEsimInstalledAction(esim.id) }} className="mt-1">
+                      <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Confirm Installed</button>
+                    </form>
+                  )}
                 </td>
               </tr>
             ))}

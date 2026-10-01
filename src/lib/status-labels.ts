@@ -88,9 +88,10 @@ export function apiKeyStatusLabel(status: string): string {
  * the detail page's no-install-data fallback can encounter is mapped here;
  * unknown values fall back to a neutral label and a raw canonical/provider value
  * is never echoed into the UI. DOWNLOADED is a provider-reported download
- * checkpoint and READY (incl. Telna RELEASED → READY) is a provisioning/
- * install-data checkpoint — neither claims "not installed", "Ready to install",
- * or "Installed on device" (see src/lib/esim/inventory-status.ts).
+ * checkpoint ("Profile downloaded") and READY (incl. Telna RELEASED → READY)
+ * means usable profile/activation details are available ("Ready to install" —
+ * available-to-install only, never a claim that the eSIM was not installed).
+ * Neither value asserts "Installed on device" (see src/lib/esim/inventory-status.ts).
  */
 export const INSTALL_STATUS_LABELS: Record<string, string> = {
   INSTALLED: 'Installed',
@@ -99,7 +100,7 @@ export const INSTALL_STATUS_LABELS: Record<string, string> = {
   INSTALLING: 'Installing',
   DISABLED: 'Installed, disabled on device',
   DELETED: 'Removed from device',
-  READY: 'Installation state unknown',
+  READY: 'Ready to install',
   PENDING: 'Pending',
   NOT_SENT: 'Not sent',
   SENT: 'Sent',

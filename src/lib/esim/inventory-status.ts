@@ -16,10 +16,12 @@
  *   3. DEVICE INSTALLATION  — CURRENT-installation evidence ONLY. "Installed" is
  *        reserved for explicit normalized installation evidence
  *        (installationStatus INSTALLED/ENABLED, labelled "latest evidence" with
- *        the status-check time when known). Canonical ACTIVE/DEPLETED,
- *        activation timestamps, and recorded usage PROVE the eSIM was activated
- *        or used historically — they do not prove its profile is still
- *        installed — so they render the distinct
+ *        the status-check time when known) OR a separately recorded customer
+ *        confirmation (labelled "Installed (customer confirmed)" so the evidence
+ *        SOURCE — provider vs customer — stays distinguishable in audit data).
+ *        Canonical ACTIVE/DEPLETED, activation timestamps, and recorded usage
+ *        PROVE the eSIM was activated or used historically — they do not prove
+ *        its profile is still installed — so they render the distinct
  *        "Activated/used; current installation unconfirmed".
  *   4. USAGE                — "Usage unavailable" when no authoritative snapshot
  *        exists; a genuine zero never renders as missing and missing never
@@ -32,14 +34,13 @@
  *   6. PRIMARY STATUS       — one consistent badge for every provider with the
  *        canonical precedence below; terminal lifecycle states are preserved
  *        verbatim and never disguised as a primary status. "Ready to install"
- *        is reserved for EXPLICIT provider evidence that the profile is ready
- *        and not yet installed, but NO in-repo authoritative source certifies
- *        that meaning for any current normalized value — so it is unreachable
- *        today. A provider-reported DOWNLOADED checkpoint renders the distinct
+ *        means usable profile/activation details are available (available to
+ *        install only — it never asserts the customer has NOT already installed
+ *        it) and is produced ONLY when the canonical service is still
+ *        provisioning with no device-install or activation evidence either way.
+ *        A provider-reported DOWNLOADED checkpoint renders the distinct
  *        evidence-exact "Profile downloaded" instead, and QR / activation-code /
- *        install-details presence alone never implies the device has not
- *        installed the eSIM: with an unknown device-install state the badge is
- *        the truthful neutral "Provisioned".
+ *        install-details alone never imply Installed or Active.
  *
  * Provider-specific raw status/raw payloads are NEVER read here, so a provider
  * response can never leak through this module.
@@ -81,6 +82,33 @@ export interface InventoryStatusRow {
   /** Scheduler-owned next status-check timestamp (null ⇒ scheduler stopped). */
   statusNextSyncAt?: Date | string | null
   lastUsageSyncAt?: Date | string | null
+  /**
+   * Separately recorded customer confirmation that the eSIM was installed on a
+   * device. Distinct from provider evidence so the evidence SOURCE stays
+   * distinguishable in details/audit data — customer-reported installation is
+   * never presented as if the provider confirmed it. Not read from any raw
+   * provider field.
+   *
+   * How this is produced today:
+   *  - confirmEsimInstalledAction (src/lib/actions/esim-confirm-installed.ts)
+   *    writes ONLY the `ESIM.customerConfirmedInstalledAt` column (inside one
+   *    transaction with the CUSTOMER_CONFIRMED_INSTALLED AuditLog row, using a
+   *    conditional update so concurrent requests cannot double-record) and never
+   *    touches provider status / installationStatus / providerStatus / providerResponse.
+   *  - Both inventory pages map the persisted column into this flag:
+   *    `customerReportedInstalled: esim.customerConfirmedInstalledAt != null`.
+   *  - Status/usage syncs and provider webhooks do not write the column, so it
+   *    survives reload, polling, webhooks, and worker sync.
+   *
+   * DEPLOYMENT REQUIREMENT: the additive migration
+   *   prisma/migrations/20261001000000_add_esim_customer_confirmed_install
+   *   (ALTER TABLE "esims" ADD COLUMN "customerConfirmedInstalledAt" TIMESTAMP(3))
+   *   MUST be applied to a database BEFORE deploying application code that reads
+   *   this column. Until the migration is applied, the column does not exist and
+   *   readers/writers fail. Rollout order is documented in the migration header:
+   *   apply the migration to the environment first, then deploy the image.
+   */
+  customerReportedInstalled?: boolean
 }
 
 export interface InventoryStatusService {
@@ -297,7 +325,7 @@ function primary(axis: {
   installation: InventoryStatusInstallation
   device: InventoryStatusDevice
   usage: InventoryStatusUsage
-}, lowRatio: number): EsimPrimaryStatus {
+}, lowRatio: number, customerReportedInstalled: boolean): EsimPrimaryStatus {
   const serviceKey = axis.service.status
   const withEvidence = (...evidence: string[]): EsimPrimaryStatus['evidence'] => evidence
 
@@ -332,10 +360,25 @@ function primary(axis: {
     return { status: 'ACTIVE', label: 'Active', tone: 'success', evidence: withEvidence('canonical lifecycle ACTIVE') }
   }
 
-  // 4. Installed on device — explicit normalized install evidence while the
-  //    service is not yet ACTIVE.
-  if (serviceKey === 'INSTALLED' || axis.device.state === 'INSTALLED') {
-    return { status: 'INSTALLED', label: 'Installed on device', tone: 'success', evidence: withEvidence('explicit normalized installation evidence') }
+  // 4. Installed on device — explicit normalized install evidence (provider
+  //    INSTALLED/ENABLED) or a separately recorded customer confirmation, while
+  //    the service is not yet ACTIVE. The evidence SOURCE is preserved so
+  //    customer-reported installation is distinguishable from provider-confirmed.
+  if (serviceKey === 'INSTALLED' || axis.device.state === 'INSTALLED' || customerReportedInstalled) {
+    // Detect the SOURCE from the device axis evidence strings: provider evidence
+    // is the explicit normalized string; a customer-only confirmation carries the
+    // distinct customer string even though device.state is also INSTALLED.
+    const deviceEvidenceIsProvider = axis.device.state === 'INSTALLED' &&
+      axis.device.evidence.every((e) => !e.includes('customer-confirmed installation'))
+    const evidence = deviceEvidenceIsProvider
+      ? axis.device.evidence
+      : customerReportedInstalled
+        ? ['customer-confirmed installation (separately recorded)']
+        : ['explicit normalized installation evidence']
+    // The evidence SOURCE is reflected in the label so a customer-confirmed
+    // install is never presented as if the provider confirmed it.
+    const sourceIsCustomer = !deviceEvidenceIsProvider && customerReportedInstalled
+    return { status: 'INSTALLED', label: sourceIsCustomer ? 'Installed on device — customer confirmed' : 'Installed on device', tone: 'success', evidence: withEvidence(...evidence) }
   }
 
   // 4b. Device-installation failure — preserved as an exceptional device state.
@@ -343,35 +386,33 @@ function primary(axis: {
     return { status: 'INSTALL_FAILED', label: 'Installation failed', tone: 'danger', evidence: withEvidence('provider-reported installation failure') }
   }
 
-  // 5. Ready to install — RESERVED for EXPLICIT normalized evidence that the
-  //    profile is ready and NOT yet installed. No current in-repo authoritative
-  //    source certifies that meaning for any normalized value (Telna DOWNLOADED
-  //    is a provisioning checkpoint — see telna-connector.ts installationStatus
-  //    mapping, cited "Telna Webhooks.pdf" is not vendored, and
-  //    docs/esim-inventory-provider-audit.md treats install-data as NOT
-  //    device-installation detection), so QR / activation-code / READY /
-  //    DOWNLOADED must never produce "Ready to install". A provider-reported
-  //    DOWNLOADED check point renders the distinct, evidence-exact
-  //    "Profile downloaded" instead.
+  // 5. Profile downloaded — provider-reported DOWNLOADED checkpoint. Kept
+  //    evidence-exact (a download checkpoint does NOT prove installation).
   if (axis.device.state === 'DOWNLOADED') {
     return { status: 'PROFILE_DOWNLOADED', label: 'Profile downloaded', tone: 'warn', evidence: withEvidence('provider-reported profile download checkpoint; installation unconfirmed') }
   }
-  // Future explicit "ready and not yet installed" evidence returns READY_TO_INSTALL
-  // here once an authoritative per-provider definition is verified in-repo.
-  // READY_TO_INSTALL is intentionally unreachable from current normalized evidence.
 
-  // 6. Honest fallback. With an unknown device-install state the primary badge
-  //    must not imply the profile is uninstalled: a fully provisioned,
-  //    installable eSIM is "Provisioned"; an eSIM still being provisioned (no
-  //    install details yet) is "Preparing". Neither claims Installed or Ready
-  //    to install without explicit evidence.
+  // 5b. Ready to install — usable profile/activation details are available
+  //    ("available to install"). This never asserts the customer has NOT already
+  //    installed it: it is produced ONLY when the canonical service is still
+  //    provisioning and there is no device-install or activation evidence either
+  //    way (device state unknown). QR/install-details alone never imply Installed
+  //    or Active — those require explicit evidence elsewhere in this ladder.
+  if (axis.installation.detailsAvailable &&
+      axis.device.state === 'UNKNOWN' &&
+      PROVISIONING_STATUSES.includes(serviceKey)) {
+    return { status: 'READY_TO_INSTALL', label: 'Ready to install', tone: 'warn', evidence: withEvidence('usable installation details available; install state not asserted') }
+  }
+
+  // 6. Honest fallback. An eSIM still being provisioned (no install details yet)
+  //    is "Preparing"; historical activation/usage with an unconfirmed current
+  //    install is "Provisioned"; unmapped evidence falls back to a truthful
+  //    "Status unavailable". None of these claims Installed, Ready to install,
+  //    or Active without explicit evidence.
   if (serviceKey === 'INSTALLING' || axis.device.state === 'INSTALLING') {
     return { status: 'PREPARING', label: 'Preparing', tone: 'neutral', evidence: withEvidence('installation in progress') }
   }
   if (PROVISIONING_STATUSES.includes(serviceKey)) {
-    if (axis.device.state === 'UNKNOWN' && axis.installation.detailsAvailable) {
-      return { status: 'PROVISIONED', label: 'Provisioned', tone: 'warn', evidence: withEvidence('provisioned with install details; device installation unconfirmed') }
-    }
     if (axis.device.state === 'ACTIVATED_UNCONFIRMED_INSTALL') {
       return { status: 'PROVISIONED', label: 'Provisioned', tone: 'warn', evidence: withEvidence('activated/used historically; current installation unconfirmed') }
     }
@@ -492,6 +533,11 @@ export function deriveEsimInventoryStatus(
   if (hasDeviceInstallEvidence(row)) {
     deviceEvidence.push('explicit normalized installation evidence (installationStatus=INSTALLED/ENABLED)')
     device = { state: 'INSTALLED', label: 'Installed (latest evidence)', tone: 'success', evidence: deviceEvidence, checkedAt }
+  } else if (row.customerReportedInstalled === true) {
+    // Separately recorded customer confirmation — distinct from provider
+    // evidence in both the state label and the audit evidence string.
+    deviceEvidence.push('customer-confirmed installation (separately recorded)')
+    device = { state: 'INSTALLED', label: 'Installed (customer confirmed)', tone: 'success', evidence: deviceEvidence, checkedAt }
   } else if (install === 'INSTALLING' || String(row.status || '').toUpperCase() === 'INSTALLING') {
     deviceEvidence.push('installation lifecycle value')
     device = { state: 'INSTALLING', label: 'Installing', tone: 'warn', evidence: deviceEvidence, checkedAt }
@@ -558,7 +604,7 @@ export function deriveEsimInventoryStatus(
   }
 
   const polling = derivePollingState(row, now)
-  const primary = primaryStatus({ service, installation, device, usage }, lowRatio)
+  const primary = primaryStatus({ service, installation, device, usage }, lowRatio, row.customerReportedInstalled === true)
 
   return {
     primary,

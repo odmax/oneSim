@@ -8,13 +8,14 @@
  * conditional lives here: the badge consumes ONLY normalized OneSIM columns.
  *
  * The primary badge prefers the canonical ladder (Depleted → Low → Active →
- * Installed on device) and preserves exceptional lifecycle states (Expired /
- * Failed / Suspended / Cancelled / Refunded) verbatim. "Ready to install" is
- * reserved for explicit normalized evidence that the profile is ready and NOT
- * yet installed — no in-repo authoritative source certifies that for any current
- * value, so it is not produced today. A provider-reported DOWNLOADED checkpoint
- * renders the distinct evidence-exact "Profile downloaded"; QR / install details
- * with an unknown device state render the truthful neutral "Provisioned".
+ * Installed on device → Ready to install) and preserves exceptional lifecycle
+ * states (Expired / Failed / Suspended / Cancelled / Refunded) verbatim.
+ * "Ready to install" means usable profile/activation details are available —
+ * available-to-install only, never a claim that the customer has not already
+ * installed. A provider-reported DOWNLOADED checkpoint renders the distinct
+ * evidence-exact "Profile downloaded". The tooltip carries the exact normalized
+ * evidence (including whether installation was provider-confirmed vs
+ * customer-confirmed) so the evidence source stays auditable.
  *
  * Detailed diagnostics (service lifecycle, installation-details availability,
  * current device-installation evidence + last check, usage used/total/remaining

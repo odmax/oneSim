@@ -41,28 +41,28 @@ describe('service axis — canonical service labels (provider-neutral)', () => {
   })
 })
 
-describe('setup axis — READY/RELEASED is a neutral install-state-unknown checkpoint', () => {
-  it('PENDING_ACTIVATION + READY + usable install data → Setup: Installation state unknown (never Ready to install)', () => {
+describe('setup axis — READY/RELEASED is Ready to install (available-to-install only)', () => {
+  it('PENDING_ACTIVATION + READY + usable install data → Setup: Ready to install (never Installed)', () => {
     const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true })
-    expect(p.setupStatus).toBe('READY')
-    expect(p.setupLabel).toBe('Installation state unknown')
-    expect(p.setupLabel).not.toBe('Ready to install')
+    expect(p.setupStatus).toBe('READY_TO_INSTALL')
+    expect(p.setupLabel).toBe('Ready to install')
     expect(p.setupLabel).not.toBe('Installed')
     expect(p.serviceLabel).toBe('Provisioned')
   })
 
-  it('Telna RELEASED → READY renders the same neutral label and never Ready to install / Installed', () => {
+  it('Telna RELEASED → READY renders Ready to install (available-to-install), never Installed', () => {
     // telna-connector.ts maps profileState RELEASED to installationStatus READY
-    // ("deliverable in hand"); the install state on the device is unknown.
+    // ("deliverable in hand"); the install state on the device is unknown, so the
+    // label is available-to-install only and never claims Installed.
     const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true })
-    expect(p.setupLabel).toBe('Installation state unknown')
-    expect(p.setupLabel).not.toBe('Ready to install')
+    expect(p.setupLabel).toBe('Ready to install')
     expect(p.setupLabel).not.toBe('Installed')
-    // The shared inventory resolver agrees: READY → Provisioned.
+    // The shared inventory resolver agrees: READY → Ready to install.
     const resolver = deriveEsimInventoryStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 })
-    expect(resolver.primary.status).toBe('PROVISIONED')
-    expect(resolver.primary.label).toBe('Provisioned')
-    expect(resolver.primary.label).not.toBe('Ready to install')
+    expect(resolver.primary.status).toBe('READY_TO_INSTALL')
+    expect(resolver.primary.label).toBe('Ready to install')
+    expect(resolver.primary.status).not.toBe('ACTIVE')
+    expect(resolver.primary.status).not.toBe('INSTALLED')
   })
 
   it('missing installation data never shows Ready to install (READY without data → Preparing)', () => {
@@ -171,7 +171,7 @@ describe('deriveEsimLifecyclePresentationFromRow — safe persisted fields only'
       dataUsedMB: 0,
     })
     expect(p.serviceLabel).toBe('Provisioned')
-    expect(p.setupLabel).toBe('Installation state unknown')
+    expect(p.setupLabel).toBe('Ready to install')
   })
 
   it('does not accept or expose raw provider status', () => {
@@ -187,9 +187,9 @@ describe('deriveEsimCustomerDisplayStatus — single customer summary badge', ()
   const preparingRow = { status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }
   const unknownRow = { status: 'PENDING_ACTIVATION', dataUsedMB: 0 }
 
-  it('Provisioned + install details → one neutral-to-installation "Activation pending" badge', () => {
+  it('Provisioned + usable install details → one "Ready to install" badge (available-to-install only)', () => {
     const d = deriveEsimCustomerDisplayStatus(readyRow)
-    expect(d.label).toBe('Activation pending')
+    expect(d.label).toBe('Ready to install')
     expect(d.tone).toBe('warn')
     expect(d.status).toBe('PENDING_ACTIVATION')
   })
@@ -311,7 +311,7 @@ describe('canonical engine + customer badge pipeline (evidence-first activation)
     expect(badge.label).toBe('Installed on device')
   })
 
-  it('provider raw ACTIVE without evidence remains Activation pending (never fabricated Active)', () => {
+  it('provider raw ACTIVE without evidence stays Ready to install (never fabricated Active)', () => {
     const lifecycle = deriveEsimLifecycleStatus({
       providerNormalizedStatus: 'ACTIVE',
       currentStatus: 'PENDING_ACTIVATION',
@@ -320,7 +320,7 @@ describe('canonical engine + customer badge pipeline (evidence-first activation)
     })
     expect(lifecycle.status).toBe('PENDING_ACTIVATION')
     const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
-    expect(badge.label).toBe('Activation pending')
+    expect(badge.label).toBe('Ready to install')
     expect(badge.label).not.toBe('Active')
   })
 

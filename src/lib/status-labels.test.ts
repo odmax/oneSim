@@ -70,11 +70,10 @@ describe('apiKeyStatusLabel / installStatusLabel / customerStatusLabel', () => {
     expect(installStatusLabel('DOWNLOADED')).not.toContain('Installation:')
   })
 
-  it('READY (incl. Telna RELEASED) renders as Installation state unknown — never Ready/Ready to install', () => {
-    expect(installStatusLabel('READY')).toBe('Installation state unknown')
-    expect(installStatusLabel('READY')).not.toBe('Ready')
-    expect(installStatusLabel('READY')).not.toBe('Ready to install')
+  it('READY (incl. Telna RELEASED) renders as Ready to install — available-to-install only, never Installed', () => {
+    expect(installStatusLabel('READY')).toBe('Ready to install')
     expect(installStatusLabel('READY')).not.toBe('Installed on device')
+    expect(installStatusLabel('READY')).not.toBe('Installation:')
   })
 
   it('maps neighboring installation-status values to provider-neutral labels without leaking raw enums', () => {
@@ -82,7 +81,7 @@ describe('apiKeyStatusLabel / installStatusLabel / customerStatusLabel', () => {
     expect(installStatusLabel('INSTALLING')).toBe('Installing')
     expect(installStatusLabel('DISABLED')).toBe('Installed, disabled on device')
     expect(installStatusLabel('DELETED')).toBe('Removed from device')
-    expect(installStatusLabel('READY')).toBe('Installation state unknown')
+    expect(installStatusLabel('READY')).toBe('Ready to install')
     expect(installStatusLabel('STALE')).toBe('Installation unavailable')
     expect(installStatusLabel('NOT_SUPPORTED')).toBe('Installation unavailable')
     expect(installStatusLabel('NOT_RECOVERABLE')).toBe('Installation unavailable')

@@ -10,6 +10,7 @@ import ShareActions from './ShareActions'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
 import { EsimPrimaryStatusBadge } from '@/components/esim/EsimPrimaryStatusBadge'
+import { confirmEsimInstalledAction } from '@/lib/actions/esim-confirm-installed'
 import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
 import { buildProviderConnector, capabilitySupported } from '@/lib/services/esims/sync-lookup'
 
@@ -45,6 +46,7 @@ function toInventoryStatusRow(esim: any) {
     statusSyncRetryCount: esim.statusSyncRetryCount,
     statusNextSyncAt: esim.statusNextSyncAt,
     lastUsageSyncAt: esim.lastUsageSyncAt,
+    customerReportedInstalled: esim.customerConfirmedInstalledAt != null,
   }
 }
 
@@ -168,6 +170,13 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                             {actions?.refresh ? <form action={syncEsimStatusAction.bind(null, esim.id)}>
                               <button type="submit" className="text-xs font-medium text-cyan-600 hover:text-cyan-700">Refresh Status</button>
                             </form> : <span className="text-xs text-gray-500">Status refresh unavailable</span>}
+                            {esim.customerConfirmedInstalledAt ? (
+                              <span className="text-xs text-gray-500">Customer confirmed installed</span>
+                            ) : (
+                              <form action={async () => { await confirmEsimInstalledAction(esim.id) }}>
+                                <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Confirm Installed</button>
+                              </form>
+                            )}
                             <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
                           </div>
                         </td>

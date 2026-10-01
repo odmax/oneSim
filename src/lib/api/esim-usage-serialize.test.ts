@@ -58,6 +58,6 @@ describe('serializePublicEsimUsageDetail — safe public usage payload', () => {
     expect(out.serviceStatus).toBe('PENDING_ACTIVATION')
     expect(out.serviceStatusLabel).toBe('Provisioned')
     expect(out.installationStatus).toBe('READY')
-    expect(out.installationStatusLabel).toBe('Installation state unknown')
+    expect(out.installationStatusLabel).toBe('Ready to install')
   })
 })

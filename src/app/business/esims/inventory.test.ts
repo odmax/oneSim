@@ -161,13 +161,12 @@ describe('business eSIM inventory — single shared primary status badge', () =>
     expect((content.match(/<EsimPrimaryStatusBadge/g) || []).length).toBe(1)
   })
 
-  it('PENDING_ACTIVATION + Ready install data with unknown device state shows a single Provisioned badge', () => {
+  it('PENDING_ACTIVATION + Ready install data with unknown device state shows a single Ready to install badge', () => {
     const d = deriveEsimInventoryStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 })
-    // QR/install details prove installability, not that the device has not
-    // installed the eSIM → honest neutral Provisioned, never Ready to install.
-    expect(d.primary.status).toBe('PROVISIONED')
-    expect(d.primary.label).toBe('Provisioned')
-    expect(d.primary.label).not.toBe('Ready to install')
+    // QR/install details are "available to install" — never a claim of Installed.
+    expect(d.primary.status).toBe('READY_TO_INSTALL')
+    expect(d.primary.label).toBe('Ready to install')
+    expect(d.primary.label).not.toBe('Installed on device')
     expect(d.device.state).not.toBe('INSTALLED')
   })
 

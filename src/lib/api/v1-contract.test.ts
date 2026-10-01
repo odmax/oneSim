@@ -946,7 +946,7 @@ describe('API-CONTRACT-18: Public DTO serializers (unit tests)', () => {
     expect(json.serviceStatus).toBe('PENDING_ACTIVATION')
     expect(json.serviceStatusLabel).toBe('Provisioned')
     expect(json.installationStatus).toBe('READY')
-    expect(json.installationStatusLabel).toBe('Installation state unknown')
+    expect(json.installationStatusLabel).toBe('Ready to install')
     expect(JSON.stringify(json)).not.toContain('providerStatus')
     expect(JSON.stringify(json)).not.toContain('providerResponse')
   })

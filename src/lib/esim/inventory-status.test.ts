@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import {
   deriveEsimInventoryStatus,
   derivePollingState,
@@ -405,13 +407,14 @@ describe('primary status precedence — one customer-safe badge', () => {
     expect(p.label).toBe('Installed on device')
   })
 
-  it('QR/installation instructions never prove device installation — READY with unknown device state means Provisioned, never Ready to install', () => {
+  it('usable install details with unknown device state → Ready to install (available-to-install), never Installed', () => {
     const inv = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'READY', qrCode: 'LPA:1$a$b' } as any)
     expect(inv.device.state).toBe('UNKNOWN')
-    expect(inv.primary.status).toBe('PROVISIONED')
-    expect(inv.primary.label).toBe('Provisioned')
-    expect(inv.primary.status).not.toBe('READY_TO_INSTALL')
+    expect(inv.primary.status).toBe('READY_TO_INSTALL')
+    expect(inv.primary.label).toBe('Ready to install')
     expect(inv.primary.status).not.toBe('INSTALLED')
+    // The label is available-to-install only — it never asserts not-installed.
+    expect(inv.primary.evidence.join(' ')).toContain('install state not asserted')
   })
 
   it('Telna DOWNLOADED (provider-reported download checkpoint) renders the distinct Profile downloaded label, never Ready to install', () => {
@@ -426,18 +429,46 @@ describe('primary status precedence — one customer-safe badge', () => {
     expect(p.evidence.join(' ')).not.toContain('not yet installed')
   })
 
-  it('Ready to install is not reachable from any current normalized evidence (QR/READY/DOWNLOADED/PENDING/usage)', () => {
-    const cases: Array<Record<string, unknown>> = [
-      { status: 'PENDING_ACTIVATION', installationStatus: 'READY', qrCode: 'LPA:1$a$b' },
-      { status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', activationCode: '1$smdp$mid' },
-      { status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' },
-      { status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 },
-    ]
-    for (const row of cases) {
-      const p = deriveEsimInventoryStatus({ ...base, ...row } as any).primary
-      expect(p.status).not.toBe('READY_TO_INSTALL')
-      expect(p.label).not.toBe('Ready to install')
+  it('DOWNLOADED + usable QR/activation details still renders Profile downloaded (download beats install-details, never Ready to install)', () => {
+    // Precedence regression: PROFILE_DOWNLOADED is evaluated BEFORE
+    // READY_TO_INSTALL, so a DOWNLOADED installationStatus must stay
+    // "Profile downloaded" even though usable install details are present.
+    for (const row of [
+      { status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED', qrCode: 'LPA:1$a$b' },
+      { status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED', activationCode: '1$smdp$mid', qrCodeUrl: 'https://qr.example/q.png' },
+    ]) {
+      const inv = deriveEsimInventoryStatus({ ...base, ...row } as any)
+      expect(inv.installation.detailsAvailable).toBe(true)
+      expect(inv.device.state).toBe('DOWNLOADED')
+      expect(inv.primary.status).toBe('PROFILE_DOWNLOADED')
+      expect(inv.primary.label).toBe('Profile downloaded')
+      expect(inv.primary.status).not.toBe('READY_TO_INSTALL')
+      expect(inv.primary.status).not.toBe('INSTALLED')
     }
+  })
+
+  it('READY means install details are available, never that the profile is uninstalled', () => {
+    const inv = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 } as any)
+    expect(inv.primary.status).toBe('READY_TO_INSTALL')
+    expect(inv.primary.label).toBe('Ready to install')
+    // The evidence is "available to install" — it never asserts not-installed.
+    expect(inv.primary.evidence.join(' ')).toContain('install state not asserted')
+    expect(inv.primary.evidence.join(' ')).not.toContain('not installed')
+  })
+
+  it('Ready to install is produced ONLY from usable install details with an unknown device state', () => {
+    // usable details + provisioning + unknown device → Ready to install
+    const ready = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 } as any).primary
+    expect(ready.status).toBe('READY_TO_INSTALL')
+    expect(ready.label).toBe('Ready to install')
+    // no usable details → Preparing, never Ready to install
+    const pending = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'PENDING' } as any).primary
+    expect(pending.status).toBe('PREPARING')
+    expect(pending.status).not.toBe('READY_TO_INSTALL')
+    // DOWNLOADED is a distinct evidence checkpoint, not Ready to install
+    const downloaded = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' } as any).primary
+    expect(downloaded.status).toBe('PROFILE_DOWNLOADED')
+    expect(downloaded.status).not.toBe('READY_TO_INSTALL')
   })
 
   it('raw provider ACTIVE never promotes a provisioning eSIM to Active', () => {
@@ -445,18 +476,19 @@ describe('primary status precedence — one customer-safe badge', () => {
     expect(p.status).not.toBe('ACTIVE')
   })
 
-  it('unsupported provider capability yields an honest fallback, never a false Ready/Installed claim', () => {
+  it('unsupported provider capability yields an honest fallback, never a false Installed claim', () => {
     // No install capability, no install data, no usage → Preparing (honest neutral).
     const provisioning = list({ status: 'PENDING_ACTIVATION', installationStatus: 'PENDING' })
     expect(provisioning.status).toBe('PREPARING')
     expect(provisioning.label).toBe('Preparing')
-    expect(provisioning.status).not.toBe('READY_TO_INSTALL')
     expect(provisioning.status).not.toBe('INSTALLED')
-    // Install details exist but device installation is unknown → Provisioned, never Ready.
+    // Install details exist but device installation is unknown → Ready to install
+    // (available-to-install), never Installed.
     const withDetails = list({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', qrCode: 'LPA:1$a$b' })
-    expect(withDetails.status).toBe('PROVISIONED')
-    expect(withDetails.status).not.toBe('READY_TO_INSTALL')
-    // A genuinely unknown canonical value → Status unavailable.
+    expect(withDetails.status).toBe('READY_TO_INSTALL')
+    expect(withDetails.label).toBe('Ready to install')
+    expect(withDetails.status).not.toBe('INSTALLED')
+    // A genuinely unknown canonical value → Status unavailable (raw retained on admin).
     const unknown = list({ status: 'WHATEVER' })
     expect(unknown.status).toBe('STATUS_UNAVAILABLE')
     expect(unknown.label).toBe('Status unavailable')
@@ -466,6 +498,84 @@ describe('primary status precedence — one customer-safe badge', () => {
     const p = list({ status: 'PENDING_ACTIVATION', installationStatus: 'FAILED', installationLastError: 'Provider reports profile installation error' })
     expect(p.status).toBe('INSTALL_FAILED')
     expect(p.label).toBe('Installation failed')
+  })
+
+  it('customer confirmation alone produces Installed on device — customer confirmed, with a distinguishable evidence source', () => {
+    const p = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', customerReportedInstalled: true } as any).primary
+    expect(p.status).toBe('INSTALLED')
+    expect(p.label).toBe('Installed on device — customer confirmed')
+    expect(p.evidence.join(' ')).toContain('customer-confirmed installation')
+    // The device axis preserves the same source so details/audit stay truthful.
+    const inv = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', customerReportedInstalled: true } as any)
+    expect(inv.device.state).toBe('INSTALLED')
+    expect(inv.device.label).toBe('Installed (customer confirmed)')
+  })
+
+  it('provider-confirmed install evidence beats a separate customer confirmation (source stays provider)', () => {
+    const p = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'INSTALLED', customerReportedInstalled: true } as any).primary
+    expect(p.status).toBe('INSTALLED')
+    expect(p.evidence.join(' ')).toContain('explicit normalized installation evidence')
+    expect(p.evidence.join(' ')).not.toContain('customer-confirmed')
+    const inv = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'INSTALLED', customerReportedInstalled: true } as any)
+    expect(inv.device.label).toBe('Installed (latest evidence)')
+  })
+
+  it('historical activation/usage with an unconfirmed install stays the neutral Provisioned (never Ready to install)', () => {
+    const p = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'READY', dataUsedMB: 512, dataTotalMB: 2048 } as any).primary
+    // Usage proves activation, not current install → NOT Ready to install.
+    expect(p.status).toBe('PROVISIONED')
+    expect(p.label).toBe('Provisioned')
+    expect(p.status).not.toBe('READY_TO_INSTALL')
+    expect(p.status).not.toBe('ACTIVE')
+  })
+})
+
+describe('customer-confirmed installation — durable wiring + resolver contract', () => {
+  it('is reload-safe: repeated derivation from the same row is identical and never mutates the input', () => {
+    const row = { ...base, status: 'PENDING_ACTIVATION', customerReportedInstalled: true }
+    const a = deriveEsimInventoryStatus(row as any)
+    const b = deriveEsimInventoryStatus(row as any)
+    expect(a.primary).toEqual(b.primary)
+    expect(a.primary.status).toBe('INSTALLED')
+    expect(a.primary.label).toBe('Installed on device — customer confirmed')
+    // The resolver never clears or rewrites the provider-side columns or the flag.
+    expect(row.customerReportedInstalled).toBe(true)
+    expect(row.installationStatus).toBe('PENDING')
+  })
+
+  it('customer confirmation is never coerced into provider-confirmed evidence', () => {
+    // customer-only → the evidence string names the customer source, never the provider.
+    const customerOnly = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', customerReportedInstalled: true } as any).primary
+    expect(customerOnly.evidence.join(' ')).toContain('customer-confirmed installation')
+    expect(customerOnly.evidence.join(' ')).toContain('separately recorded')
+    expect(customerOnly.evidence.join(' ')).not.toContain('explicit normalized installation evidence')
+    // provider + customer → provider evidence wins and stays provider-confirmed.
+    const both = deriveEsimInventoryStatus({ ...base, status: 'PENDING_ACTIVATION', installationStatus: 'INSTALLED', customerReportedInstalled: true } as any).primary
+    expect(both.evidence.join(' ')).toContain('explicit normalized installation evidence')
+    expect(both.evidence.join(' ')).not.toContain('customer-confirmed')
+  })
+
+  it('survives reload: the inventory row-mappers feed the persisted column into the shared resolver on BOTH pages', () => {
+    // After the migration, the pages map customerConfirmedInstalledAt != null into
+    // the resolver input, so the customer label is reachable from persisted data.
+    for (const pagePath of ['src/app/admin/esims/page.tsx', 'src/app/business/esims/page.tsx']) {
+      const content = readFileSync(path.join(process.cwd(), pagePath), 'utf8')
+      expect(content).toContain('customerReportedInstalled: esim.customerConfirmedInstalledAt != null')
+    }
+  })
+
+  it('status/usage syncs and the provider webhook processor never write or clear the confirmation column', () => {
+    // These services use explicit updateData objects and never reference the
+    // customer confirmation field, so it survives status/usage sync and webhooks.
+    const sources = [
+      'src/lib/services/esims/sync-esim-status.ts',
+      'src/lib/services/usage/sync-usage.ts',
+      'src/lib/services/webhooks/provider-webhook-processor.ts',
+    ]
+    for (const file of sources) {
+      const content = readFileSync(path.join(process.cwd(), file), 'utf8')
+      expect(content).not.toContain('customerConfirmedInstalledAt')
+    }
   })
 })
 
@@ -486,8 +596,8 @@ describe('provider fixtures — the same normalized evidence always renders the 
     }
   })
 
-  it('provisioned-with-install-details renders exactly the same Provisioned badge for every provider', () => {
-    const expected = { status: 'PROVISIONED', label: 'Provisioned' }
+  it('ready-to-install-with-usable-details renders exactly the same badge for every provider', () => {
+    const expected = { status: 'READY_TO_INSTALL', label: 'Ready to install' }
     for (const id of providerFixtures) {
       expect(labelFor(id, { status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 })).toEqual(expected)
     }
@@ -504,6 +614,13 @@ describe('provider fixtures — the same normalized evidence always renders the 
     const expected = { status: 'INSTALLED', label: 'Installed on device' }
     for (const id of providerFixtures) {
       expect(labelFor(id, { status: 'PENDING_ACTIVATION', installationStatus: 'INSTALLED' })).toEqual(expected)
+    }
+  })
+
+  it('separately recorded customer confirmation renders exactly the same customer-confirmed badge for every provider', () => {
+    const expected = { status: 'INSTALLED', label: 'Installed on device — customer confirmed' }
+    for (const id of providerFixtures) {
+      expect(labelFor(id, { status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', customerReportedInstalled: true })).toEqual(expected)
     }
   })
 
@@ -528,25 +645,23 @@ describe('providers without a device-installation capability — unknown device 
     return { status: p.status, label: p.label }
   }
 
-  it('PENDING_ACTIVATION + valid QR details + unknown device state never displays "Ready to install"', () => {
+  it('PENDING_ACTIVATION + valid QR details + unknown device state shows Ready to install (available-to-install) for every provider', () => {
     for (const id of noDeviceCapabilityProviders) {
       const p = labelFor(id, { status: 'PENDING_ACTIVATION', installationStatus: 'READY', qrCodeUrl: 'https://qr.example/q.png', activationCode: '1$smdp$matching', dataUsedMB: 0 })
-      expect(p.status).toBe('PROVISIONED')
-      expect(p.label).toBe('Provisioned')
-      expect(p.label).not.toBe('Ready to install')
+      expect(p.status).toBe('READY_TO_INSTALL')
+      expect(p.label).toBe('Ready to install')
       expect(p.label).not.toBe('Installed on device')
     }
   })
 
-  it('QR + provisioning without any device-install capability never claims Installed on device or Ready to install', () => {
+  it('QR + provisioning without any device-install capability never claims Installed on device without evidence', () => {
     for (const id of noDeviceCapabilityProviders) {
-      // install data available, device state unknown → Provisioned
-      expect(labelFor(id, { status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 }).label).toBe('Provisioned')
+      // install data available, device state unknown → Ready to install (not Installed)
+      expect(labelFor(id, { status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 }).label).toBe('Ready to install')
       // no install data at all → Preparing
       const preparing = labelFor(id, { status: 'PENDING_ACTIVATION', installationStatus: 'PENDING' })
       expect(preparing.label).toBe('Preparing')
       expect(preparing.label).not.toBe('Installed on device')
-      expect(preparing.label).not.toBe('Ready to install')
       // canonical Active stays Active via lifecycle/usage (never Installed from QR)
       expect(labelFor(id, { status: 'ACTIVE', dataTotalMB: 1024, dataRemainingMB: 512, lastUsageSyncAt: fresh }).label).toBe('Active')
     }

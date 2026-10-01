@@ -52,7 +52,7 @@ describe('business eSIM detail — no-install-data fallback never leaks a raw in
     expect(fallbackLabel('INSTALLING')).toBe('Installing')
     expect(fallbackLabel('DISABLED')).toBe('Installed, disabled on device')
     expect(fallbackLabel('DELETED')).toBe('Removed from device')
-    expect(fallbackLabel('READY')).toBe('Installation state unknown')
+    expect(fallbackLabel('READY')).toBe('Ready to install')
     expect(fallbackLabel('UNKNOWN')).toBe('Unknown')
     // INSTALL_MESSAGES friendly copy takes precedence for the covered states.
     expect(fallbackLabel('PENDING')).toContain('prepared automatically')

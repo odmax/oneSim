@@ -125,7 +125,7 @@ describe('createOrder canonical forwarding', () => {
     expect(esim.serviceStatus).toBe('PENDING_ACTIVATION')
     expect(esim.serviceStatusLabel).toBe('Provisioned')
     expect(esim.installationStatus).toBe('READY')
-    expect(esim.installationStatusLabel).toBe('Installation state unknown')
+    expect(esim.installationStatusLabel).toBe('Ready to install')
     // Provider identity/vocabulary is never exposed.
     expect(JSON.stringify(payload)).not.toContain('providerStatus')
     expect(JSON.stringify(payload)).not.toContain('provider')

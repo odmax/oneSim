@@ -7,9 +7,9 @@ import { ESIM_STATUS_META } from '@/lib/status-constants'
  *                 (Provisioned / Provisioning / Active / Depleted / Suspended /
  *                 Expired / Failed / Cancelled / Refunded ...).
  * Setup axis    : how ready the eSIM is to install on a device
- *                 (Installation state unknown / Installing / Profile
- *                 downloaded / Installed / Preparing / Installation failed /
- *                 Installation unavailable / Unknown).
+ *                 (Ready to install / Installing / Profile downloaded /
+ *                 Installed / Preparing / Installation failed / Installation
+ *                 unavailable / Unknown).
  *
  * This module is PURE and provider-neutral. It NEVER receives the raw
  * provider status or provider vocabulary. "Installed" is only implied from
@@ -125,13 +125,12 @@ function deriveSetupAxis(input: LifecyclePresentationInput): Pick<EsimLifecycleP
     return setupPresentation('INSTALLATION_UNAVAILABLE', 'Installation unavailable', 'warn')
   }
   if (install === 'READY') {
-    // READY (incl. Telna RELEASED → READY) is a provisioning/install-data
-    // checkpoint. No authoritative in-repo contract proves "ready to install,
-    // not installed", so the label is deliberately neutral and never claims the
-    // profile is uninstalled or "ready to install" as a confirmed state.
-    // setupStatus remains an internal taxonomy value, not a displayed label.
+    // READY (incl. Telna RELEASED → READY) means usable profile/activation
+    // details are available. The label is "available to install" ONLY — it is a
+    // deliberate rule that this never asserts the customer has NOT already
+    // installed the eSIM (device-install state is unknown).
     return input.hasUsableInstallData === true
-      ? setupPresentation('READY', 'Installation state unknown', 'warn')
+      ? setupPresentation('READY_TO_INSTALL', 'Ready to install', 'warn')
       : setupPresentation('PREPARING', 'Preparing', 'warn')
   }
   if (install === 'PENDING') {
@@ -185,7 +184,7 @@ export function deriveEsimLifecyclePresentationFromRow(esim: {
  *     FAILED, EXPIRED, SUSPENDED, DEPLETED);
  *   - an ACTIVE service always displays `Active` regardless of setup state;
  *   - a provisioned eSIM (PENDING_ACTIVATION) maps its setup state to the most
- *     actionable customer status (Activation pending / Installing / Installation
+ *     actionable customer status (Ready to install / Installing / Installation
  *     failed / Installation unavailable / Preparing / Provisioned);
  *   - other non-terminal provisioning states keep their established
  *     customer-safe service labels.
@@ -226,11 +225,12 @@ export function deriveEsimCustomerDisplayStatus(input: LifecyclePresentationInpu
   // 3. Provisioned / setup flow — the setup state is the most actionable truth.
   if (status === 'PENDING_ACTIVATION') {
     switch (setup.setupStatus) {
-      case 'READY':
-        // A QR code / install details prove installation is possible, not that
-        // the device has not installed it. Some providers cannot report device
-        // installation, so the summary stays the neutral "Activation pending".
-        return { status, label: 'Activation pending', tone: 'warn' }
+      case 'READY_TO_INSTALL':
+        // Usable installation details are available ("available to install").
+        // This never asserts the device has NOT installed it — the compact
+        // summary uses the same provisioned-neutral OneSIM status for the
+        // inventory and list surfaces.
+        return { status, label: 'Ready to install', tone: 'warn' }
       case 'INSTALLING':
         return { status, label: 'Installing', tone: 'warn' }
       case 'INSTALLATION_FAILED':
