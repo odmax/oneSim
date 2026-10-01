@@ -6,6 +6,7 @@ import {
   deriveEsimCustomerDisplayStatusFromRow,
 } from './lifecycle-presentation'
 import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
+import { deriveEsimInventoryStatus } from '@/lib/esim/inventory-status'
 
 describe('service axis — canonical service labels (provider-neutral)', () => {
   it('PENDING_ACTIVATION makes its service label Provisioned (never the whole "Ready to install")', () => {
@@ -40,12 +41,28 @@ describe('service axis — canonical service labels (provider-neutral)', () => {
   })
 })
 
-describe('setup axis — Ready to install only with usable installation data', () => {
-  it('PENDING_ACTIVATION + READY + usable install data → Setup: Ready to install', () => {
+describe('setup axis — READY/RELEASED is a neutral install-state-unknown checkpoint', () => {
+  it('PENDING_ACTIVATION + READY + usable install data → Setup: Installation state unknown (never Ready to install)', () => {
     const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true })
-    expect(p.setupStatus).toBe('READY_TO_INSTALL')
-    expect(p.setupLabel).toBe('Ready to install')
+    expect(p.setupStatus).toBe('READY')
+    expect(p.setupLabel).toBe('Installation state unknown')
+    expect(p.setupLabel).not.toBe('Ready to install')
+    expect(p.setupLabel).not.toBe('Installed')
     expect(p.serviceLabel).toBe('Provisioned')
+  })
+
+  it('Telna RELEASED → READY renders the same neutral label and never Ready to install / Installed', () => {
+    // telna-connector.ts maps profileState RELEASED to installationStatus READY
+    // ("deliverable in hand"); the install state on the device is unknown.
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true })
+    expect(p.setupLabel).toBe('Installation state unknown')
+    expect(p.setupLabel).not.toBe('Ready to install')
+    expect(p.setupLabel).not.toBe('Installed')
+    // The shared inventory resolver agrees: READY → Provisioned.
+    const resolver = deriveEsimInventoryStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 })
+    expect(resolver.primary.status).toBe('PROVISIONED')
+    expect(resolver.primary.label).toBe('Provisioned')
+    expect(resolver.primary.label).not.toBe('Ready to install')
   })
 
   it('missing installation data never shows Ready to install (READY without data → Preparing)', () => {
@@ -60,8 +77,13 @@ describe('setup axis — Ready to install only with usable installation data', (
   })
 
   it('Telna profile checkpoints show downloaded, installed, disabled, removed, and failed accurately', () => {
+    // DOWNLOADED is a provider download checkpoint only — never "not installed".
+    expect(deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' }).setupLabel)
+      .toBe('Profile downloaded')
     expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' }).label)
-      .toBe('Downloaded; not installed')
+      .toBe('Profile downloaded')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' }).label)
+      .not.toBe('Ready to install')
     expect(deriveEsimCustomerDisplayStatus({ status: 'INSTALLED', installationStatus: 'INSTALLED' }).label)
       .toBe('Installed on device')
     expect(deriveEsimCustomerDisplayStatus({ status: 'INSTALLED', installationStatus: 'DISABLED' }).label)
@@ -70,6 +92,22 @@ describe('setup axis — Ready to install only with usable installation data', (
       .toBe('Removed from device')
     expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'FAILED' }).label)
       .toBe('Installation failed')
+  })
+
+  it('DOWNLOADED renders as Profile downloaded while INSTALLED/ENABLED still render as Installed (distinction preserved)', () => {
+    const downloaded = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED', hasUsableInstallData: true })
+    expect(downloaded.setupLabel).toBe('Profile downloaded')
+    expect(downloaded.setupLabel).not.toBe('Ready to install')
+    expect(downloaded.setupLabel).not.toBe('Installed')
+    for (const installed of ['INSTALLED', 'ENABLED']) {
+      const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: installed })
+      expect(p.setupLabel).toBe('Installed')
+      expect(p.setupLabel).not.toBe('Profile downloaded')
+    }
+    // The shared inventory resolver agrees: same normalized DOWNLOADED evidence → same label.
+    const resolver = deriveEsimInventoryStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' })
+    expect(resolver.primary.label).toBe('Profile downloaded')
+    expect(resolver.primary.label).not.toBe('Ready to install')
   })
 
   it('missing installation evidence → Unknown', () => {
@@ -133,7 +171,7 @@ describe('deriveEsimLifecyclePresentationFromRow — safe persisted fields only'
       dataUsedMB: 0,
     })
     expect(p.serviceLabel).toBe('Provisioned')
-    expect(p.setupLabel).toBe('Ready to install')
+    expect(p.setupLabel).toBe('Installation state unknown')
   })
 
   it('does not accept or expose raw provider status', () => {

@@ -7,8 +7,9 @@ import { ESIM_STATUS_META } from '@/lib/status-constants'
  *                 (Provisioned / Provisioning / Active / Depleted / Suspended /
  *                 Expired / Failed / Cancelled / Refunded ...).
  * Setup axis    : how ready the eSIM is to install on a device
- *                 (Ready to install / Installing / Installed / Preparing /
- *                 Installation failed / Installation unavailable / Unknown).
+ *                 (Installation state unknown / Installing / Profile
+ *                 downloaded / Installed / Preparing / Installation failed /
+ *                 Installation unavailable / Unknown).
  *
  * This module is PURE and provider-neutral. It NEVER receives the raw
  * provider status or provider vocabulary. "Installed" is only implied from
@@ -103,7 +104,10 @@ function deriveSetupAxis(input: LifecyclePresentationInput): Pick<EsimLifecycleP
     return setupPresentation('INSTALLING', 'Installing', 'warn')
   }
   if (install === 'DOWNLOADED') {
-    return setupPresentation('DOWNLOADED', 'Downloaded; not installed', 'warn')
+    // Provider-reported download checkpoint. No authoritative contract proves
+    // "downloaded but not installed", so the label stays evidence-exact and
+    // never claims the profile was not installed.
+    return setupPresentation('DOWNLOADED', 'Profile downloaded', 'warn')
   }
   if (install === 'INSTALLED' || install === 'ENABLED') {
     return setupPresentation('INSTALLED', 'Installed', 'success')
@@ -121,10 +125,13 @@ function deriveSetupAxis(input: LifecyclePresentationInput): Pick<EsimLifecycleP
     return setupPresentation('INSTALLATION_UNAVAILABLE', 'Installation unavailable', 'warn')
   }
   if (install === 'READY') {
-    // READY is only "Ready to install" when usable install data actually
-    // exists. READY without data must never present "Ready to install".
+    // READY (incl. Telna RELEASED → READY) is a provisioning/install-data
+    // checkpoint. No authoritative in-repo contract proves "ready to install,
+    // not installed", so the label is deliberately neutral and never claims the
+    // profile is uninstalled or "ready to install" as a confirmed state.
+    // setupStatus remains an internal taxonomy value, not a displayed label.
     return input.hasUsableInstallData === true
-      ? setupPresentation('READY_TO_INSTALL', 'Ready to install', 'warn')
+      ? setupPresentation('READY', 'Installation state unknown', 'warn')
       : setupPresentation('PREPARING', 'Preparing', 'warn')
   }
   if (install === 'PENDING') {
@@ -219,9 +226,10 @@ export function deriveEsimCustomerDisplayStatus(input: LifecyclePresentationInpu
   // 3. Provisioned / setup flow — the setup state is the most actionable truth.
   if (status === 'PENDING_ACTIVATION') {
     switch (setup.setupStatus) {
-      case 'READY_TO_INSTALL':
-        // A QR code proves installation is possible, not that the device has
-        // not installed it. Some providers cannot report device installation.
+      case 'READY':
+        // A QR code / install details prove installation is possible, not that
+        // the device has not installed it. Some providers cannot report device
+        // installation, so the summary stays the neutral "Activation pending".
         return { status, label: 'Activation pending', tone: 'warn' }
       case 'INSTALLING':
         return { status, label: 'Installing', tone: 'warn' }
@@ -230,7 +238,8 @@ export function deriveEsimCustomerDisplayStatus(input: LifecyclePresentationInpu
       case 'INSTALLATION_UNAVAILABLE':
         return { status, label: 'Installation unavailable', tone: 'warn' }
       case 'DOWNLOADED':
-        return { status, label: 'Downloaded; not installed', tone: 'warn' }
+        // Download checkpoint only; installation is not confirmed.
+        return { status, label: 'Profile downloaded', tone: 'warn' }
       case 'INSTALLED_DISABLED':
         return { status, label: 'Installed, disabled on device', tone: 'warn' }
       case 'INSTALLATION_REMOVED':

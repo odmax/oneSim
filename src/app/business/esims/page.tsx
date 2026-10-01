@@ -9,8 +9,7 @@ import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
-import { deriveEsimCustomerDisplayStatus } from '@/lib/esim/lifecycle-presentation'
-import { hasUsableInstallData } from '@/lib/esim/installation-data'
+import { EsimPrimaryStatusBadge } from '@/components/esim/EsimPrimaryStatusBadge'
 import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
 import { buildProviderConnector, capabilitySupported } from '@/lib/services/esims/sync-lookup'
 
@@ -25,37 +24,28 @@ function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } 
   } catch { return null }
 }
 
-/** One clear customer summary status badge (Service + Setup collapsed). */
-function StatusPill({ title, label, tone }: { title?: string; label: string; tone: string }) {
-  const styles: Record<string, { bg: string; dot: string }> = {
-    success: { bg: 'bg-emerald-50 text-emerald-600', dot: 'bg-emerald-400' },
-    warn: { bg: 'bg-amber-50 text-amber-600', dot: 'bg-amber-400' },
-    danger: { bg: 'bg-red-50 text-red-600', dot: 'bg-red-400' },
-    neutral: { bg: 'bg-gray-50 text-gray-600', dot: 'bg-gray-400' },
+/** Field shape fed to the shared provider-neutral primary status badge. */
+function toInventoryStatusRow(esim: any) {
+  return {
+    status: esim.status,
+    installationStatus: esim.installationStatus,
+    installationLastError: esim.installationLastError,
+    installationLastCheckedAt: esim.installationLastCheckedAt,
+    activationCode: esim.activationCode,
+    qrCodeUrl: esim.qrCodeUrl,
+    qrCode: esim.qrCode,
+    smdpAddress: esim.smdpAddress,
+    matchingId: esim.matchingId,
+    activatedAt: esim.activatedAt,
+    activationDetectedAt: esim.activationDetectedAt,
+    dataUsedMB: esim.dataUsedMB,
+    dataTotalMB: esim.dataTotalMB,
+    dataRemainingMB: esim.dataRemainingMB,
+    lastStatusSyncAt: esim.lastStatusSyncAt,
+    statusSyncRetryCount: esim.statusSyncRetryCount,
+    statusNextSyncAt: esim.statusNextSyncAt,
+    lastUsageSyncAt: esim.lastUsageSyncAt,
   }
-  const s = styles[tone] || styles.neutral
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${s.bg}`} title={title}>
-      <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
-      {label}
-    </span>
-  )
-}
-
-/** Single summary status derived from canonical + persisted setup evidence. */
-function CustomerStatusBadge({ status, installationStatus, hasInstallData, activatedAt, activationDetectedAt, dataUsedMB }: {
-  status: string
-  installationStatus?: string | null
-  hasInstallData: boolean
-  activatedAt?: Date | string | null
-  activationDetectedAt?: Date | string | null
-  dataUsedMB?: number | null
-}) {
-  const display = deriveEsimCustomerDisplayStatus({
-    status, installationStatus, hasUsableInstallData: hasInstallData,
-    activatedAt, activationDetectedAt, dataUsedMB,
-  })
-  return <StatusPill title={display.label} label={display.label} tone={display.tone} />
 }
 
 export default async function ESIMsPage({ searchParams }: { searchParams: { success?: string; error?: string } }) {
@@ -147,17 +137,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                         {archived && <span className="ml-1.5 text-xs text-amber-500">(discontinued)</span>}
                       </td>
                       <td className="whitespace-nowrap px-5 py-4">
-                        <CustomerStatusBadge
-                          status={esim.status}
-                          installationStatus={esim.installationStatus}
-                          hasInstallData={hasUsableInstallData({ activationCode: esim.activationCode, qrCodeUrl: esim.qrCodeUrl, qrCode: esim.qrCode, smdpAddress: esim.smdpAddress, matchingId: esim.matchingId })}
-                          activatedAt={esim.activatedAt}
-                          activationDetectedAt={esim.activationDetectedAt}
-                          dataUsedMB={esim.dataUsedMB}
-                        />
-                        <p className="mt-1 text-xs text-gray-500">
-                          {esim.lastStatusSyncAt ? `Last checked ${new Date(esim.lastStatusSyncAt).toISOString().replace('T', ' ').slice(0, 16)} UTC` : 'Status not yet checked'}
-                        </p>
+                        <EsimPrimaryStatusBadge esim={toInventoryStatusRow(esim)} />
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
                         {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '\u2014'}

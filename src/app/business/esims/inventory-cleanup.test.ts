@@ -170,7 +170,7 @@ describe('business inventory — no customer column or assignment', () => {
 })
 
 describe('status labels remain consistent after customer removal', () => {
-  it('PENDING_ACTIVATION service label is "Provisioned" (Ready to install lives on the setup axis)', () => {
+  it('PENDING_ACTIVATION service label is "Provisioned" (READY install details render Installation state unknown)', () => {
     expect(getEsimStatusLabel('PENDING_ACTIVATION').label).toBe('Provisioned')
   })
 

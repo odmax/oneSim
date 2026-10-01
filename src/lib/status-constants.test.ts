@@ -214,7 +214,7 @@ describe('OpenAPI Business API status consistency', () => {
     expect(examples).toBeDefined()
     const keys = Object.keys(examples)
     expect(keys).toEqual([
-      'Provisioned + Ready to install',
+      'Provisioned + Installation state unknown',
       'Active + Installed',
       'Depleted + Installed',
       'Provisioned + Preparing or Unknown',
@@ -226,7 +226,7 @@ describe('OpenAPI Business API status consistency', () => {
     }
     expect(examples['Depleted + Installed'].value.serviceStatusLabel).toBe('Depleted')
     expect(examples['Active + Installed'].value.installationStatusLabel).toBe('Installed')
-    expect(examples['Provisioned + Ready to install'].value.installationStatusLabel).toBe('Ready to install')
+    expect(examples['Provisioned + Installation state unknown'].value.installationStatusLabel).toBe('Installation state unknown')
     expect(examples['Provisioned + Preparing or Unknown'].value.installationStatusLabel).toBe('Preparing')
   })
 

@@ -63,6 +63,38 @@ describe('apiKeyStatusLabel / installStatusLabel / customerStatusLabel', () => {
     expect(installStatusLabel('UNKNOWN')).toBe('Unknown')
   })
 
+  it('the no-install-data fallback maps DOWNLOADED to Profile downloaded (never Ready to install / Installed on device)', () => {
+    expect(installStatusLabel('DOWNLOADED')).toBe('Profile downloaded')
+    expect(installStatusLabel('DOWNLOADED')).not.toBe('Ready to install')
+    expect(installStatusLabel('DOWNLOADED')).not.toBe('Installed on device')
+    expect(installStatusLabel('DOWNLOADED')).not.toContain('Installation:')
+  })
+
+  it('READY (incl. Telna RELEASED) renders as Installation state unknown — never Ready/Ready to install', () => {
+    expect(installStatusLabel('READY')).toBe('Installation state unknown')
+    expect(installStatusLabel('READY')).not.toBe('Ready')
+    expect(installStatusLabel('READY')).not.toBe('Ready to install')
+    expect(installStatusLabel('READY')).not.toBe('Installed on device')
+  })
+
+  it('maps neighboring installation-status values to provider-neutral labels without leaking raw enums', () => {
+    expect(installStatusLabel('ENABLED')).toBe('Installed')
+    expect(installStatusLabel('INSTALLING')).toBe('Installing')
+    expect(installStatusLabel('DISABLED')).toBe('Installed, disabled on device')
+    expect(installStatusLabel('DELETED')).toBe('Removed from device')
+    expect(installStatusLabel('READY')).toBe('Installation state unknown')
+    expect(installStatusLabel('STALE')).toBe('Installation unavailable')
+    expect(installStatusLabel('NOT_SUPPORTED')).toBe('Installation unavailable')
+    expect(installStatusLabel('NOT_RECOVERABLE')).toBe('Installation unavailable')
+    expect(installStatusLabel('PERMANENT_FAILURE')).toBe('Installation unavailable')
+  })
+
+  it('falls back to a neutral label for unknown/canonical values, never echoing the raw value', () => {
+    expect(installStatusLabel('TOTALLY_NEW')).toBe('Unknown')
+    expect(installStatusLabel('')).toBe('Unknown')
+    expect(installStatusLabel('TOTALLY_NEW')).not.toContain('TOTALLY_NEW')
+  })
+
   it('maps customer statuses', () => {
     expect(customerStatusLabel('ACTIVE')).toBe('Active')
     expect(customerStatusLabel('SUSPENDED')).toBe('Suspended')

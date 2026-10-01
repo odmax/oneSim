@@ -941,7 +941,7 @@ console.log(data);`} />
               newStatus: 'ACTIVE',
               activated: true,
             }, null, 2)} />
-            <p className="mt-2 text-xs text-gray-500">When `activated` is true, this is the first time activation was detected. The eSIM status transitions from PENDING_ACTIVATION (Ready to install) → ACTIVE (Activated on device).</p>
+            <p className="mt-2 text-xs text-gray-500">When `activated` is true, this is the first time activation was detected. The eSIM status transitions from PENDING_ACTIVATION (Provisioned — install state unknown) → ACTIVE (Activated on device).</p>
           </EndpointCard>
 
           <EndpointCard method="POST" path="/api/v1/esims/{esimId}/refresh-qr" description="Refresh QR code and installation data from the provider. This is a read-only operation — it does not purchase an eSIM, change the ICCID, or affect the wallet.">

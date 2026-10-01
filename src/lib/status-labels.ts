@@ -83,17 +83,36 @@ export function apiKeyStatusLabel(status: string): string {
   return API_KEY_STATUS_LABELS[status] || status
 }
 
+/**
+ * Provider-neutral labels for persisted installation-status values. Every value
+ * the detail page's no-install-data fallback can encounter is mapped here;
+ * unknown values fall back to a neutral label and a raw canonical/provider value
+ * is never echoed into the UI. DOWNLOADED is a provider-reported download
+ * checkpoint and READY (incl. Telna RELEASED → READY) is a provisioning/
+ * install-data checkpoint — neither claims "not installed", "Ready to install",
+ * or "Installed on device" (see src/lib/esim/inventory-status.ts).
+ */
 export const INSTALL_STATUS_LABELS: Record<string, string> = {
   INSTALLED: 'Installed',
+  ENABLED: 'Installed',
+  DOWNLOADED: 'Profile downloaded',
+  INSTALLING: 'Installing',
+  DISABLED: 'Installed, disabled on device',
+  DELETED: 'Removed from device',
+  READY: 'Installation state unknown',
   PENDING: 'Pending',
   NOT_SENT: 'Not sent',
   SENT: 'Sent',
   FAILED: 'Failed',
+  STALE: 'Installation unavailable',
+  NOT_SUPPORTED: 'Installation unavailable',
+  NOT_RECOVERABLE: 'Installation unavailable',
+  PERMANENT_FAILURE: 'Installation unavailable',
   UNKNOWN: 'Unknown',
 }
 
 export function installStatusLabel(status: string): string {
-  return INSTALL_STATUS_LABELS[status] || `Installation: ${status}`
+  return INSTALL_STATUS_LABELS[status] || 'Unknown'
 }
 
 export const CUSTOMER_STATUS_LABELS: Record<string, string> = {

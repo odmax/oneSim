@@ -12,8 +12,9 @@ const ESIM_STATUS_LABELS = ESIM_LIFECYCLE_STATUSES.map((s) => ESIM_STATUS_META[s
 
 /** Customer-safe setup-axis labels (derived; never raw provider vocabulary). */
 const ESIM_SETUP_LABELS = [
-  'Ready to install',
+  'Installation state unknown',
   'Installing',
+  'Profile downloaded',
   'Installed',
   'Preparing',
   'Installation failed',
@@ -99,7 +100,7 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
               serviceStatus: { type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES], description: 'Canonical service status (alias of `status`).' },
               serviceStatusLabel: { type: 'string', enum: [...ESIM_STATUS_LABELS], description: 'Customer-facing service label (e.g. `Provisioned` for PENDING_ACTIVATION).' },
               installationStatus: { type: 'string', nullable: true, description: 'Stored installation/setup state or null when unknown.' },
-              installationStatusLabel: { type: 'string', enum: [...ESIM_SETUP_LABELS], description: 'Customer-facing setup label (Ready to install / Preparing / Installing / Installed / failure / unavailable / Unknown).' },
+              installationStatusLabel: { type: 'string', enum: [...ESIM_SETUP_LABELS], description: 'Customer-facing setup label (Installation state unknown / Installing / Profile downloaded / Installed / Preparing / Installation failed / Installation unavailable / Unknown).' },
               expiresAt: { type: 'string' },
               dataUsedMB: { type: 'integer' }, dataRemainingMB: { type: 'integer' },
             }}},
@@ -132,7 +133,7 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
             },
             installationStatusLabel: {
               type: 'string', enum: [...ESIM_SETUP_LABELS],
-              description: 'Customer-facing setup label: Ready to install / Preparing / Installing / Installed / Installation failed / Installation unavailable / Unknown. `Ready to install` appears only when usable installation data exists; authoritative activation evidence (network attach, activation timestamp, real usage) renders `Installed`.',
+              description: 'Customer-facing setup label: Installation state unknown / Installing / Profile downloaded / Preparing / Installed / Installation failed / Installation unavailable / Unknown. READY (incl. Telna RELEASED) renders the neutral `Installation state unknown` because no authoritative contract proves "ready to install, not installed"; authoritative activation evidence (network attach, activation timestamp, real usage) renders `Installed`. `Profile downloaded` is a provider-reported download checkpoint only and never claims the profile was not installed.',
             },
             qrCodeUrl: { type: 'string' }, activationCode: { type: 'string' },
             activatedAt: { type: 'string', format: 'date-time' }, expiresAt: { type: 'string', format: 'date-time' },
@@ -147,14 +148,14 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
             serviceStatus: 'PENDING_ACTIVATION',
             serviceStatusLabel: 'Provisioned',
             installationStatus: 'READY',
-            installationStatusLabel: 'Ready to install',
+            installationStatusLabel: 'Installation state unknown',
             activatedAt: null, expiresAt: '2026-10-01T00:00:00Z',
             dataUsedMB: 0, dataTotalMB: 1024, dataRemainingMB: 1024,
           },
           'x-axes-examples': {
-            'Provisioned + Ready to install': {
-              summary: 'Provisioned service with usable installation data',
-              value: { status: 'PENDING_ACTIVATION', statusLabel: 'Provisioned', serviceStatus: 'PENDING_ACTIVATION', serviceStatusLabel: 'Provisioned', installationStatus: 'READY', installationStatusLabel: 'Ready to install' },
+            'Provisioned + Installation state unknown': {
+              summary: 'Provisioned service while the device install state is unknown (READY)',
+              value: { status: 'PENDING_ACTIVATION', statusLabel: 'Provisioned', serviceStatus: 'PENDING_ACTIVATION', serviceStatusLabel: 'Provisioned', installationStatus: 'READY', installationStatusLabel: 'Installation state unknown' },
             },
             'Active + Installed': {
               summary: 'Activated service that is installed on a device',

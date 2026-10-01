@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { hasUsableInstallData } from '@/lib/esim/installation-data'
+import { installStatusLabel } from '@/lib/status-labels'
 
 describe('business eSIM detail — installation data gating (uses shared helper)', () => {
   it('shows install panel when only qrCode payload is present', () => {
@@ -25,6 +26,36 @@ describe('business eSIM detail — installation data gating (uses shared helper)
   it('hides install panel when no install data exists at all', () => {
     const esim = { qrCodeUrl: null, qrCode: null, activationCode: null, smdpAddress: null, matchingId: null }
     expect(hasUsableInstallData(esim)).toBe(false)
+  })
+})
+
+describe('business eSIM detail — no-install-data fallback never leaks a raw installation status', () => {
+  // Mirror of the page's no-panel fallback:
+  //   <p>{INSTALL_MESSAGES[installStatus] || installStatusLabel(installStatus)}</p>
+  const INSTALL_MESSAGES: Record<string, string> = {
+    PENDING: 'Installation details are being prepared automatically.',
+    FAILED: 'Installation details could not be retrieved. Please contact support.',
+    STALE: 'Installation details could not be retrieved. Please contact support.',
+  }
+  const fallbackLabel = (installStatus: string): string =>
+    INSTALL_MESSAGES[installStatus] || installStatusLabel(installStatus)
+
+  it('DOWNLOADED without an install-data panel renders "Profile downloaded", never "Installation: DOWNLOADED"', () => {
+    expect(fallbackLabel('DOWNLOADED')).toBe('Profile downloaded')
+    expect(fallbackLabel('DOWNLOADED')).not.toContain('Installation:')
+    expect(fallbackLabel('DOWNLOADED')).not.toBe('Ready to install')
+    expect(fallbackLabel('DOWNLOADED')).not.toBe('Installed on device')
+  })
+
+  it('neighboring installation-status values render provider-neutral labels in the fallback', () => {
+    expect(fallbackLabel('ENABLED')).toBe('Installed')
+    expect(fallbackLabel('INSTALLING')).toBe('Installing')
+    expect(fallbackLabel('DISABLED')).toBe('Installed, disabled on device')
+    expect(fallbackLabel('DELETED')).toBe('Removed from device')
+    expect(fallbackLabel('READY')).toBe('Installation state unknown')
+    expect(fallbackLabel('UNKNOWN')).toBe('Unknown')
+    // INSTALL_MESSAGES friendly copy takes precedence for the covered states.
+    expect(fallbackLabel('PENDING')).toContain('prepared automatically')
   })
 })
 
