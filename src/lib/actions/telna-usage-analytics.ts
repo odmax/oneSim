@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
@@ -16,6 +17,7 @@ function isTelnaConnector(c: unknown): c is TelnaConnector {
 export async function telnaSyncUsage(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
@@ -87,6 +89,7 @@ export async function telnaSyncUsage(esimId: string) {
 export async function telnaSyncSessions(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
@@ -158,6 +161,7 @@ export async function telnaSyncSessions(esimId: string) {
 export async function telnaSyncBalances(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
@@ -210,6 +214,7 @@ export async function telnaSyncBalances(esimId: string) {
 export async function telnaGetAnalytics(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_ANALYTICS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
@@ -283,6 +288,7 @@ function getWeekKey(d: Date): string {
 export async function telnaGetDashboard() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_ANALYTICS))) throw new Error('Unauthorized')
 
   const esims = await prisma.eSIM.findMany({
     where: { iccid: { not: '' } },
@@ -340,6 +346,7 @@ export async function telnaGetDashboard() {
 export async function telnaGenerateAlerts() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const alerts: { esimId: string; alertType: string; severity: string; message: string }[] = []
   const startTime = Date.now()
@@ -465,6 +472,7 @@ export async function telnaGenerateAlerts() {
 export async function telnaExportUsage(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_ANALYTICS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({ where: { id: esimId } })
   if (!esim) return { error: 'eSIM not found' }

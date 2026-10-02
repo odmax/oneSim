@@ -32,7 +32,7 @@ export default async function AdminWalletTopupsPage({
 }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
-  const perm = await checkPermission(Permissions.MANAGE_FINANCE)
+  const perm = await checkPermission(Permissions.MANAGE_WALLETS)
   if (!perm.allowed) redirect('/admin/unauthorized')
 
   const statusFilter = searchParams?.status

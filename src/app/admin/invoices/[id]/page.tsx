@@ -2,12 +2,14 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { markInvoicePaid, cancelInvoice } from '@/lib/actions/invoices'
 
 export default async function InvoiceDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.VIEW_INVOICES); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const invoice = await prisma.invoice.findUnique({
     where: { id: params.id },

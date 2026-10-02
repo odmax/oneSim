@@ -1,6 +1,7 @@
 'use server'
 
 import { getServerSession } from 'next-auth'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
@@ -67,6 +68,7 @@ export async function getApplyRulePreview(
 ): Promise<{ success: boolean; data?: ApplyRulePreview; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PRICING))) return { success: false, error: 'Unauthorized' }
 
   const rule = await prisma.packageConfigurationRule.findUnique({ where: { id: ruleId } })
   if (!rule) return { success: false, error: 'Rule not found' }
@@ -155,6 +157,7 @@ export async function executeApplyRule(
 ): Promise<ApplyRuleResult> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PRICING))) return { success: false, error: 'Unauthorized' }
 
   try {
     const rule = await prisma.packageConfigurationRule.findUnique({ where: { id: ruleId } })
@@ -342,6 +345,7 @@ export async function getRuleExecutionHistory(
 ): Promise<{ executions: RuleExecutionSummary[]; total: number; page: number; totalPages: number }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { executions: [], total: 0, page: 1, totalPages: 0 }
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PRICING))) return { executions: [], total: 0, page: 1, totalPages: 0 }
 
   const where: any = {}
   if (ruleId) where.ruleId = ruleId
@@ -382,6 +386,7 @@ export async function getRuleExecutionHistory(
 export async function getRuleExecutionDetail(executionId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return null
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PRICING))) return null
 
   return prisma.ruleExecution.findUnique({
     where: { id: executionId },
@@ -390,6 +395,8 @@ export async function getRuleExecutionDetail(executionId: string) {
 }
 
 export async function getRuleLastUsed(ruleId: string): Promise<Date | null> {
+  const session = await getServerSession(authOptions)
+  if (!(await canAccessAdmin(session?.user?.id, Permissions.VIEW_PRICING))) return null
   const last = await prisma.ruleExecution.findFirst({
     where: { ruleId, status: 'COMPLETED' },
     orderBy: { executedAt: 'desc' },
@@ -399,6 +406,8 @@ export async function getRuleLastUsed(ruleId: string): Promise<Date | null> {
 }
 
 export async function getRuleTimesApplied(ruleId: string): Promise<number> {
+  const session = await getServerSession(authOptions)
+  if (!(await canAccessAdmin(session?.user?.id, Permissions.VIEW_PRICING))) return 0
   return prisma.ruleExecution.count({
     where: { ruleId, status: 'COMPLETED' },
   })
@@ -423,6 +432,7 @@ export async function simulateRuleApplication(
 ): Promise<{ success: boolean; data?: SimulationResult; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PRICING))) return { success: false, error: 'Unauthorized' }
 
   const rule = await prisma.packageConfigurationRule.findUnique({
     where: { id: ruleId },

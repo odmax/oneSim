@@ -2,8 +2,8 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth/config'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 import {
   parseFilters,
   computeDateRange,
@@ -20,10 +20,8 @@ const REVENUE_ORDER_STATUSES = ['FULFILLED', 'PARTIALLY_FULFILLED', 'COMPLETED']
 const REVENUE_ORDER_SQL = "('FULFILLED','PARTIALLY_FULFILLED','COMPLETED')"
 
 export async function GET(req: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') {
-    return new NextResponse('Unauthorized', { status: 401 })
-  }
+  const { allowed, denied } = await adminApiAccess(Permissions.VIEW_ANALYTICS)
+  if (!allowed) return denied
 
   const searchParams = Object.fromEntries(req.nextUrl.searchParams.entries())
   const filters = parseFilters(searchParams as any)

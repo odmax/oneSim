@@ -2,12 +2,16 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 
 export default async function AdminAuditLogsPage() {
   const session = await getServerSession(authOptions)
   
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') {
+  if (!session || session.user.role !== 'INTERNAL_ADMIN' || !session.user.id) {
     redirect('/login')
+  }
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_AUDIT_LOGS))) {
+    redirect('/admin/unauthorized')
   }
 
   const logs = await prisma.auditLog.findMany({

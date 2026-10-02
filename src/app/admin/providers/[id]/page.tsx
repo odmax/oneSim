@@ -30,6 +30,7 @@ import { requiresTravelDateForPackage } from '@/lib/providers/travel-date-utils'
 import { TelnaDiscoveryPanel } from '@/components/admin/providers/telna/TelnaDiscoveryPanel'
 import { ProviderRoamingProfilesCard } from '@/components/admin/providers/ProviderRoamingProfilesCard'
 import { RoutingSimulator } from '@/components/admin/providers/RoutingSimulator'
+import { checkPermission, Permissions, loadAdminAccess } from '@/lib/auth/permissions'
 
 function maskApiToken(token: string | null): string {
   if (!token) return ''
@@ -80,7 +81,10 @@ function healthEventIcon(type: string): string {
 
 export default async function ProviderDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string; synced?: string; setup?: string; tab?: string; preview?: string } }) {
   const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  if (!session || session.user.role !== 'INTERNAL_ADMIN' || !session.user.id) redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_PROVIDERS); if (!perm.allowed) redirect('/admin/unauthorized')
+  const adminAccess = await loadAdminAccess(session.user.id)
+  const isSuperAdmin = adminAccess?.role === 'SUPER_ADMIN'
 
   const provider = await prisma.provider.findUnique({ where: { id: params.id } })
   if (!provider) redirect('/admin/providers?error=Provider+not+found')
@@ -513,7 +517,7 @@ export default async function ProviderDetailPage({ params, searchParams }: { par
           providerId={provider.id}
           providerName={provider.name}
           providerStatus={provider.status}
-          isSuperAdmin={session.user.internalAdminRole === 'SUPER_ADMIN'}
+          isSuperAdmin={isSuperAdmin}
           isDefaultFallback={provider.isDefaultFallback}
         />
       </div>

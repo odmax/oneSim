@@ -2,12 +2,14 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { createBusiness } from '@/lib/actions/business'
 
 export default async function NewBusinessPage({ searchParams }: { searchParams?: { success?: string; error?: string; email?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') { redirect('/login') }
+  const perm = await checkPermission(Permissions.MANAGE_BUSINESSES); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const users = await prisma.user.findMany({
     where: { role: 'BUSINESS_USER', businessUsers: { none: {} } },

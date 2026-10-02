@@ -7,10 +7,12 @@ import { enqueueJob, startJob, completeJob, failJob, cancelJob, updateJobProgres
 import { executeProviderSync, executeCatalogPipelineJob } from '@/lib/jobs/provider-sync-runner'
 import { claimJob, processJob } from '@/lib/jobs/worker'
 import { createScheduledJobs, getSchedules, updateSchedule } from '@/lib/jobs/scheduler'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 
 async function requireAdmin() {
   const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!session || session.user.role !== 'INTERNAL_ADMIN' || !session.user.id) throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_JOBS))) throw new Error('Unauthorized')
   return session.user.id
 }
 

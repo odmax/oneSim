@@ -44,6 +44,8 @@ vi.mock('@/lib/providers/adapter-manager', () => ({
 
 const { prisma } = vi.hoisted(() => ({
   prisma: {
+
+  internalAdmin: { findUnique: vi.fn().mockResolvedValue({ id: 'admin-row', role: 'SUPER_ADMIN', isActive: true, permissions: null }) },
     provider: { findUnique: vi.fn(), update: vi.fn() },
     providerPackage: { findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), create: vi.fn() },
     auditLog: { create: vi.fn() },

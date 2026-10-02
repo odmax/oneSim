@@ -1,6 +1,7 @@
 'use server'
 
 import { getServerSession } from 'next-auth'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
@@ -62,6 +63,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     return { success: false, error: 'Unauthorized' }
   }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PACKAGES))) return { success: false, error: 'Unauthorized' }
 
   if (!packageIds || packageIds.length === 0) {
     return { success: false, error: 'No packages selected' }
@@ -193,6 +195,7 @@ export async function publishToCatalog(packageIds: string[]): Promise<{
 export async function bulkSetPublishStatus(packageIds: string[], status: 'HIDDEN' | 'ARCHIVED'): Promise<{ success: boolean; updated?: number; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PACKAGES))) return { success: false, error: 'Unauthorized' }
   if (!packageIds || packageIds.length === 0) return { success: false, error: 'No packages selected' }
 
   const validStatuses = ['HIDDEN', 'ARCHIVED']
@@ -222,7 +225,8 @@ export async function bulkSetPublishStatus(packageIds: string[], status: 'HIDDEN
 
 export async function getPublishSummary(packageIds: string[]) {
   const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') return null
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PACKAGES))) return null
 
   const candidates = await prisma.providerPackage.findMany({
     where: { id: { in: packageIds } },
@@ -262,7 +266,8 @@ export async function getPublishSummary(packageIds: string[]) {
 
 export async function getReadySummary() {
   const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') return null
+  if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PACKAGES))) return null
 
   const ready = await prisma.providerPackage.count({
     where: {
@@ -334,6 +339,7 @@ export async function publishAllReady(): Promise<{
 }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PACKAGES))) return { success: false, error: 'Unauthorized' }
 
   const readyPackages = await prisma.providerPackage.findMany({
     where: {

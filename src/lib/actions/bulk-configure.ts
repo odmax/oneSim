@@ -1,6 +1,7 @@
 'use server'
 
 import { getServerSession } from 'next-auth'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
@@ -45,6 +46,7 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     return { success: false, error: 'Unauthorized' }
   }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PACKAGES))) return { success: false, error: 'Unauthorized' }
 
   const { packageIds, ...configUpdates } = params
 

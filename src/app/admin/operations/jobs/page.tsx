@@ -1,12 +1,14 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { getJobAnalytics } from '@/lib/services/operations/operations-service'
 
 export default async function OpsJobsPage() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/admin')
+  const perm = await checkPermission(Permissions.MANAGE_JOBS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const [analytics, recentJobs] = await Promise.all([
     getJobAnalytics(),

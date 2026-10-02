@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { deriveOperationalState } from '@/lib/services/operations/operational-classifier'
 
@@ -10,6 +11,7 @@ const PAGE_SIZE = 25
 export default async function RecoveryQueuePage({ searchParams }: { searchParams: Record<string, string | undefined> }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_ORDERS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const page = Math.max(1, parseInt(searchParams.page || '1', 10) || 1)
   const classification = searchParams.classification || undefined

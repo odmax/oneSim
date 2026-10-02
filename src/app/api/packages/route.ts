@@ -2,10 +2,10 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth/config'
 import { createPackageSchema } from '@/lib/validations/package'
 import { stripPackageProviderFields } from '@/lib/analytics/safe-fields'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 const packagePublicSelect = {
   id: true, name: true, displayName: true, dataGB: true,
@@ -15,16 +15,9 @@ const packagePublicSelect = {
   createdAt: true, updatedAt: true,
 } as const
 
-function requireAdmin(session: any): NextResponse | null {
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (session.user.role !== 'INTERNAL_ADMIN') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-  return null
-}
-
 export async function GET() {
-  const session = await getServerSession(authOptions)
-  const authError = requireAdmin(session)
-  if (authError) return authError
+  const { allowed, denied } = await adminApiAccess(Permissions.VIEW_PACKAGES)
+  if (!allowed) return denied
 
   const packages = await prisma.eSIMPackage.findMany({
     where: { source: { in: ['CATALOG_PRODUCT', 'MANUAL'] } },
@@ -36,9 +29,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions)
-  const authError = requireAdmin(session)
-  if (authError) return authError
+  const { allowed, denied } = await adminApiAccess(Permissions.MANAGE_PACKAGES)
+  if (!allowed) return denied
 
   try {
     const body = await request.json()

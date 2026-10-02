@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { updateBusinessStatus, deleteBusiness } from '@/lib/actions/business'
 
@@ -19,7 +20,8 @@ export default async function BusinessDetailPage({
   
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     redirect('/login')
-  }
+    }
+  const perm = await checkPermission(Permissions.MANAGE_BUSINESSES); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const currentAdmin = await prisma.internalAdmin.findUnique({ where: { userId: session.user.id } })
   const isSuperAdmin = currentAdmin?.role === 'SUPER_ADMIN'

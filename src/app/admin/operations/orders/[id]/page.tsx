@@ -4,6 +4,7 @@ import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
 import { getOrderOperationsDetail } from '@/lib/services/operations/order-operations-detail'
 import { getOrderOperationsActions } from '@/lib/services/operations/order-operation-actions'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 
 function SeverityBadge({ severity }: { severity: string }) {
   const c: Record<string, string> = { INFO: 'bg-gray-100 text-gray-700', WARNING: 'bg-amber-100 text-amber-700', ERROR: 'bg-red-100 text-red-700', CRITICAL: 'bg-red-200 text-red-900 font-semibold' }
@@ -28,6 +29,7 @@ function IntegrityBadge({ result }: { result: string }) {
 export default async function OperationsOrderDetailPage({ params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_ORDERS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const detail = await getOrderOperationsDetail(params.id)
   if (!detail) notFound()

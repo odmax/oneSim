@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
@@ -16,6 +17,7 @@ function tryParseJson(raw: string): any {
 export async function createProvider(formData: FormData) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) redirect('/login')
 
   const name = formData.get('name') as string
   const code = formData.get('code') as string
@@ -191,6 +193,7 @@ export async function createProvider(formData: FormData) {
 export async function updateProvider(providerId: string, formData: FormData) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) redirect('/login')
 
   const existingProvider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!existingProvider) redirect('/admin/providers?error=Provider+not+found')
@@ -333,6 +336,7 @@ export async function updateProvider(providerId: string, formData: FormData) {
 export async function toggleProviderStatus(providerId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) return
@@ -387,6 +391,7 @@ async function recordProviderHealth(providerId: string, success: boolean, errorM
 export async function testProviderConnection(providerId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
   const provider = await prisma.provider.findUnique({
     where: { id: providerId },
@@ -442,6 +447,7 @@ export async function testProviderConnection(providerId: string) {
 export async function setProviderStatus(providerId: string, status: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
   const validStatuses = ['ACTIVE', 'DEGRADED', 'MAINTENANCE', 'INACTIVE', 'TESTING', 'ARCHIVED']
   if (!validStatuses.includes(status)) return { success: false, error: 'Invalid status' }

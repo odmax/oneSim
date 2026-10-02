@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { revalidatePath } from 'next/cache'
@@ -78,6 +79,7 @@ export interface ImportedPlansFilters {
 export async function getImportedPlans(filters: ImportedPlansFilters): Promise<ImportedPlanRow[]> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return []
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PROVIDERS))) return []
 
   const where: any = { isAvailable: true }
 
@@ -167,6 +169,7 @@ export async function getImportedPlans(filters: ImportedPlansFilters): Promise<I
 export async function saveImportedPlanPricing(formData: FormData): Promise<{ success: boolean; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
   const providerPackageId = formData.get('providerPackageId') as string
   const costPriceRaw = formData.get('costPriceUSD') as string
@@ -302,6 +305,7 @@ export async function saveImportedPlanPricing(formData: FormData): Promise<{ suc
 export async function markReadyToPublish(providerPackageId: string): Promise<{ success: boolean; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
   const pp = await prisma.providerPackage.findUnique({ where: { id: providerPackageId }, include: { publishedAs: true } })
   if (!pp) return { success: false, error: 'Not found' }
@@ -328,6 +332,7 @@ export async function markReadyToPublish(providerPackageId: string): Promise<{ s
 export async function unmarkReadyToPublish(providerPackageId: string): Promise<{ success: boolean; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
   await prisma.providerPackage.update({ where: { id: providerPackageId }, data: { readyToPublish: false } })
 
@@ -346,6 +351,7 @@ export async function unmarkReadyToPublish(providerPackageId: string): Promise<{
 export async function publishImportedPlan(formData: FormData): Promise<{ success: boolean; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
   const providerPackageId = formData.get('providerPackageId') as string
 
@@ -400,6 +406,7 @@ export async function publishImportedPlan(formData: FormData): Promise<{ success
 export async function archiveImportedPlan(providerPackageId: string): Promise<{ success: boolean; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
   const esim = await prisma.eSIMPackage.findFirst({ where: { providerPackageId } })
   if (esim) {
@@ -432,6 +439,7 @@ export async function previewPricingRules(formData: FormData): Promise<{
 }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PROVIDERS))) throw new Error('Unauthorized')
 
   const providerCode = (formData.get('providerCode') as string) || undefined
   const country = (formData.get('country') as string) || undefined
@@ -496,6 +504,7 @@ export async function applyPricingRules(formData: FormData): Promise<{
 }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { applied: 0, errors: [] }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { applied: 0, errors: [] }
 
   const preview = await previewPricingRules(formData)
   const errors: string[] = []
@@ -591,6 +600,7 @@ function parseNum(v: string): number | null {
 export async function exportImportedPlansCsv(): Promise<string> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PROVIDERS))) throw new Error('Unauthorized')
   const rows = await getImportedPlans({})
   const header = CSV_COLS.map(sanitize).join(',')
   const lines = rows.map(r => CSV_COLS.map(c => {
@@ -645,6 +655,7 @@ export async function importImportedPlansCsvPreview(formData: FormData): Promise
 }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PROVIDERS))) throw new Error('Unauthorized')
 
   const file = formData.get('file') as File
   if (!file) throw new Error('No file')
@@ -741,6 +752,7 @@ export async function importImportedPlansCsvPreview(formData: FormData): Promise
 export async function applyImportedPlansCsvImport(formData: FormData): Promise<{ applied: number; errors: { line: number; message: string }[] }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { applied: 0, errors: [] }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { applied: 0, errors: [] }
 
   const preview = await importImportedPlansCsvPreview(formData)
   if (preview.errors.length > 0 && preview.preview.length === 0) return { applied: 0, errors: preview.errors }

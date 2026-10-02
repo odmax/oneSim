@@ -3,22 +3,29 @@ import Header from '@/components/layout/header';
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
-import { hasAnyPermission, Permissions } from '@/lib/auth/permissions'
-import { InternalAdminRole } from '@prisma/client'
+import { Permissions, loadAdminAccess, capabilityToPermissionIds, type Capability } from '@/lib/auth/permissions'
 
 interface SidebarItemDef {
   title: string
   href: string
   sectionHeader?: boolean
-  permission?: InternalAdminRole[]
+  permission?: Capability
 }
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  if (!session || session.user.role !== 'INTERNAL_ADMIN' || !session.user.id) redirect('/login')
 
-  const role = session.user.internalAdminRole
-  const can = (perm: InternalAdminRole[]) => hasAnyPermission(role, perm)
+  // DB-backed access for THIS request: stale session claims cannot retain
+  // removed permissions. A missing or deactivated InternalAdmin row is denied
+  // here at the layout (never renders children) so no admin page can be reached
+  // by a session that no longer maps to a live admin record. Redirect to the
+  // EXTERNAL /admin-access-denied route (outside this layout) — NOT to /login,
+  // which re-homes admins to /admin/dashboard and would loop back here.
+  const access = await loadAdminAccess(session.user.id)
+  if (!access) redirect('/admin-access-denied')
+  const granted = new Set(access.permissions as readonly string[])
+  const can = (perm: Capability) => capabilityToPermissionIds(perm).every(id => granted.has(id))
 
   const allItems: SidebarItemDef[] = [
     { title: 'Dashboard', href: '/admin/dashboard' },
@@ -37,7 +44,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     { title: 'Usage Analytics', href: '/admin/usage', permission: Permissions.VIEW_ANALYTICS },
     { title: 'Invoices', href: '/admin/invoices', permission: Permissions.VIEW_FINANCE },
     { title: 'Finance Dashboard', href: '/admin/finance', permission: Permissions.VIEW_FINANCE },
-    { title: 'Credit Allocations', href: '/admin/wallet-topups', permission: Permissions.MANAGE_FINANCE },
+    { title: 'Credit Allocations', href: '/admin/wallet-topups', permission: Permissions.MANAGE_WALLETS },
     { title: 'MONITORING', href: '#', sectionHeader: true },
     { title: 'Analytics', href: '/admin/analytics', permission: Permissions.VIEW_ANALYTICS },
     { title: 'SIM Usage', href: '/admin/analytics/sim-usage', permission: Permissions.VIEW_ANALYTICS },
@@ -47,8 +54,8 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     { title: 'Performance', href: '/admin/performance', permission: Permissions.VIEW_ANALYTICS },
     { title: 'Provider Health', href: '/admin/provider-health', permission: Permissions.MANAGE_PROVIDERS },
     { title: 'Support Queue', href: '/admin/support', permission: Permissions.VIEW_SUPPORT },
-    { title: 'Audit Logs', href: '/admin/audit-logs', permission: Permissions.VIEW_LOGS },
-    { title: 'API Logs', href: '/admin/api-logs', permission: Permissions.VIEW_LOGS },
+    { title: 'Audit Logs', href: '/admin/audit-logs', permission: Permissions.VIEW_AUDIT_LOGS },
+    { title: 'API Logs', href: '/admin/api-logs', permission: Permissions.VIEW_API_LOGS },
     { title: 'Provider Webhooks', href: '/admin/provider-webhooks', permission: Permissions.MANAGE_PROVIDERS },
     { title: 'Webhook Monitoring', href: '/admin/webhook-monitoring', permission: Permissions.MANAGE_PROVIDERS },
     { title: 'Admin Users', href: '/admin/users', permission: Permissions.MANAGE_USERS },

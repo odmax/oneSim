@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { generateUsageReport } from '@/lib/actions/usage'
 
 export default async function AdminUsagePage({
@@ -18,7 +19,8 @@ export default async function AdminUsagePage({
   
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     redirect('/login')
-  }
+    }
+  const perm = await checkPermission(Permissions.VIEW_ANALYTICS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   // Build filter conditions
   const where: any = {}

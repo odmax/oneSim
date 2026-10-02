@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { createTopUpOrder } from '@/lib/services/orders/top-up-order'
 import { adminEsimStatusBadge } from '@/lib/status-badges'
@@ -9,6 +10,7 @@ import { adminEsimStatusBadge } from '@/lib/status-badges'
 export default async function AdminTopUpPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_ESIMS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: params.id },

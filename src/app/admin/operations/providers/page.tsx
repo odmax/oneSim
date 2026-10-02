@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { getProviderOperationalHealth } from '@/lib/services/operations/provider-operational-health'
 
@@ -13,6 +14,7 @@ function HealthBadge({ health }: { health: string }) {
 export default async function ProviderOpsOverviewPage() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_PROVIDERS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const providers = await prisma.provider.findMany({
     where: { status: { not: 'ARCHIVED' } },

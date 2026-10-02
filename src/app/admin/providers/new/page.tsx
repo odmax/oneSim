@@ -1,6 +1,7 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { createProvider } from '@/lib/actions/providers'
 import { getTemplates } from '@/lib/actions/provider-templates'
@@ -9,6 +10,7 @@ import { NewProviderForm } from './NewProviderForm'
 export default async function NewProviderPage({ searchParams }: { searchParams?: { error?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_PROVIDERS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const templates = await getTemplates()
 

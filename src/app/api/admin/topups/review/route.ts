@@ -1,9 +1,9 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 /**
  * Admin visibility for top-ups requiring review (ESIMTopUp.PENDING_REVIEW).
@@ -11,10 +11,8 @@ import { prisma } from '@/lib/prisma'
  * credentials, and never a blind top-up re-dispatch action.
  */
 export async function GET(request: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const { allowed, denied } = await adminApiAccess(Permissions.MANAGE_WALLETS)
+  if (!allowed) return denied
 
   const url = new URL(request.url)
   const escalatedOnly = url.searchParams.get('escalated') === '1'

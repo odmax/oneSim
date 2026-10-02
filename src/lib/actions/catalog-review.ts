@@ -5,10 +5,12 @@ import { authOptions } from '@/lib/auth/config'
 import { revalidatePath } from 'next/cache'
 import { getReviewStats, getReviewItems } from '@/lib/catalog/catalog-review-service'
 import { applyReviewDecision, bulkApplyReviewDecisions } from '@/lib/catalog/catalog-review-apply-service'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 
 async function requireAdmin() {
   const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!session || session.user.role !== 'INTERNAL_ADMIN' || !session.user.id) throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PRODUCTS))) throw new Error('Unauthorized')
   return session.user.id
 }
 

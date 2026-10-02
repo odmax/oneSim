@@ -1,14 +1,12 @@
 export const dynamic = 'force-dynamic';
 
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth/config'
 import { exportPricingCsv } from '@/lib/actions/pricing-csv'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 export async function GET() {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') {
-    return new Response('Unauthorized', { status: 401 })
-  }
+  const { allowed, denied } = await adminApiAccess(Permissions.VIEW_PRICING)
+  if (!allowed) return denied
 
   try {
     const csv = await exportPricingCsv()

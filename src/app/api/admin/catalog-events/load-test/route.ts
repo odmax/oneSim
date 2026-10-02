@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth/config'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 import { simulatePackageUpdates } from '@/lib/catalog-workers'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const { allowed, denied } = await adminApiAccess(Permissions.MANAGE_PRODUCTS)
+  if (!allowed) return denied
 
   const body = await request.json().catch(() => ({}))
   const count = Math.min(body.count || 100, 10000)

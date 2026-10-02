@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/lib/prisma', () => ({
   prisma: {
+
+  internalAdmin: { findUnique: vi.fn().mockResolvedValue({ id: 'admin-row', role: 'SUPER_ADMIN', isActive: true, permissions: null }) },
     provider: { findUnique: vi.fn() },
     eSIM: { findFirst: vi.fn(), update: vi.fn() },
   },

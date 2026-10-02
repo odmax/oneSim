@@ -6,6 +6,8 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { stripPackageProviderFields, stripEsimProviderFields } from '@/lib/analytics/safe-fields'
 import { getActivationInstructions } from '@/lib/esim/activation-instructions'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 export async function GET(
   request: NextRequest,
@@ -30,11 +32,15 @@ export async function GET(
     return NextResponse.json({ error: 'eSIM not found' }, { status: 404 })
   }
 
-  if (session.user.role === 'BUSINESS_USER') {
+if (session.user.role === 'BUSINESS_USER') {
     if (esim.purchase.businessId !== session.user.businessId) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
-  } else if (session.user.role !== 'INTERNAL_ADMIN') {
+  } else if (session.user.role === 'INTERNAL_ADMIN') {
+    // DB-backed: stale permission claims cannot grant admin access.
+    const { allowed, denied } = await adminApiAccess(Permissions.VIEW_ESIMS)
+    if (!allowed) return denied
+  } else {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 

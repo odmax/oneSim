@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import EsimActions from '@/components/EsimActions'
 import { getPackageDisplayName } from '@/lib/packages/snapshot-utils'
 import { EsimPrimaryStatusBadge } from '@/components/esim/EsimPrimaryStatusBadge'
@@ -22,7 +23,8 @@ export default async function AdminESIMsPage({
   
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     redirect('/login')
-  }
+    }
+  const perm = await checkPermission(Permissions.VIEW_ESIMS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   // Build filter conditions
   const where: any = {}

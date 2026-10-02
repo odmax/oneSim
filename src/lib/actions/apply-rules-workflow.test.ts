@@ -3,6 +3,8 @@ import { prisma } from '@/lib/prisma'
 
 vi.mock('@/lib/prisma', () => ({
   prisma: {
+
+  internalAdmin: { findUnique: vi.fn().mockResolvedValue({ id: 'admin-row', role: 'SUPER_ADMIN', isActive: true, permissions: null }) },
     providerPackage: {
       findMany: vi.fn(),
       update: vi.fn(),

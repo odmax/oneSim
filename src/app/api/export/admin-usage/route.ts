@@ -1,8 +1,13 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 export async function GET(request: NextRequest) {
+  const { allowed, denied } = await adminApiAccess(Permissions.VIEW_ANALYTICS)
+  if (!allowed) return denied
+
   const { searchParams } = new URL(request.url)
   const data = searchParams.get('data')
   

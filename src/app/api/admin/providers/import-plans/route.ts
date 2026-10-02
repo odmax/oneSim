@@ -1,17 +1,15 @@
 export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth/config'
 import { importProviderPlans } from '@/lib/actions/provider-import'
 import type { ImportResult } from '@/lib/providers/plan-utils'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 export async function POST(request: Request) {
   try {
-    const session = await getServerSession(authOptions)
-    if (!session || session.user.role !== 'INTERNAL_ADMIN') {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    const { allowed, denied, session } = await adminApiAccess(Permissions.MANAGE_PROVIDERS)
+    if (!allowed || !session) return denied
 
     const body = await request.json()
     const { providerId, plans } = body

@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const { mockGetServerSession } = vi.hoisted(() => ({ mockGetServerSession: vi.fn() }))
 const { mockPrisma } = vi.hoisted(() => ({
   mockPrisma: {
+  internalAdmin: { findUnique: vi.fn().mockResolvedValue({ id: 'admin-row', role: 'SUPER_ADMIN', isActive: true, permissions: null }) },
+
     provider: {
       findUnique: vi.fn(),
       upsert: vi.fn(),

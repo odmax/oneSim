@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { TopUpReviewActions } from '@/components/admin/topups/TopUpReviewActions'
 
@@ -10,6 +11,7 @@ const PAGE_SIZE = 50
 export default async function TopUpReviewPage({ searchParams }: { searchParams: Record<string, string | undefined> }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_WALLETS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const page = Math.max(1, parseInt(searchParams.page || '1', 10) || 1)
   const escalatedOnly = searchParams.escalated === '1'

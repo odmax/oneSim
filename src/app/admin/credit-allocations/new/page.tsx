@@ -2,12 +2,14 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { adminAllocateCredit } from '@/lib/actions/admin-credit'
 
 export default async function AllocateCreditPage({ searchParams }: { searchParams?: { error?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_WALLETS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const businesses = await prisma.business.findMany({
     where: { status: 'APPROVED' },
