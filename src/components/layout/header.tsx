@@ -9,43 +9,47 @@ interface HeaderProps {
 
 export default async function Header({ title, breadcrumbs }: HeaderProps) {
   const session = await getServerSession(authOptions)
-  
+
   return (
-    <header className="border-b border-gray-100 bg-white px-6 py-4">
-      <div className="flex items-center justify-between">
-        <div>
+    <header className="z-20 border-b border-border bg-card/95 px-4 py-3 backdrop-blur sm:px-6">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           {breadcrumbs && breadcrumbs.length > 0 && (
-            <div className="mb-2 flex items-center gap-2 text-sm text-gray-500">
-              <Link href="/" className="hover:text-cyan-600 transition-colors">
+            <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Link href="/" className="rounded text-muted-foreground transition-colors hover:text-primary">
                 ←
               </Link>
               {breadcrumbs.map((crumb, i) => (
-                <span key={i}>
-                  {i > 0 && <span className="mx-2 text-gray-300">/</span>}
+                <span key={i} className="flex items-center gap-1.5">
+                  {i > 0 && <span className="text-border">/</span>}
                   {crumb.href ? (
-                    <Link href={crumb.href} className="hover:text-cyan-600 transition-colors">
+                    <Link href={crumb.href} className="transition-colors hover:text-primary">
                       {crumb.label}
                     </Link>
                   ) : (
-                    <span className="text-gray-900 font-medium">{crumb.label}</span>
+                    <span className="font-medium text-foreground">{crumb.label}</span>
                   )}
                 </span>
               ))}
             </div>
           )}
-          <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
+          <h1 className="truncate text-base font-semibold tracking-tight text-foreground sm:text-lg">{title}</h1>
         </div>
-        
-        <div className="flex items-center gap-4">
+
+        <div className="flex shrink-0 items-center gap-3">
           {session?.user && (
             <div className="flex items-center gap-3">
-              <div className="text-right">
-                <p className="text-sm font-medium text-gray-900">{session.user.name}</p>
-                <p className="text-xs text-gray-500">{session.user.businessName || 'Admin'}</p>
+              <div className="hidden text-right sm:block">
+                <p className="max-w-[180px] truncate text-sm font-medium text-foreground">{session.user.name}</p>
+                <p className="max-w-[180px] truncate text-xs text-muted-foreground">{session.user.businessName || 'Admin'}</p>
               </div>
-              <Link href={session.user.role === 'INTERNAL_ADMIN' ? '/admin/account' : '/business/account'}>
-                <div className="h-8 w-8 rounded-full bg-cyan-500 flex items-center justify-center cursor-pointer hover:bg-cyan-600 transition-colors">
-                  <span className="text-white text-sm font-medium">
+              <Link
+                href={session.user.role === 'INTERNAL_ADMIN' ? '/admin/account' : '/business/account'}
+                aria-label="Account settings"
+                className="shrink-0"
+              >
+                <div className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-primary text-white transition-colors hover:bg-primary/90">
+                  <span className="text-sm font-medium">
                     {session.user.name?.charAt(0).toUpperCase()}
                   </span>
                 </div>
