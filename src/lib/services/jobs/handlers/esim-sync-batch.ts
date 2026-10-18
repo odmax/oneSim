@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { resolveSyncProviderId, resolveSyncPackageIdentity } from '@/lib/services/esims/resolve-sync-provider'
 import { getStatusNextSync, getUsageNextSync, shouldStopRetrying, nextStatusSyncDisposition, nextUsageSyncDisposition } from '../sync-policy'
 import { claimEsimForSync } from '../recurring-jobs'
 import type { IProviderConnector } from '@/lib/providers/connectors/connector-interface'
@@ -101,7 +102,7 @@ export async function backfillEsimSyncSchedules(): Promise<void> {
     usageNextSyncAt: null,
     usageSyncRetryCount: 0,
     ...extra,
-    ...(capableIn ? { purchase: { package: { providerId: capableIn } } } : { id: '__NO_USAGE_CAPABLE_PROVIDER__' }),
+    ...(capableIn ? { purchase: { providerId: capableIn } } : { id: '__NO_USAGE_CAPABLE_PROVIDER__' }),
   })
 
   await prisma.eSIM.updateMany({
@@ -133,7 +134,9 @@ export async function backfillEsimSyncSchedules(): Promise<void> {
     where: {
       usageNextSyncAt: { not: null },
       status: { notIn: ['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'] },
-      ...(capableIn ? { NOT: { purchase: { package: { providerId: capableIn } } } } : {}),
+      ...(capableIn
+        ? { purchase: { providerId: { not: null, notIn: usageCapableProviderIds } } }
+        : { purchase: { providerId: { not: null } } }),
     },
     data: { usageNextSyncAt: null },
   }).catch(() => {})
@@ -158,7 +161,7 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
       statusNextSyncAt: { lte: now },
       status: { notIn: ['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'] },
     },
-    include: { purchase: { select: { package: { select: { providerId: true } } } } },
+    include: { purchase: { select: { providerId: true, package: true } } },
     take: batchSize,
     orderBy: { statusSyncRetryCount: 'asc' },
   })
@@ -167,21 +170,21 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
 
   for (const esim of esims) {
     if (!await claimEsimForSync(esim.id, 'statusNextSyncAt')) continue
+    const providerId = await resolveSyncProviderId(esim.purchase)
 
     // Pre-dispatch STOP guard: a row whose retry budget is already exhausted is
     // terminated WITHOUT a provider request (stopRetrying is enforced by both
     // persistence — nextSyncAt=null — and eligibility, never just a log line).
     if (shouldStopRetrying(esim.statusSyncRetryCount)) {
-      console.log(`[ESIM_STATUS_SYNC_STOPPED] providerId=${esim.purchase?.package?.providerId ?? '?'} esimId=${esim.id} retryCount=${esim.statusSyncRetryCount}`)
+      console.log(`[ESIM_STATUS_SYNC_STOPPED] providerId=${providerId ?? '?'} esimId=${esim.id} retryCount=${esim.statusSyncRetryCount}`)
       await prisma.eSIM.update({ where: { id: esim.id }, data: { statusNextSyncAt: null, lastStatusSyncAt: new Date() } })
       // One durable operational signal per provider+eSIM+sync type (deduplicated);
       // never a provider call at this guard.
-      emitSyncExhaustedAlert(esim.purchase?.package?.providerId, 'status', esim.id, esim.iccid)
+      emitSyncExhaustedAlert(providerId, 'status', esim.id, esim.iccid)
       skipped++
       continue
     }
 
-    const providerId = esim.purchase?.package?.providerId
     if (!providerId) { skipped++; continue }
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
@@ -311,7 +314,7 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
       usageNextSyncAt: { lte: now },
       status: { in: ['PENDING', 'PENDING_ACTIVATION', 'ACTIVE', 'INSTALLED', 'SUSPENDED', 'DEPLETED'] },
     },
-    include: { purchase: { select: { package: { select: { providerId: true, providerPlanId: true, providerPackageId: true } } } } },
+    include: { purchase: { select: { providerId: true, package: true } } },
     take: batchSize,
     orderBy: { usageSyncRetryCount: 'asc' },
   })
@@ -320,21 +323,21 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
 
   for (const esim of esims) {
     if (!await claimEsimForSync(esim.id, 'usageNextSyncAt')) continue
+    const providerId = await resolveSyncProviderId(esim.purchase)
 
     // Pre-dispatch STOP guard (usage): exhausted rows are terminated without a
     // provider request. A stop is an attempt metadata change — it must never
     // make the eSIM appear freshly usage-synced.
     if (shouldStopRetrying(esim.usageSyncRetryCount)) {
-      console.log(`[ESIM_USAGE_SYNC_STOPPED] providerId=${esim.purchase?.package?.providerId ?? '?'} esimId=${esim.id} retryCount=${esim.usageSyncRetryCount}`)
+      console.log(`[ESIM_USAGE_SYNC_STOPPED] providerId=${providerId ?? '?'} esimId=${esim.id} retryCount=${esim.usageSyncRetryCount}`)
       await prisma.eSIM.update({ where: { id: esim.id }, data: { usageNextSyncAt: null } })
       // Usage exhaustion is covered by the same deduplicated operational alert,
       // scoped to (provider, eSIM, usage) so it never merges with status.
-      emitSyncExhaustedAlert(esim.purchase?.package?.providerId, 'usage', esim.id, esim.iccid)
+      emitSyncExhaustedAlert(providerId, 'usage', esim.id, esim.iccid)
       skipped++
       continue
     }
 
-    const providerId = esim.purchase?.package?.providerId
     if (!providerId) { skipped++; continue }
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
@@ -358,10 +361,10 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
       // SAFE provider-neutral identifier — never a local OneSIM database id.
       // Package identity is included so providers that match package↔eSIM
       // associations (e.g. US-Matrix) resolve them deterministically.
+      const packageIdentity = await resolveSyncPackageIdentity(esim.purchase, providerId)
       const lookup = resolveUsageLookup(connector, {
         ...esim,
-        providerPackageId: esim.purchase?.package?.providerPackageId ?? undefined,
-        providerPlanId: esim.purchase?.package?.providerPlanId ?? undefined,
+        ...packageIdentity,
       } as SyncLookupEsim)
       if (!lookup.ok) {
         console.log(`[ESIM_USAGE_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=${lookup.skipReason}`)

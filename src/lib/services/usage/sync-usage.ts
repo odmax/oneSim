@@ -1,3 +1,4 @@
+import { resolveSyncProviderId, resolveSyncPackageIdentity } from '@/lib/services/esims/resolve-sync-provider'
 import { prisma } from '@/lib/prisma'
 import { capabilitySupported, resolveUsageLookup, buildProviderConnector, mergeProviderPackageEsimId, isUsageLookupSkip, type SyncLookupEsim } from '@/lib/services/esims/sync-lookup'
 import { deriveDepletionStatus, deriveUsageActivation, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
@@ -50,7 +51,7 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
 
   if (!esim) return { success: false, error: 'eSIM not found' }
 
-  const providerId = esim.purchase?.package?.providerId
+  const providerId = await resolveSyncProviderId(esim.purchase)
   if (!providerId) return { success: true, skipped: true, skipReason: 'PROVIDER_NOT_CONFIGURED' }
 
   const connector = await buildProviderConnector(providerId)
@@ -65,10 +66,10 @@ export async function syncESIMUsage(esimId: string): Promise<SyncUsageResult> {
   // resolver also receives the provider-owned package identity so providers
   // that need to match package↔eSIM associations (e.g. US-Matrix mobile-detail)
   // can resolve them deterministically.
+  const packageIdentity = await resolveSyncPackageIdentity(esim.purchase, providerId)
   const lookup = resolveUsageLookup(connector, {
     ...esim,
-    providerPackageId: esim.purchase?.package?.providerPackageId ?? undefined,
-    providerPlanId: esim.purchase?.package?.providerPlanId ?? undefined,
+    ...packageIdentity,
   } as SyncLookupEsim)
   if (!lookup.ok) {
     return { success: true, skipped: true, skipReason: lookup.skipReason }

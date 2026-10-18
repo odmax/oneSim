@@ -3,6 +3,8 @@ import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
 import { reserveTopUpFunds, captureTopUpFundsUpToInTx, releaseTopUpFundsUpTo } from './wallet-actions'
 import { createTimelineEvent } from './order-state-machine'
 import { TOP_UP_ELIGIBLE_STATUSES } from '@/lib/providers/capabilities/esim-action-availability'
+import { resolveSyncProviderId } from '@/lib/services/esims/resolve-sync-provider'
+import { resolvePackageBacking } from './package-backing-resolver'
 
 export interface TopUpOrderParams {
   businessId: string
@@ -114,8 +116,19 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
     return { success: false, error: 'Package is not a top-up package', errorStatus: 400 }
   }
 
-  const providerId = topUpPkg.providerId || esim.purchase.package.providerId
-  if (!providerId) return { success: false, error: 'No provider configured for top-up', errorStatus: 400 }
+  // A top-up must execute on the provider that fulfilled this eSIM.
+  // Never route using a retail package default or an internal package ID.
+  const providerId = await resolveSyncProviderId(esim.purchase)
+  if (!providerId) {
+    return { success: false, error: 'eSIM fulfillment provider is unverified', errorStatus: 400 }
+  }
+
+  const backing = await resolvePackageBacking(topUpPkg)
+  if (backing.kind !== 'BOUND' || backing.backing.providerId !== providerId || !backing.backing.providerPlanId) {
+    return { success: false, error: 'Top-up package is not verified for this eSIM provider', errorStatus: 400 }
+  }
+
+  const verifiedProviderPlanId = backing.backing.providerPlanId
 
   // Check provider supports top-up
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
@@ -189,9 +202,10 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
   const providerResult = await adapter.topUpESIM({
     iccid: esim.iccid,
     imsi: esim.imsi,
-    planId: topUpPkg.providerPlanId || topUpPkg.id,
-    sku: topUpPkg.sku || topUpPkg.packageCode || undefined,
-    packageName: topUpPkg.displayName || topUpPkg.name,
+    planId: verifiedProviderPlanId,
+    // Provider-backed identity only: never dispatch a retail SKU or name.
+    sku: verifiedProviderPlanId,
+    packageName: verifiedProviderPlanId,
     quantity,
   })
 

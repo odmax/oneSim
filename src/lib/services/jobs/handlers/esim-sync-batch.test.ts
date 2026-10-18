@@ -43,7 +43,7 @@ function mockEsim(overrides: any = {}) {
     lastUsageSyncAt: null,
     providerSubscriptionId: null,
     providerActivationId: null,
-    purchase: { package: { providerId: 'p-1' } },
+    purchase: { providerId: 'p-1', package: { providerId: 'p-1' } },
     ...overrides,
   }
 }
@@ -464,7 +464,7 @@ it('6. repeated backfill is idempotent (same guarded predicate, no extra writes)
     mockBuildConnector.mockResolvedValue(choiceConnector() as any)
     await backfillEsimSyncSchedules()
     const seed = mockPrisma.eSIM.updateMany.mock.calls[3][0]
-    expect(seed.where.purchase.package.providerId.in).toContain('p-1')
+    expect(seed.where.purchase.providerId.in).toContain('p-1')
   })
 
   it('10. backfill NEVER seeds pending usage for a usageLookup=false provider (e.g. AirHub)', async () => {
@@ -518,10 +518,10 @@ it('6. repeated backfill is idempotent (same guarded predicate, no extra writes)
     mockBuildConnector.mockResolvedValue(choiceConnector() as any)
     await backfillEsimSyncSchedules()
     const seed = mockPrisma.eSIM.updateMany.mock.calls[3][0]
-    expect(seed.where.purchase.package.providerId.in).toContain('p-choice-like')
+    expect(seed.where.purchase.providerId.in).toContain('p-choice-like')
     // The provider row carries no capability claim; only the connector's
     // usageLookup declaration drives inclusion.
-    expect(seed.where.purchase.package.providerId.in).not.toContain('AIRHUB')
+    expect(seed.where.purchase.providerId.in).not.toContain('AIRHUB')
   })
 })
 

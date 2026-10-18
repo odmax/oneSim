@@ -765,3 +765,45 @@ describe('device/install-signal precedence (Phase 1 follow-up)', () => {
     }
   })
 })
+
+
+describe('EXPIRING warning never expires an eSIM', () => {
+  it.each([
+    'ACTIVE',
+    'INSTALLED',
+    'PENDING_ACTIVATION',
+    'REFUNDED',
+  ])('preserves %s on provider EXPIRING', (currentStatus) => {
+    const result = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'EXPIRING',
+      currentStatus,
+      dataUsedMB: 0,
+      activatedAt: null,
+    })
+    expect(result.status).toBe(currentStatus)
+    expect(result.setActivatedAt).toBe(false)
+    expect(result.reason).toBe(
+      currentStatus === 'REFUNDED'
+        ? 'preserve-terminal'
+        : 'provider-expiring-warning',
+    )
+  })
+
+  it('normalizes PROCESSING without expiring the eSIM', () => {
+    const result = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'EXPIRING',
+      currentStatus: 'PROCESSING',
+      dataUsedMB: 0,
+    })
+    expect(result.status).toBe('PENDING_ACTIVATION')
+    expect(result.setActivatedAt).toBe(false)
+  })
+
+  it('still expires ACTIVE on explicit provider EXPIRED', () => {
+    expect(deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'EXPIRED',
+      currentStatus: 'ACTIVE',
+      dataUsedMB: 0,
+    }).status).toBe('EXPIRED')
+  })
+})

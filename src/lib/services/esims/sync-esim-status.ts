@@ -1,3 +1,4 @@
+import { resolveSyncProviderId } from '@/lib/services/esims/resolve-sync-provider'
 import { prisma } from '@/lib/prisma'
 import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
 import { getStatusNextSync, getUsageNextSync } from '@/lib/services/jobs/sync-policy'
@@ -42,7 +43,7 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   })
   if (!esim) return { success: false, error: 'eSIM not found' }
 
-  const providerId = esim.purchase?.package?.providerId
+  const providerId = await resolveSyncProviderId(esim.purchase)
   if (!providerId) return { success: false, error: 'No provider configured' }
 
   const connector = await buildProviderConnector(providerId)

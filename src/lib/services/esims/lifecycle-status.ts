@@ -180,9 +180,18 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
     return { status: 'SUSPENDED', setActivatedAt: false, reason: 'provider-suspended' }
   }
 
-  // 8. Expired
-  if (upper === 'EXPIRED' || upper === 'EXPIRING') {
+  // 8. Expired: EXPIRING is a warning, never terminal evidence.
+  if (upper === 'EXPIRED') {
     return { status: 'EXPIRED', setActivatedAt: false, reason: 'provider-expired' }
+  }
+  if (upper === 'EXPIRING') {
+    return {
+      status: WEAKER_PROVISIONING_STATES.includes(currentUpper) || !currentUpper
+        ? 'PENDING_ACTIVATION'
+        : currentUpper,
+      setActivatedAt: false,
+      reason: 'provider-expiring-warning',
+    }
   }
 
   // 9. CANCELLED

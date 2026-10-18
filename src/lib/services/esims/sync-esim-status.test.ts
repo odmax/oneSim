@@ -31,7 +31,7 @@ function makeEsim(overrides: any = {}) {
     activationDetectedAt: null,
     usageNextSyncAt: null,
     providerResponse: null,
-    purchase: { package: { providerId: 'p-1' } },
+    purchase: { providerId: 'p-1', package: { providerId: 'p-1' } },
     ...overrides,
   }
 }
