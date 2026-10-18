@@ -106,6 +106,32 @@ describe('provider-finalizer', () => {
       expect(result.success).toBe(false)
     })
 
+    it('does NOT fabricate providerStatus ACTIVE — truthful PROVISIONED fallback when no connector status supplied', async () => {
+      mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({ id: ORDER_ID, businessId: 'b1', userId: 'u1', status: 'CREATED', totalAmount: { toString: () => '5' } } as any)
+      mockCompleteFulfill.mockResolvedValue({ success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true })
+
+      const result = await completeProviderOperation({ orderId: ORDER_ID, businessId: 'b1', providerId: 'p-1', providerRef: PROVIDER_REF, providerName: 'iBASIS', totalAmount: 5, iccids: ['89012345678901234567'] })
+
+      expect(result.success).toBe(true)
+      expect(mockCompleteFulfill).toHaveBeenCalledWith(expect.objectContaining({
+        providerResult: expect.objectContaining({ providerStatus: 'PROVISIONED' }),
+      }))
+      const providerStatus = (mockCompleteFulfill.mock.calls[0][0] as any).providerResult.providerStatus
+      expect(providerStatus).not.toBe('ACTIVE')
+    })
+
+    it('persists the real connector result status when supplied', async () => {
+      mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({ id: ORDER_ID, businessId: 'b1', userId: 'u1', status: 'CREATED', totalAmount: { toString: () => '5' } } as any)
+      mockCompleteFulfill.mockResolvedValue({ success: true, orderStatus: 'FULFILLED', walletCaptured: true, eSIMsPersisted: true })
+
+      const result = await completeProviderOperation({ orderId: ORDER_ID, businessId: 'b1', providerId: 'p-1', providerRef: PROVIDER_REF, providerName: 'iBASIS', totalAmount: 5, iccids: ['89012345678901234567'], providerStatus: 'PROCESSING' })
+
+      expect(result.success).toBe(true)
+      expect(mockCompleteFulfill).toHaveBeenCalledWith(expect.objectContaining({
+        providerResult: expect.objectContaining({ providerStatus: 'PROCESSING' }),
+      }))
+    })
+
     it('returns recovery-required when finalization fails with recovery flag', async () => {
       mockPrisma.eSIMPurchase.findUnique.mockResolvedValue({ id: ORDER_ID, businessId: 'b1', userId: 'u1', status: 'CREATED', totalAmount: { toString: () => '5' } } as any)
       mockCompleteFulfill.mockResolvedValue({ success: false, recoveryRequired: true, orderStatus: 'CREATED', walletCaptured: false, eSIMsPersisted: false, error: 'Partial eSIM persistence' })

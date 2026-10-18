@@ -11,6 +11,7 @@
 // ===========================================================================
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
@@ -77,6 +78,7 @@ async function upsertLocalCustomer(businessId: string, providerSubscriberId: str
 export async function ensureIbasisSubscriber(providerId: string, businessId: string, input: IbasisSubscriberInput) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
   if (!providerId || !businessId) return { error: 'providerId and businessId are required' }
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
@@ -126,6 +128,7 @@ export async function ensureIbasisSubscriber(providerId: string, businessId: str
 export async function getIbasisSubscriber(providerId: string, businessId: string, providerSubscriberId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PROVIDERS))) throw new Error('Unauthorized')
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) return { error: 'Provider not found' }
@@ -154,6 +157,7 @@ export async function getIbasisSubscriber(providerId: string, businessId: string
 export async function updateIbasisSubscriber(providerId: string, businessId: string, providerSubscriberId: string, patch: IbasisSubscriberInput) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) return { error: 'Provider not found' }

@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
@@ -21,6 +22,7 @@ export async function getProviderDependencies(providerId: string): Promise<Provi
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     return { packages: 0, purchases: 0, esims: 0, topUps: 0, pricingRules: 0, total: 0, hasDependencies: false }
   }
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PROVIDERS))) return { packages: 0, purchases: 0, esims: 0, topUps: 0, pricingRules: 0, total: 0, hasDependencies: false }
 
   const [packages] = await Promise.all([
     prisma.eSIMPackage.count({ where: { providerId } }),
@@ -55,6 +57,7 @@ export async function archiveProvider(providerId: string) {
     if (!session || session.user.role !== 'INTERNAL_ADMIN') {
       return { success: false, error: 'Unauthorized' }
     }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
     if (!provider) return { success: false, error: 'Provider not found' }
@@ -118,6 +121,7 @@ export async function restoreProvider(formData: FormData) {
   try {
     const session = await getServerSession(authOptions)
     if (!session || session.user.role !== 'INTERNAL_ADMIN') return
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
     if (!provider || provider.status !== 'ARCHIVED') return
@@ -146,6 +150,7 @@ export async function restoreProviderById(providerId: string) {
   try {
     const session = await getServerSession(authOptions)
     if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
     if (!provider) return { success: false, error: 'Provider not found' }
@@ -175,6 +180,7 @@ export async function resetProviderConfiguration(providerId: string) {
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     return { success: false, error: 'Unauthorized' }
   }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) return { success: false, error: 'Unauthorized' }
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) return { success: false, error: 'Provider not found' }
@@ -215,11 +221,17 @@ export async function resetProviderConfiguration(providerId: string) {
 export async function hardDeleteProvider(providerId: string) {
   try {
     const session = await getServerSession(authOptions)
-    if (!session || session.user.role !== 'INTERNAL_ADMIN') {
+    if (!session || session.user.role !== 'INTERNAL_ADMIN' || !session.user.id) {
       return { success: false, error: 'Unauthorized' }
     }
 
-    if (session.user.internalAdminRole !== 'SUPER_ADMIN') {
+    if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) {
+      return { success: false, error: 'Unauthorized' }
+    }
+
+    const { loadAdminAccess } = await import('@/lib/auth/permissions')
+    const access = await loadAdminAccess(session.user.id)
+    if (!access || access.role !== 'SUPER_ADMIN') {
       return { success: false, error: 'Only SUPER_ADMIN can hard-delete providers' }
     }
 

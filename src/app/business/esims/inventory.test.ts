@@ -1,11 +1,15 @@
 import { describe, it, expect } from 'vitest'
+import fs from 'fs'
+import path from 'path'
 import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
 import { buildPackageSearchText } from '@/lib/packages/search-text'
+import { deriveEsimInventoryStatus } from '@/lib/esim/inventory-status'
 
 describe('business eSIM status labels (via centralized helper)', () => {
-  it('labels PENDING_ACTIVATION as "Ready to install" not "Activated on device"', () => {
+  it('labels PENDING_ACTIVATION as "Provisioned" not "Ready to install" or "Activated on device"', () => {
     const label = getEsimStatusLabel('PENDING_ACTIVATION')
-    expect(label.label).toBe('Ready to install')
+    expect(label.label).toBe('Provisioned')
+    expect(label.label).not.toBe('Ready to install')
     expect(label.label).not.toBe('Activated on device')
   })
 
@@ -130,6 +134,83 @@ describe('QR action visibility rules', () => {
   })
 })
 
+describe('business eSIM inventory — single shared primary status badge', () => {
+  const pagePath = path.join(process.cwd(), 'src/app/business/esims/page.tsx')
+
+  it('renders exactly one provider-neutral primary badge per eSIM (no stacked Service/Setup/Usage/Status-check badges)', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    // The inventory uses the single shared provider-neutral badge, not the two-axis
+    // presentation and not the stacked inventory-fields component.
+    expect(content).toContain('EsimPrimaryStatusBadge')
+    expect(content).not.toContain('EsimInventoryStatusFields')
+    expect(content).not.toContain('deriveEsimLifecyclePresentation')
+    expect(content).not.toContain('deriveEsimCustomerDisplayStatus')
+    const rendered = (content.match(/<EsimPrimaryStatusBadge/g) || []).length
+    expect(rendered).toBe(1)
+    // No stacked unlabelled pills remain on the inventory list.
+    expect(content).not.toContain('Service status')
+    expect(content).not.toContain('Setup status')
+  })
+
+  it('Active + Installed inventory row shows a single Active badge and no separate Installed badge', () => {
+    const d = deriveEsimInventoryStatus({ status: 'ACTIVE', installationStatus: 'READY', activationCode: 'LPA:1$a$b', activatedAt: new Date('2026-01-01'), dataUsedMB: 512 })
+    expect(d.primary.label).toBe('Active')
+    expect(d.primary.status).toBe('ACTIVE')
+    // A single primary badge means no second device badge is rendered.
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect((content.match(/<EsimPrimaryStatusBadge/g) || []).length).toBe(1)
+  })
+
+  it('PENDING_ACTIVATION + Ready install data with unknown device state shows a single Ready to install badge', () => {
+    const d = deriveEsimInventoryStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 })
+    // QR/install details are "available to install" — never a claim of Installed.
+    expect(d.primary.status).toBe('READY_TO_INSTALL')
+    expect(d.primary.label).toBe('Ready to install')
+    expect(d.primary.label).not.toBe('Installed on device')
+    expect(d.device.state).not.toBe('INSTALLED')
+  })
+
+  it('preserves QR/top-up/refresh/share/copy-details actions', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).toContain('QrCodeButton')
+    expect(content).toContain('isTopUpEligibleStatus')
+    expect(content).toContain('syncEsimStatusAction')
+    expect(content).toContain('ShareActions')
+    expect(content).toContain('CopyButton')
+  })
+})
+
+describe('business eSIM detail page — labelled two-axis status', () => {
+  it('detail page labels Service status and Setup status explicitly', () => {
+    const content = fs.readFileSync(path.join(process.cwd(), 'src/app/business/esims/[id]/page.tsx'), 'utf8')
+    expect(content).toContain('Service status')
+    expect(content).toContain('Setup status')
+    expect(content).toContain('deriveEsimLifecyclePresentation')
+  })
+})
+
+describe('compact eSIM summary surfaces — one-badge helper', () => {
+  it('customers detail uses the single summary helper (not raw service label)', () => {
+    const content = fs.readFileSync(path.join(process.cwd(), 'src/app/business/customers/[id]/page.tsx'), 'utf8')
+    expect(content).toContain('deriveEsimCustomerDisplayStatus')
+    expect(content).not.toContain('getEsimStatusLabel')
+  })
+
+  it('business top-up summary card uses the single summary helper', () => {
+    const content = fs.readFileSync(path.join(process.cwd(), 'src/app/business/esims/[id]/top-up/page.tsx'), 'utf8')
+    expect(content).toContain('deriveEsimCustomerDisplayStatus')
+    expect(content).not.toContain('getEsimStatusLabel')
+  })
+
+  it('usage list uses the single summary helper, not stacked two-axis pills', () => {
+    const content = fs.readFileSync(path.join(process.cwd(), 'src/app/business/esim-usage/page.tsx'), 'utf8')
+    expect(content).toContain('deriveEsimCustomerDisplayStatus')
+    expect(content).not.toContain('deriveEsimLifecyclePresentation')
+    expect(content).not.toContain('Service status')
+    expect(content).not.toContain('Setup status')
+  })
+})
+
 describe('search text for business packages', () => {
   it('Zambia package search text contains expected fields', () => {
     const p = {
@@ -152,5 +233,41 @@ describe('search text for business packages', () => {
     const text = buildPackageSearchText(p)
     expect(text).toContain('botswana')
     expect(text).toContain('bw')
+  })
+})
+
+describe('business eSIM inventory — provider-neutral shared status badge', () => {
+  const pagePath = path.join(process.cwd(), 'src/app/business/esims/page.tsx')
+
+  it('renders the shared provider-neutral primary status badge (same resolver as Admin)', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).toContain("from '@/components/esim/EsimPrimaryStatusBadge'")
+  })
+
+  it('no longer renders the stacked inventory-fields component or the lifecycle badge in the list', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).not.toContain('EsimInventoryStatusFields')
+    expect(content).not.toContain('deriveEsimCustomerDisplayStatus')
+  })
+
+  it('never renders raw provider status, raw payloads, or provider data columns', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).not.toContain('esim.providerStatus')
+    expect(content).not.toContain('providerRawData')
+    // providerResponse is read ONLY through the whitelist LPA extractor.
+    expect(content).toContain('safeProviderLPA(esim.providerResponse)')
+  })
+
+  it('the single shared status badge stays in place (one EsimPrimaryStatusBadge per row)', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect((content.match(/<EsimPrimaryStatusBadge/g) || []).length).toBe(1)
+  })
+
+  it('feeds installation-check, scheduler and usage-check fields', () => {
+    const content = fs.readFileSync(pagePath, 'utf8')
+    expect(content).toContain('installationLastCheckedAt: esim.installationLastCheckedAt')
+    expect(content).toContain('statusNextSyncAt: esim.statusNextSyncAt')
+    expect(content).toContain('lastStatusSyncAt: esim.lastStatusSyncAt')
+    expect(content).toContain('lastUsageSyncAt: esim.lastUsageSyncAt')
   })
 })

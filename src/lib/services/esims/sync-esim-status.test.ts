@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     eSIM: { findUnique: vi.fn(), update: vi.fn() },
+    $executeRawUnsafe: vi.fn().mockResolvedValue(0),
   },
 }))
 
@@ -30,7 +31,7 @@ function makeEsim(overrides: any = {}) {
     activationDetectedAt: null,
     usageNextSyncAt: null,
     providerResponse: null,
-    purchase: { package: { providerId: 'p-1' } },
+    purchase: { providerId: 'p-1', package: { providerId: 'p-1' } },
     ...overrides,
   }
 }
@@ -110,6 +111,43 @@ describe('syncESIMStatus — canonical evidence pipeline (root-cause fix)', () =
     expect(updateCall.data.usageNextSyncAt.getTime() - Date.now()).toBeGreaterThanOrEqual(sixHours - 5000)
   })
 
+  it('connector-confirmed authoritative activatedAt (e.g. iBASIS) + ACTIVE promotes PENDING → ACTIVE and persists the timestamp', async () => {
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', rawStatus: 'active', activatedAt: '2026-07-02T00:00:00Z', rawMetadata: { source: 'subscription' } },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    const result = await syncESIMStatus('esim-1')
+
+    expect(result.status).toBe('ACTIVE')
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBe('ACTIVE')
+    expect(updateCall.data.activatedAt).toEqual(new Date('2026-07-02T00:00:00Z'))
+    expect(updateCall.data.activationDetectedAt).toBeInstanceOf(Date)
+  })
+
+  it('raw ACTIVE without any activation evidence (no timestamp, no usage) does NOT promote a pending eSIM', async () => {
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', rawStatus: 'active', rawMetadata: { source: 'package-only' } },
+      }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    const result = await syncESIMStatus('esim-1')
+
+    expect(result.status).toBe('PENDING_ACTIVATION')
+    // Persistence only writes a status when it changed; a weak ACTIVE claim
+    // leaves PENDING_ACTIVATION untouched (no fabrication, no activation).
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+    expect(updateCall.data.activatedAt).toBeUndefined()
+  })
+
   it('does NOT seed usageNextSyncAt when the connector does not declare usage lookup', async () => {
     const connector = statusConnector({
       capabilities: { statusLookup: true, usageLookup: false },
@@ -138,8 +176,35 @@ describe('syncESIMStatus — canonical evidence pipeline (root-cause fix)', () =
     expect(result.status).toBe('INSTALLED')
     const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
     expect(updateCall.data.status).toBe('INSTALLED')
-    expect(updateCall.data.activatedAt).toBeInstanceOf(Date)
-    expect(updateCall.data.activationDetectedAt).toBeInstanceOf(Date)
+    expect(updateCall.data.activatedAt).toBeUndefined()
+    expect(updateCall.data.activationDetectedAt).toBeUndefined()
+    expect(result.activated).toBe(false)
+  })
+
+  it('Telna disabled profile is shown on install axis without becoming service SUSPENDED', async () => {
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({ success: true, data: {
+        status: 'INSTALLED', evidence: { deviceInstalled: true, installationStatus: 'DISABLED' },
+      } }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.status).toBe('INSTALLED')
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data).toMatchObject({ status: 'INSTALLED', installationStatus: 'DISABLED' })
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data.status).not.toBe('SUSPENDED')
+  })
+
+  it('confirmed deleted profile clears an install-only service state during polling', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'INSTALLED' }) as any)
+    const connector = statusConnector({
+      getStatus: vi.fn().mockResolvedValue({ success: true, data: {
+        status: 'PENDING_ACTIVATION', evidence: { installationStatus: 'DELETED' },
+      } }),
+    })
+    mockBuildConnector.mockResolvedValue(connector as any)
+    const result = await syncESIMStatus('esim-1')
+    expect(result.status).toBe('PENDING_ACTIVATION')
+    expect(mockPrisma.eSIM.update.mock.calls[0][0].data).toMatchObject({ status: 'PENDING_ACTIVATION', installationStatus: 'DELETED' })
   })
 
   it('weak ACTIVE claim (no evidence) stays PENDING_ACTIVATION at the pending cadence', async () => {
@@ -481,5 +546,45 @@ describe('iBASIS deactivated lifecycle semantics through the shared engine (term
     expect(result.statusChanged).toBe(false)
     const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
     expect(updateCall.data.status).toBeUndefined()
+  })
+
+  it('stored REFUNDED + provider ACTIVE report stays REFUNDED (status sync cannot reactivate)', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'REFUNDED' }) as any)
+    mockBuildConnector.mockResolvedValue(statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', evidence: { networkAttached: true }, rawMetadata: { networkAttached: true } },
+      }),
+    }) as any)
+
+    const result = await syncESIMStatus('esim-1')
+
+    expect(result.status).toBe('REFUNDED')
+    expect(result.statusChanged).toBe(false)
+    const updateCall = mockPrisma.eSIM.update.mock.calls[0][0]
+    expect(updateCall.data.status).toBeUndefined()
+    expect(updateCall.data.statusNextSyncAt).toBeInstanceOf(Date) // refresh still re-schedules cadence
+  })
+
+  it('a successful manual refresh resolves ONLY this eSIM’s STATUS exhaustion', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status: 'ACTIVE', statusSyncRetryCount: 3 }) as any)
+    mockBuildConnector.mockResolvedValue(statusConnector({
+      getStatus: vi.fn().mockResolvedValue({
+        success: true,
+        data: { status: 'ACTIVE', evidence: { networkAttached: true }, rawMetadata: { networkAttached: true } },
+      }),
+    }) as any)
+
+    await syncESIMStatus('esim-1')
+
+    expect(mockPrisma.$executeRawUnsafe).toHaveBeenCalled()
+    const [sql, providerId, code, resourceType, resourceId, dedupKey] = mockPrisma.$executeRawUnsafe.mock.calls[0]
+    expect(String(sql)).toContain('UPDATE provider_alerts')
+    expect(String(sql)).toContain('"resolvedAt" IS NULL AND "resourceType"=$3 AND "resourceId"=$4 AND "dedupKey"=$5')
+    expect(providerId).toBe('p-1')
+    expect(code).toBe('SYNC_RETRY_EXHAUSTED')
+    expect(resourceType).toBe('ESIM')
+    expect(resourceId).toBe('esim-1') // internal eSIM id — never an ICCID
+    expect(dedupKey).toBe('status') // status recovery never clears usage exhaustion
   })
 })

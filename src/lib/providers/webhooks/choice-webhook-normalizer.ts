@@ -46,16 +46,23 @@ export function normalizeChoiceWebhook(payload: any): NormalizedWebhookEvent {
   const rawImsi = payload.imsi != null ? String(payload.imsi) : undefined
   const rawIccid = payload.iccid ? String(payload.iccid) : undefined
   const maxQtyType = (payload.max_qty_type || 'MB').toUpperCase()
-  const quantityUsed = parseInt(payload.quantity_used) || 0
-  const maximumUnits = parseInt(payload.maximum_units) || 0
+
+  // Parse only when the field is actually present: a legitimate "0" is a real
+  // zero and preserved; an absent field stays undefined (unknown).
+  const quantityUsedRaw = payload.quantity_used
+  const maxUnitsRaw = payload.maximum_units
+  const hasUsed = quantityUsedRaw !== undefined && quantityUsedRaw !== null && String(quantityUsedRaw).trim() !== ''
+  const hasTotal = maxUnitsRaw !== undefined && maxUnitsRaw !== null && String(maxUnitsRaw).trim() !== ''
+  const quantityUsed = hasUsed ? parseInt(quantityUsedRaw) || 0 : undefined
+  const maximumUnits = hasTotal ? parseInt(maxUnitsRaw) || 0 : undefined
 
   let dataUsedMB = quantityUsed
-  if (maxQtyType === 'GB') dataUsedMB = quantityUsed * 1024
-  if (maxQtyType === 'TB') dataUsedMB = quantityUsed * 1024 * 1024
+  if (maxQtyType === 'GB') dataUsedMB = quantityUsed != null ? quantityUsed * 1024 : undefined
+  if (maxQtyType === 'TB') dataUsedMB = quantityUsed != null ? quantityUsed * 1024 * 1024 : undefined
 
   let dataTotalMB = maximumUnits
-  if (maxQtyType === 'GB') dataTotalMB = maximumUnits * 1024
-  if (maxQtyType === 'TB') dataTotalMB = maximumUnits * 1024 * 1024
+  if (maxQtyType === 'GB') dataTotalMB = maximumUnits != null ? maximumUnits * 1024 : undefined
+  if (maxQtyType === 'TB') dataTotalMB = maximumUnits != null ? maximumUnits * 1024 * 1024 : undefined
 
   const externalId = [
     'choice',
@@ -75,9 +82,9 @@ export function normalizeChoiceWebhook(payload: any): NormalizedWebhookEvent {
     providerStatus: eventType === 'ESIM_ACTIVATED' ? 'ACTIVE' : eventType === 'ESIM_EXPIRED' ? 'EXPIRED' : undefined,
     activatedAt: eventType === 'ESIM_ACTIVATED' ? parseChoiceDate(payload.start_time) : undefined,
     usageDate: parseChoiceDate(payload.start_time),
-    dataUsedMB: dataUsedMB || undefined,
-    dataTotalMB: dataTotalMB || undefined,
-    dataRemainingMB: dataTotalMB > 0 && dataUsedMB > 0 ? Math.max(0, dataTotalMB - dataUsedMB) : undefined,
+    dataUsedMB,
+    dataTotalMB,
+    dataRemainingMB: dataUsedMB != null && dataTotalMB != null && dataTotalMB > 0 ? Math.max(0, dataTotalMB - dataUsedMB) : undefined,
     expiresAt: parseChoiceDate(payload.expire_time),
     raw: payload,
   }

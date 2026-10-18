@@ -16,6 +16,7 @@
 // ===========================================================================
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
@@ -45,6 +46,7 @@ function safeAdminMessage(error: any, context: string): string {
 export async function assignPackageToSim(esimId: string, providerPackageId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const assignStartTime = Date.now()
 
@@ -199,6 +201,7 @@ export async function assignPackageToSim(esimId: string, providerPackageId: stri
 export async function refreshSimPCRProfile(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   try {
     const esim = await prisma.eSIM.findUnique({

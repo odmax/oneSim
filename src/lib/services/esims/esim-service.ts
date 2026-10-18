@@ -3,6 +3,7 @@ import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
 import { createTimelineEvent } from '@/lib/services/orders/order-state-machine'
 import type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
 import { buildChoiceStatusLookup, hasChoiceIdentifier, extractChoiceImsiVersion } from './choice-lookup'
+import { isTopUpEligibleStatus, TOP_UP_ELIGIBLE_STATUSES } from '@/lib/providers/capabilities/esim-action-availability'
 
 export { buildChoiceStatusLookup, extractChoiceImsiVersion } from './choice-lookup'
 export type { StatusLookupIdentifier } from '@/lib/providers/connectors/connector-interface'
@@ -68,7 +69,8 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
   })
   if (!esim) return { success: false, error: 'eSIM not found' }
 
-  const providerId = esim.purchase.package.providerId
+  const { resolveSyncProviderId } = await import('@/lib/services/esims/resolve-sync-provider')
+  const providerId = await resolveSyncProviderId(esim.purchase)
   if (!providerId) return { success: false, error: 'No linked provider' }
 
   // Capability exposure gate (client portal).
@@ -89,28 +91,22 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
     return { success: false, error: result.error || 'Usage sync failed' }
   }
 
-  // Re-read the persisted snapshot and apply canonical first-usage activation
-  // evidence (positive per-eSIM usage may promote PENDING_ACTIVATION → ACTIVE).
+  // The canonical usage sync already promoted PENDING → ACTIVE (via
+  // deriveUsageActivation) and persisted activation timestamps; re-read the
+  // snapshot to build the timeline + return shape — never a direct status write.
   const fresh = await prisma.eSIM.findUnique({ where: { id: esimId } })
   const dataUsedMB = result.dataUsedMB ?? 0
   const dataTotalMB = result.dataTotalMB
   const dataRemainingMB = result.dataRemainingMB
 
-  const hadNoUsage = (esim.dataUsedMB || 0) <= 0
-  const nowHasUsage = dataUsedMB > 0
-  const firstActivation = hadNoUsage && nowHasUsage && !esim.activatedAt
-  const shouldPromoteToActive = hadNoUsage && nowHasUsage && (esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING')
+  const firstActivation = !esim.activatedAt && Boolean(fresh?.activatedAt)
+  const promotedToActive = !(esim.status === 'ACTIVE') && (fresh?.status === 'ACTIVE' || result.status === 'ACTIVE')
 
-  await prisma.eSIM.update({
-    where: { id: esimId },
-    data: {
-      ...(firstActivation ? { activatedAt: new Date() } : {}),
-      ...(shouldPromoteToActive ? { status: 'ACTIVE' } : {}),
-    },
-  })
-
-  if (firstActivation) {
-    await createTimelineEvent(esim.purchaseId, { eventType: 'ESIM_ACTIVATED', message: `eSIM ${esim.iccid.slice(-8)} activated — first usage detected (${dataUsedMB}MB)` })
+  if (firstActivation || promotedToActive) {
+    await createTimelineEvent(esim.purchaseId, {
+      eventType: 'ESIM_ACTIVATED',
+      message: `eSIM ${esim.iccid.slice(-8)} activated — first usage detected (${dataUsedMB}MB)`,
+    })
   }
   await createTimelineEvent(esim.purchaseId, { eventType: 'USAGE_REFRESHED', message: `Usage synced: ${dataUsedMB}MB used` })
 
@@ -118,7 +114,7 @@ export async function refreshEsimUsage(esimId: string): Promise<{ success: boole
 
   return {
     success: true,
-    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: fresh?.expiresAt || esim.expiresAt || undefined, status: shouldPromoteToActive ? 'ACTIVE' : fresh?.status || esim.status },
+    data: { dataUsedMB, dataTotalMB, dataRemainingMB, percentageUsed, expiresAt: fresh?.expiresAt || esim.expiresAt || undefined, status: result.status || fresh?.status || esim.status },
   }
 }
 
@@ -137,7 +133,12 @@ async function runEsimLifecycle(action: 'SUSPEND' | 'RESUME', esimId: string): P
   })
   if (!esim) return { success: false, error: 'eSIM not found' }
 
-  const providerId = esim.purchase.package.providerId
+  if (['EXPIRED', 'FAILED', 'CANCELLED', 'REFUNDED'].includes(String(esim.status).toUpperCase())) {
+    return { success: false, error: 'Cannot change lifecycle of a terminal eSIM' }
+  }
+
+  const { resolveSyncProviderId } = await import('@/lib/services/esims/resolve-sync-provider')
+  const providerId = await resolveSyncProviderId(esim.purchase)
   if (!providerId) return { success: false, error: 'No linked provider' }
 
   const { isCapabilityExposedToPortal } = await import('@/lib/providers/capabilities/exposure')
@@ -154,6 +155,12 @@ async function runEsimLifecycle(action: 'SUSPEND' | 'RESUME', esimId: string): P
     select: { code: true },
   })
   const isChoice = provider?.code?.toUpperCase() === 'CHOICE'
+
+  // IBASIS requires an authoritative subscription ID, not an ICCID.
+  // Fail closed until subscription-ID provenance is verified for lifecycle actions.
+  if (provider?.code?.toUpperCase() === 'IBASIS') {
+    return { success: false, error: 'IBASIS lifecycle requires verified subscription identity' }
+  }
 
   let identifier: string | StatusLookupIdentifier
   if (isChoice) {
@@ -213,7 +220,7 @@ export async function topUpEsimWithWallet(esimId: string, businessId: string, us
   if (!esim) return { success: false, error: 'eSIM not found' }
   if (esim.purchase.businessId !== businessId) return { success: false, error: 'eSIM does not belong to this business' }
 
-  const allowed = ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING']
+  const allowed = TOP_UP_ELIGIBLE_STATUSES
   if (!allowed.includes(esim.status)) return { success: false, error: 'eSIM status does not allow top-up' }
 
   const topUpPkg = await prisma.eSIMPackage.findUnique({ where: { id: topUpPackageId } })
@@ -222,8 +229,17 @@ export async function topUpEsimWithWallet(esimId: string, businessId: string, us
   const productType = topUpPkg.productType || 'NEW_ESIM'
   if (productType !== 'TOP_UP' && productType !== 'BOTH') return { success: false, error: 'Package is not a top-up package' }
 
-  const providerId = topUpPkg.providerId || esim.purchase.package.providerId
-  if (!providerId) return { success: false, error: 'No provider configured' }
+  const { resolveSyncProviderId } = await import('@/lib/services/esims/resolve-sync-provider')
+  const providerId = await resolveSyncProviderId(esim.purchase)
+  if (!providerId) return { success: false, error: 'eSIM fulfillment provider is unverified' }
+
+  // Package compatibility is also enforced inside createTopUpOrder,
+  // protecting direct API callers before wallet reservation.
+  const { resolvePackageBacking } = await import('@/lib/services/orders/package-backing-resolver')
+  const backing = await resolvePackageBacking(topUpPkg)
+  if (backing.kind !== 'BOUND' || backing.backing.providerId !== providerId || !backing.backing.providerPlanId) {
+    return { success: false, error: 'Top-up package is not verified for this eSIM provider' }
+  }
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider || !provider.supportsTopUp) return { success: false, error: 'Provider does not support top-up' }
@@ -255,11 +271,11 @@ export async function topUpEsimWithWallet(esimId: string, businessId: string, us
 }
 
 export async function markExpiredESIMs(): Promise<number> {
-  const result = await prisma.eSIM.updateMany({
-    where: { expiresAt: { lte: new Date() }, status: { notIn: ['EXPIRED', 'FAILED', 'CANCELLED'] } },
-    data: { status: 'EXPIRED' },
-  })
-  return result.count
+  // Safety hold: expiresAt may be an estimate calculated at fulfillment.
+  // Never convert estimated expiry into a terminal lifecycle status.
+  // Provider-confirmed expiry remains handled by canonical status sync.
+  // Restore bulk expiry only after authoritative expiry provenance exists.
+  return 0
 }
 
 export async function refreshAllActiveStatuses(): Promise<{ refreshed: number; errors: number }> {

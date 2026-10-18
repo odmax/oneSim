@@ -1,6 +1,7 @@
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { getTemplate } from '@/lib/actions/provider-templates'
 import { TemplateForm } from '../../new/TemplateForm'
@@ -8,6 +9,7 @@ import { TemplateForm } from '../../new/TemplateForm'
 export default async function EditTemplatePage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_PROVIDERS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const template = await getTemplate(params.id)
   if (!template) redirect('/admin/provider-templates?error=Template+not+found')

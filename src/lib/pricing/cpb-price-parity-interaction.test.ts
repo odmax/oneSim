@@ -14,6 +14,23 @@ vi.mock('@/lib/providers/capabilities/exposure', () => ({
 import { queryPurchasablePackages } from '@/lib/packages/query-purchasable'
 
 function customRetail(overrides: Record<string, any> = {}) {
+  const backing = (id: string, sell: string) => ({
+    id,
+    isActive: true,
+    providerPackage: {
+      id,
+      providerId: 'prov-1',
+      publishStatus: 'PUBLISHED',
+      configurationStatus: 'CONFIGURED',
+      pricingStatus: 'READY',
+      costStatus: 'VALID',
+      activePriceSnapshotId: 'snap-' + id,
+      sellingPrice: { toString: () => sell },
+      costPrice: { toString: () => '1.00' },
+      isAvailable: true,
+      provider: { id: 'prov-1', name: 'USMatrix', status: 'ACTIVE', enabledCapabilities: ['PURCHASE'], code: 'USMATRIX' },
+    },
+  })
   return {
     id: 'custom-1',
     name: 'Custom Multi-Provider',
@@ -26,8 +43,10 @@ function customRetail(overrides: Record<string, any> = {}) {
     // Custom packages have NO single providerPackageId → not subject to BOUND parity.
     providerPackageId: null,
     providerPackage: null,
-    // Custom packages have providerBindings (multi-provider backings).
-    providerBindings: [{ id: 'b1' }, { id: 'b2' }],
+    // Custom packages have providerBindings (multi-provider backings). A custom
+    // package is operationally ready only when ≥1 binding's ProviderPackage +
+    // Provider satisfy full PURCHASE readiness (see countOperationalReadyCustomBackings).
+    providerBindings: [backing('b1', '5'), backing('b2', '8')],
     provider: { status: 'ACTIVE', enabledCapabilities: ['PURCHASE'], code: 'USMATRIX', id: 'prov-1' },
     ...overrides,
   }

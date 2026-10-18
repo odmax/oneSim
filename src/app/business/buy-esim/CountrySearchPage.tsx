@@ -6,6 +6,13 @@ import EsimSearchAssistant, { parseQuery, type ParsedQuery } from '@/components/
 import { filterPackages } from './package-filter'
 import { countryFlagEntry, matchCountrySearch } from '@/lib/packages/country-flags'
 import type { CountryFlagEntry } from '@/lib/packages/country-flags'
+import {
+  stableSortPackages,
+  takeWindow,
+  hasMore,
+  CATALOG_PAGE_SIZE,
+  type BuySortMode,
+} from '@/lib/packages/catalog-pagination'
 
 interface Props {
   packages: any[]
@@ -16,7 +23,7 @@ interface CountryOption extends CountryFlagEntry {
   count: number
 }
 
-type SortMode = 'price-asc' | 'price-desc' | 'data-desc' | 'validity-desc'
+type SortMode = BuySortMode
 
 const VALIDITY_FILTERS = [
   { label: 'All', days: 0 },
@@ -64,19 +71,9 @@ function buildCountryList(packages: any[]): CountryOption[] {
 }
 
 function sortPackages(packages: any[], mode: SortMode): any[] {
-  const sorted = [...packages]
-  switch (mode) {
-    case 'price-asc':
-      sorted.sort((a, b) => parseFloat(a.priceUSD?.toString?.() || '0') - parseFloat(b.priceUSD?.toString?.() || '0'))
-      break
-    case 'data-desc':
-      sorted.sort((a, b) => (b.dataGB || 0) - (a.dataGB || 0))
-      break
-    case 'validity-desc':
-      sorted.sort((a, b) => (b.validityDays || 0) - (a.validityDays || 0))
-      break
-  }
-  return sorted
+  // Deterministic ordering (price/data/validity) with the package `id` as the
+  // tiebreaker + dedup — page boundaries are stable and nothing is duplicated.
+  return stableSortPackages(packages, mode)
 }
 
 export function CountrySearchPage({ packages, walletBalance }: Props) {
@@ -92,6 +89,18 @@ export function CountrySearchPage({ packages, walletBalance }: Props) {
   const [highlightIndex, setHighlightIndex] = useState(-1)
   const inputRef = useRef<HTMLInputElement>(null)
   const listboxRef = useRef<HTMLUListElement>(null)
+
+  // Render-window pagination (Load More) over the FULL filtered, sorted set.
+  // Any change to search/country/validity/sort/AI resets to the first window.
+  const [visibleCount, setVisibleCount] = useState(CATALOG_PAGE_SIZE)
+  const filterKey = [search, selectedCountry?.code || '', validityDays, sortMode, aiResults ? 1 : 0].join('|')
+  const prevFilterKey = useRef(filterKey)
+  useEffect(() => {
+    if (prevFilterKey.current !== filterKey) {
+      prevFilterKey.current = filterKey
+      setVisibleCount(CATALOG_PAGE_SIZE)
+    }
+  }, [filterKey])
 
   // Derive country list from packages
   const countries = useMemo(() => buildCountryList(packages), [packages])
@@ -122,6 +131,11 @@ export function CountrySearchPage({ packages, walletBalance }: Props) {
     }
     return sortPackages(pkgs, sortMode)
   }, [packages, selectedCountry, search, validityDays, sortMode, aiResults])
+
+  // Search/filter always operate over the ENTIRE eligible set; only the render
+  // window is paginated.
+  const renderedPackages = takeWindow(displayPackages, visibleCount)
+  const canLoadMore = hasMore(displayPackages, visibleCount)
 
   // Keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -288,8 +302,8 @@ export function CountrySearchPage({ packages, walletBalance }: Props) {
           {selectedCountry
             ? `${displayPackages.length} package${displayPackages.length !== 1 ? 's' : ''} for ${selectedCountry.flag} ${selectedCountry.name}`
             : search.trim()
-              ? `Showing ${displayPackages.length} of ${packages.length} packages matching "${search.trim()}"`
-              : `Showing ${displayPackages.length} of ${packages.length} packages`}
+              ? `Showing ${renderedPackages.length} of ${displayPackages.length} packages matching "${search.trim()}"`
+              : `Showing ${renderedPackages.length} of ${displayPackages.length} packages`}
         </p>
       )}
 
@@ -313,13 +327,25 @@ export function CountrySearchPage({ packages, walletBalance }: Props) {
         </div>
       )}
 
-      {/* Package grid */}
+      {/* Package grid — render window over the full eligible, filtered set */}
       {displayPackages.length > 0 && (
-        <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-          {displayPackages.map((pkg: any) => (
-            <PackageBuyCard key={pkg.id} pkg={pkg} walletBalance={walletBalance} />
-          ))}
-        </div>
+        <>
+          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+            {renderedPackages.map((pkg: any) => (
+              <PackageBuyCard key={pkg.id} pkg={pkg} walletBalance={walletBalance} />
+            ))}
+          </div>
+          {canLoadMore && (
+            <div className="flex justify-center pt-2">
+              <button
+                onClick={() => setVisibleCount(c => c + CATALOG_PAGE_SIZE)}
+                className="rounded-lg border border-cyan-300 bg-white px-5 py-2.5 text-sm font-medium text-cyan-700 hover:bg-cyan-50 transition-colors"
+              >
+                Load More ({displayPackages.length - renderedPackages.length} more)
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {/* Advanced search toggle */}

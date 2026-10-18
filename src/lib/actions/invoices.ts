@@ -6,6 +6,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { redirect } from 'next/navigation'
 import { handlePrismaError, handleServerActionError } from '@/lib/errors/handle-prisma-error'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 
 function generateInvoiceNumber(): string {
   const ts = Date.now().toString(36).toUpperCase()
@@ -13,9 +14,15 @@ function generateInvoiceNumber(): string {
   return `INV-${ts}-${rand}`
 }
 
-export async function generateInvoice(formData: FormData) {
+async function requireManageInvoices() {
   const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  if (!session || session.user.role !== 'INTERNAL_ADMIN' || !session.user.id) redirect('/login')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_INVOICES))) redirect('/admin/unauthorized')
+  return session
+}
+
+export async function generateInvoice(formData: FormData) {
+  const session = await requireManageInvoices()
 
   const businessId = formData.get('businessId') as string
   const type = formData.get('type') as string || 'MANUAL'
@@ -70,8 +77,7 @@ export async function generateInvoice(formData: FormData) {
 
 export async function markInvoicePaid(invoiceId: string) {
   try {
-    const session = await getServerSession(authOptions)
-    if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+    const session = await requireManageInvoices()
 
     const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } })
     if (!invoice) redirect('/admin/invoices?error=Invoice+not+found')
@@ -92,8 +98,7 @@ export async function markInvoicePaid(invoiceId: string) {
 
 export async function cancelInvoice(invoiceId: string) {
   try {
-    const session = await getServerSession(authOptions)
-    if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+    const session = await requireManageInvoices()
 
     const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } })
     if (!invoice) redirect('/admin/invoices?error=Invoice+not+found')

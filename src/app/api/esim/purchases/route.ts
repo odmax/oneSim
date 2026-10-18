@@ -3,6 +3,8 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { stripPackageProviderFields, stripEsimProviderFields, stripPurchaseProviderFields } from '@/lib/analytics/safe-fields'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,6 +20,8 @@ export async function GET(request: NextRequest) {
     const businessId = searchParams.get('businessId')
 
     if (session.user.role === 'INTERNAL_ADMIN') {
+      const { allowed, denied } = await adminApiAccess(Permissions.VIEW_ESIMS)
+      if (!allowed) return denied
       const where = businessId ? { businessId } : {}
       const purchases = await prisma.eSIMPurchase.findMany({
         where,

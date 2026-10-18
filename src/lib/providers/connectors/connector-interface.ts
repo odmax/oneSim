@@ -65,7 +65,10 @@ export interface ActivateESIMResult {
 
 export interface UsageResult {
   iccid: string
-  dataUsedMB: number
+  /** Used allowance in MB (normalized). Absent when the provider did not return
+   *  an authoritative used value — callers must treat absence as UNKNOWN, never
+   *  invent a zero. */
+  dataUsedMB?: number
   timestamp?: string
   /** Total allowance in MB (normalized). Additive — non-Choice providers may omit it. */
   dataTotalMB?: number
@@ -99,6 +102,8 @@ export type StatusResultEvidence = {
   networkAttached?: boolean
   /** Verified profile installed/enabled on device (no network attach). */
   deviceInstalled?: boolean
+  /** Provider's current profile-install checkpoint, not service lifecycle. */
+  installationStatus?: string
   /** Provider event timestamp that produced the evidence (ISO 8601). */
   observedAt?: string
   /** Human-readable reason (sanitized, no credentials). */
@@ -111,12 +116,21 @@ export interface StatusResult {
   iccid?: string
   /** Raw provider lifecycle value that produced `status`. */
   rawStatus?: string
-  /** Choice `imsi_version` returned by package_detail. */
+  /** Optional Choice `imsi_version` returned by package_detail. */
   imsiVersion?: string | number
   packageName?: string
   rateGroupStarttime?: string
   rateGroupExpire?: string
   expiresAt?: string
+  /**
+   * Optional authoritative activation timestamp (ISO 8601) a connector VERIFIED
+   * from provider data (e.g. iBASIS subscription `activated_at`). Used as
+   * activation history by the canonical engine — a provider ACTIVE claim with a
+   * confirmed activation timestamp may promote, while a raw ACTIVE claim alone
+   * never does. Only set when source semantics are confirmed by connector
+   * code/tests. Never inferred.
+   */
+  activatedAt?: string
   /** Canonical activation-evidence signals the connector verified (see StatusResultEvidence). */
   evidence?: StatusResultEvidence
   /** Optional canonical install data recovered during a status lookup (e.g.

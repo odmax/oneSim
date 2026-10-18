@@ -4,52 +4,88 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    /* App surfaces */
+    --background: 210 40% 98%;          /* very light cool grey/blue */
+    --foreground: 222 47% 11%;          /* deep navy/slate text */
+    --card: 0 0% 100%;                  /* white cards */
+    --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 186 100% 42%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Primary interaction — modern enterprise blue */
+    --primary: 221 83% 53%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 186 100% 95%;
-    --accent-foreground: 186 100% 32%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 186 100% 42%;
+
+    /* Neutral secondary / muted / accent (cool slate) */
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222 47% 11%;
+
+    /* Feedback */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 71% 45%;             /* OneSIM connectivity green */
+    --success-foreground: 0 0% 100%;
+    --warning: 32 95% 44%;
+    --warning-foreground: 0 0% 100%;
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+
+    /* Brand + lines */
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 221 83% 53%;
     --radius: 0.75rem;
+
+    /* Navigation / strong dark surfaces */
+    --navy: 240 30% 14%;
+    --navy-foreground: 210 40% 98%;
+
+    /* Brand tokens (kept for backward compatibility) */
     --onesim-cyan: #00d4d4;
     --onesim-navy: #1a1a2e;
+    --onesim-green: #22c55e;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
+    --background: 222 47% 8%;
     --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
+    --card: 222 45% 11%;
     --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
+    --popover: 222 45% 11%;
     --popover-foreground: 210 40% 98%;
-    --primary: 186 100% 42%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 217.2 32.6% 17.5%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+
+    --secondary: 217 33% 17%;
     --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 17%;
     --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
+
+    --destructive: 0 63% 45%;
     --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 186 100% 42%;
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 95% 50%;
+    --warning-foreground: 222 47% 11%;
+    --info: 199 89% 55%;
+    --info-foreground: 222 47% 11%;
+
+    --border: 217 33% 20%;
+    --input: 217 33% 20%;
+    --ring: 217 91% 60%;
+    --navy: 222 47% 8%;
+    --navy-foreground: 210 40% 98%;
+
     --onesim-cyan: #00d4d4;
     --onesim-navy: #1a1a2e;
+    --onesim-green: #22c55e;
   }
 }
 
@@ -58,24 +94,31 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+  }
+  /* Consistent, accessible focus treatment across interactive elements */
+  :focus-visible {
+    @apply outline-none;
   }
 }
 
 @layer components {
+  /* Legacy sidebar item classes (kept; navigation component is out of scope) */
   .sidebar-item {
-    @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all hover:bg-white/10;
+    @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors hover:bg-white/10;
   }
-  
+
   .sidebar-item.active {
-    @apply bg-cyan-500/20 text-cyan-400 font-semibold;
+    @apply bg-primary/20 font-semibold text-white;
+    box-shadow: inset 2px 0 0 0 hsl(var(--primary));
   }
-  
+
+  /* Metric card used by portal dashboards (kept class name for compatibility) */
   .stat-card {
-    @apply rounded-xl border-0 bg-white p-6 shadow-sm transition-all hover:shadow-md;
+    @apply rounded-xl border border-border bg-card p-5 shadow-card transition-shadow hover:shadow-card-hover;
   }
-  
+
   .dashboard-card {
-    @apply rounded-xl border-0 bg-white p-6 shadow-sm transition-all hover:shadow-lg hover:scale-[1.02] cursor-pointer;
+    @apply rounded-xl border border-border bg-card p-5 shadow-card transition-all hover:shadow-card-hover;
   }
 }

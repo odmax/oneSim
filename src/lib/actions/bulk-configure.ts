@@ -1,6 +1,7 @@
 'use server'
 
 import { getServerSession } from 'next-auth'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
@@ -9,12 +10,13 @@ import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes, record
 import { resolvePricingMutation, inferPricingIntent, type PricingMutationIntent } from '@/lib/pricing/pricing-engine'
 import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
 import { isPackagePublishEligible, getPublishIneligibilityReasons } from '@/lib/catalog/publish-eligibility'
+import { parseDecimalInput } from '@/lib/packages/decimal-input'
 
 /** Convert a Prisma Decimal-ish value (has toString()) to a finite number, else null. */
 function decimalToNumber(v: unknown): number | null {
   if (v === null || v === undefined) return null
-  const n = typeof v === 'number' ? v : Number(String((v as any).toString?.() ?? v))
-  return isNaN(n) || !isFinite(n) ? null : n
+  const n = typeof v === 'number' ? v : parseDecimalInput(String((v as any).toString?.() ?? v))
+  return n === null || !isFinite(n) ? null : n
 }
 
 export interface BulkConfigureParams {
@@ -44,6 +46,7 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     return { success: false, error: 'Unauthorized' }
   }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PACKAGES))) return { success: false, error: 'Unauthorized' }
 
   const { packageIds, ...configUpdates } = params
 
@@ -136,7 +139,7 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
   try {
     const beforePackages = await prisma.providerPackage.findMany({
       where: { id: { in: packageIds } },
-      select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, sellingPrice: true, sellingCurrency: true, markupPercent: true, providerPlanId: true, providerId: true, publishStatus: true, configurationStatus: true },
+      select: { id: true, name: true, dataGB: true, validityDays: true, costPrice: true, currency: true, sellingPrice: true, sellingCurrency: true, markupPercent: true, providerPlanId: true, providerId: true, publishStatus: true, configurationStatus: true, pricingMode: true },
     })
 
     // CANONICAL bidirectional pricing: resolve a consistent triple per package
@@ -155,7 +158,7 @@ export async function bulkConfigurePackages(params: BulkConfigureParams): Promis
         markupPercent: decimalToNumber(bp.markupPercent),
       }
       const intent = params.pricingIntent || inferPricingIntent(supplied, existingState)
-      const resolved = resolvePricingMutation({ intent, supplied, existing: existingState })
+      const resolved = resolvePricingMutation({ intent, supplied, existing: existingState, mode: configUpdates.pricingMode ?? bp.pricingMode })
       if (!resolved.valid) {
         await recordStageFromCounts({ pipelineRunId, stage: 'CONFIGURATION', startTime: configStartTime, total: packageIds.length, passed: 0, failed: packageIds.length, skipped: 0, statusOverride: 'FAILED', metadata: { error: `Invalid pricing for ${bp.id}: ${resolved.errors.join('; ')}` } })
         await failPipelineRun(pipelineRunId, `Invalid pricing for ${bp.id}: ${resolved.errors.join('; ')}`)

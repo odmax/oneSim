@@ -172,6 +172,28 @@ describe('QR classification (provider-neutral)', () => {
 })
 
 describe('buildInstallationPresentation (canonical install model)', () => {
+  it('presents a complete LPA activationCode as a locally renderable QR payload', () => {
+    const value = 'LPA:1$smdp.example.com$matching-id'
+    const presentation = buildInstallationPresentation({
+      activationCode: value,
+    })
+
+    expect(presentation.kind).toBe('QR_PAYLOAD')
+    expect(presentation.qrPayload).toBe(value)
+    expect(presentation.activationCode).toBe(value)
+  })
+
+  it('presents a bare consumer-format activation payload as QR data', () => {
+    const value = '1$smdp.example.com$matching-id'
+    const presentation = buildInstallationPresentation({
+      activationCode: value,
+    })
+
+    expect(presentation.kind).toBe('QR_PAYLOAD')
+    expect(presentation.qrPayload).toBe(value)
+    expect(presentation.activationCode).toBe(value)
+  })
+
   it('US-Matrix purchase: qrcodeString persisted as qrCode → presented as QR_PAYLOAD', () => {
     // US-Matrix activateESIM now maps qrcodeString → qrCode (not qrCodeUrl).
     const p = buildInstallationPresentation({

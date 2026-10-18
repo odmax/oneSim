@@ -1,5 +1,31 @@
 import { describe, it, expect } from 'vitest'
-import { deriveEsimLifecycleStatus, type LifecycleInput } from './lifecycle-status'
+import { deriveEsimLifecycleStatus, deriveUsageActivation, type LifecycleInput } from './lifecycle-status'
+
+describe('installation and service activation remain distinct across refreshes', () => {
+  it('install then ambiguous ACTIVE cannot manufacture activation history', () => {
+    const installed = deriveEsimLifecycleStatus({ providerNormalizedStatus: 'INSTALLED', currentStatus: 'PENDING_ACTIVATION', dataUsedMB: 0, providerInstalledSignal: true })
+    expect(installed.setActivatedAt).toBe(false)
+    const refreshed = deriveEsimLifecycleStatus({ providerNormalizedStatus: 'ACTIVE', currentStatus: installed.status, dataUsedMB: 0, activatedAt: null })
+    expect(refreshed.status).toBe('INSTALLED')
+    expect(refreshed.setActivatedAt).toBe(false)
+  })
+  it.each([0, null, NaN, Infinity])('installed with usage %s is not activated', (dataUsedMB) => {
+    expect(deriveUsageActivation({ currentStatus: 'INSTALLED', dataUsedMB }).status).toBe('INSTALLED')
+  })
+  it('first positive usage activates an installed eSIM', () => {
+    expect(deriveUsageActivation({ currentStatus: 'INSTALLED', dataUsedMB: 1, activatedAt: null })).toMatchObject({ status: 'ACTIVE', setActivatedAt: true })
+  })
+  it('deleted profile clears install-only state but never masks verified network attach', () => {
+    expect(deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'PENDING_ACTIVATION', currentStatus: 'INSTALLED', dataUsedMB: 0,
+      activatedAt: null, providerProfileDeletedSignal: true,
+    }).status).toBe('PENDING_ACTIVATION')
+    expect(deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE', currentStatus: 'PENDING_ACTIVATION', dataUsedMB: 0,
+      activatedAt: null, providerProfileDeletedSignal: true, providerNetworkAttachedSignal: true,
+    }).status).toBe('ACTIVE')
+  })
+})
 
 function input(overrides: Partial<LifecycleInput> = {}): LifecycleInput {
   return {
@@ -40,17 +66,17 @@ describe('deriveEsimLifecycleStatus', () => {
     expect(r.reason).toBe('already-activated')
   })
 
-  it('5. explicit installed signal maps to INSTALLED and sets activatedAt', () => {
+  it('5. explicit installed signal maps to INSTALLED without fabricating activatedAt', () => {
     const r = deriveEsimLifecycleStatus(input({ providerInstalledSignal: true, activatedAt: null }))
     expect(r.status).toBe('INSTALLED')
-    expect(r.setActivatedAt).toBe(true)
+    expect(r.setActivatedAt).toBe(false)
     expect(r.reason).toBe('provider-installed-signal')
   })
 
   it('6. provider INSTALLED status maps to INSTALLED', () => {
     const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'installed', activatedAt: null }))
     expect(r.status).toBe('INSTALLED')
-    expect(r.setActivatedAt).toBe(true)
+    expect(r.setActivatedAt).toBe(false)
   })
 
   it('7. provider SUSPENDED maps to SUSPENDED', () => {
@@ -580,20 +606,57 @@ describe('deriveEsimLifecycleStatus — Phase 1 hardening transition matrix', ()
     expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ONLINE', currentStatus: 'CANCELLED', providerInstalledSignal: true })).status).toBe('CANCELLED')
   })
 
-  // ── REFUNDED (money/business state — not lifecycle-sticky; semantics unchanged)
-  it('92. REFUNDED + unknown provider value → PENDING_ACTIVATION (characterized, unchanged)', () => {
+  // ── REFUNDED (canonical terminal — never resurrected) ────
+  it('92. REFUNDED + unknown provider value preserves REFUNDED', () => {
     const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'UNKNOWN_STATE', currentStatus: 'REFUNDED' }))
-    expect(r.status).toBe('PENDING_ACTIVATION')
-    expect(r.reason).toBe('unknown-provider-fallback')
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
   })
 
-  it('93. REFUNDED + ACTIVE without evidence → PENDING_ACTIVATION (characterized, unchanged)', () => {
+  it('93. REFUNDED + ACTIVE (with or without evidence) preserves REFUNDED', () => {
     const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ACTIVE', currentStatus: 'REFUNDED', dataUsedMB: 0, activatedAt: null }))
-    expect(r.status).toBe('PENDING_ACTIVATION')
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
+    const withEvidence = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'ACTIVE', currentStatus: 'REFUNDED', dataUsedMB: 500, activatedAt: new Date('2026-01-01'), providerNetworkAttachedSignal: true }))
+    expect(withEvidence.status).toBe('REFUNDED')
   })
 
-  it('94. REFUNDED + provider FAILED → FAILED (engine does not treat REFUNDED as terminal; unchanged)', () => {
-    expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'FAILED', currentStatus: 'REFUNDED' })).status).toBe('FAILED')
+  it('94. REFUNDED + provider FAILED preserves REFUNDED (REFUNDED is terminal; provider errors cannot re-classify it)', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'FAILED', currentStatus: 'REFUNDED' }))
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
+  })
+
+  it('95. REFUNDED + explicit exhausted/DEPLETED provider status preserves REFUNDED', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'DEPLETED', currentStatus: 'REFUNDED' }))
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
+  })
+
+  it('96. REFUNDED + device-installed signal preserves REFUNDED', () => {
+    const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: 'INSTALLED', currentStatus: 'REFUNDED', providerInstalledSignal: true }))
+    expect(r.status).toBe('REFUNDED')
+    expect(r.reason).toBe('preserve-terminal')
+    for (const s of ['ONLINE', 'IN_USE', 'ACTIVATED_ON_DEVICE', 'DEVICE_ACTIVATED', 'ATTACHED']) {
+      expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: s, currentStatus: 'REFUNDED' })).status).toBe('REFUNDED')
+    }
+  })
+
+  it('97. REFUNDED + weaker provisioning value preserves REFUNDED', () => {
+    for (const s of ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'QUEUED', 'RESERVED']) {
+      expect(deriveEsimLifecycleStatus(input({ providerNormalizedStatus: s, currentStatus: 'REFUNDED' })).status).toBe('REFUNDED')
+    }
+  })
+
+  it('98. REFUNDED is sticky: no provider report or evidence can move it to a non-terminal state', () => {
+    const currents = ['REFUNDED']
+    const providers = ['PENDING', 'PROCESSING', 'PROVISIONING', 'QUEUED', 'RESERVED', 'ACTIVE', 'INSTALLED', 'IN_USE', 'ONLINE', 'ATTACHED', 'SUSPENDED', 'DISABLED', 'EXPIRED', 'EXPIRING', 'FAILED', 'ERROR', 'REJECTED', 'DEPLETED', 'EXHAUSTED', 'DATA_DEPLETED', 'OUT_OF_DATA', 'SOMETHING_NEW']
+    for (const current of currents) {
+      for (const provider of providers) {
+        const r = deriveEsimLifecycleStatus(input({ providerNormalizedStatus: provider, currentStatus: current, providerInstalledSignal: true, dataUsedMB: 500, activatedAt: new Date('2026-01-01') }))
+        expect(r.status).toBe('REFUNDED')
+      }
+    }
   })
 
   // ── Invariant 6: the engine never emits PROCESSING ──────
@@ -700,5 +763,47 @@ describe('device/install-signal precedence (Phase 1 follow-up)', () => {
       }
       expect(deriveEsimLifecycleStatus(input({ currentStatus: current, providerInstalledSignal: true })).status).toBe(current)
     }
+  })
+})
+
+
+describe('EXPIRING warning never expires an eSIM', () => {
+  it.each([
+    'ACTIVE',
+    'INSTALLED',
+    'PENDING_ACTIVATION',
+    'REFUNDED',
+  ])('preserves %s on provider EXPIRING', (currentStatus) => {
+    const result = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'EXPIRING',
+      currentStatus,
+      dataUsedMB: 0,
+      activatedAt: null,
+    })
+    expect(result.status).toBe(currentStatus)
+    expect(result.setActivatedAt).toBe(false)
+    expect(result.reason).toBe(
+      currentStatus === 'REFUNDED'
+        ? 'preserve-terminal'
+        : 'provider-expiring-warning',
+    )
+  })
+
+  it('normalizes PROCESSING without expiring the eSIM', () => {
+    const result = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'EXPIRING',
+      currentStatus: 'PROCESSING',
+      dataUsedMB: 0,
+    })
+    expect(result.status).toBe('PENDING_ACTIVATION')
+    expect(result.setActivatedAt).toBe(false)
+  })
+
+  it('still expires ACTIVE on explicit provider EXPIRED', () => {
+    expect(deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'EXPIRED',
+      currentStatus: 'ACTIVE',
+      dataUsedMB: 0,
+    }).status).toBe('EXPIRED')
   })
 })

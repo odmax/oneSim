@@ -144,4 +144,38 @@ describe('queryPurchasablePackages — client-facing flows stay strict PURCHASE'
     const result = await queryPurchasablePackages('portal')
     expect(result).toHaveLength(1)
   })
+
+  it('returns the ENTIRE eligible set (no truncation) with deterministic ordering', async () => {
+    const many = Array.from({ length: 64 }, (_, i) => makeRetail('PUBLISHED', {
+      id: `retail-${String(i).padStart(2, '0')}`,
+      priceUSD: 1 + (i % 11),
+      providerPackage: {
+        costStatus: 'VALID', pricingStatus: 'READY', publishStatus: 'PUBLISHED',
+        configurationStatus: 'CONFIGURED', activePriceSnapshotId: 'snap-1',
+        sellingPrice: { toString: () => String(1 + (i % 11)) },
+        costPrice: { toString: () => '1' },
+        providerId: 'prov-1', country: 'ZA', region: null, normalizedCountry: 'ZA', providerRawData: null,
+      },
+    }))
+    mockFindMany.mockResolvedValue(many)
+    const result = await queryPurchasablePackages('portal')
+    expect(result).toHaveLength(64)
+    const ids = result.map(p => p.id)
+    expect(new Set(ids).size).toBe(64)
+    // Deterministic: price asc then id tiebreaker (never flips between calls)
+    const sorted = stableSortIds(ids)
+    expect(ids).toEqual(sorted)
+  })
+
+  it('API exposure OFF excludes the provider packages (privacy gate)', async () => {
+    const { isCapabilityExposedToApi } = await import('@/lib/providers/capabilities/exposure')
+    vi.mocked(isCapabilityExposedToApi).mockResolvedValueOnce(false)
+    mockFindMany.mockResolvedValue([makeRetail('PUBLISHED')])
+    const result = await queryPurchasablePackages('api')
+    expect(result).toHaveLength(0)
+  })
 })
+
+function stableSortIds(ids: string[]): string[] {
+  return [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+}

@@ -62,12 +62,14 @@ export default async function BusinessLayout({
   ];
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen bg-background">
       <Sidebar items={sidebarItems} portalName={session?.user?.businessName || "Business Client"} />
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Header title="Business Client Portal" />
-        <main className="flex-1 overflow-y-auto bg-gray-50 p-8">
-          {children}
+        <main className="flex-1 overflow-y-auto bg-background">
+          <div className="mx-auto w-full max-w-[1600px] p-4 sm:p-6 lg:p-8">
+            {children}
+          </div>
         </main>
       </div>
     </div>

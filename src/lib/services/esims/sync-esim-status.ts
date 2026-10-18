@@ -1,8 +1,12 @@
+import { resolveSyncProviderId } from '@/lib/services/esims/resolve-sync-provider'
 import { prisma } from '@/lib/prisma'
 import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
 import { getStatusNextSync, getUsageNextSync } from '@/lib/services/jobs/sync-policy'
 import { capabilitySupported, resolveStatusLookup, buildProviderConnector } from '@/lib/services/esims/sync-lookup'
+import { resolveProviderAlert } from '@/lib/services/operations/provider-alerts'
 import type { StatusResultEvidence } from '@/lib/providers/connectors/connector-interface'
+
+const SYNC_RETRY_EXHAUSTED = 'SYNC_RETRY_EXHAUSTED' as const
 
 export interface SyncStatusResult {
   success: boolean
@@ -39,7 +43,7 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   })
   if (!esim) return { success: false, error: 'eSIM not found' }
 
-  const providerId = esim.purchase?.package?.providerId
+  const providerId = await resolveSyncProviderId(esim.purchase)
   if (!providerId) return { success: false, error: 'No provider configured' }
 
   const connector = await buildProviderConnector(providerId)
@@ -59,12 +63,17 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   let providerStatus: string | undefined
   let evidence: StatusResultEvidence | undefined
   let sanitizedRawMetadata: Record<string, unknown> | undefined
+  let connectorActivatedAt: Date | undefined
 
   try {
     const statusResult = await connector.getStatus(lookup.identifier)
     if (statusResult.success && statusResult.data) {
       providerStatus = statusResult.data.status
       evidence = statusResult.data.evidence
+      if (statusResult.data.activatedAt) {
+        const t = new Date(statusResult.data.activatedAt)
+        if (!Number.isNaN(t.getTime())) connectorActivatedAt = t
+      }
       if (statusResult.data.rawMetadata && typeof statusResult.data.rawMetadata === 'object') {
         sanitizedRawMetadata = statusResult.data.rawMetadata as Record<string, unknown>
       }
@@ -80,13 +89,17 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   // Canonical evidence-aware lifecycle derivation (monotonic, never regress).
   // Verified connector evidence (network attach / device install) is forwarded
   // so the lifecycle engine can promote ACTIVE/INSTALLED without a
-  // provider-name branch.
+  // provider-name branch. A connector-confirmed authoritative activation
+  // timestamp (e.g. iBASIS) counts as activation history, so a provider ACTIVE
+  // + confirmed activation timestamp may promote while a raw ACTIVE claim alone
+  // never does.
   const lifecycle = deriveEsimLifecycleStatus({
     providerNormalizedStatus: providerStatus || 'UNKNOWN',
     currentStatus: esim.status,
     dataUsedMB: esim.dataUsedMB || 0,
-    activatedAt: esim.activatedAt,
+    activatedAt: connectorActivatedAt || esim.activatedAt,
     providerInstalledSignal: evidence?.deviceInstalled,
+    providerProfileDeletedSignal: evidence?.installationStatus === 'DELETED',
     providerNetworkAttachedSignal: evidence?.networkAttached,
   })
 
@@ -98,12 +111,26 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
     statusSyncRetryCount: 0,
   }
 
+  // Installation checkpoints are a separate axis from service lifecycle:
+  // Telna's DOWNLOADED/DISABLED/DELETED profile states must not be written as
+  // ACTIVE/SUSPENDED/EXPIRED service states.
+  if (evidence?.installationStatus) {
+    updateData.installationStatus = evidence.installationStatus
+    updateData.installationLastCheckedAt = new Date()
+    updateData.installationLastError = evidence.installationStatus === 'FAILED' ? 'Provider reports profile installation error' : null
+  }
+
   if (lifecycle.status !== esim.status) {
     updateData.status = lifecycle.status
   }
 
   if (lifecycle.setActivatedAt && !esim.activatedAt) {
-    updateData.activatedAt = new Date()
+    updateData.activatedAt = connectorActivatedAt || new Date()
+    updateData.activationDetectedAt = new Date()
+  } else if (connectorActivatedAt && !esim.activatedAt && (lifecycle.status === 'ACTIVE' || lifecycle.status === 'INSTALLED')) {
+    // Connector-confirmed authoritative activation timestamp that the canonical
+    // engine accepted as activation history — persist it so it is not lost.
+    updateData.activatedAt = connectorActivatedAt
     updateData.activationDetectedAt = new Date()
   }
 
@@ -129,6 +156,11 @@ export async function syncESIMStatus(esimId: string): Promise<SyncStatusResult> 
   }
 
   await prisma.eSIM.update({ where: { id: esimId }, data: updateData })
+
+  // A successful refresh is the authoritative recovery for an exhausted STATUS
+  // budget: close ONLY this eSIM's STATUS exhaustion. It must never resolve
+  // another eSIM's alert or this eSIM's USAGE exhaustion.
+  resolveProviderAlert(providerId, SYNC_RETRY_EXHAUSTED, { resourceType: 'ESIM', resourceId: esimId, dedupKey: 'status' })
 
   return {
     success: true,

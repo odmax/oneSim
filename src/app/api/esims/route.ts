@@ -2,14 +2,13 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth/config'
 import { stripPackageProviderFields, stripEsimProviderFields, stripPurchaseProviderFields } from '@/lib/analytics/safe-fields'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 export async function GET(request: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (session.user.role !== 'INTERNAL_ADMIN') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  const { allowed, denied } = await adminApiAccess(Permissions.VIEW_ESIMS)
+  if (!allowed) return denied
 
   const { searchParams } = new URL(request.url)
   const businessId = searchParams.get('businessId')

@@ -161,7 +161,7 @@ export async function publishProviderPackageToRetailCatalog(
   const retail = await prisma.eSIMPackage.findUnique({
     where: { id: retailPackageId },
     include: {
-      providerPackage: { select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true } },
+      providerPackage: { select: { costStatus: true, pricingStatus: true, publishStatus: true, configurationStatus: true, activePriceSnapshotId: true, sellingPrice: true, costPrice: true, isAvailable: true } },
       provider: { select: { status: true, enabledCapabilities: true, code: true } },
     },
   })

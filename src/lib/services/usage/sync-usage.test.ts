@@ -19,10 +19,16 @@ vi.mock('@/lib/services/esims/sync-lookup', async (importOriginal) => {
   return { ...actual, buildProviderConnector: vi.fn() }
 })
 
+vi.mock('@/lib/services/orders/package-backing-resolver', () => ({
+  resolvePackageBacking: vi.fn(),
+}))
+
+const { resolvePackageBacking } = await import('@/lib/services/orders/package-backing-resolver')
 const { prisma } = await import('@/lib/prisma')
 const { buildProviderConnector } = await import('@/lib/services/esims/sync-lookup')
 const { syncESIMUsage } = await import('./sync-usage')
 
+const mockResolvePackageBacking = vi.mocked(resolvePackageBacking)
 const mockPrisma = vi.mocked(prisma)
 const mockBuildConnector = vi.mocked(buildProviderConnector)
 
@@ -33,7 +39,7 @@ function makeEsim(overrides: any = {}) {
     providerActivationId: 'esim-uuid-1',
     providerResponse: null,
     status: 'ACTIVE',
-    purchase: { package: { providerId: 'p-1', providerPlanId: 'pkg-uuid-77', providerPackageId: 'pp-1' } },
+    purchase: { providerId: 'p-1', package: { id: 'retail-package-1', providerId: 'p-1', providerPlanId: 'pkg-uuid-77', providerPackageId: 'pp-1' } },
     ...overrides,
   }
 }
@@ -60,6 +66,14 @@ function usageConnector(overrides: any = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockResolvePackageBacking.mockResolvedValue({
+    kind: 'BOUND',
+    backing: {
+      providerId: 'p-1',
+      providerPackageId: 'pp-1',
+      providerPlanId: 'pkg-uuid-77',
+    },
+  })
   mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim() as any)
   mockPrisma.eSIM.update.mockResolvedValue({} as any)
   mockPrisma.usageRecord.create.mockResolvedValue({} as any)
@@ -111,6 +125,42 @@ describe('syncESIMUsage — provider-neutral discovery + persistence', () => {
     // Second sync resolves the persisted id (fast path) instead of the bundle.
     expect(connector.getUsage.mock.calls[1][0]).toBe('assoc-uuid-9')
     expect(connector.getUsage.mock.calls[0][0]).toEqual({ providerActivationId: 'esim-uuid-1', providerPlanId: 'pkg-uuid-77', providerPackageId: 'pp-1' })
+  })
+
+  it('never sends another provider package identity to the fulfillment connector', async () => {
+    const esim = makeEsim({
+      purchase: {
+        providerId: 'actual-provider',
+        package: {
+          id: 'retail-package-1',
+          providerId: 'retail-provider',
+          providerPackageId: 'retail-pp',
+          providerPlanId: 'retail-plan',
+        },
+      },
+    })
+
+    mockPrisma.eSIM.findUnique.mockResolvedValue(esim as any)
+
+    mockResolvePackageBacking.mockResolvedValue({
+      kind: 'BOUND',
+      backing: {
+        providerId: 'retail-provider',
+        providerPackageId: 'retail-pp',
+        providerPlanId: 'retail-plan',
+      },
+    })
+
+    const connector = usageConnector()
+    mockBuildConnector.mockResolvedValue(connector as any)
+
+    const result = await syncESIMUsage('esim-1')
+
+    expect(result.success).toBe(true)
+    expect(mockBuildConnector).toHaveBeenCalledWith('actual-provider')
+    expect(connector.getUsage).toHaveBeenCalledWith({
+      providerActivationId: 'esim-uuid-1',
+    })
   })
 
   it('treats an ambiguous association as a clean skip (no persistence, no failure)', async () => {

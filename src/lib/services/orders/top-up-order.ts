@@ -2,6 +2,9 @@ import { prisma } from '@/lib/prisma'
 import { getAdapterForProvider } from '@/lib/providers/adapter-manager'
 import { reserveTopUpFunds, captureTopUpFundsUpToInTx, releaseTopUpFundsUpTo } from './wallet-actions'
 import { createTimelineEvent } from './order-state-machine'
+import { TOP_UP_ELIGIBLE_STATUSES } from '@/lib/providers/capabilities/esim-action-availability'
+import { resolveSyncProviderId } from '@/lib/services/esims/resolve-sync-provider'
+import { resolvePackageBacking } from './package-backing-resolver'
 
 export interface TopUpOrderParams {
   businessId: string
@@ -97,7 +100,7 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
   if (!esim) return { success: false, error: 'eSIM not found', errorStatus: 404 }
   if (esim.purchase.businessId !== businessId) return { success: false, error: 'eSIM does not belong to this business', errorStatus: 403 }
 
-  const allowedStatuses = ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING']
+  const allowedStatuses = TOP_UP_ELIGIBLE_STATUSES
   if (!allowedStatuses.includes(esim.status)) {
     return { success: false, error: 'eSIM status does not allow top-up', errorStatus: 400 }
   }
@@ -113,8 +116,19 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
     return { success: false, error: 'Package is not a top-up package', errorStatus: 400 }
   }
 
-  const providerId = topUpPkg.providerId || esim.purchase.package.providerId
-  if (!providerId) return { success: false, error: 'No provider configured for top-up', errorStatus: 400 }
+  // A top-up must execute on the provider that fulfilled this eSIM.
+  // Never route using a retail package default or an internal package ID.
+  const providerId = await resolveSyncProviderId(esim.purchase)
+  if (!providerId) {
+    return { success: false, error: 'eSIM fulfillment provider is unverified', errorStatus: 400 }
+  }
+
+  const backing = await resolvePackageBacking(topUpPkg)
+  if (backing.kind !== 'BOUND' || backing.backing.providerId !== providerId || !backing.backing.providerPlanId) {
+    return { success: false, error: 'Top-up package is not verified for this eSIM provider', errorStatus: 400 }
+  }
+
+  const verifiedProviderPlanId = backing.backing.providerPlanId
 
   // Check provider supports top-up
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
@@ -188,9 +202,10 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
   const providerResult = await adapter.topUpESIM({
     iccid: esim.iccid,
     imsi: esim.imsi,
-    planId: topUpPkg.providerPlanId || topUpPkg.id,
-    sku: topUpPkg.sku || topUpPkg.packageCode || undefined,
-    packageName: topUpPkg.displayName || topUpPkg.name,
+    planId: verifiedProviderPlanId,
+    // Provider-backed identity only: never dispatch a retail SKU or name.
+    sku: verifiedProviderPlanId,
+    packageName: verifiedProviderPlanId,
     quantity,
   })
 
@@ -245,8 +260,8 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
           status: 'COMPLETED',
           completedAt: new Date(),
           providerReference: topUpData.providerReference || null,
-          dataAddedMB: dataAddedMB || null,
-          validityDaysAdded: validityDaysAdded || null,
+          dataAddedMB: dataAddedMB ?? null,
+          validityDaysAdded: validityDaysAdded ?? null,
           providerResponse: topUpData as any,
         },
       })
@@ -258,8 +273,13 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
       } else if (validityDaysAdded) {
         updateData.expiresAt = new Date(Date.now() + validityDaysAdded * 24 * 60 * 60 * 1000)
       }
-      if (topUpData.newDataTotalMB) updateData.dataTotalMB = topUpData.newDataTotalMB
-      if (topUpData.newDataRemainingMB) updateData.dataRemainingMB = topUpData.newDataRemainingMB
+      // Preserve a legitimate zero returned after a top-up (a real 0 remaining
+      // must never keep a stale value), while a provider that omits the field
+      // leaves the existing value untouched. The eSIM status is NOT changed
+      // here: a depleted line stays DEPLETED until an authoritative remaining >
+      // 0 snapshot arrives through the canonical depletion engine.
+      if (topUpData.newDataTotalMB != null) updateData.dataTotalMB = topUpData.newDataTotalMB
+      if (topUpData.newDataRemainingMB != null) updateData.dataRemainingMB = topUpData.newDataRemainingMB
 
       if (Object.keys(updateData).length > 0) {
         await tx.eSIM.update({ where: { id: esimId }, data: updateData })
@@ -327,8 +347,8 @@ export async function createTopUpOrder(params: TopUpOrderParams): Promise<TopUpO
       status: 'COMPLETED',
       amount,
       currency,
-      dataAddedMB: dataAddedMB || undefined,
-      validityDaysAdded: validityDaysAdded || undefined,
+      dataAddedMB: dataAddedMB ?? undefined,
+      validityDaysAdded: validityDaysAdded ?? undefined,
     }
   } catch (error: any) {
     // Provider succeeded but local completion failed — the reservation is KEPT

@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { deriveOperationalState } from '@/lib/services/operations/operational-classifier'
 import { computeProviderHealth } from '@/lib/services/operations/provider-health-score'
@@ -34,6 +35,7 @@ function CountCard({ label, count, href, severity }: { label: string; count: num
 export default async function OperationsDashboardPage() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_ORDERS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const now = new Date()
   const last24h = new Date(now.getTime() - 86400000)

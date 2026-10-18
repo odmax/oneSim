@@ -1,0 +1,348 @@
+import { describe, it, expect } from 'vitest'
+import {
+  deriveEsimLifecyclePresentation,
+  deriveEsimLifecyclePresentationFromRow,
+  deriveEsimCustomerDisplayStatus,
+  deriveEsimCustomerDisplayStatusFromRow,
+} from './lifecycle-presentation'
+import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
+import { deriveEsimInventoryStatus } from '@/lib/esim/inventory-status'
+
+describe('service axis — canonical service labels (provider-neutral)', () => {
+  it('PENDING_ACTIVATION makes its service label Provisioned (never the whole "Ready to install")', () => {
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', hasUsableInstallData: false })
+    expect(p.serviceStatus).toBe('PENDING_ACTIVATION')
+    expect(p.serviceLabel).toBe('Provisioned')
+    expect(p.serviceTone).toBe('warn')
+  })
+
+  it('maps every canonical service status to a customer-safe label', () => {
+    const cases: Array<[string, string]> = [
+      ['PENDING', 'Provisioning'],
+      ['ACTIVE', 'Active'],
+      ['DEPLETED', 'Depleted'],
+      ['SUSPENDED', 'Suspended'],
+      ['EXPIRED', 'Expired'],
+      ['FAILED', 'Failed'],
+      ['CANCELLED', 'Cancelled'],
+      ['REFUNDED', 'Refunded'],
+      ['INSTALLED', 'Installed on device'],
+    ]
+    for (const [status, label] of cases) {
+      const p = deriveEsimLifecyclePresentation({ status })
+      expect(p.serviceStatus).toBe(status)
+      expect(p.serviceLabel).toBe(label)
+    }
+  })
+
+  it('falls back to the raw value for unknown statuses', () => {
+    const p = deriveEsimLifecyclePresentation({ status: 'SOMETHING_NEW' })
+    expect(p.serviceLabel).toBe('SOMETHING_NEW')
+  })
+})
+
+describe('setup axis — READY/RELEASED is Ready to install (available-to-install only)', () => {
+  it('PENDING_ACTIVATION + READY + usable install data → Setup: Ready to install (never Installed)', () => {
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true })
+    expect(p.setupStatus).toBe('READY_TO_INSTALL')
+    expect(p.setupLabel).toBe('Ready to install')
+    expect(p.setupLabel).not.toBe('Installed')
+    expect(p.serviceLabel).toBe('Provisioned')
+  })
+
+  it('Telna RELEASED → READY renders Ready to install (available-to-install), never Installed', () => {
+    // telna-connector.ts maps profileState RELEASED to installationStatus READY
+    // ("deliverable in hand"); the install state on the device is unknown, so the
+    // label is available-to-install only and never claims Installed.
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true })
+    expect(p.setupLabel).toBe('Ready to install')
+    expect(p.setupLabel).not.toBe('Installed')
+    // The shared inventory resolver agrees: READY → Ready to install.
+    const resolver = deriveEsimInventoryStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', activationCode: '1$smdp$mid', dataUsedMB: 0 })
+    expect(resolver.primary.status).toBe('READY_TO_INSTALL')
+    expect(resolver.primary.label).toBe('Ready to install')
+    expect(resolver.primary.status).not.toBe('ACTIVE')
+    expect(resolver.primary.status).not.toBe('INSTALLED')
+  })
+
+  it('missing installation data never shows Ready to install (READY without data → Preparing)', () => {
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: false })
+    expect(p.setupLabel).not.toBe('Ready to install')
+    expect(p.setupLabel).toBe('Preparing')
+  })
+
+  it('PENDING installation state → Preparing', () => {
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', hasUsableInstallData: false })
+    expect(p.setupLabel).toBe('Preparing')
+  })
+
+  it('Telna profile checkpoints show downloaded, installed, disabled, removed, and failed accurately', () => {
+    // DOWNLOADED is a provider download checkpoint only — never "not installed".
+    expect(deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' }).setupLabel)
+      .toBe('Profile downloaded')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' }).label)
+      .toBe('Profile downloaded')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' }).label)
+      .not.toBe('Ready to install')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'INSTALLED', installationStatus: 'INSTALLED' }).label)
+      .toBe('Installed on device')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'INSTALLED', installationStatus: 'DISABLED' }).label)
+      .toBe('Installed, disabled on device')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'DELETED' }).label)
+      .toBe('Removed from device')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'FAILED' }).label)
+      .toBe('Installation failed')
+  })
+
+  it('DOWNLOADED renders as Profile downloaded while INSTALLED/ENABLED still render as Installed (distinction preserved)', () => {
+    const downloaded = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED', hasUsableInstallData: true })
+    expect(downloaded.setupLabel).toBe('Profile downloaded')
+    expect(downloaded.setupLabel).not.toBe('Ready to install')
+    expect(downloaded.setupLabel).not.toBe('Installed')
+    for (const installed of ['INSTALLED', 'ENABLED']) {
+      const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: installed })
+      expect(p.setupLabel).toBe('Installed')
+      expect(p.setupLabel).not.toBe('Profile downloaded')
+    }
+    // The shared inventory resolver agrees: same normalized DOWNLOADED evidence → same label.
+    const resolver = deriveEsimInventoryStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'DOWNLOADED' })
+    expect(resolver.primary.label).toBe('Profile downloaded')
+    expect(resolver.primary.label).not.toBe('Ready to install')
+  })
+
+  it('missing installation evidence → Unknown', () => {
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION' })
+    expect(p.setupStatus).toBe('UNKNOWN')
+    expect(p.setupLabel).toBe('Unknown')
+  })
+
+  it('failure/stale/not-recoverable installation states never show Ready to install', () => {
+    for (const state of ['FAILED', 'STALE', 'NOT_SUPPORTED', 'NOT_RECOVERABLE', 'PERMANENT_FAILURE']) {
+      const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: state, hasUsableInstallData: true })
+      expect(p.setupLabel).not.toBe('Ready to install')
+    }
+    expect(deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'FAILED' }).setupLabel).toBe('Installation failed')
+    expect(deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'STALE' }).setupLabel).toBe('Installation unavailable')
+  })
+})
+
+describe('setup axis — authoritative activation evidence implies Installed', () => {
+  it('activatedAt present → Installed', () => {
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', activatedAt: new Date('2026-01-01') })
+    expect(p.setupStatus).toBe('INSTALLED')
+    expect(p.setupLabel).toBe('Installed')
+  })
+
+  it('activationDetectedAt present → Installed', () => {
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', activationDetectedAt: '2026-01-01T00:00:00Z' })
+    expect(p.setupStatus).toBe('INSTALLED')
+  })
+
+  it('real usage > 0 → Installed (usage is activation evidence)', () => {
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', dataUsedMB: 512 })
+    expect(p.setupStatus).toBe('INSTALLED')
+  })
+
+  it('zero used / missing usage never implies Installed', () => {
+    expect(deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', dataUsedMB: 0, installationStatus: 'PENDING' }).setupLabel).toBe('Preparing')
+    expect(deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', dataUsedMB: null, installationStatus: 'PENDING' }).setupLabel).toBe('Preparing')
+  })
+
+  it('canonical ACTIVE / DEPLETED implies Installed', () => {
+    expect(deriveEsimLifecyclePresentation({ status: 'ACTIVE' }).setupStatus).toBe('INSTALLED')
+    expect(deriveEsimLifecyclePresentation({ status: 'DEPLETED' }).setupStatus).toBe('INSTALLED')
+  })
+
+  it('raw provider ACTIVE is never an input (the helper has no provider-status field)', () => {
+    // The input interface intentionally has no providerStatus member; a raw
+    // provider ACTIVE claim alone cannot make the setup axis say Installed.
+    const p = deriveEsimLifecyclePresentation({ status: 'PENDING_ACTIVATION', installationStatus: 'PENDING' })
+    expect(p.setupStatus).not.toBe('INSTALLED')
+  })
+})
+
+describe('deriveEsimLifecyclePresentationFromRow — safe persisted fields only', () => {
+  it('builds service + setup from a persisted row', () => {
+    const p = deriveEsimLifecyclePresentationFromRow({
+      status: 'PENDING_ACTIVATION',
+      installationStatus: 'READY',
+      hasUsableInstallData: true,
+      activatedAt: null,
+      dataUsedMB: 0,
+    })
+    expect(p.serviceLabel).toBe('Provisioned')
+    expect(p.setupLabel).toBe('Ready to install')
+  })
+
+  it('does not accept or expose raw provider status', () => {
+    const row = { status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', providerStatus: 'ACTIVE', dataUsedMB: 0 }
+    const p = deriveEsimLifecyclePresentationFromRow({ status: row.status, installationStatus: row.installationStatus, hasUsableInstallData: false, dataUsedMB: row.dataUsedMB })
+    expect(JSON.stringify(p)).not.toContain('ACTIVE')
+    expect(p.serviceLabel).toBe('Provisioned')
+  })
+})
+
+describe('deriveEsimCustomerDisplayStatus — single customer summary badge', () => {
+  const readyRow = { status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }
+  const preparingRow = { status: 'PENDING_ACTIVATION', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }
+  const unknownRow = { status: 'PENDING_ACTIVATION', dataUsedMB: 0 }
+
+  it('Provisioned + usable install details → one "Ready to install" badge (available-to-install only)', () => {
+    const d = deriveEsimCustomerDisplayStatus(readyRow)
+    expect(d.label).toBe('Ready to install')
+    expect(d.tone).toBe('warn')
+    expect(d.status).toBe('PENDING_ACTIVATION')
+  })
+
+  it('Provisioned + Preparing → Preparing', () => {
+    expect(deriveEsimCustomerDisplayStatus(preparingRow).label).toBe('Preparing')
+  })
+
+  it('Provisioned + Unknown/null → Provisioned', () => {
+    const d = deriveEsimCustomerDisplayStatus(unknownRow)
+    expect(d.label).toBe('Provisioned')
+    expect(d.tone).toBe('warn')
+  })
+
+  it('Provisioned + Installation failed → Installation failed (dominant over Provisioned)', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'FAILED', hasUsableInstallData: false, dataUsedMB: 0 })
+    expect(d.label).toBe('Installation failed')
+    expect(d.tone).toBe('danger')
+  })
+
+  it('Provisioned + Installation unavailable → Installation unavailable', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'NOT_SUPPORTED', hasUsableInstallData: false, dataUsedMB: 0 })
+    expect(d.label).toBe('Installation unavailable')
+    expect(d.tone).toBe('warn')
+  })
+
+  it('Active + Installed → one "Active" badge (no second Installed badge)', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'ACTIVE', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 256 })
+    expect(d.label).toBe('Active')
+    expect(d.tone).toBe('success')
+  })
+
+  it('Active + Installing → Active (service dominates setup)', () => {
+    expect(deriveEsimCustomerDisplayStatus({ status: 'ACTIVE', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }).label).toBe('Active')
+  })
+
+  it('Depleted + Installed → Depleted', () => {
+    const d = deriveEsimCustomerDisplayStatus({ status: 'DEPLETED', installationStatus: 'READY', hasUsableInstallData: true, activatedAt: new Date('2026-01-01'), dataUsedMB: 1024 })
+    expect(d.label).toBe('Depleted')
+    expect(d.tone).toBe('danger')
+  })
+
+  it('Suspended + any setup → Suspended', () => {
+    expect(deriveEsimCustomerDisplayStatus({ status: 'SUSPENDED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Suspended')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'SUSPENDED', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }).label).toBe('Suspended')
+  })
+
+  it('Expired + any setup → Expired', () => {
+    expect(deriveEsimCustomerDisplayStatus({ status: 'EXPIRED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Expired')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'EXPIRED', installationStatus: 'PENDING', hasUsableInstallData: false, dataUsedMB: 0 }).label).toBe('Expired')
+  })
+
+  it('Failed / Cancelled / Refunded dominate setup', () => {
+    expect(deriveEsimCustomerDisplayStatus({ status: 'FAILED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Failed')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'CANCELLED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Cancelled')
+    expect(deriveEsimCustomerDisplayStatus({ status: 'REFUNDED', installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 }).label).toBe('Refunded')
+  })
+
+  it('never returns Active for PENDING_ACTIVATION solely from install data', () => {
+    // QR + install data + READY setup on a pending line still cannot be Active.
+    const d = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true, qrCode: undefined, dataUsedMB: 0 })
+    expect(d.label).not.toBe('Active')
+    expect(d.status).toBe('PENDING_ACTIVATION')
+
+    // Even with a QR/activatedAt hint, a non-ACTIVE canonical status stays
+    // Provisioned (the display helper never self-derives Active).
+    const withEvidence = deriveEsimCustomerDisplayStatus({ status: 'PENDING_ACTIVATION', installationStatus: 'READY', hasUsableInstallData: true, activatedAt: new Date('2026-01-01') })
+    expect(withEvidence.label).not.toBe('Active')
+    expect(withEvidence.label).toBe('Provisioned')
+  })
+
+  it('is deterministic and never mutates input', () => {
+    const input = { ...readyRow }
+    const a = deriveEsimCustomerDisplayStatus(input)
+    const b = deriveEsimCustomerDisplayStatus(input)
+    expect(a).toEqual(b)
+    expect(input.status).toBe('PENDING_ACTIVATION')
+    expect(input.installationStatus).toBe('READY')
+  })
+
+  it('deriveEsimCustomerDisplayStatusFromRow matches the direct helper', () => {
+    const row = { status: 'ACTIVE', installationStatus: 'READY', hasUsableInstallData: true, activatedAt: new Date('2026-01-01'), dataUsedMB: 512 }
+    expect(deriveEsimCustomerDisplayStatusFromRow(row).label).toBe('Active')
+    expect(deriveEsimCustomerDisplayStatusFromRow(row)).toEqual(deriveEsimCustomerDisplayStatus(row))
+  })
+})
+
+describe('canonical engine + customer badge pipeline (evidence-first activation)', () => {
+  it('network-attached evidence promotes PENDING_ACTIVATION → ACTIVE and the badge becomes Active', () => {
+    // Connector proves a verified network attach (e.g. Telna SIM in-service,
+    // US-Matrix DIAMETER_SUCCESS). The canonical engine promotes; the summary
+    // badge then renders one "Active" (never a second "Installed" badge).
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+      providerNetworkAttachedSignal: true,
+    })
+    expect(lifecycle.status).toBe('ACTIVE')
+    const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
+    expect(badge.label).toBe('Active')
+    // A summary badge has no secondary "Installed" component.
+    const serialized = JSON.stringify(badge)
+    expect(serialized).not.toContain('Installed')
+  })
+
+  it('device-installed evidence promotes PENDING → INSTALLED and the badge never says Ready to install', () => {
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'INSTALLED',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+      providerInstalledSignal: true,
+    })
+    expect(lifecycle.status).toBe('INSTALLED')
+    const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
+    expect(badge.label).not.toBe('Ready to install')
+    expect(badge.label).toBe('Installed on device')
+  })
+
+  it('provider raw ACTIVE without evidence stays Ready to install (never fabricated Active)', () => {
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+    })
+    expect(lifecycle.status).toBe('PENDING_ACTIVATION')
+    const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 0 })
+    expect(badge.label).toBe('Ready to install')
+    expect(badge.label).not.toBe('Active')
+  })
+
+  it('first usage (dataUsedMB > 0) activates a pending line and the badge becomes Active', () => {
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 256,
+      activatedAt: null,
+    })
+    expect(lifecycle.status).toBe('ACTIVE')
+    const badge = deriveEsimCustomerDisplayStatus({ status: lifecycle.status, installationStatus: 'READY', hasUsableInstallData: true, dataUsedMB: 256 })
+    expect(badge.label).toBe('Active')
+  })
+
+  it('dataUsedMB = 0 is valid usage but is not activation evidence', () => {
+    const lifecycle = deriveEsimLifecycleStatus({
+      providerNormalizedStatus: 'ACTIVE',
+      currentStatus: 'PENDING_ACTIVATION',
+      dataUsedMB: 0,
+      activatedAt: null,
+    })
+    expect(lifecycle.status).toBe('PENDING_ACTIVATION')
+  })
+})

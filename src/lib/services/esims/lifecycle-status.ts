@@ -17,6 +17,8 @@ export interface LifecycleInput {
   activatedAt: Date | null | undefined
   /** Optional explicit device-level evidence from the provider response. */
   providerInstalledSignal?: boolean
+  /** Provider-confirmed profile deletion from the target device/eUICC. */
+  providerProfileDeletedSignal?: boolean
   /** Optional VERIFIED network-attach evidence from the provider response.
    *  Only set when the connector proved a successful network attach for the
    *  exact target eSIM (never from a weak "package active" claim). */
@@ -35,19 +37,24 @@ export interface LifecycleResult {
  * Canonical provider-terminal lifecycle states. Once the canonical engine maps
  * a provider report into one of these, the eSIM must never be pulled back out by
  * a later weaker, unrecognized, or ambiguous report (e.g. an unverified ACTIVE
- * claim, a device-installed signal, a PENDING report, or an unknown value).
- * Legitimate recovery flows operate above this engine and rewrite the row
- * directly, so no in-engine exit is needed.
+ * claim, a device-installed signal, a PENDING report, an exhausted/usage report,
+ * or an unknown value). REFUNDED is terminal exactly like EXPIRED / FAILED /
+ * CANCELLED: a refunded eSIM is lifecycle-closed and must never be reactivated
+ * to DEPLETED, ACTIVE, INSTALLED or any other non-terminal state by provider
+ * status, usage synchronization, webhook processing or device-installed
+ * evidence. Legitimate recovery flows operate above this engine and rewrite the
+ * row directly, so no in-engine exit is needed.
  */
-const TERMINAL_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED']
+const TERMINAL_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED', 'REFUNDED']
 
 /** Lifecycle states backed by OneSIM's own device/activation evidence (or a
  *  provider suspension that has no legitimate silent exit). A weaker or
  *  unrecognized provider report must never downgrade these to a "not yet
  *  active" provisioning state; they may still move to recognized authoritative
  *  terminal states (SUSPENDED/EXPIRED/FAILED/CANCELLED) or to ACTIVE via
- *  canonical evidence. */
-const PRESERVABLE_CURRENT_STATUSES = ['ACTIVE', 'INSTALLED', 'INSTALLING', 'SUSPENDED']
+ *  canonical evidence. DEPLETED is included: only the authoritative usage rule
+ *  (remaining data > 0) may move a depleted line back to ACTIVE. */
+const PRESERVABLE_CURRENT_STATUSES = ['ACTIVE', 'INSTALLED', 'INSTALLING', 'SUSPENDED', 'DEPLETED']
 
 /** Provider-reported statuses that represent device-level activation. */
 const DEVICE_ACTIVATION_SIGNALS = ['INSTALLED', 'ACTIVATED_ON_DEVICE', 'DEVICE_ACTIVATED', 'IN_USE', 'ONLINE', 'ATTACHED']
@@ -65,7 +72,7 @@ function hasActivationHistory(activatedAt: Date | null | undefined): boolean {
 }
 
 export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResult {
-  const { providerNormalizedStatus, currentStatus, dataUsedMB, activatedAt, providerInstalledSignal, providerNetworkAttachedSignal } = input
+  const { providerNormalizedStatus, currentStatus, dataUsedMB, activatedAt, providerInstalledSignal, providerProfileDeletedSignal, providerNetworkAttachedSignal } = input
   const upper = providerNormalizedStatus.toUpperCase()
   const currentUpper = (currentStatus || '').toUpperCase()
 
@@ -75,6 +82,32 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
   //    unknown value). Preserve the terminal state and only the terminal state.
   if (TERMINAL_STATUSES.includes(currentUpper)) {
     return { status: currentUpper, setActivatedAt: false, reason: 'preserve-terminal' }
+  }
+
+  // 1b. Explicit provider "data exhausted" status → customer-visible DEPLETED,
+  //     even for providers WITHOUT usage lookup (e.g. AirHub, iBASIS that report
+  //     the exhausted lifecycle through status sync/webhooks/reconciliation).
+  //     Precedence: an already-expired or terminal/refunded line is never
+  //     converted to DEPLETED; an already-DEPLETED line stays DEPLETED
+  //     (idempotent). providerStatus keeps the raw provider value at the callers.
+  if (isProviderExhaustedStatus(providerNormalizedStatus)) {
+    if (currentUpper === 'DEPLETED') {
+      return { status: 'DEPLETED', setActivatedAt: false, reason: 'provider-exhausted-preserved' }
+    }
+    if ((DEPLETION_IMMUTABLE_STATUSES as string[]).includes(currentUpper)) {
+      return { status: currentUpper, setActivatedAt: false, reason: 'preserve-terminal-on-exhausted' }
+    }
+    return { status: 'DEPLETED', setActivatedAt: false, reason: 'provider-exhausted' }
+  }
+
+  // A confirmed profile deletion is current device-install evidence. It can
+  // clear an install-only state, but must not erase activation, suspension,
+  // depletion, or terminal service history.
+  if (providerProfileDeletedSignal && !providerNetworkAttachedSignal) {
+    if (currentUpper === 'INSTALLED') {
+      return { status: 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'provider-profile-deleted' }
+    }
+    return { status: currentUpper || 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'preserve-service-on-profile-delete' }
   }
 
   // 2. Monotonic guard: never regress from a state backed by OneSIM's own
@@ -91,16 +124,27 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
   //    PENDING_ACTIVATION / INSTALLING) up to INSTALLED, and is a no-op for a
   //    current INSTALLED.
   if (providerInstalledSignal || DEVICE_ACTIVATION_SIGNALS.includes(upper)) {
+    if (currentUpper === 'DEPLETED') {
+      return { status: 'DEPLETED', setActivatedAt: false, reason: 'depleted-preserved' }
+    }
     if (currentUpper === 'ACTIVE' || currentUpper === 'SUSPENDED') {
       return { status: currentUpper, setActivatedAt: false, reason: 'preserve-authoritative-on-installed-signal' }
     }
-    return { status: 'INSTALLED', setActivatedAt: !hasActivationHistory(activatedAt), reason: 'provider-installed-signal' }
+    // Installation alone must not create network-activation history. A later
+    // ambiguous ACTIVE response would otherwise reuse that fabricated proof.
+    return { status: 'INSTALLED', setActivatedAt: false, reason: 'provider-installed-signal' }
   }
 
   // 4. Provider says ACTIVE — check for usage/activation evidence. The connector
   //    may provide VERIFIED network-attach evidence (providerNetworkAttachedSignal)
   //    that proves device activation without usage history.
   if (upper === 'ACTIVE') {
+    if (currentUpper === 'DEPLETED') {
+      // Ordinary provider ACTIVE status is NOT evidence of replenished data:
+      // a depleted eSIM returns to ACTIVE only via the authoritative usage rule
+      // (deriveDepletionStatus with remaining data > 0).
+      return { status: 'DEPLETED', setActivatedAt: false, reason: 'depleted-needs-authoritative-replenishment' }
+    }
     if (hasActivationHistory(activatedAt)) {
       return { status: 'ACTIVE', setActivatedAt: false, reason: 'already-activated' }
     }
@@ -136,9 +180,18 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
     return { status: 'SUSPENDED', setActivatedAt: false, reason: 'provider-suspended' }
   }
 
-  // 8. Expired
-  if (upper === 'EXPIRED' || upper === 'EXPIRING') {
+  // 8. Expired: EXPIRING is a warning, never terminal evidence.
+  if (upper === 'EXPIRED') {
     return { status: 'EXPIRED', setActivatedAt: false, reason: 'provider-expired' }
+  }
+  if (upper === 'EXPIRING') {
+    return {
+      status: WEAKER_PROVISIONING_STATES.includes(currentUpper) || !currentUpper
+        ? 'PENDING_ACTIVATION'
+        : currentUpper,
+      setActivatedAt: false,
+      reason: 'provider-expiring-warning',
+    }
   }
 
   // 9. CANCELLED
@@ -155,4 +208,122 @@ export function deriveEsimLifecycleStatus(input: LifecycleInput): LifecycleResul
   }
 
   return { status: 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'unknown-provider-fallback' }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Provider-neutral DEPLETED status (customer-visible "data allowance exhausted").
+//
+// Only ONE canonical decision point: a depleted line is derived from AUTHORITATIVE
+// usage evidence (finite remaining data <= 0 on a valid snapshot) OR an explicit
+// provider status that unambiguously means exhausted data. It is never inferred
+// from missing/unknown remaining data, a failed usage request, total allowance
+// alone, or a provider lifecycle status of ACTIVE without usage evidence.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Provider statuses that unambiguously mean the data allowance is exhausted. */
+export const EXHAUSTED_PROVIDER_STATUSES = ['DEPLETED', 'EXHAUSTED', 'DATA_DEPLETED', 'OUT_OF_DATA'] as const
+
+export function isProviderExhaustedStatus(providerStatus?: string | null): boolean {
+  const upper = String(providerStatus || '').toUpperCase()
+  return (EXHAUSTED_PROVIDER_STATUSES as readonly string[]).includes(upper)
+}
+
+/** Irreversible/lifecycle-closed states a depleted line is NEVER derived from
+ *  (an EXPIRED eSIM must not become DEPLETED; FAILED/CANCELLED/REFUNDED are
+ *  already terminal for the customer). */
+const DEPLETION_IMMUTABLE_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED', 'REFUNDED']
+
+export interface DepletionEvidence {
+  /** dataRemainingMB from an authoritative usage snapshot (null = unknown). */
+  dataRemainingMB?: number | null
+  /** True only when the provider/connector considered the snapshot valid. */
+  snapshotValid?: boolean
+  /** Explicit provider status that unambiguously means exhausted data. */
+  providerExhausted?: boolean
+}
+
+/**
+ * Canonical provider-neutral DEPLETED transition.
+ *
+ * Returns:
+ *  - 'DEPLETED'  status change (remaining <= 0 on a valid snapshot, or an
+ *                explicit exhausted provider status) unless the current status
+ *                is already DEPLETED (no-op → idempotent);
+ *  - 'ACTIVE'    when a DEPLETED line is replenished by an authoritative
+ *                snapshot with remaining data > 0 (top-up reactivation);
+ *  - null        no status change (idempotent / insufficient evidence).
+ *
+ * Negative remaining values are treated safely as depleted (clamped for the
+ * decision). EXPIRED/FAILED/CANCELLED/REFUNDED are never converted to DEPLETED.
+ */
+export function deriveDepletionStatus(
+  currentStatus: string | null | undefined,
+  evidence: DepletionEvidence,
+): 'DEPLETED' | 'ACTIVE' | null {
+  const current = String(currentStatus || 'PENDING').toUpperCase()
+  if (DEPLETION_IMMUTABLE_STATUSES.includes(current)) return null
+
+  const remaining = evidence.dataRemainingMB
+  const numericDepleted =
+    evidence.snapshotValid === true &&
+    typeof remaining === 'number' &&
+    Number.isFinite(remaining) &&
+    remaining <= 0
+
+  if (numericDepleted || evidence.providerExhausted === true) {
+    return current === 'DEPLETED' ? null : 'DEPLETED'
+  }
+
+  const replenished =
+    typeof remaining === 'number' &&
+    Number.isFinite(remaining) &&
+    remaining > 0 &&
+    evidence.snapshotValid === true
+
+  if (current === 'DEPLETED' && replenished) return 'ACTIVE'
+
+  return null
+}
+
+export interface UsageActivationInput {
+  /** Current stored canonical status. */
+  currentStatus?: string | null
+  /** Authoritative finite used value from a successful snapshot (0 = no evidence). */
+  dataUsedMB?: number | null
+  activatedAt?: Date | null | undefined
+}
+
+export interface UsageActivationResult {
+  /** 'ACTIVE' when a pending eSIM is promoted by real usage; otherwise the unchanged current status. */
+  status: string
+  /** True when this promotion should set/update activatedAt. */
+  setActivatedAt: boolean
+  /** reason for the decision (for logs/audit). */
+  reason: string
+}
+
+/**
+ * Canonical PENDING → ACTIVE promotion from AUTHORITATIVE usage evidence.
+ *
+ * The single decision point shared by the scheduled usage sync, the manual
+ * usage refresh and authoritative USAGE_UPDATED webhooks. Provenance rules:
+ *   - promotes PENDING / PENDING_ACTIVATION / INSTALLED rows (a DEPLETED row is
+ *     restored by `deriveDepletionStatus`, never here);
+ *   - a finite authoritative `dataUsedMB > 0` is the ONLY activation evidence;
+ *   - a real zero-used snapshot is valid but is NOT activation evidence;
+ *   - missing / non-finite / stale usage is NOT activation evidence;
+ *   - terminal statuses are never touched here (DEPLETION_IMMUTABLE_STATUSES
+ *     and the engine's terminal one-way guard apply at the callers).
+ * Activation timestamps are set only through the returned flag (the caller
+ * persists via the canonical engine semantics).
+ */
+export function deriveUsageActivation(input: UsageActivationInput): UsageActivationResult {
+  const current = String(input.currentStatus || '').toUpperCase()
+  const used = input.dataUsedMB
+  const hasUsageEvidence = typeof used === 'number' && Number.isFinite(used) && used > 0
+
+  if ((current === 'PENDING' || current === 'PENDING_ACTIVATION' || current === 'INSTALLED') && hasUsageEvidence) {
+    return { status: 'ACTIVE', setActivatedAt: !hasActivationHistory(input.activatedAt), reason: 'usage-evidence-activation' }
+  }
+  return { status: current || 'PENDING_ACTIVATION', setActivatedAt: false, reason: 'no-usage-activation-evidence' }
 }

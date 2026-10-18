@@ -1,6 +1,7 @@
 'use server'
 
 import { getServerSession } from 'next-auth'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
@@ -8,12 +9,13 @@ import { syncProviderPackageToPublishedProducts, revalidateCatalogRoutes, record
 import { publishProviderPackageToRetailCatalog } from '@/lib/services/catalog/publish-to-retail'
 import { resolvePricingMutation, inferPricingIntent, type PricingMutationIntent } from '@/lib/pricing/pricing-engine'
 import { isPackagePublishEligible, getPublishIneligibilityReasons, PUBLISH_INELIGIBLE_MESSAGE } from '@/lib/catalog/publish-eligibility'
+import { parseDecimalInput } from '@/lib/packages/decimal-input'
 
 /** Convert a Prisma Decimal-ish value (has toString()) to a finite number, else null. */
 function decimalToNumber(v: unknown): number | null {
   if (v === null || v === undefined) return null
-  const n = typeof v === 'number' ? v : Number(String((v as any).toString?.() ?? v))
-  return isNaN(n) || !isFinite(n) ? null : n
+  const n = typeof v === 'number' ? v : parseDecimalInput(String((v as any).toString?.() ?? v))
+  return n === null || !isFinite(n) ? null : n
 }
 
 /**
@@ -27,6 +29,7 @@ function buildPricingUpdateData(
     costPrice?: unknown
     sellingPrice?: unknown
     markupPercent?: unknown
+    pricingMode?: string | null
   },
   data: {
     costPrice?: number
@@ -52,7 +55,11 @@ function buildPricingUpdateData(
     markupPercent: decimalToNumber(before.markupPercent),
   }
   const intent = data.pricingIntent || inferPricingIntent(supplied, existingState)
-  const resolved = resolvePricingMutation({ intent, supplied, existing: existingState })
+  // Mode-aware validation: FIXED_PRICE packages validate only their selling
+  // price (see resolvePricingMutation). The persisted pricingMode is the
+  // authority when the edit did not change it.
+  const mode = data.pricingMode ?? before.pricingMode ?? null
+  const resolved = resolvePricingMutation({ intent, supplied, existing: existingState, mode })
   if (!resolved.valid) throw new Error(`Invalid pricing: ${resolved.errors.join('; ')}`)
 
   if (data.costPrice !== undefined) updateData.costPrice = resolved.costPrice
@@ -61,7 +68,9 @@ function buildPricingUpdateData(
   // Always persist the derived dependent so the invariant holds: when the
   // admin edits markup, selling is computed even if left blank; when they
   // edit selling, markup is computed even if left blank; a cost edit
-  // recalculates whichever dependent is determinable.
+  // recalculates whichever dependent is determinable. For FIXED_PRICE the
+  // dependent value follows the mode contract (never clobber the fixed
+  // selling price).
   if (intent === 'COST' || intent === 'MARKUP' || intent === 'SELLING') {
     if (resolved.sellingPrice !== null) updateData.sellingPrice = resolved.sellingPrice
     if (resolved.markupPercent !== null) updateData.markupPercent = resolved.markupPercent
@@ -87,52 +96,84 @@ export async function updateSinglePackage(packageId: string, data: {
   notes?: string
   /** What the administrator actually edited — authority for bidirectional pricing. */
   pricingIntent?: PricingMutationIntent
-}): Promise<{ success: boolean; error?: string; readinessReasons?: string[]; eligibilityReasons?: string[] }> {
+}): Promise<{
+  success: boolean
+  error?: string
+  readinessReasons?: string[]
+  eligibilityReasons?: string[]
+  /** Canonical values persisted by the pricing resolver, safe for client state. */
+  updatedPackage?: {
+    id: string
+    costPrice: string
+    sellingPrice: string | null
+    sellingCurrency: string | null
+    markupPercent: string | null
+    pricingMode: string | null
+    publishStatus: string | null
+    configurationStatus: string | null
+    notes: string | null
+  }
+}> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PACKAGES))) return { success: false, error: 'Unauthorized' }
 
   // Explicit PUBLISHED intent: check the FIRST gate (publish eligibility)
   // against the prospective state, then persist the admin's edits, then run
   // canonical finalization + the single publication gate. Never force
   // PUBLISHED on eligibility or readiness failure.
+  //
+  // IDEMPOTENCY: an already-PUBLISHED package is a repeat edit of live
+  // configuration — it must NOT re-run the publish pipeline (finalize →
+  // recalculate-from-rules → new snapshot → republish). Re-running it would
+  // silently overwrite the admin's just-saved price with rule-derived values
+  // and fail later edits ("edited successfully only once"). Only a genuine
+  // transition INTO PUBLISHED runs the publication gate.
   if (data.publishStatus === 'PUBLISHED') {
     const before = await prisma.providerPackage.findUnique({ where: { id: packageId } })
     if (!before) return { success: false, error: 'Package not found' }
 
-    // Prospective status: requested edits win; otherwise the current DB state.
-    const prospectiveState = {
-      configurationStatus: data.configurationStatus ?? before.configurationStatus,
-      publishStatus: data.publishStatus && data.publishStatus !== 'PUBLISHED' ? data.publishStatus : before.publishStatus,
-    }
-    if (!isPackagePublishEligible(prospectiveState)) {
-      return {
-        success: false,
-        error: PUBLISH_INELIGIBLE_MESSAGE,
-        eligibilityReasons: getPublishIneligibilityReasons(prospectiveState),
+    if (before.publishStatus !== 'PUBLISHED') {
+      // Genuine transition into PUBLISHED — canonical publication gate.
+      const prospectiveState = {
+        configurationStatus: data.configurationStatus ?? before.configurationStatus,
+        publishStatus: before.publishStatus,
       }
-    }
-
-    try {
-      await prisma.$transaction(async (tx) => {
-        const { updateData } = buildPricingUpdateData(before, data)
-        if (Object.keys(updateData).length === 0) throw new Error('No fields to update')
-        const updated = await tx.providerPackage.update({ where: { id: packageId }, data: updateData })
-        await syncProviderPackageToPublishedProducts(tx, updated)
-      })
-    } catch (e: any) {
-      return { success: false, error: e.message || 'Update failed' }
-    }
-
-    const result = await publishProviderPackageToRetailCatalog(packageId, { reason: 'MANUAL_EDIT' })
-    if (!result.success) {
-      return {
-        success: false,
-        error: result.error || 'Publish failed',
-        readinessReasons: result.readinessReasons || (result.failedStage ? [result.error || result.failedStage] : []),
+      if (!isPackagePublishEligible(prospectiveState)) {
+        return {
+          success: false,
+          error: PUBLISH_INELIGIBLE_MESSAGE,
+          eligibilityReasons: getPublishIneligibilityReasons(prospectiveState),
+        }
       }
+
+      try {
+        await prisma.$transaction(async (tx) => {
+          const { updateData } = buildPricingUpdateData(before, data)
+          // A status-only publish (no config/pricing edits) is still valid:
+          // persist whatever is present, otherwise proceed straight to the gate.
+          if (Object.keys(updateData).length > 0) {
+            const updated = await tx.providerPackage.update({ where: { id: packageId }, data: updateData })
+            await syncProviderPackageToPublishedProducts(tx, updated)
+          }
+        })
+      } catch (e: any) {
+        return { success: false, error: e.message || 'Update failed' }
+      }
+
+      const result = await publishProviderPackageToRetailCatalog(packageId, { reason: 'MANUAL_EDIT' })
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error || 'Publish failed',
+          readinessReasons: result.readinessReasons || (result.failedStage ? [result.error || result.failedStage] : []),
+        }
+      }
+      await revalidateCatalogRoutes()
+      return { success: true }
     }
-    await revalidateCatalogRoutes()
-    return { success: true }
+    // Otherwise fall through to the plain edit path: the package is already
+    // published, so this is a repeat configuration/pricing edit.
   }
 
   try {
@@ -161,7 +202,20 @@ export async function updateSinglePackage(packageId: string, data: {
     )
 
     await revalidateCatalogRoutes()
-    return { success: true }
+    return {
+      success: true,
+      updatedPackage: {
+        id: updated.id,
+        costPrice: updated.costPrice.toString(),
+        sellingPrice: updated.sellingPrice?.toString() ?? null,
+        sellingCurrency: updated.sellingCurrency,
+        markupPercent: updated.markupPercent?.toString() ?? null,
+        pricingMode: updated.pricingMode,
+        publishStatus: updated.publishStatus,
+        configurationStatus: updated.configurationStatus,
+        notes: updated.notes,
+      },
+    }
   } catch (e: any) {
     if (e.message === 'Package not found' || e.message === 'No fields to update') {
       return { success: false, error: e.message }
@@ -173,6 +227,7 @@ export async function updateSinglePackage(packageId: string, data: {
 export async function undoLastRules(): Promise<{ success: boolean; rolledBack?: number; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PACKAGES))) return { success: false, error: 'Unauthorized' }
 
   const lastRules = await prisma.catalogChangeSet.findFirst({
     where: { actionType: 'RULES_APPLIED' },

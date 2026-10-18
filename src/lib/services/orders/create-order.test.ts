@@ -104,4 +104,30 @@ describe('createOrder canonical forwarding', () => {
     const failed = enqueueBusinessWebhooks.mock.calls.find((c: any) => c[1] === 'order.failed')
     expect(failed).toBeTruthy()
   })
+
+  it('esim.provisioned webhook payload is additive — canonical status preserved, normalized lifecycle fields added, no provider status', async () => {
+    orchestrator().executePurchaseAsync.mockResolvedValueOnce({
+      success: true, orderId: 'order-1', status: 'FULFILLED', quantity: 1,
+      esims: [{ id: 'esim-1', iccid: '89012345678901234567', status: 'PENDING_ACTIVATION', activationCode: 'LPA:1$smdp.example.com$mid-1', qrCodeUrl: null }],
+    })
+    await createOrder({ businessId: 'biz-1', userId: 'u1', packageId: 'pkg-1', quantity: 1, async: true })
+
+    // Give the fire-and-forget webhook closure a microtask to run.
+    await new Promise((r) => setTimeout(r, 10))
+
+    const { enqueueBusinessWebhooks } = await import('@/lib/services/business-webhooks/dispatcher')
+    const call = enqueueBusinessWebhooks.mock.calls.find((c: any) => c[1] === 'esim.provisioned')
+    expect(call).toBeTruthy()
+    const payload = call[2]
+    const esim = payload.esims[0]
+    // Backward-compatible raw canonical status retained.
+    expect(esim.status).toBe('PENDING_ACTIVATION')
+    expect(esim.serviceStatus).toBe('PENDING_ACTIVATION')
+    expect(esim.serviceStatusLabel).toBe('Provisioned')
+    expect(esim.installationStatus).toBe('READY')
+    expect(esim.installationStatusLabel).toBe('Ready to install')
+    // Provider identity/vocabulary is never exposed.
+    expect(JSON.stringify(payload)).not.toContain('providerStatus')
+    expect(JSON.stringify(payload)).not.toContain('provider')
+  })
 })

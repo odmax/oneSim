@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { revalidatePath } from 'next/cache'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
@@ -32,6 +33,7 @@ function extractCountry(rawData: string): string | null {
 export async function syncProviderPlans(providerId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) redirect('/login')
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId }, include: { providerTemplate: true } })
   if (!provider) return { error: 'Provider not found' }
@@ -459,6 +461,7 @@ async function recalculateProviderPackageAfterCostChange(packageId: string): Pro
 export async function importProviderPlan(providerId: string, formData: FormData) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) redirect('/login')
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) redirect(`/admin/providers?error=Provider+not+found`)

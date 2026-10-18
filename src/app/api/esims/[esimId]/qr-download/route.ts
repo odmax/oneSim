@@ -6,6 +6,8 @@ import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { buildInstallationPresentation } from '@/lib/esim/installation-data'
 import { renderQrPayload } from '@/lib/esim/qr-encoder'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 export async function GET(request: Request, { params }: { params: { esimId: string } }) {
   const session = await getServerSession(authOptions)
@@ -27,6 +29,10 @@ export async function GET(request: Request, { params }: { params: { esimId: stri
     if (esim.purchase.businessId !== session.user.businessId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
     }
+  } else if (session.user.role === 'INTERNAL_ADMIN') {
+    // DB-backed: stale permission claims cannot grant admin QR downloads.
+    const { allowed, denied } = await adminApiAccess(Permissions.VIEW_ESIMS)
+    if (!allowed) return denied
   }
 
   // Canonical classification: an image URL is fetched; an LPA payload is rendered

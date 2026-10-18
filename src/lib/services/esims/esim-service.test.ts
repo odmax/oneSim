@@ -55,7 +55,7 @@ function makeEsim(overrides: any = {}) {
     providerActivationId: '',
     providerResponse: null,
     expiresAt: new Date('2026-01-01'),
-    purchase: { id: 'order-1', package: { providerId: 'p1' } },
+    purchase: { id: 'order-1', providerId: 'p1', package: { providerId: 'p1' } },
     ...overrides,
   }
 }
@@ -121,17 +121,18 @@ describe('refreshEsimUsage (canonical delegation)', () => {
     expect(result.data?.dataUsedMB).toBe(512)
   })
 
-  it('first positive usage promotes PENDING_ACTIVATION → ACTIVE (activation evidence)', async () => {
+  it('first positive usage promotes PENDING_ACTIVATION → ACTIVE via the canonical usage sync (no direct status write)', async () => {
     mockPrisma.eSIM.findUnique
-      .mockResolvedValueOnce(makeEsim({ status: 'PENDING_ACTIVATION', dataUsedMB: 0 }))
-      .mockResolvedValueOnce({ status: 'ACTIVE' })
+      .mockResolvedValueOnce(makeEsim({ purchaseId: 'order-1', status: 'PENDING_ACTIVATION', dataUsedMB: 0, activatedAt: null }))
+      .mockResolvedValueOnce({ id: 'esim-1', status: 'ACTIVE', activatedAt: new Date() })
     mockPrisma.eSIM.update.mockResolvedValue({} as any)
+    vi.mocked(mockSyncESIMUsage).mockResolvedValue({ success: true, status: 'ACTIVE', dataUsedMB: 2048, dataTotalMB: 1024, dataRemainingMB: 512 })
 
     const result = await refreshEsimUsage('esim-1')
     expect(result.data?.status).toBe('ACTIVE')
-    const updateData = mockPrisma.eSIM.update.mock.calls[0][0].data
-    expect(updateData.status).toBe('ACTIVE')
-    expect(updateData.activatedAt).toBeInstanceOf(Date)
+    // The canonical usage sync owns the status promotion — refreshEsimUsage only
+    // re-reads and reports the persisted outcome.
+    expect(mockCreateTimeline).toHaveBeenCalledWith('order-1', expect.objectContaining({ eventType: 'ESIM_ACTIVATED' }))
   })
 
   it('maps a capability-not-supported skip to a client-safe error (never a provider call)', async () => {
@@ -164,7 +165,7 @@ describe('refreshEsimUsage (canonical delegation)', () => {
     const result = await refreshEsimUsage('esim-1')
     expect(result.data?.status).toBe('ACTIVE')
     // No status regression write from usage.
-    expect(mockPrisma.eSIM.update.mock.calls[0][0].data.status).toBeUndefined()
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
   })
 })
 
@@ -307,6 +308,85 @@ describe('suspendEsim / resumeEsim (Choice lifecycle)', () => {
     expect(lookup.iccid).toBeUndefined()
   })
 })
+
+
+describe('lifecycle provider ownership and safety', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.eSIM.update.mockResolvedValue({} as any)
+    mockCreateTimeline.mockResolvedValue(undefined as any)
+  })
+
+  it('uses fulfillment provider rather than retail provider', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({
+      status: 'ACTIVE',
+      purchase: {
+        id: 'order-1',
+        providerId: 'actual-provider',
+        package: { providerId: 'retail-provider' },
+      },
+    }))
+    mockPrisma.provider.findUnique.mockResolvedValue({ code: 'USMATRIX' })
+
+    const suspendESIM = vi.fn().mockResolvedValue({
+      success: true,
+      data: { status: 'SUSPENDED', providerStatus: 'suspended' },
+    })
+    mockGetAdapter.mockResolvedValue({ suspendESIM } as any)
+
+    const result = await suspendEsim('esim-1')
+
+    expect(result.success).toBe(true)
+    expect(mockGetAdapter).toHaveBeenCalledWith('actual-provider')
+    expect(suspendESIM).toHaveBeenCalledWith(CHOICE_ICCID)
+  })
+
+  it.each(['EXPIRED', 'FAILED', 'CANCELLED', 'REFUNDED'])(
+    'rejects terminal status %s without contacting a provider',
+    async (status) => {
+      mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({ status }))
+
+      const result = await suspendEsim('esim-1')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toBe('Cannot change lifecycle of a terminal eSIM')
+      expect(mockGetAdapter).not.toHaveBeenCalled()
+      expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+    },
+  )
+
+  it('blocks IBASIS suspend without a verified subscription identity', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({
+      status: 'ACTIVE',
+      providerSubscriptionId: 'unverified-reference',
+    }))
+    mockPrisma.provider.findUnique.mockResolvedValue({ code: 'IBASIS' })
+
+    const suspendESIM = vi.fn()
+    mockGetAdapter.mockResolvedValue({ suspendESIM } as any)
+
+    const result = await suspendEsim('esim-1')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('IBASIS lifecycle requires verified subscription identity')
+    expect(suspendESIM).not.toHaveBeenCalled()
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+  })
+
+  it('rejects missing fulfillment ownership without provider calls', async () => {
+    mockPrisma.eSIM.findUnique.mockResolvedValue(makeEsim({
+      status: 'ACTIVE',
+      purchase: { id: 'order-1', providerId: null, package: null },
+    }))
+
+    const result = await resumeEsim('esim-1')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('No linked provider')
+    expect(mockGetAdapter).not.toHaveBeenCalled()
+  })
+})
+
 
 describe('buildChoiceStatusLookup', () => {
   it('uses ICCID when present', () => {

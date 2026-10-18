@@ -1,3 +1,5 @@
+import { parseDecimalInput } from '@/lib/packages/decimal-input'
+
 export interface ProviderPackageInput {
   id: string
   name: string
@@ -32,8 +34,8 @@ export function decimalValuesEqual(
 
 export function parseDecimalSafe(val: { toString(): string } | null): number | null {
   if (val === null || val === undefined) return null
-  const n = parseFloat(val.toString())
-  return isNaN(n) ? null : n
+  // Locale-safe: "21,49" parses to 21.49 (never 21 / 2149 / NaN).
+  return parseDecimalInput(String((val as any).toString?.() ?? val))
 }
 
 export function buildCatalogProductSyncData(pp: ProviderPackageInput) {

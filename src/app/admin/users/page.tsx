@@ -4,7 +4,7 @@ import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { toggleAdminStatus, deleteAdminUser } from '@/lib/actions/admin-users'
+import { toggleAdminStatus, deactivateAdminUser } from '@/lib/actions/admin-users'
 import { ADMIN_PERMISSIONS } from '@/lib/auth/admin-permissions'
 import { ConfirmForm } from '@/components/admin/providers/ConfirmForm'
 
@@ -127,7 +127,7 @@ export default async function AdminUsersPage({ searchParams }: { searchParams?: 
                     <td className="px-5 py-4">
                       <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${u.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}`}>
                         <span className={`h-1.5 w-1.5 rounded-full ${u.isActive ? 'bg-emerald-400' : 'bg-red-400'}`} />
-                        {u.isActive ? 'Active' : 'Suspended'}
+                        {u.isActive ? 'Active' : 'Inactive'}
                       </span>
                     </td>
                     <td className="px-5 py-4 text-gray-500">{new Date(u.createdAt).toLocaleDateString()}</td>
@@ -143,8 +143,8 @@ export default async function AdminUsersPage({ searchParams }: { searchParams?: 
                                   {u.isActive ? 'Suspend' : 'Activate'}
                                 </button>
                               </form>
-                              <ConfirmForm action={deleteAdminUser.bind(null, u.id)} message={`Delete ${u.user.name}? This cannot be undone.`}>
-                                <button type="submit" className="rounded-md bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100">Delete</button>
+                              <ConfirmForm action={deactivateAdminUser.bind(null, u.id)} message={`Deactivate ${u.user.name}? The account is kept on file and can be reactivated.`}>
+                                <button type="submit" className="rounded-md bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100">Deactivate</button>
                               </ConfirmForm>
                             </>
                           )}

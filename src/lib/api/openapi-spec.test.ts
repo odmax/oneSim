@@ -43,8 +43,12 @@ describe('OpenAPI specification', () => {
   it('7. spec includes Order schema with lifecycle statuses', () => {
     if (!specRouteExists) return
     const content = fs.readFileSync('src/app/api/openapi.json/route.ts', 'utf8')
-    expect(content).toContain('PARTIALLY_FULFILLED')
-    expect(content).toContain('PROVIDER_RECONCILIATION')
+    // The order status enum is derived from the shared canonical constant module
+    // (src/lib/status-constants.ts) so the spec and the domain never drift.
+    const statusConstants = fs.readFileSync('src/lib/status-constants.ts', 'utf8')
+    expect(content).toContain('ORDER_API_STATUSES')
+    expect(statusConstants).toContain('PARTIALLY_FULFILLED')
+    expect(statusConstants).toContain('PROVIDER_RECONCILIATION')
   })
 
   it('8. spec includes ESIM schema', () => {

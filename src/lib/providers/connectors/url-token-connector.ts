@@ -139,7 +139,7 @@ const CHOICE_STATUS_GROUPS: Record<string, string[]> = {
   CANCELLED: ['cancelled', 'canceled'],
 }
 
-const MEANINGFUL_INTERNAL_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED']
+const MEANINGFUL_INTERNAL_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'SUSPENDED', 'EXPIRED', 'FAILED', 'CANCELLED', 'DEPLETED', 'EXHAUSTED', 'DATA_DEPLETED', 'OUT_OF_DATA']
 
 /** Legacy/placeholder Choice user_id values that must never be sent upstream. */
 const CHOICE_USER_ID_PLACEHOLDERS = ['onesim', 'default', 'choice', 'unknown', 'n/a', 'na', 'none', 'null', 'undefined']
@@ -1400,8 +1400,8 @@ export class UrlTokenConnector extends RestCatalogConnector {
           validityDaysAdded,
           status: json.status || 'COMPLETED',
           newExpiry: json.expiry_date || json.expires_at || undefined,
-          newDataTotalMB: json.data_total_mb || json.dataTotalMB || undefined,
-          newDataRemainingMB: json.data_remaining_mb || json.dataRemainingMB || undefined,
+          newDataTotalMB: json.data_total_mb ?? json.dataTotalMB ?? undefined,
+          newDataRemainingMB: json.data_remaining_mb ?? json.dataRemainingMB ?? undefined,
         },
       }
     } catch (e: any) {

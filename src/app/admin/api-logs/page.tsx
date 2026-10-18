@@ -12,7 +12,7 @@ export default async function AdminApiLogsPage({
 }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
-  const perm = await checkPermission(Permissions.VIEW_LOGS)
+  const perm = await checkPermission(Permissions.VIEW_API_LOGS)
   if (!perm.allowed) redirect('/admin/unauthorized')
 
   const page = parseInt(searchParams?.page || '1', 10)

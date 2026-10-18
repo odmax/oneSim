@@ -10,6 +10,7 @@
     "vercel-build": "prisma generate && next build",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "prisma:studio": "prisma studio",
     "db:migrate:deploy": "prisma migrate deploy",
     "catalog:sync-pricing": "npx ts-node scripts/sync-catalog-pricing.ts",

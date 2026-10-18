@@ -104,10 +104,31 @@ export function EditProviderForm({ provider }: { provider: any }) {
       </div>
 
       <div>
-        <label htmlFor="apiToken" className="block text-sm font-medium text-gray-700">API Token / Key</label>
-        <input id="apiToken" name="apiToken" type="password" placeholder={provider.apiToken ? 'Leave empty to keep current token' : 'Enter API token'} className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
+        <label htmlFor="apiToken" className="block text-sm font-medium text-gray-700">
+          {provider.code === 'TELNA' ? 'Telna API Access Key ID' : 'API Token / Key'}
+        </label>
+        <input id="apiToken" name="apiToken" type="password" autoComplete="new-password" placeholder={provider.apiToken ? 'Leave empty to keep current token' : 'Enter API token'} className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none" />
         {provider.apiToken && <p className="mt-1 text-xs text-gray-500">Current token is masked. Enter a new value to replace it.</p>}
       </div>
+
+      {provider.code === 'TELNA' && (
+        <div>
+          <label htmlFor="telnaPcrApiKey" className="block text-sm font-medium text-gray-700">
+            Telna PCR API Key
+          </label>
+          <input
+            id="telnaPcrApiKey"
+            name="telnaPcrApiKey"
+            type="password"
+            autoComplete="new-password"
+            placeholder="Leave empty to keep the current PCR API key"
+            className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none"
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            Used as the Telna PCR ApiKey header. The saved value is encrypted and is never displayed.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div>

@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { telnaGetDashboard, telnaGetAnalytics, telnaExportUsage, telnaGenerateAlerts } from '@/lib/actions/telna-usage-analytics'
 
@@ -36,6 +37,7 @@ function TableCard({ title, children }: { title: string; children: React.ReactNo
 export default async function AdminSimUsagePage({ searchParams }: { searchParams: { esimId?: string; tab?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.VIEW_ANALYTICS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const dashboard = await telnaGetDashboard()
   const dashboardData = dashboard.success ? dashboard.data : null

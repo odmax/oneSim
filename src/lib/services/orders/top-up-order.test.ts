@@ -16,6 +16,14 @@ vi.mock('@/lib/providers/adapter-manager', () => ({
   getAdapterForProvider: vi.fn(),
 }))
 
+vi.mock('@/lib/services/esims/resolve-sync-provider', () => ({
+  resolveSyncProviderId: vi.fn(),
+}))
+
+vi.mock('./package-backing-resolver', () => ({
+  resolvePackageBacking: vi.fn(),
+}))
+
 vi.mock('@/lib/services/orders/wallet-actions', () => ({
   reserveTopUpFunds: vi.fn().mockResolvedValue({ success: true }),
   captureTopUpFundsUpToInTx: vi.fn().mockResolvedValue({ success: true }),
@@ -34,6 +42,11 @@ const { prisma } = await import('@/lib/prisma')
 const { getAdapterForProvider } = await import('@/lib/providers/adapter-manager')
 const { reserveTopUpFunds, captureTopUpFundsUpToInTx, releaseTopUpFundsUpTo } = await import('@/lib/services/orders/wallet-actions')
 const { createTopUpOrder } = await import('./top-up-order')
+const { resolveSyncProviderId } = await import('@/lib/services/esims/resolve-sync-provider')
+const { resolvePackageBacking } = await import('./package-backing-resolver')
+
+const mockResolveProvider = vi.mocked(resolveSyncProviderId)
+const mockResolveBacking = vi.mocked(resolvePackageBacking)
 
 const mockPrisma = vi.mocked(prisma)
 const mockReserve = vi.mocked(reserveTopUpFunds)
@@ -76,6 +89,15 @@ const adapter = { topUpESIM: vi.fn() }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockResolveProvider.mockResolvedValue('p1')
+  mockResolveBacking.mockResolvedValue({
+    kind: 'BOUND',
+    backing: {
+      providerId: 'p1',
+      providerPackageId: 'provider-pkg-1',
+      providerPlanId: 'verified-plan-1',
+    },
+  })
   mockPrisma.eSIM.findUnique.mockResolvedValue(esim as any)
   mockPrisma.eSIMPackage.findUnique.mockResolvedValue(topUpPkg as any)
   mockPrisma.provider.findUnique.mockResolvedValue(provider as any)
@@ -220,5 +242,123 @@ describe('F2 — no double provider charge / double debit on retry', () => {
     expect(result.success).toBe(false)
     expect(mockReleaseUpTo).not.toHaveBeenCalled()
     expect(mockCaptureUpToInTx).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('F3 — authoritative zero after top-up', () => {
+  it('preserves newDataRemainingMB 0 and does NOT change eSIM status (no silent activation)', async () => {
+    adapter.topUpESIM.mockResolvedValue({ success: true, data: { providerReference: 'ref-1', newDataTotalMB: 0, newDataRemainingMB: 0 } })
+    const result = await createTopUpOrder({ businessId: 'biz-1', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1 })
+    expect(result.success).toBe(true)
+    const esimUpdate = txMock.eSIM.update.mock.calls.find((c: any) => c[0].where?.id === 'esim-1')
+    expect(esimUpdate).toBeDefined()
+    const data = esimUpdate![0].data
+    // authoritative zero is preserved on the snapshot
+    expect(data.dataRemainingMB).toBe(0)
+    expect(data.dataTotalMB).toBe(0)
+    // status is decided only by the canonical depletion engine — a top-up may
+    // never silently activate a depleted eSIM
+    expect(data.status).toBeUndefined()
+  })
+
+  it('leaves remaining/total untouched when the provider omits them (no status write)', async () => {
+    adapter.topUpESIM.mockResolvedValue({ success: true, data: { providerReference: 'ref-1' } })
+    await createTopUpOrder({ businessId: 'biz-1', userId: 'u1', esimId: 'esim-1', topUpPackageId: 'pkg-1', quantity: 1 })
+    const esimUpdate = txMock.eSIM.update.mock.calls.find((c: any) => c[0].where?.id === 'esim-1')
+    expect(esimUpdate).toBeDefined()
+    const data = esimUpdate![0].data
+    expect(data.dataRemainingMB).toBeUndefined()
+    expect(data.dataTotalMB).toBeUndefined()
+    expect(data.status).toBeUndefined()
+  })
+})
+
+
+describe('top-up fulfillment ownership safeguards', () => {
+  const params = {
+    businessId: 'biz-1',
+    userId: 'u1',
+    esimId: 'esim-1',
+    topUpPackageId: 'pkg-1',
+    quantity: 1,
+  }
+
+  async function expectRejectedBeforeWallet() {
+    const result = await createTopUpOrder(params)
+    expect(result.success).toBe(false)
+    expect(result.errorStatus).toBe(400)
+    expect(mockPrisma.eSIMTopUp.create).not.toHaveBeenCalled()
+    expect(mockReserve).not.toHaveBeenCalled()
+    expect(getAdapterForProvider).not.toHaveBeenCalled()
+    expect(adapter.topUpESIM).not.toHaveBeenCalled()
+  }
+
+  it('rejects missing fulfillment ownership', async () => {
+    mockResolveProvider.mockResolvedValue(null)
+    await expectRejectedBeforeWallet()
+  })
+
+  it('rejects backing belonging to another provider', async () => {
+    mockResolveBacking.mockResolvedValue({
+      kind: 'BOUND',
+      backing: {
+        providerId: 'foreign-provider',
+        providerPackageId: 'foreign-package',
+        providerPlanId: 'foreign-plan',
+      },
+    })
+    await expectRejectedBeforeWallet()
+  })
+
+  it.each(['NONE', 'UNAVAILABLE'])(
+    'rejects %s backing',
+    async (kind) => {
+      mockResolveBacking.mockResolvedValue({ kind } as any)
+      await expectRejectedBeforeWallet()
+    },
+  )
+
+  it('rejects ambiguous custom backing', async () => {
+    mockResolveBacking.mockResolvedValue({
+      kind: 'CUSTOM',
+      backings: [{
+        providerId: 'p1',
+        providerPackageId: 'provider-pkg-1',
+        providerName: 'Provider',
+        priority: 1,
+      }],
+    })
+    await expectRejectedBeforeWallet()
+  })
+
+  it('rejects missing verified provider plan ID', async () => {
+    mockResolveBacking.mockResolvedValue({
+      kind: 'BOUND',
+      backing: {
+        providerId: 'p1',
+        providerPackageId: 'provider-pkg-1',
+        providerPlanId: '',
+      },
+    })
+    await expectRejectedBeforeWallet()
+  })
+
+  it('dispatches only the verified provider plan ID', async () => {
+    const result = await createTopUpOrder(params)
+
+    expect(result.success).toBe(true)
+    expect(getAdapterForProvider).toHaveBeenCalledWith('p1')
+    expect(adapter.topUpESIM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planId: 'verified-plan-1',
+        sku: 'verified-plan-1',
+        packageName: 'verified-plan-1',
+      }),
+    )
+    expect(mockPrisma.eSIMTopUp.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ providerId: 'p1' }),
+      }),
+    )
   })
 })

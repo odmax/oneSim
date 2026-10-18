@@ -2,8 +2,12 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import EsimActions from '@/components/EsimActions'
 import { getPackageDisplayName } from '@/lib/packages/snapshot-utils'
+import { EsimPrimaryStatusBadge } from '@/components/esim/EsimPrimaryStatusBadge'
+import { confirmEsimInstalledAction } from '@/lib/actions/esim-confirm-installed'
+import { ESIM_LIFECYCLE_STATUSES } from '@/lib/status-constants'
 
 export default async function AdminESIMsPage({
   searchParams
@@ -19,7 +23,8 @@ export default async function AdminESIMsPage({
   
   if (!session || session.user.role !== 'INTERNAL_ADMIN') {
     redirect('/login')
-  }
+    }
+  const perm = await checkPermission(Permissions.VIEW_ESIMS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   // Build filter conditions
   const where: any = {}
@@ -104,11 +109,9 @@ export default async function AdminESIMsPage({
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none"
             >
               <option value="">All Statuses</option>
-              <option value="ACTIVE">Active</option>
-              <option value="PENDING">Pending</option>
-              <option value="INACTIVE">Inactive</option>
-              <option value="EXPIRED">Expired</option>
-              <option value="SUSPENDED">Suspended</option>
+              {ESIM_LIFECYCLE_STATUSES.map((s) => (
+                <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
+              ))}
             </select>
           </div>
 
@@ -197,22 +200,27 @@ export default async function AdminESIMsPage({
                   )}
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">
-                  <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
-                    esim.status === 'ACTIVE' ? 'bg-green-100 text-green-800' :
-                    esim.status === 'PENDING_ACTIVATION' ? 'bg-yellow-100 text-yellow-800' :
-                    esim.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' :
-                    esim.status === 'EXPIRED' ? 'bg-red-100 text-red-800' :
-                    esim.status === 'SUSPENDED' ? 'bg-orange-100 text-orange-800' :
-                    esim.status === 'FAILED' ? 'bg-red-100 text-red-800' :
-                    'bg-gray-100 text-gray-800'
-                  }`}>
-                    {esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' :
-                     esim.status === 'ACTIVE' ? 'Active' :
-                     esim.status === 'EXPIRED' ? 'Expired' :
-                     esim.status === 'SUSPENDED' ? 'Suspended' :
-                     esim.status === 'FAILED' ? 'Provisioning failed' :
-                     esim.status}
-                  </span>
+                  <EsimPrimaryStatusBadge esim={{
+                    status: esim.status,
+                    installationStatus: esim.installationStatus,
+                    installationLastError: esim.installationLastError,
+                    installationLastCheckedAt: esim.installationLastCheckedAt,
+                    activationCode: esim.activationCode,
+                    qrCodeUrl: esim.qrCodeUrl,
+                    qrCode: esim.qrCode,
+                    smdpAddress: esim.smdpAddress,
+                    matchingId: esim.matchingId,
+                    activatedAt: esim.activatedAt,
+                    activationDetectedAt: esim.activationDetectedAt,
+                    dataUsedMB: esim.dataUsedMB,
+                    dataTotalMB: esim.dataTotalMB,
+                    dataRemainingMB: esim.dataRemainingMB,
+                    lastStatusSyncAt: esim.lastStatusSyncAt,
+                    statusSyncRetryCount: esim.statusSyncRetryCount,
+                    statusNextSyncAt: esim.statusNextSyncAt,
+                    lastUsageSyncAt: esim.lastUsageSyncAt,
+                    customerReportedInstalled: esim.customerConfirmedInstalledAt != null,
+                  }} />
                 </td>
                 <td className="whitespace-nowrap px-6 py-4">
                   {esim.providerStatus ? (
@@ -247,6 +255,13 @@ export default async function AdminESIMsPage({
                 </td>
                 <td className="whitespace-nowrap px-6 py-4 text-sm">
                   <EsimActions esimId={esim.id} iccid={esim.iccid} providerActivationId={esim.providerActivationId} />
+                  {esim.customerConfirmedInstalledAt ? (
+                    <div className="mt-1 text-xs text-gray-500">Customer confirmed installed</div>
+                  ) : (
+                    <form action={async () => { await confirmEsimInstalledAction(esim.id) }} className="mt-1">
+                      <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Confirm Installed</button>
+                    </form>
+                  )}
                 </td>
               </tr>
             ))}

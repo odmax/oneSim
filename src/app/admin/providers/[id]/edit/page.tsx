@@ -2,6 +2,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { updateProvider } from '@/lib/actions/providers'
 import { EditProviderForm } from './EditProviderForm'
@@ -9,6 +10,7 @@ import { EditProviderForm } from './EditProviderForm'
 export default async function EditProviderPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_PROVIDERS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const provider = await prisma.provider.findUnique({ where: { id: params.id } })
   if (!provider) redirect('/admin/providers?error=Provider+not+found')

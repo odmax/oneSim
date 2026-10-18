@@ -1546,7 +1546,7 @@ export class UsMatrixConnector implements IProviderConnector {
         },
       }
     }
-    if (profileStatus === 'ENABLED' || profileStatus === 'ENABLE' || logStates.includes('ENABLED') || logStates.includes('INSTALLED')) {
+    if (profileStatus === 'INSTALLED' || profileStatus === 'ENABLED' || profileStatus === 'ENABLE' || logStates.includes('ENABLED') || logStates.includes('INSTALLED')) {
       // Profile enabled / installed on device — NOT network-active.
       return {
         success: true,

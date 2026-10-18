@@ -1,12 +1,14 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
 import type { TelnaConnector } from '@/lib/providers/connectors/telna-connector'
 import { mapTelnaUsage, mapTelnaSession, mapTelnaBalance } from '@/lib/providers/mappers/telna-usage-mapper'
 import { maskIccid } from '@/lib/providers/mappers/ibasis-sim-mapper'
+import { insertUsageAlertIfAbsent, resolveUsageAlertType, lowerUsageTiers, USAGE_THRESHOLD_TIERS } from '@/lib/services/usage/usage-alert-store'
 
 function isTelnaConnector(c: unknown): c is TelnaConnector {
   return c !== null && typeof c === 'object' && 'getSimUsage' in c
@@ -15,6 +17,7 @@ function isTelnaConnector(c: unknown): c is TelnaConnector {
 export async function telnaSyncUsage(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
@@ -86,6 +89,7 @@ export async function telnaSyncUsage(esimId: string) {
 export async function telnaSyncSessions(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
@@ -157,6 +161,7 @@ export async function telnaSyncSessions(esimId: string) {
 export async function telnaSyncBalances(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
@@ -183,7 +188,6 @@ export async function telnaSyncBalances(esimId: string) {
       esimId,
       dataUsedMB: 0,
       dataRemainingMB: mapped.dataRemainingMB ?? undefined,
-      dataTotalMB: mapped.dataRemainingMB ?? undefined,
       timestamp: mapped.timestamp ? new Date(mapped.timestamp) : new Date(),
       rawData: mapped.rawData as any,
     },
@@ -210,6 +214,7 @@ export async function telnaSyncBalances(esimId: string) {
 export async function telnaGetAnalytics(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_ANALYTICS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: esimId },
@@ -283,6 +288,7 @@ function getWeekKey(d: Date): string {
 export async function telnaGetDashboard() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_ANALYTICS))) throw new Error('Unauthorized')
 
   const esims = await prisma.eSIM.findMany({
     where: { iccid: { not: '' } },
@@ -340,16 +346,25 @@ export async function telnaGetDashboard() {
 export async function telnaGenerateAlerts() {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const alerts: { esimId: string; alertType: string; severity: string; message: string }[] = []
   const startTime = Date.now()
 
+  // Terminal eSIMs must never generate misleading usage alerts: a refunded /
+  // failed / expended / cancelled line is lifecycle-closed.
+  const TERMINAL = ['EXPIRED', 'FAILED', 'CANCELLED', 'REFUNDED']
+
   const esims = await prisma.eSIM.findMany({
-    where: { iccid: { not: '' } },
+    where: { iccid: { not: '' }, status: { notIn: TERMINAL } },
     include: { purchase: { include: { package: { select: { providerId: true, providerName: true } } } } },
   })
 
   for (const esim of esims) {
+    // Defense-in-depth: even if a terminal row ever slips past the query gate,
+    // a lifecycle-closed eSIM must not produce misleading usage alerts.
+    if (TERMINAL.includes(String(esim.status || '').toUpperCase())) continue
+
     const records = await prisma.usageRecord.findMany({
       where: { esimId: esim.id },
       orderBy: { timestamp: 'desc' },
@@ -357,11 +372,14 @@ export async function telnaGenerateAlerts() {
     })
 
     if (records.length === 0) {
+      // NO_ACTIVITY is an intentional product alert for a line with zero usage
+      // history (schema documents the type). It is NOT derived from a failed
+      // usage request.
       alerts.push({
         esimId: esim.id,
         alertType: 'NO_ACTIVITY',
         severity: 'WARNING',
-        message: `SIM ${esim.iccid} has no usage records`,
+        message: `SIM ${maskIccid(esim.iccid)} has no usage records`,
       })
       continue
     }
@@ -373,19 +391,28 @@ export async function telnaGenerateAlerts() {
         esimId: esim.id,
         alertType: 'NO_ACTIVITY',
         severity: 'WARNING',
-        message: `SIM ${esim.iccid} has had no activity for ${daysSinceLastUsage} days`,
+        message: `SIM ${maskIccid(esim.iccid)} has had no activity for ${daysSinceLastUsage} days`,
       })
+    } else {
+      // Activity resumed → close any unresolved NO_ACTIVITY alert for this eSIM.
+      await resolveUsageAlertType(esim.id, 'NO_ACTIVITY')
     }
 
     if (latest.dataRemainingMB !== null && latest.dataTotalMB !== null && latest.dataTotalMB > 0) {
       const usedMB = latest.dataTotalMB - latest.dataRemainingMB
       const pct = Math.round((usedMB / latest.dataTotalMB) * 100)
       if (pct >= 100) {
-        alerts.push({ esimId: esim.id, alertType: 'USAGE_100', severity: 'CRITICAL', message: `SIM ${esim.iccid} has exhausted its data allowance` })
+        alerts.push({ esimId: esim.id, alertType: 'USAGE_100', severity: 'CRITICAL', message: `SIM ${maskIccid(esim.iccid)} has exhausted its data allowance` })
       } else if (pct >= 90) {
-        alerts.push({ esimId: esim.id, alertType: 'USAGE_90', severity: 'WARNING', message: `SIM ${esim.iccid} has used ${pct}% of data allowance` })
+        alerts.push({ esimId: esim.id, alertType: 'USAGE_90', severity: 'WARNING', message: `SIM ${maskIccid(esim.iccid)} has used ${pct}% of data allowance` })
       } else if (pct >= 80) {
-        alerts.push({ esimId: esim.id, alertType: 'USAGE_80', severity: 'INFO', message: `SIM ${esim.iccid} has used ${pct}% of data allowance` })
+        alerts.push({ esimId: esim.id, alertType: 'USAGE_80', severity: 'INFO', message: `SIM ${maskIccid(esim.iccid)} has used ${pct}% of data allowance` })
+      } else {
+        // Authoritative replenishment: usage is back above 80% headroom, so any
+        // obsolete percentage/exhausted threshold alerts for this eSIM resolve.
+        for (const tier of Object.keys(USAGE_THRESHOLD_TIERS)) {
+          await resolveUsageAlertType(esim.id, tier)
+        }
       }
     }
 
@@ -399,23 +426,31 @@ export async function telnaGenerateAlerts() {
           esimId: esim.id,
           alertType: 'USAGE_SPIKE',
           severity: 'WARNING',
-          message: `SIM ${esim.iccid} usage spike: recent avg ${Math.round(avgRecent)}MB vs ${Math.round(avgEarlier)}MB (${Math.round((avgRecent / avgEarlier) * 100)}%)`,
+          message: `SIM ${maskIccid(esim.iccid)} usage spike: recent avg ${Math.round(avgRecent)}MB vs ${Math.round(avgEarlier)}MB (${Math.round((avgRecent / avgEarlier) * 100)}%)`,
         })
       }
     }
   }
 
-  // Persist alerts
+  // Race-safe persistence: the partial unique index (esimId, alertType) WHERE
+  // acknowledgedAt IS NULL enforces exactly one unresolved alert per type, even
+  // under concurrent runs. Creating/computing a higher threshold tier closes the
+  // lower tiers (progression). Only newly-created alerts are emitted.
   let created = 0
+  const persisted: typeof alerts = []
   for (const alert of alerts) {
-    try {
-      await prisma.usageAlert.create({ data: alert })
+    for (const lower of lowerUsageTiers(alert.alertType)) {
+      await resolveUsageAlertType(alert.esimId, lower)
+    }
+    const inserted = await insertUsageAlertIfAbsent(alert)
+    if (inserted) {
       created++
-    } catch { }
+      persisted.push(alert)
+    }
   }
 
   const { emitEvent } = await import('@/lib/catalog-events')
-  for (const alert of alerts) {
+  for (const alert of persisted) {
     emitEvent({
       eventType: 'SIM_ALERT_CREATED' as any,
       providerId: null,
@@ -437,6 +472,7 @@ export async function telnaGenerateAlerts() {
 export async function telnaExportUsage(esimId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_ANALYTICS))) throw new Error('Unauthorized')
 
   const esim = await prisma.eSIM.findUnique({ where: { id: esimId } })
   if (!esim) return { error: 'eSIM not found' }

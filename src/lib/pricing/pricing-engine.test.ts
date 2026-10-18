@@ -603,6 +603,95 @@ describe('resolvePricingMutation — canonical bidirectional pricing contract', 
   })
 })
 
+describe('resolvePricingMutation — FIXED_PRICE mode validates only its relevant field', () => {
+  it('SELLING edit on a fixed-price package with NO cost succeeds and keeps selling', () => {
+    const r = resolvePricingMutation({
+      intent: 'SELLING',
+      supplied: { sellingPrice: 25 },
+      existing: { costPrice: null, sellingPrice: 21.49, markupPercent: null },
+      mode: 'FIXED_PRICE',
+    })
+    expect(r.valid).toBe(true)
+    expect(r.sellingPrice).toBe(25)
+    expect(r.markupPercent).toBeNull()
+  })
+
+  it('SELLING edit never recomputes the fixed selling price from markup', () => {
+    const r = resolvePricingMutation({
+      intent: 'SELLING',
+      supplied: { sellingPrice: 25 },
+      existing: { costPrice: 7, sellingPrice: 21.49, markupPercent: 30.5 },
+      mode: 'FIXED_PRICE',
+    })
+    expect(r.valid).toBe(true)
+    expect(r.sellingPrice).toBe(25)
+    // markup is NOT derived-required for a fixed price
+    expect(r.markupPercent).toBe(30.5)
+  })
+
+  it('MARKUP edit on a fixed-price package does NOT clobber the fixed selling price', () => {
+    const r = resolvePricingMutation({
+      intent: 'MARKUP',
+      supplied: { markupPercent: 40 },
+      existing: { costPrice: 7, sellingPrice: 25, markupPercent: 30.5 },
+      mode: 'FIXED_PRICE',
+    })
+    expect(r.valid).toBe(true)
+    expect(r.sellingPrice).toBe(25)
+    expect(r.markupPercent).toBe(40)
+  })
+
+  it('COST edit on a fixed-price package keeps the fixed selling price', () => {
+    const r = resolvePricingMutation({
+      intent: 'COST',
+      supplied: { costPrice: 9 },
+      existing: { costPrice: 7, sellingPrice: 25, markupPercent: 30.5 },
+      mode: 'FIXED_PRICE',
+    })
+    expect(r.valid).toBe(true)
+    expect(r.sellingPrice).toBe(25)
+  })
+
+  it('explicit REPEATED fixed-price selling save is idempotent', () => {
+    const once = resolvePricingMutation({
+      intent: 'SELLING',
+      supplied: { sellingPrice: 25, costPrice: 0 },
+      existing: { costPrice: 0, sellingPrice: 21.49, markupPercent: null },
+      mode: 'FIXED_PRICE',
+    })
+    expect(once.valid).toBe(true)
+    expect(once.sellingPrice).toBe(25)
+    const again = resolvePricingMutation({
+      intent: 'SELLING',
+      supplied: { sellingPrice: 25, costPrice: 0 },
+      existing: { costPrice: 0, sellingPrice: 25, markupPercent: null },
+      mode: 'FIXED_PRICE',
+    })
+    expect(again.valid).toBe(true)
+    expect(again.sellingPrice).toBe(25)
+  })
+
+  it('MARKUP_PERCENT (non-fixed) still requires positive cost for markup edits', () => {
+    const r = resolvePricingMutation({
+      intent: 'MARKUP',
+      supplied: { markupPercent: 25 },
+      existing: { costPrice: 0, sellingPrice: null, markupPercent: null },
+      mode: 'MARKUP_PERCENT',
+    })
+    expect(r.valid).toBe(false)
+  })
+
+  it('undefined mode keeps the existing strict contract (backward compatible)', () => {
+    const r = resolvePricingMutation({
+      intent: 'MARKUP',
+      supplied: { costPrice: 7, markupPercent: 9.89 },
+      existing: { costPrice: 7, sellingPrice: null, markupPercent: null },
+    })
+    expect(r.valid).toBe(true)
+    expect(r.sellingPrice).toBe(7.69)
+  })
+})
+
 describe('inferPricingIntent — legacy fallback authority', () => {
   it('markup supplied alone → MARKUP', () => {
     expect(inferPricingIntent({ markupPercent: 9.89 }, {})).toBe('MARKUP')

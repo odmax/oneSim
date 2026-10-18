@@ -4,18 +4,7 @@ import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-
-const STATUS_COLORS: Record<string, string> = {
-  CREATED: 'bg-gray-100 text-gray-700', PAYMENT_RESERVED: 'bg-blue-100 text-blue-700',
-  PENDING_PROVIDER: 'bg-amber-100 text-amber-700', PROVIDER_ACCEPTED: 'bg-cyan-100 text-cyan-700',
-  RESERVED: 'bg-purple-100 text-purple-700', FULFILLING: 'bg-indigo-100 text-indigo-700',
-  FULFILLED: 'bg-emerald-100 text-emerald-700', INSTALLING: 'bg-sky-100 text-sky-700',
-  INSTALLED: 'bg-teal-100 text-teal-700', ACTIVE: 'bg-green-100 text-green-700',
-  EXPIRED: 'bg-gray-100 text-gray-700', CANCELLED: 'bg-amber-100 text-amber-700',
-  FAILED: 'bg-red-100 text-red-700', REFUNDED: 'bg-rose-100 text-rose-700',
-  PROVIDER_RECONCILIATION: 'bg-purple-100 text-purple-800',
-  PARTIALLY_FULFILLED: 'bg-amber-100 text-amber-800',
-}
+import { adminOrderStatusBadge, adminEsimStatusBadge } from '@/lib/status-badges'
 
 function WalletBadge({ orderId, status }: { orderId: string; status: string }) {
   if (['CANCELLED', 'REFUNDED'].includes(status)) return <span className="text-[10px] text-gray-400">Released</span>
@@ -131,7 +120,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams?:
                 <td className="px-3 py-3 text-sm text-gray-900">{p.package.name}</td>
                 <td className="px-3 py-3 text-sm font-medium text-gray-900">${Number(p.totalAmount).toFixed(2)}</td>
                 <td className="px-3 py-3">
-                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[p.status] || 'bg-gray-100 text-gray-700'}`}>{p.status}</span>
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${adminOrderStatusBadge(p.status).className}`}>{adminOrderStatusBadge(p.status).label}</span>
                   {p.providerErrorCode && (
                     <span className="block text-[10px] text-red-500 mt-0.5" title={p.providerErrorMessage || ''}>Error: {p.providerErrorCode}</span>
                   )}
@@ -151,7 +140,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams?:
                 </td>
                 <td className="px-3 py-3 text-xs text-gray-500">
                   {p.esims[0]?.iccid ? (
-                    <><span className="font-mono">{p.esims[0].iccid.slice(-8)}</span><br /><span className="text-gray-400">{p.esims[0].status}</span></>
+                    <><span className="font-mono">{p.esims[0].iccid.slice(-8)}</span><br /><span className="text-gray-400">{adminEsimStatusBadge(p.esims[0].status).label}</span></>
                   ) : '—'}
                 </td>
                 <td className="px-3 py-3 text-sm text-gray-500">{new Date(p.createdAt).toLocaleDateString()}</td>

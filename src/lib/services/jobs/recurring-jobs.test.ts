@@ -88,6 +88,8 @@ describe('claimEsimForSync — UTC clock semantics', () => {
     const text = String(sql)
     expect(text).toContain('NOW() AT TIME ZONE \'UTC\'')
     expect(text).not.toContain('NOW())') // no bare NOW() due comparison
+    // status claims lease on lastStatusSyncAt
+    expect(text).toContain('"lastStatusSyncAt" IS NULL OR "lastStatusSyncAt" < $3')
     // lease param is a JS Date (UTC wall-clock)
     const lease = mockExec.mock.calls[0][3]
     expect(lease).toBeInstanceOf(Date)
@@ -97,6 +99,10 @@ describe('claimEsimForSync — UTC clock semantics', () => {
     const before = Date.now()
     mockExec.mockResolvedValue(1)
     await claimEsimForSync('esim-2', 'usageNextSyncAt')
+    const [sql] = mockExec.mock.calls[0]
+    // usage claims lease on lastUsageSyncAt (never deferred by a status sync)
+    expect(String(sql)).toContain('"lastUsageSyncAt" IS NULL OR "lastUsageSyncAt" < $3')
+    expect(String(sql)).not.toContain('"lastStatusSyncAt" IS NULL')
     const lease = mockExec.mock.calls[0][3] as Date
     const deltaMs = before - lease.getTime()
     expect(deltaMs).toBeGreaterThanOrEqual(5 * 60_000 - 2000)

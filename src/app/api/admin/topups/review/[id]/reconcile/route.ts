@@ -1,9 +1,9 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth/config'
 import { manualRetryTopUpReconciliation } from '@/lib/services/topups/top-up-reconciliation'
+import { adminApiAccess } from '@/lib/auth/admin-api-gate'
+import { Permissions } from '@/lib/auth/permissions'
 
 /**
  * Admin safe action: Retry Reconciliation.
@@ -12,10 +12,8 @@ import { manualRetryTopUpReconciliation } from '@/lib/services/topups/top-up-rec
  * verification plus the idempotent wallet capture/release resolution.
  */
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
-  const session = await getServerSession(authOptions)
-  if (!session || session.user.role !== 'INTERNAL_ADMIN') {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const { allowed, denied } = await adminApiAccess(Permissions.MANAGE_WALLETS)
+  if (!allowed) return denied
 
   const { id } = params
   if (!id) return NextResponse.json({ error: 'Missing top-up id' }, { status: 400 })

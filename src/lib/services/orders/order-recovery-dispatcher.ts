@@ -134,6 +134,24 @@ export async function discoverStrandedOrders(
   context: RecoveryDiscoveryContext = { source: 'PROVIDER_SELF_HEAL' },
   now: Date = new Date(),
 ): Promise<RecoveryDiscoveryResult> {
+  // Automatic recovery is independently controlled from the general job
+  // worker. Self-heal may continue evaluating provider health while recovery
+  // remains disabled, but it must never enqueue order-recovery jobs.
+  if (
+    context.source === 'PROVIDER_SELF_HEAL' &&
+    process.env.ORDER_RECOVERY_ENABLED !== 'true'
+  ) {
+    return {
+      source: context.source,
+      scanned: 0,
+      eligible: 0,
+      enqueued: 0,
+      duplicateSkipped: 0,
+      skippedInFlight: 0,
+      errors: [],
+    }
+  }
+
   const candidates = await prisma.eSIMPurchase.findMany({
     where: {
       status: { in: [...RECOVERY_SCOPE_STATUSES] } as any,
@@ -239,6 +257,12 @@ export async function discoverStrandedOrders(
 export async function executeOrderRecovery(payload: any): Promise<{ completed: boolean; error?: string }> {
   const orderId = payload?.orderId
   if (!orderId) return { completed: false, error: 'Recovery requires orderId' }
+
+  // Fail closed at execution too. A job queued before recovery was disabled
+  // must not call a provider or mutate its order.
+  if (process.env.ORDER_RECOVERY_ENABLED !== 'true') {
+    return { completed: true, error: 'Order recovery is disabled' }
+  }
 
   try {
     const order = await prisma.eSIMPurchase.findUnique({

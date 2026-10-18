@@ -1,9 +1,12 @@
 import { prisma } from '@/lib/prisma'
-import { getStatusNextSync, getUsageNextSync, shouldStopRetrying } from '../sync-policy'
+import { resolveSyncProviderId, resolveSyncPackageIdentity } from '@/lib/services/esims/resolve-sync-provider'
+import { getStatusNextSync, getUsageNextSync, shouldStopRetrying, nextStatusSyncDisposition, nextUsageSyncDisposition } from '../sync-policy'
 import { claimEsimForSync } from '../recurring-jobs'
 import type { IProviderConnector } from '@/lib/providers/connectors/connector-interface'
-import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
+import { deriveEsimLifecycleStatus, deriveDepletionStatus, deriveUsageActivation, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
 import { capabilitySupported, resolveStatusLookup, resolveUsageLookup, buildProviderConnector, mergeProviderPackageEsimId, isUsageLookupSkip, type SyncLookupEsim } from '@/lib/services/esims/sync-lookup'
+import { normalizeDataRemainingMB } from '@/lib/services/usage/sync-usage'
+import { upsertProviderAlert, resolveProviderAlert } from '@/lib/services/operations/provider-alerts'
 
 async function getConnector(providerId: string): Promise<IProviderConnector | null> {
   return buildProviderConnector(providerId)
@@ -14,29 +17,130 @@ function maskIccid(iccid: string | null | undefined): string {
   return iccid.length <= 8 ? '****' : `${iccid.slice(0, 4)}••••${iccid.slice(-4)}`
 }
 
-/** Backfill null sync schedules for existing eSIMs. Idempotent. */
+const SYNC_RETRY_EXHAUSTED = 'SYNC_RETRY_EXHAUSTED' as const
+
+/**
+ * One deduplicated durable operational signal when an eSIM's automatic sync
+ * retry budget is exhausted. Scoped to (provider, eSIM identity, sync type) so
+ * status/usage and different eSIMs never merge, and one eSIM's recovery never
+ * clears another's. resourceId is the INTERNAL eSIM id; only a masked ICCID
+ * appears in the human-readable message.
+ */
+function emitSyncExhaustedAlert(providerId: string | undefined | null, syncType: 'status' | 'usage', esimId: string, iccid: string | null | undefined): void {
+  if (!providerId) return
+  upsertProviderAlert(providerId, {
+    code: SYNC_RETRY_EXHAUSTED,
+    severity: 'WARNING',
+    message: `${syncType} sync retries exhausted for eSIM ${maskIccid(iccid)}`,
+  }, { resourceType: 'ESIM', resourceId: esimId, dedupKey: syncType })
+}
+
+/** Resolve ONLY this eSIM's + sync-type exhaustion on a successful authoritative refresh. */
+function resolveSyncExhaustedAlert(providerId: string | undefined | null, syncType: 'status' | 'usage', esimId: string): void {
+  if (!providerId) return
+  resolveProviderAlert(providerId, SYNC_RETRY_EXHAUSTED, { resourceType: 'ESIM', resourceId: esimId, dedupKey: syncType })
+}
+
+/**
+ * Canonical, LOCAL resolution of which providers effectively support usage
+ * lookup, from the connectors' own declared capabilities (usageLookup). This
+ * never performs a provider network call and never hard-codes provider
+ * identity — it builds each provider's connector once via the canonical
+ * connector factory and reads its declared capability. Providers whose
+ * connector is unavailable or does not declare usage lookup (e.g. AirHub,
+ * iBASIS, Telna Seamless, header-token/standard without usage wiring) are
+ * treated as NOT usage-capable.
+ */
+export async function resolveUsageCapableProviderIds(): Promise<string[]> {
+  const providers = await prisma.provider.findMany({ select: { id: true } }).catch(() => [])
+  const capable: string[] = []
+  for (const p of providers) {
+    try {
+      const connector = await buildProviderConnector(p.id)
+      if (connector && capabilitySupported(connector, 'usageLookup')) capable.push(p.id)
+    } catch {
+      // Connector build failure → conservatively NOT usage-capable.
+    }
+  }
+  return capable
+}
+
+/** Backfill null sync schedules for existing eSIMs. Idempotent.
+ *
+ *  SAFETY: only rows that have NEVER failed (retryCount === 0) are seeded. A
+ *  null schedule on a row with retryCount > 0 is the canonical
+ *  "retry exhausted / stopped" marker and must NEVER be resurrected here —
+ *  otherwise a STOP disposes nothing and the provider keeps getting called.
+ *
+ *  USAGE SCHEDULES ARE CAPABILITY-AWARE: usage schedules are only seeded for
+ *  eSIMs whose provider is locally resolved as usage-capable. A recurring
+ *  cleanup pass also nulls any lingering usageNextSyncAt on providers that do
+ *  NOT declare usage lookup, so unsupported rows (e.g. AirHub) are never
+ *  re-selected or churned — they stay scheduled=null with "usage unavailable".
+ */
 export async function backfillEsimSyncSchedules(): Promise<void> {
   const now = new Date()
   // Null-schedule non-terminal eSIMs in active-ish / pending-ish states become
-  // eligible REGARDLESS of age. A null statusNextSyncAt means the row was never
-  // scheduled (created before the scheduler/backfill existed, or its schedule
-  // was cleared); the previous 24h createdAt gate permanently stranded older
-  // rows because ESIM_STATUS_SYNC only selects statusNextSyncAt <= now. Pure
-  // backfill: only null schedules are touched, populated schedules are never
-  // overwritten, terminal statuses are never scheduled, and no provider or
-  // wallet call is involved.
+  // eligible REGARDLESS of age, BUT only when the row never failed a sync.
   await prisma.eSIM.updateMany({
-    where: { statusNextSyncAt: null, status: { in: ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'RESERVED'] } },
+    where: { statusNextSyncAt: null, statusSyncRetryCount: 0, status: { in: ['PENDING', 'PENDING_ACTIVATION', 'PROCESSING', 'PROVISIONING', 'RESERVED'] } },
     data: { statusNextSyncAt: new Date(now.getTime() + 60000) },
   }).catch(() => {})
   await prisma.eSIM.updateMany({
-    where: { statusNextSyncAt: null, status: { in: ['ACTIVE', 'INSTALLED', 'INSTALLING'] } },
+    where: { statusNextSyncAt: null, statusSyncRetryCount: 0, status: { in: ['ACTIVE', 'INSTALLED', 'INSTALLING'] } },
     data: { statusNextSyncAt: new Date(now.getTime() + 3600000) },
   }).catch(() => {})
+
+  // Usage-capable providers (resolved locally from connector capabilities,
+  // never a provider network call).
+  const usageCapableProviderIds = await resolveUsageCapableProviderIds()
+  const capableIn = usageCapableProviderIds.length > 0 ? { in: usageCapableProviderIds } : undefined
+  // Capability-aware seed guard: with no usage-capable provider, every seed
+  // becomes a no-op (id guaranteed not to exist) so unsupported rows never get
+  // a schedule here.
+  const seedWhere = (extra: Record<string, unknown>) => ({
+    usageNextSyncAt: null,
+    usageSyncRetryCount: 0,
+    ...extra,
+    ...(capableIn ? { purchase: { providerId: capableIn } } : { id: '__NO_USAGE_CAPABLE_PROVIDER__' }),
+  })
+
   await prisma.eSIM.updateMany({
-    where: { usageNextSyncAt: null, status: { in: ['ACTIVE', 'INSTALLED'] }, dataTotalMB: null },
+    where: seedWhere({ status: { in: ['ACTIVE', 'INSTALLED'] }, dataTotalMB: null }),
     data: { usageNextSyncAt: new Date(now.getTime() + 3600000) },
   }).catch(() => {})
+  // PENDING / PENDING_ACTIVATION rows that never started usage polling are
+  // seeded on a BOUNDED 1 h cadence so a provisioned-but-installed line on a
+  // usage-capable connector is picked up and can surface first-usage activation
+  // evidence. Unsupported providers are never seeded here.
+  await prisma.eSIM.updateMany({
+    where: seedWhere({ status: { in: ['PENDING', 'PENDING_ACTIVATION'] } }),
+    data: { usageNextSyncAt: new Date(now.getTime() + 3600000) },
+  }).catch(() => {})
+  // DEPLETED rows that never started usage polling are re-seeded on a
+  // conservative cadence so a genuine top-up restores them automatically
+  // (usage-capable providers only).
+  await prisma.eSIM.updateMany({
+    where: seedWhere({ status: 'DEPLETED' }),
+    data: { usageNextSyncAt: new Date(now.getTime() + 24 * 3600000) },
+  }).catch(() => {})
+
+  // Cleanup: clear lingering usage schedules on providers that do NOT declare
+  // usage lookup. Never touches lastUsageSyncAt, retry counts, or usage
+  // values. When NO provider is usage-capable this clears every non-terminal
+  // usageNextSyncAt (nothing is supported); otherwise it clears rows whose
+  // package provider is not in the usage-capable set.
+  await prisma.eSIM.updateMany({
+    where: {
+      usageNextSyncAt: { not: null },
+      status: { notIn: ['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'] },
+      ...(capableIn
+        ? { purchase: { providerId: { not: null, notIn: usageCapableProviderIds } } }
+        : { purchase: { providerId: { not: null } } }),
+    },
+    data: { usageNextSyncAt: null },
+  }).catch(() => {})
+
   await prisma.eSIM.updateMany({
     where: { status: { in: ['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'] }, statusNextSyncAt: { not: null } },
     data: { statusNextSyncAt: null, usageNextSyncAt: null },
@@ -57,7 +161,7 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
       statusNextSyncAt: { lte: now },
       status: { notIn: ['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'] },
     },
-    include: { purchase: { select: { package: { select: { providerId: true } } } } },
+    include: { purchase: { select: { providerId: true, package: true } } },
     take: batchSize,
     orderBy: { statusSyncRetryCount: 'asc' },
   })
@@ -66,8 +170,21 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
 
   for (const esim of esims) {
     if (!await claimEsimForSync(esim.id, 'statusNextSyncAt')) continue
+    const providerId = await resolveSyncProviderId(esim.purchase)
 
-    const providerId = esim.purchase?.package?.providerId
+    // Pre-dispatch STOP guard: a row whose retry budget is already exhausted is
+    // terminated WITHOUT a provider request (stopRetrying is enforced by both
+    // persistence — nextSyncAt=null — and eligibility, never just a log line).
+    if (shouldStopRetrying(esim.statusSyncRetryCount)) {
+      console.log(`[ESIM_STATUS_SYNC_STOPPED] providerId=${providerId ?? '?'} esimId=${esim.id} retryCount=${esim.statusSyncRetryCount}`)
+      await prisma.eSIM.update({ where: { id: esim.id }, data: { statusNextSyncAt: null, lastStatusSyncAt: new Date() } })
+      // One durable operational signal per provider+eSIM+sync type (deduplicated);
+      // never a provider call at this guard.
+      emitSyncExhaustedAlert(providerId, 'status', esim.id, esim.iccid)
+      skipped++
+      continue
+    }
+
     if (!providerId) { skipped++; continue }
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
@@ -102,12 +219,15 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
         const providerStatus = result.data.status
         // Forward verified connector evidence (network attach / device install)
         // so the lifecycle engine promotes ACTIVE/INSTALLED identically to the
-        // single-sync path — no duplicated normalization logic.
+        // single-sync path — no duplicated normalization logic. A connector-
+        // confirmed authoritative activation timestamp (e.g. iBASIS) counts as
+        // activation history.
+        const connectorActivatedAt = result.data.activatedAt ? new Date(result.data.activatedAt) : undefined
         const lifecycle = deriveEsimLifecycleStatus({
           providerNormalizedStatus: providerStatus,
           currentStatus: esim.status,
           dataUsedMB: esim.dataUsedMB || 0,
-          activatedAt: esim.activatedAt,
+          activatedAt: connectorActivatedAt || (esim as any).activatedAt || null,
           providerInstalledSignal: result.data.evidence?.deviceInstalled,
           providerNetworkAttachedSignal: result.data.evidence?.networkAttached,
         })
@@ -130,8 +250,11 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
             evidenceObservedAt: new Date().toISOString(),
           },
         }
-        if (lifecycle.setActivatedAt && !esim.activatedAt) {
-          updateData.activatedAt = new Date()
+        if (lifecycle.setActivatedAt && !(esim as any).activatedAt) {
+          updateData.activatedAt = connectorActivatedAt || new Date()
+          updateData.activationDetectedAt = new Date()
+        } else if (connectorActivatedAt && !(esim as any).activatedAt && (newStatus === 'ACTIVE' || newStatus === 'INSTALLED')) {
+          updateData.activatedAt = connectorActivatedAt
           updateData.activationDetectedAt = new Date()
         }
         // Usage polling handoff: prove ACTIVE/INSTALLED + usageLookup support →
@@ -142,23 +265,30 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
           }
         }
         await prisma.eSIM.update({ where: { id: esim.id }, data: updateData })
+        // Authoritative success closes this eSIM's STATUS exhaustion only (when
+        // it had previously been in retry — otherwise there is nothing to close).
+        if (esim.statusSyncRetryCount > 0) resolveSyncExhaustedAlert(providerId, 'status', esim.id)
         updated++
       } else {
         const errCode = result.error?.code || 'UNKNOWN'
-        const stop = shouldStopRetrying(esim.statusSyncRetryCount + 1, errCode)
-        console.log(`[ESIM_STATUS_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=${errCode} retryCount=${esim.statusSyncRetryCount + 1} stopRetrying=${stop}`)
+        const disp = nextStatusSyncDisposition(esim.statusSyncRetryCount, errCode)
+        console.log(`[ESIM_STATUS_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=${errCode} retryCount=${disp.nextRetryCount} stopRetrying=${disp.stop}`)
+        if (disp.stop) emitSyncExhaustedAlert(providerId, 'status', esim.id, esim.iccid)
         await prisma.eSIM.update({
           where: { id: esim.id },
           data: {
             statusSyncRetryCount: { increment: 1 },
-            ...(stop ? { statusNextSyncAt: null } : { statusNextSyncAt: getStatusNextSync(esim.status, esim.statusSyncRetryCount + 1) }),
+            lastStatusSyncAt: new Date(),
+            statusNextSyncAt: disp.nextSyncAt, // null ⇒ stopped, never selected again
           },
         })
         failed++
       }
     } catch (e: any) {
-      console.log(`[ESIM_STATUS_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=THROWN retryCount=${esim.statusSyncRetryCount + 1} stopRetrying=${shouldStopRetrying(esim.statusSyncRetryCount + 1)}`)
-      await prisma.eSIM.update({ where: { id: esim.id }, data: { statusSyncRetryCount: { increment: 1 }, statusNextSyncAt: getStatusNextSync(esim.status, esim.statusSyncRetryCount + 1) } })
+      const disp = nextStatusSyncDisposition(esim.statusSyncRetryCount, 'THROWN')
+      console.log(`[ESIM_STATUS_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=THROWN retryCount=${disp.nextRetryCount} stopRetrying=${disp.stop}`)
+      if (disp.stop) emitSyncExhaustedAlert(providerId, 'status', esim.id, esim.iccid)
+      await prisma.eSIM.update({ where: { id: esim.id }, data: { statusSyncRetryCount: { increment: 1 }, lastStatusSyncAt: new Date(), statusNextSyncAt: disp.nextSyncAt } })
       failed++
     }
   }
@@ -169,12 +299,22 @@ export async function executeStatusSynchronization(batchSize = 20): Promise<{ pr
 
 export async function executeUsageSynchronization(batchSize = 20): Promise<{ processed: number; updated: number; failed: number; skipped: number }> {
   const now = new Date()
+  // DEPLETED is scheduler-eligible so a genuine top-up/replenishment can be
+  // detected and the line restored to ACTIVE automatically (conservative 24 h
+  // cadence, see sync-policy getUsageBaseInterval). PENDING_ACTIVATION and
+  // PENDING are ALSO scheduler-eligible at a BOUNDED cadence (1 h): a
+  // provisioned-but-not-yet-activated line on a usage-capable connector can
+  // surface real first-usage evidence (dataUsedMB > 0) so the canonical
+  // activation rule promotes it to ACTIVE — without this, an installed eSIM
+  // stuck at PENDING_ACTIVATION would never be usage-synced and could never
+  // progress automatically. Unsupported connectors are still cleanly skipped
+  // by the capability gate below (usageNextSyncAt = null).
   const esims = await prisma.eSIM.findMany({
     where: {
       usageNextSyncAt: { lte: now },
-      status: { in: ['ACTIVE', 'INSTALLED', 'SUSPENDED'] },
+      status: { in: ['PENDING', 'PENDING_ACTIVATION', 'ACTIVE', 'INSTALLED', 'SUSPENDED', 'DEPLETED'] },
     },
-    include: { purchase: { select: { package: { select: { providerId: true, providerPlanId: true, providerPackageId: true } } } } },
+    include: { purchase: { select: { providerId: true, package: true } } },
     take: batchSize,
     orderBy: { usageSyncRetryCount: 'asc' },
   })
@@ -183,8 +323,21 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
 
   for (const esim of esims) {
     if (!await claimEsimForSync(esim.id, 'usageNextSyncAt')) continue
+    const providerId = await resolveSyncProviderId(esim.purchase)
 
-    const providerId = esim.purchase?.package?.providerId
+    // Pre-dispatch STOP guard (usage): exhausted rows are terminated without a
+    // provider request. A stop is an attempt metadata change — it must never
+    // make the eSIM appear freshly usage-synced.
+    if (shouldStopRetrying(esim.usageSyncRetryCount)) {
+      console.log(`[ESIM_USAGE_SYNC_STOPPED] providerId=${providerId ?? '?'} esimId=${esim.id} retryCount=${esim.usageSyncRetryCount}`)
+      await prisma.eSIM.update({ where: { id: esim.id }, data: { usageNextSyncAt: null } })
+      // Usage exhaustion is covered by the same deduplicated operational alert,
+      // scoped to (provider, eSIM, usage) so it never merges with status.
+      emitSyncExhaustedAlert(providerId, 'usage', esim.id, esim.iccid)
+      skipped++
+      continue
+    }
+
     if (!providerId) { skipped++; continue }
 
     const provider = await prisma.provider.findUnique({ where: { id: providerId } })
@@ -208,10 +361,10 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
       // SAFE provider-neutral identifier — never a local OneSIM database id.
       // Package identity is included so providers that match package↔eSIM
       // associations (e.g. US-Matrix) resolve them deterministically.
+      const packageIdentity = await resolveSyncPackageIdentity(esim.purchase, providerId)
       const lookup = resolveUsageLookup(connector, {
         ...esim,
-        providerPackageId: esim.purchase?.package?.providerPackageId ?? undefined,
-        providerPlanId: esim.purchase?.package?.providerPlanId ?? undefined,
+        ...packageIdentity,
       } as SyncLookupEsim)
       if (!lookup.ok) {
         console.log(`[ESIM_USAGE_SYNC_SKIP] providerId=${providerId} connector=${connectorName} esimId=${esim.id} reason=${lookup.skipReason}`)
@@ -223,19 +376,68 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
 
       if (result.success && result.data) {
         const data = result.data as any
+        // Normalize WITHOUT inventing zero: finite numbers are preserved; a
+        // missing used/total stays UNKNOWN (undefined) and is never written as 0.
+        const dataUsedMB = typeof data.dataUsedMB === 'number' && Number.isFinite(data.dataUsedMB) ? data.dataUsedMB : undefined
+        const dataTotalMB = typeof data.dataTotalMB === 'number' && Number.isFinite(data.dataTotalMB) ? data.dataTotalMB : undefined
+        const dataRemainingMB = normalizeDataRemainingMB(data.dataRemainingMB)
+        // Canonical provider-neutral depletion decision — the SAME engine as the
+        // single/manual path (syncESIMUsage). Terminal states (EXPIRED/FAILED/
+        // CANCELLED/REFUNDED) are never rewritten; missing/invalid remaining
+        // never implies depletion; DEPLETED is restored only by remaining > 0.
+        const depletion = deriveDepletionStatus(esim.status, {
+          dataRemainingMB,
+          snapshotValid: true,
+          providerExhausted: isProviderExhaustedStatus(data.status ?? data.providerStatus),
+        })
+        // Canonical PENDING → ACTIVE promotion from authoritative usage evidence
+        // (identical to syncESIMUsage and the USAGE_UPDATED webhook). Zero used,
+        // missing or invalid usage are never activation evidence.
+        const activation = deriveUsageActivation({
+          currentStatus: esim.status,
+          dataUsedMB: dataUsedMB == null ? undefined : Number(dataUsedMB),
+          activatedAt: esim.activatedAt ?? null,
+        })
+        // DEPLETED (depletion) takes precedence over usage-activation when the
+        // snapshot reports exhausted remaining data; otherwise a pending line
+        // with real usage promotes to ACTIVE.
+        const effectiveStatus = depletion || (activation.status !== esim.status ? activation.status : esim.status)
         const mergedProviderResponse = mergeProviderPackageEsimId(esim.providerResponse, data.providerPackageEsimId)
         const updateData: any = {
-          dataUsedMB: Math.round(data.dataUsedMB || 0),
-          dataRemainingMB: data.dataRemainingMB != null ? Math.round(data.dataRemainingMB) : undefined,
-          dataTotalMB: data.dataTotalMB != null ? Math.round(data.dataTotalMB) : undefined,
+          ...(dataUsedMB !== undefined && esim.dataUsedMB !== dataUsedMB ? { dataUsedMB: Math.round(dataUsedMB) } : {}),
+          ...(dataTotalMB !== undefined && esim.dataTotalMB !== dataTotalMB ? { dataTotalMB: Math.round(dataTotalMB) } : {}),
+          ...(dataRemainingMB !== null && esim.dataRemainingMB !== dataRemainingMB ? { dataRemainingMB: Math.round(dataRemainingMB) } : {}),
+          // Only a successful authoritative fetch advances this timestamp.
           lastUsageSyncAt: new Date(),
-          usageNextSyncAt: getUsageNextSync(esim.status, 0),
+          usageNextSyncAt: getUsageNextSync(effectiveStatus, 0),
           usageSyncRetryCount: 0,
         }
-        // Persist a provider-discovered package↔eSIM association id without
-        // overwriting existing providerResponse keys (fast path next time).
+        if (effectiveStatus !== esim.status) updateData.status = effectiveStatus
+        // Activation timestamps are set only through the canonical engine flag.
+        if (effectiveStatus === 'ACTIVE' && activation.setActivatedAt && !esim.activatedAt) {
+          updateData.activatedAt = new Date()
+          updateData.activationDetectedAt = new Date()
+        }
+        if ((data as any).expiresAt) updateData.expiresAt = new Date((data as any).expiresAt)
+        if (data.status && esim.providerStatus !== String(data.status)) updateData.providerStatus = String(data.status)
         if (mergedProviderResponse) updateData.providerResponse = mergedProviderResponse
         await prisma.eSIM.update({ where: { id: esim.id }, data: updateData })
+        // Persist an authoritative usage history record (shared shape with
+        // syncESIMUsage); a record is only created when a real value exists, and
+        // alerts cannot break the execution path.
+        if (dataUsedMB != null || dataTotalMB != null || dataRemainingMB != null) {
+          await prisma.usageRecord.create({
+            data: {
+              esimId: esim.id,
+              dataUsedMB: dataUsedMB ?? 0,
+              dataTotalMB: dataTotalMB ?? null,
+              dataRemainingMB,
+              timestamp: data.timestamp ? new Date(data.timestamp) : new Date(),
+            },
+          }).catch(() => {})
+        }
+        // Authoritative usage success closes this eSIM's USAGE exhaustion only.
+        if (esim.usageSyncRetryCount > 0) resolveSyncExhaustedAlert(providerId, 'usage', esim.id)
         updated++
       } else if (isUsageLookupSkip(result.error?.code)) {
         // No safe usage identifier (no/ambiguous association) → clean skip,
@@ -244,20 +446,25 @@ export async function executeUsageSynchronization(batchSize = 20): Promise<{ pro
         await prisma.eSIM.update({ where: { id: esim.id }, data: { usageNextSyncAt: getUsageNextSync(esim.status, 0), usageSyncRetryCount: 0 } })
         skipped++
       } else {
-        const stop = shouldStopRetrying(esim.usageSyncRetryCount + 1)
-        console.log(`[ESIM_USAGE_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=${result.error?.code || 'UNKNOWN'} retryCount=${esim.usageSyncRetryCount + 1} stopRetrying=${stop}`)
+        const disp = nextUsageSyncDisposition(esim.usageSyncRetryCount)
+        console.log(`[ESIM_USAGE_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=${result.error?.code || 'UNKNOWN'} retryCount=${disp.nextRetryCount} stopRetrying=${disp.stop}`)
+        if (disp.stop) emitSyncExhaustedAlert(providerId, 'usage', esim.id, esim.iccid)
+        // A failure must never advance the successful-sync timestamp.
         await prisma.eSIM.update({
           where: { id: esim.id },
           data: {
             usageSyncRetryCount: { increment: 1 },
-            ...(stop ? { usageNextSyncAt: null } : { usageNextSyncAt: getUsageNextSync(esim.status, esim.usageSyncRetryCount + 1) }),
+            usageNextSyncAt: disp.nextSyncAt,
           },
         })
         failed++
       }
     } catch (e: any) {
-      console.log(`[ESIM_USAGE_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=THROWN retryCount=${esim.usageSyncRetryCount + 1} stopRetrying=${shouldStopRetrying(esim.usageSyncRetryCount + 1)}`)
-      await prisma.eSIM.update({ where: { id: esim.id }, data: { usageSyncRetryCount: { increment: 1 }, usageNextSyncAt: getUsageNextSync(esim.status, esim.usageSyncRetryCount + 1) } })
+      const disp = nextUsageSyncDisposition(esim.usageSyncRetryCount)
+      console.log(`[ESIM_USAGE_SYNC_FAILURE] providerId=${providerId} connector=${connectorName} iccid=${maskIccid(esim.iccid)} errorCode=THROWN retryCount=${disp.nextRetryCount} stopRetrying=${disp.stop}`)
+      if (disp.stop) emitSyncExhaustedAlert(providerId, 'usage', esim.id, esim.iccid)
+      // A failure must never advance the successful-sync timestamp.
+      await prisma.eSIM.update({ where: { id: esim.id }, data: { usageSyncRetryCount: { increment: 1 }, usageNextSyncAt: disp.nextSyncAt } })
       failed++
     }
   }

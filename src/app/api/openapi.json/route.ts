@@ -1,7 +1,26 @@
 import { NextResponse } from 'next/server'
+import {
+  ESIM_LIFECYCLE_STATUSES,
+  ESIM_STATUS_META,
+  ORDER_API_STATUSES,
+} from '@/lib/status-constants'
 
 const BASE_URL = process.env.API_BASE_URL || 'https://api.onesim.africa'
 const SANDBOX_URL = process.env.API_SANDBOX_URL || 'https://sandbox.onesim.africa'
+
+const ESIM_STATUS_LABELS = ESIM_LIFECYCLE_STATUSES.map((s) => ESIM_STATUS_META[s].label)
+
+/** Customer-safe setup-axis labels (derived; never raw provider vocabulary). */
+const ESIM_SETUP_LABELS = [
+  'Ready to install',
+  'Installing',
+  'Profile downloaded',
+  'Installed',
+  'Preparing',
+  'Installation failed',
+  'Installation unavailable',
+  'Unknown',
+] as const
 
 export function GET() {
   const spec: any = {
@@ -64,7 +83,7 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
         Order: {
           type: 'object', required: ['id', 'status', 'quantity', 'unitCost', 'totalCost', 'currency', 'createdAt'],
           properties: {
-            id: { type: 'string' }, status: { type: 'string', enum: ['CREATED','PAYMENT_RESERVED','PENDING_PROVIDER','PROVIDER_ACCEPTED','RESERVED','FULFILLING','PARTIALLY_FULFILLED','FULFILLED','PROVIDER_RECONCILIATION','FAILED','CANCELLED','REFUNDED'] },
+            id: { type: 'string' }, status: { type: 'string', enum: [...ORDER_API_STATUSES] },
             quantity: { type: 'integer' }, unitCost: { type: 'number' }, totalCost: { type: 'number' }, currency: { type: 'string' },
             fulfilledQuantity: { type: 'integer' }, failedQuantity: { type: 'integer' },
             callbackUrl: { type: 'string', nullable: true }, travelDate: { type: 'string', nullable: true },
@@ -73,8 +92,16 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
               validityDays: { type: 'integer' }, priceUSD: { type: 'number' }, currency: { type: 'string' },
             }},
             esims: { type: 'array', items: { type: 'object', properties: {
-              id: { type: 'string' }, iccid: { type: 'string' }, imsi: { type: 'string' },
-              status: { type: 'string' }, expiresAt: { type: 'string' },
+              id: { type: 'string' }, iccid: { type: 'string' }, imsi: { type: 'string', nullable: true },
+              status: {
+                type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES],
+                description: 'Canonical stored oneSIM service status (e.g. `PENDING_ACTIVATION` remains possible).',
+              },
+              serviceStatus: { type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES], description: 'Canonical service status (alias of `status`).' },
+              serviceStatusLabel: { type: 'string', enum: [...ESIM_STATUS_LABELS], description: 'Customer-facing service label (e.g. `Provisioned` for PENDING_ACTIVATION).' },
+              installationStatus: { type: 'string', nullable: true, description: 'Stored installation/setup state or null when unknown.' },
+              installationStatusLabel: { type: 'string', enum: [...ESIM_SETUP_LABELS], description: 'Customer-facing setup label (Ready to install / Installing / Profile downloaded / Installed / Preparing / Installation failed / Installation unavailable / Unknown).' },
+              expiresAt: { type: 'string' },
               dataUsedMB: { type: 'integer' }, dataRemainingMB: { type: 'integer' },
             }}},
             createdAt: { type: 'string', format: 'date-time' },
@@ -83,13 +110,65 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
         },
         ESIM: {
           type: 'object', properties: {
-            id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string', enum: ['PENDING','PENDING_ACTIVATION','ACTIVE','SUSPENDED','EXPIRED','FAILED'] },
-            statusLabel: { type: 'string', enum: ['Ready to install','Active','Suspended','Expired','Failed'] },
+            id: { type: 'string' }, iccid: { type: 'string' },
+            status: {
+              type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES],
+              description: 'Canonical stored oneSIM service status. `PENDING_ACTIVATION` remains a possible raw canonical value (the stored enum is unchanged) — its customer-facing label is `Provisioned`.',
+            },
+            statusLabel: {
+              type: 'string', enum: [...ESIM_STATUS_LABELS],
+              description: 'Customer-facing service label derived from the canonical `status`. `PENDING_ACTIVATION` renders as `Provisioned`.',
+            },
+            serviceStatus: {
+              type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES],
+              description: 'Canonical service status (alias of `status`). Raw provider status is never exposed.',
+            },
+            serviceStatusLabel: {
+              type: 'string', enum: [...ESIM_STATUS_LABELS],
+              description: 'Customer-facing service label (alias of `statusLabel`).',
+            },
+            installationStatus: {
+              type: 'string', nullable: true,
+              description: 'Stored installation/setup state (READY/PENDING/FAILED/STALE/NOT_SUPPORTED/NOT_RECOVERABLE/INSTALLING...). Nullable when unknown.',
+            },
+            installationStatusLabel: {
+              type: 'string', enum: [...ESIM_SETUP_LABELS],
+              description: 'Customer-facing setup label: Ready to install / Installing / Profile downloaded / Preparing / Installed / Installation failed / Installation unavailable / Unknown. `Ready to install` means usable profile/activation details are available — available-to-install only, never a claim that the customer has not already installed the eSIM. Authoritative activation evidence (network attach, activation timestamp, real usage) renders `Installed`. `Profile downloaded` is a provider-reported download checkpoint only and never claims the profile was not installed.',
+            },
             qrCodeUrl: { type: 'string' }, activationCode: { type: 'string' },
             activatedAt: { type: 'string', format: 'date-time' }, expiresAt: { type: 'string', format: 'date-time' },
             dataUsedMB: { type: 'integer' }, dataTotalMB: { type: 'integer' }, dataRemainingMB: { type: 'integer' },
             package: { $ref: '#/components/schemas/Package' },
             lastUsageAt: { type: 'string', format: 'date-time' },
+          },
+          example: {
+            id: 'esim_abc123', iccid: '89012345••••4321',
+            status: 'PENDING_ACTIVATION',
+            statusLabel: 'Provisioned',
+            serviceStatus: 'PENDING_ACTIVATION',
+            serviceStatusLabel: 'Provisioned',
+            installationStatus: 'READY',
+            installationStatusLabel: 'Ready to install',
+            activatedAt: null, expiresAt: '2026-10-01T00:00:00Z',
+            dataUsedMB: 0, dataTotalMB: 1024, dataRemainingMB: 1024,
+          },
+          'x-axes-examples': {
+            'Provisioned + Ready to install': {
+              summary: 'Provisioned service with usable installation data (available to install)',
+              value: { status: 'PENDING_ACTIVATION', statusLabel: 'Provisioned', serviceStatus: 'PENDING_ACTIVATION', serviceStatusLabel: 'Provisioned', installationStatus: 'READY', installationStatusLabel: 'Ready to install' },
+            },
+            'Active + Installed': {
+              summary: 'Activated service that is installed on a device',
+              value: { status: 'ACTIVE', statusLabel: 'Active', serviceStatus: 'ACTIVE', serviceStatusLabel: 'Active', installationStatus: 'READY', installationStatusLabel: 'Installed' },
+            },
+            'Depleted + Installed': {
+              summary: 'Depleted allowance on an installed eSIM',
+              value: { status: 'DEPLETED', statusLabel: 'Depleted', serviceStatus: 'DEPLETED', serviceStatusLabel: 'Depleted', installationStatus: 'READY', installationStatusLabel: 'Installed' },
+            },
+            'Provisioned + Preparing or Unknown': {
+              summary: 'Provisioned service while installation data is still being prepared (or unknown)',
+              value: { status: 'PENDING_ACTIVATION', statusLabel: 'Provisioned', serviceStatus: 'PENDING_ACTIVATION', serviceStatusLabel: 'Provisioned', installationStatus: 'PENDING', installationStatusLabel: 'Preparing' },
+            },
           },
         },
         Customer: {
@@ -121,9 +200,9 @@ Businesses interact with OneSIM only — no provider identifiers, provider crede
           responses: {
             '200': { description: 'Order created (may be processing)', content: { 'application/json': { schema: { type: 'object', properties: {
               success: { type: 'boolean' },
-              order: { type: 'object', properties: { id: { type: 'string' }, status: { type: 'string' }, quantity: { type: 'integer' }, unitCost: { type: 'number' }, totalCost: { type: 'number' }, currency: { type: 'string' }, createdAt: { type: 'string' } } },
+              order: { type: 'object', properties: { id: { type: 'string' }, status: { type: 'string', enum: [...ORDER_API_STATUSES] }, quantity: { type: 'integer' }, unitCost: { type: 'number' }, totalCost: { type: 'number' }, currency: { type: 'string' }, createdAt: { type: 'string' } } },
               package: { $ref: '#/components/schemas/Package' },
-              esims: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string' }, activationCode: { type: 'string' }, qrCodeUrl: { type: 'string' }, expiresAt: { type: 'string' } } } },
+              esims: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, iccid: { type: 'string' }, status: { type: 'string', enum: [...ESIM_LIFECYCLE_STATUSES] }, activationCode: { type: 'string' }, qrCodeUrl: { type: 'string' }, expiresAt: { type: 'string' } } } },
               wallet: { type: 'object', properties: { deducted: { type: 'number' }, currency: { type: 'string' } } },
             } } } } },
             '400': { description: 'Invalid request', content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } } },

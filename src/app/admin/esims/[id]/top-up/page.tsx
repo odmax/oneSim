@@ -2,12 +2,15 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
+import { checkPermission, Permissions } from '@/lib/auth/permissions'
 import Link from 'next/link'
 import { createTopUpOrder } from '@/lib/services/orders/top-up-order'
+import { adminEsimStatusBadge } from '@/lib/status-badges'
 
 export default async function AdminTopUpPage({ params, searchParams }: { params: { id: string }; searchParams?: { error?: string; success?: string } }) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') redirect('/login')
+  const perm = await checkPermission(Permissions.MANAGE_ESIMS); if (!perm.allowed) redirect('/admin/unauthorized')
 
   const esim = await prisma.eSIM.findUnique({
     where: { id: params.id },
@@ -127,7 +130,7 @@ export default async function AdminTopUpPage({ params, searchParams }: { params:
           <h3 className="mb-3 text-sm font-semibold text-gray-900">eSIM Summary</h3>
           <dl className="space-y-3 text-sm">
             <div className="flex justify-between"><dt className="text-gray-500">ICCID</dt><dd className="font-mono text-xs text-gray-900">{esim.iccid}</dd></div>
-            <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className="inline-flex rounded-full px-2 text-xs font-semibold leading-5 bg-emerald-100 text-emerald-800">{esim.status}</span></dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Status</dt><dd><span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${adminEsimStatusBadge(esim.status).className}`}>{adminEsimStatusBadge(esim.status).label}</span></dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">Package</dt><dd className="text-gray-900">{originalPkg.name}</dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">Data</dt><dd className="text-gray-900">{originalPkg.dataGB} GB</dd></div>
             {esim.expiresAt && <div className="flex justify-between"><dt className="text-gray-500">Expires</dt><dd className="text-gray-900">{new Date(esim.expiresAt).toLocaleDateString()}</dd></div>}

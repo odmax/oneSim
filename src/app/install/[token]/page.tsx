@@ -1,6 +1,9 @@
 import { prisma } from '@/lib/prisma'
 import { notFound } from 'next/navigation'
 import { sanitizePublicText } from '@/lib/catalog/public-package-presentation'
+import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 import InstallClient from './InstallClient'
 
 export default async function InstallPage({ params }: { params: { token: string } }) {
@@ -32,28 +35,41 @@ export default async function InstallPage({ params }: { params: { token: string 
 
   const esim = shareToken.esim
   const pkg = esim.purchase.package
-  const latestUsage = esim.usageRecords[0]
 
-  // Build safe display data (no provider internals)
+  // Build safe display data (no provider internals). A missing usage snapshot is
+  // UNKNOWN — never a fabricated zero or a package-allowance fallback.
+  // Two-axis customer presentation (Service + Setup). Raw provider status is
+  // never exposed to the installing customer.
+  const lifecycle = deriveEsimLifecyclePresentation({
+    status: esim.status,
+    installationStatus: esim.installationStatus,
+    hasUsableInstallData: hasUsableInstallData(esim),
+    activatedAt: esim.activatedAt,
+    activationDetectedAt: esim.activationDetectedAt,
+    dataUsedMB: esim.dataUsedMB,
+  })
+
   const display = {
     id: esim.id,
     iccid: esim.iccid,
     imsi: esim.imsi || null,
     status: esim.status,
-    statusLabel: esim.status === 'PENDING_ACTIVATION' ? 'Ready to install' :
-                  esim.status === 'ACTIVE' ? 'Active' :
-                 esim.status === 'EXPIRED' ? 'Expired' :
-                 esim.status === 'SUSPENDED' ? 'Suspended' :
-                 esim.status === 'FAILED' ? 'Provisioning failed' : esim.status,
+    statusLabel: getEsimStatusLabel(esim.status).label,
+    serviceStatus: lifecycle.serviceStatus,
+    serviceLabel: lifecycle.serviceLabel,
+    setupStatus: lifecycle.setupStatus,
+    setupLabel: lifecycle.setupLabel,
     activationCode: esim.activationCode || null,
     qrCodeUrl: esim.qrCodeUrl || null,
     expiresAt: esim.expiresAt?.toISOString() || null,
     packageName: sanitizePublicText(esim.packageName || pkg.displayName || pkg.name, null, pkg.providerName) || pkg.displayName || pkg.name,
     dataGB: esim.packageDataGB || pkg.dataGB,
     validityDays: esim.packageValidityDays || pkg.validityDays,
-    dataUsedMB: esim.dataUsedMB || latestUsage?.dataUsedMB || 0,
-    dataTotalMB: esim.dataTotalMB || latestUsage?.dataTotalMB || (pkg.dataGB * 1024),
-    dataRemainingMB: esim.dataRemainingMB ?? latestUsage?.dataRemainingMB ?? null,
+    dataUsedMB: esim.dataUsedMB ?? null,
+    dataTotalMB: esim.dataTotalMB ?? null,
+    dataRemainingMB: esim.dataRemainingMB ?? null,
+    hasUsageSnapshot: esim.dataTotalMB != null || esim.dataRemainingMB != null,
+    lastUsageSyncAt: esim.lastUsageSyncAt?.toISOString() || null,
     activationDetectedAt: esim.activationDetectedAt?.toISOString() || null,
     lastUsageAt: esim.lastUsageAt?.toISOString() || null,
   }

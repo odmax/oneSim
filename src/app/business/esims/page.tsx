@@ -8,7 +8,11 @@ import { getPackageDisplayName, getPackageDataGB, isPackageArchived } from '@/li
 import CopyButton from '@/components/CopyButton'
 import ShareActions from './ShareActions'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
-import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
+import { EsimPrimaryStatusBadge } from '@/components/esim/EsimPrimaryStatusBadge'
+import { confirmEsimInstalledAction } from '@/lib/actions/esim-confirm-installed'
+import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
+import { buildProviderConnector, capabilitySupported } from '@/lib/services/esims/sync-lookup'
 
 function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } | null {
   if (!raw) return null
@@ -21,21 +25,29 @@ function safeProviderLPA(raw: any): { lpaValue?: string; smdpAddress?: string } 
   } catch { return null }
 }
 
-function StatusPill({ status }: { status: string }) {
-  const { label, tone } = getEsimStatusLabel(status)
-  const styles: Record<string, { bg: string; dot: string }> = {
-    success: { bg: 'bg-emerald-50 text-emerald-600', dot: 'bg-emerald-400' },
-    warn: { bg: 'bg-amber-50 text-amber-600', dot: 'bg-amber-400' },
-    danger: { bg: 'bg-red-50 text-red-600', dot: 'bg-red-400' },
-    neutral: { bg: 'bg-gray-50 text-gray-600', dot: 'bg-gray-400' },
+/** Field shape fed to the shared provider-neutral primary status badge. */
+function toInventoryStatusRow(esim: any) {
+  return {
+    status: esim.status,
+    installationStatus: esim.installationStatus,
+    installationLastError: esim.installationLastError,
+    installationLastCheckedAt: esim.installationLastCheckedAt,
+    activationCode: esim.activationCode,
+    qrCodeUrl: esim.qrCodeUrl,
+    qrCode: esim.qrCode,
+    smdpAddress: esim.smdpAddress,
+    matchingId: esim.matchingId,
+    activatedAt: esim.activatedAt,
+    activationDetectedAt: esim.activationDetectedAt,
+    dataUsedMB: esim.dataUsedMB,
+    dataTotalMB: esim.dataTotalMB,
+    dataRemainingMB: esim.dataRemainingMB,
+    lastStatusSyncAt: esim.lastStatusSyncAt,
+    statusSyncRetryCount: esim.statusSyncRetryCount,
+    statusNextSyncAt: esim.statusNextSyncAt,
+    lastUsageSyncAt: esim.lastUsageSyncAt,
+    customerReportedInstalled: esim.customerConfirmedInstalledAt != null,
   }
-  const s = styles[tone] || styles.neutral
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${s.bg}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
-      {label}
-    </span>
-  )
 }
 
 export default async function ESIMsPage({ searchParams }: { searchParams: { success?: string; error?: string } }) {
@@ -47,6 +59,20 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
     include: { purchase: { include: { package: true } } },
     orderBy: { createdAt: 'desc' },
   })
+
+  // Resolve once per provider, not once per eSIM. Portal exposure is permission
+  // to show an action; the connector must also implement it.
+  const providerIds = [...new Set(esims.map(esim => esim.purchase.package.providerId).filter((id): id is string => !!id))]
+  const providerActions = new Map(await Promise.all(providerIds.map(async providerId => {
+    const [exposure, connector] = await Promise.all([
+      getEsimClientCapabilities(providerId),
+      buildProviderConnector(providerId).catch(() => null),
+    ])
+    return [providerId, {
+      refresh: exposure.canRefreshStatus && !!connector && capabilitySupported(connector, 'statusLookup'),
+      topUp: exposure.canTopUp && connector?.capabilities?.topUp === true,
+    }] as const
+  })))
 
   return (
     <div className="space-y-6">
@@ -91,6 +117,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
               <tbody className="divide-y divide-gray-50">
                 {esims.map((esim) => {
                   const pkg = esim.purchase.package
+                  const actions = pkg.providerId ? providerActions.get(pkg.providerId) : undefined
                   const snapName = getPackageDisplayName(esim)
                   const snapData = getPackageDataGB(esim)
                   const archived = pkg ? isPackageArchived(pkg) : false
@@ -112,7 +139,7 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                         {archived && <span className="ml-1.5 text-xs text-amber-500">(discontinued)</span>}
                       </td>
                       <td className="whitespace-nowrap px-5 py-4">
-                        <StatusPill status={esim.status} />
+                        <EsimPrimaryStatusBadge esim={toInventoryStatusRow(esim)} />
                       </td>
                       <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-500">
                         {esim.expiresAt ? new Date(esim.expiresAt).toLocaleDateString() : '\u2014'}
@@ -137,12 +164,19 @@ export default async function ESIMsPage({ searchParams }: { searchParams: { succ
                               packageName={snapName}
                               whatsAppUrl={whatsAppUrl}
                             />
-                            {['ACTIVE', 'PENDING_ACTIVATION', 'PENDING'].includes(esim.status) && esim.iccid && (
+                            {actions?.topUp && isTopUpEligibleStatus(esim.status) && esim.iccid && (
                               <Link href={`/business/esims/${esim.id}/top-up`} className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Top Up</Link>
                             )}
-                            <form action={syncEsimStatusAction.bind(null, esim.id)}>
+                            {actions?.refresh ? <form action={syncEsimStatusAction.bind(null, esim.id)}>
                               <button type="submit" className="text-xs font-medium text-cyan-600 hover:text-cyan-700">Refresh Status</button>
-                            </form>
+                            </form> : <span className="text-xs text-gray-500">Status refresh unavailable</span>}
+                            {esim.customerConfirmedInstalledAt ? (
+                              <span className="text-xs text-gray-500">Customer confirmed installed</span>
+                            ) : (
+                              <form action={async () => { await confirmEsimInstalledAction(esim.id) }}>
+                                <button type="submit" className="text-xs font-medium text-emerald-600 hover:text-emerald-700">Confirm Installed</button>
+                              </form>
+                            )}
                             <CopyButton text={`ICCID: ${esim.iccid}\nPackage: ${snapName}\nData: ${snapData}GB`} label="Copy Details" />
                           </div>
                         </td>

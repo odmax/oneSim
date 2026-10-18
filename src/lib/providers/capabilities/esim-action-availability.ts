@@ -1,5 +1,6 @@
 import { providerSupports, type CapabilityProvider } from './registry'
 import { buildChoiceStatusLookup, hasChoiceIdentifier } from '@/lib/services/esims/choice-lookup'
+import { ESIM_STATUS_META } from '@/lib/status-constants'
 
 export interface EsimActionState {
   visible: boolean
@@ -47,6 +48,18 @@ export const SUSPENDABLE_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING', 
 /** Statuses that rule out top-up entirely. */
 export const TERMINAL_TOP_UP_STATUSES = ['EXPIRED', 'FAILED', 'CANCELLED', 'REFUNDED']
 
+/**
+ * Canonical top-up status eligibility (independent of provider capability).
+ * Preserves the existing product rule (ACTIVE / PENDING_ACTIVATION / PENDING)
+ * and adds DEPLETED — an exhausted eSIM must remain able to be refilled when
+ * the provider supports top-up. Every other status stays blocked.
+ */
+export const TOP_UP_ELIGIBLE_STATUSES = ['ACTIVE', 'PENDING_ACTIVATION', 'PENDING', 'DEPLETED']
+
+export function isTopUpEligibleStatus(status?: string | null): boolean {
+  return TOP_UP_ELIGIBLE_STATUSES.includes(String(status || '').toUpperCase())
+}
+
 function trimOrEmpty(value?: string | null): string {
   return value && String(value).trim() ? String(value).trim() : ''
 }
@@ -77,31 +90,17 @@ export interface EsimStatusLabel {
  * as ACTIVE — it maps to its own "ready to install" state.
  * ACTIVE means "Active" (not "Activated on device" — device activation requires
  * explicit evidence per deriveEsimLifecycleStatus).
+ *
+ * Labels/tones come from the shared ESIM_STATUS_META so the UI helper and the
+ * API/OpenAPI contracts never drift. Every canonical status has a stable label
+ * and tone — only a truly empty value falls back to "Unknown".
  */
 export function getEsimStatusLabel(status: string | null | undefined): EsimStatusLabel {
   const s = status || ''
-  switch (s.toUpperCase()) {
-    case 'ACTIVE':
-      return { label: 'Active', tone: 'success' }
-    case 'PENDING_ACTIVATION':
-      return { label: 'Ready to install', tone: 'warn' }
-    case 'INSTALLED':
-      return { label: 'Installed on device', tone: 'success' }
-    case 'PENDING':
-      return { label: 'Provisioning', tone: 'warn' }
-    case 'SUSPENDED':
-      return { label: 'Suspended', tone: 'warn' }
-    case 'EXPIRED':
-      return { label: 'Expired', tone: 'danger' }
-    case 'FAILED':
-      return { label: 'Failed', tone: 'danger' }
-    case 'CANCELLED':
-      return { label: 'Cancelled', tone: 'danger' }
-    case 'REFUNDED':
-      return { label: 'Refunded', tone: 'danger' }
-    default:
-      return { label: s || 'Unknown', tone: 'neutral' }
-  }
+  const key = s.toUpperCase()
+  const meta = ESIM_STATUS_META[key]
+  if (meta) return { label: meta.label, tone: meta.tone }
+  return { label: s || 'Unknown', tone: 'neutral' }
 }
 
 /**

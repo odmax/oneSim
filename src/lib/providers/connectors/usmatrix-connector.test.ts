@@ -1305,6 +1305,18 @@ describe('US-Matrix status lookup (read-only evidence policy)', () => {
     expect(r.data?.rawMetadata?.observedAt).toBe('2026-08-15T08:00:00Z')
   })
 
+  it('an INSTALLED profile without logs or network events remains installed, not active', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(okJson({ activationProfile: { status: 'INSTALLED' }, profileLogs: [] }))
+      .mockResolvedValueOnce(okJson({ data: [] }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchSpy)
+    const connector = new UsMatrixConnector('usmatrix-1', 'US-Matrix')
+    const result = await connector.getStatus('esim-uuid-1')
+    expect(result.data?.status).toBe('INSTALLED')
+    expect(result.data?.evidence).toMatchObject({ deviceInstalled: true })
+    expect(result.data?.evidence?.networkAttached).not.toBe(true)
+  })
+
   it('ENABLE + INSTALLED logs but EMPTY location events → INSTALLED (not ACTIVE)', async () => {
     const fetchSpy = vi.fn()
     fetchSpy

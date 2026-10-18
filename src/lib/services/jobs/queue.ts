@@ -165,16 +165,16 @@ async function markFailedWithRetry(jobId: string, error: string) {
   })
 }
 
-async function executeProviderOperation(payload: any) {
+async function executeProviderOperation(payload: any, jobMeta?: { jobId?: string; runAt?: Date }) {
   try {
     const { executeProviderOperation } = await import('./handlers/provider-operation')
-    return executeProviderOperation(payload)
+    return executeProviderOperation(payload, jobMeta)
   } catch (error: any) {
     return { completed: false, error: error.message || 'Provider operation handler failed' }
   }
 }
 
-async function executeJob(job: { id: string; type: string; payload: any }) {
+async function executeJob(job: { id: string; type: string; payload: any; runAt?: Date }) {
   switch (job.type) {
     case 'ACTIVATION_SYNC':
       return executeActivationSync(job.payload)
@@ -183,7 +183,7 @@ async function executeJob(job: { id: string; type: string; payload: any }) {
     case 'EMAIL_DELIVERY':
       return { completed: true }
     case 'PROVIDER_OPERATION':
-      return executeProviderOperation(job.payload)
+      return executeProviderOperation(job.payload, { jobId: job.id, runAt: job.runAt })
     case 'INSTALLATION_RECONCILIATION':
       return (await import('./handlers/installation-reconciliation')).executeInstallationReconciliation()
     case 'TOPUP_RECONCILIATION':

@@ -75,12 +75,17 @@ async function repairRecurringSeedTimestamps(type: string): Promise<void> {
 
 /**
  * Claim an eSIM for sync with atomic update. Returns true if claimed.
- * Uses lastAttemptedAt lease with 5-minute expiry for crash recovery.
+ * Uses a 5-minute crash-recovery lease on the SUCCESS timestamp of the matched
+ * sync domain: status claims lease on lastStatusSyncAt, usage claims lease on
+ * lastUsageSyncAt (so a usage claim is never deferred by a status sync and a
+ * failed/stopped usage attempt can never advance the usage lease).
  * The due check compares the UTC-written statusNextSyncAt/usageNextSyncAt value
  * against UTC wall-clock (`NOW() AT TIME ZONE 'UTC'`); the lease parameter is a
  * JS Date already serialized as UTC wall-clock.
  */
 export async function claimEsimForSync(esimId: string, field: 'statusNextSyncAt' | 'usageNextSyncAt'): Promise<boolean> {
+  // Fixed lease-column map — never interpolates arbitrary caller input.
+  const leaseColumn = field === 'statusNextSyncAt' ? 'lastStatusSyncAt' : 'lastUsageSyncAt'
   const now = new Date()
   const leaseExpiry = new Date(now.getTime() - 5 * 60 * 1000) // 5 min lease
 
@@ -89,7 +94,7 @@ export async function claimEsimForSync(esimId: string, field: 'statusNextSyncAt'
     SET "${field}" = $1
     WHERE id = $2
       AND ("${field}" IS NOT NULL AND "${field}" <= ${UTC_NOW})
-      AND ("lastStatusSyncAt" IS NULL OR "lastStatusSyncAt" < $3)
+      AND ("${leaseColumn}" IS NULL OR "${leaseColumn}" < $3)
   `, new Date(now.getTime() + 24 * 3600 * 1000), esimId, leaseExpiry)
 
   return result > 0

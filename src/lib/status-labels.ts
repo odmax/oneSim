@@ -23,12 +23,16 @@ export const ORDER_STATUS_LABELS: Record<string, StatusLabelStyle> = {
   INSTALLING: { label: 'Installing', dot: 'bg-sky-400', bg: 'bg-sky-50 text-sky-600' },
   INSTALLED: { label: 'Installed', dot: 'bg-teal-400', bg: 'bg-teal-50 text-teal-600' },
   ACTIVE: { label: 'Active', dot: 'bg-green-400', bg: 'bg-green-50 text-green-600' },
+  DEPLETED: { label: 'Depleted', dot: 'bg-red-400', bg: 'bg-red-50 text-red-600' },
   EXPIRED: { label: 'Expired', dot: 'bg-gray-400', bg: 'bg-gray-50 text-gray-500' },
   CANCELLED: { label: 'Cancelled', dot: 'bg-amber-400', bg: 'bg-amber-50 text-amber-600' },
   FAILED: { label: 'Failed', dot: 'bg-red-400', bg: 'bg-red-50 text-red-600' },
   REFUNDED: { label: 'Refunded', dot: 'bg-rose-400', bg: 'bg-rose-50 text-rose-600' },
   PROVIDER_RECONCILIATION: { label: 'Reconciling', dot: 'bg-purple-400', bg: 'bg-purple-50 text-purple-700' },
   PARTIALLY_FULFILLED: { label: 'Partial', dot: 'bg-orange-400', bg: 'bg-orange-50 text-orange-700' },
+  // Transient async-response and legacy order statuses the API can surface.
+  PROCESSING: { label: 'Processing', dot: 'bg-blue-400', bg: 'bg-blue-50 text-blue-600' },
+  PENDING: { label: 'Pending', dot: 'bg-gray-400', bg: 'bg-gray-50 text-gray-600' },
 }
 
 export function orderStatusLabel(status: string): StatusLabelStyle {
@@ -79,17 +83,37 @@ export function apiKeyStatusLabel(status: string): string {
   return API_KEY_STATUS_LABELS[status] || status
 }
 
+/**
+ * Provider-neutral labels for persisted installation-status values. Every value
+ * the detail page's no-install-data fallback can encounter is mapped here;
+ * unknown values fall back to a neutral label and a raw canonical/provider value
+ * is never echoed into the UI. DOWNLOADED is a provider-reported download
+ * checkpoint ("Profile downloaded") and READY (incl. Telna RELEASED → READY)
+ * means usable profile/activation details are available ("Ready to install" —
+ * available-to-install only, never a claim that the eSIM was not installed).
+ * Neither value asserts "Installed on device" (see src/lib/esim/inventory-status.ts).
+ */
 export const INSTALL_STATUS_LABELS: Record<string, string> = {
   INSTALLED: 'Installed',
+  ENABLED: 'Installed',
+  DOWNLOADED: 'Profile downloaded',
+  INSTALLING: 'Installing',
+  DISABLED: 'Installed, disabled on device',
+  DELETED: 'Removed from device',
+  READY: 'Ready to install',
   PENDING: 'Pending',
   NOT_SENT: 'Not sent',
   SENT: 'Sent',
   FAILED: 'Failed',
+  STALE: 'Installation unavailable',
+  NOT_SUPPORTED: 'Installation unavailable',
+  NOT_RECOVERABLE: 'Installation unavailable',
+  PERMANENT_FAILURE: 'Installation unavailable',
   UNKNOWN: 'Unknown',
 }
 
 export function installStatusLabel(status: string): string {
-  return INSTALL_STATUS_LABELS[status] || `Installation: ${status}`
+  return INSTALL_STATUS_LABELS[status] || 'Unknown'
 }
 
 export const CUSTOMER_STATUS_LABELS: Record<string, string> = {

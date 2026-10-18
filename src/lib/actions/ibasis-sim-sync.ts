@@ -11,6 +11,7 @@
 // ===========================================================================
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { buildConnectorFromProvider } from '@/lib/providers/connectors/connector-factory'
@@ -37,6 +38,7 @@ const MAX_PAGES = 10000
 export async function ibasisSyncSims(providerId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PROVIDERS))) throw new Error('Unauthorized')
 
   const provider = await prisma.provider.findUnique({ where: { id: providerId } })
   if (!provider) return { error: 'Provider not found' }

@@ -1034,6 +1034,13 @@ export class IbasisConnector implements IProviderConnector {
             status: sub.data.status,
             iccids: sub.data.iccid ? [sub.data.iccid] : activationIccids,
             iccid: sub.data.iccid || undefined,
+            // Authoritative provider activation timestamp (mapped from
+            // `activated_at`/`activation_date` by the confirmed mapper). The
+            // canonical engine treats it as activation history so a provider
+            // ACTIVE + confirmed activation timestamp may promote, while a raw
+            // subscription ACTIVE alone never does.
+            activatedAt: sub.data.activatedAt || undefined,
+            rawStatus: sub.data.providerStatus || undefined,
           },
         }
       }

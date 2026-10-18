@@ -1,4 +1,6 @@
 import { PurchaseOrchestrator } from './purchase-orchestrator'
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
+import { hasUsableInstallData } from '@/lib/esim/installation-data'
 
 export interface CreateOrderCustomer {
   name: string
@@ -138,7 +140,25 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
           })
           await enqueueBusinessWebhooks(params.businessId, 'esim.provisioned', {
             orderId: result.orderId, quantity: params.quantity,
-            esims: result.esims?.map(e => ({ id: undefined, iccid: e.iccid, status: 'PENDING_ACTIVATION' })) || [],
+            // Normalized oneSIM service/setup presentation from the persisted
+            // canonical status (backward-compatible `status` retained; no raw
+            // provider status or provider vocabulary is ever exposed).
+            esims: result.esims?.map(e => {
+              const installFields = { activationCode: e.activationCode, qrCodeUrl: e.qrCodeUrl, qrCode: (e as any).qrCode, smdpAddress: (e as any).smdpAddress, matchingId: (e as any).matchingId }
+              const p = deriveEsimLifecyclePresentation({
+                status: e.status,
+                installationStatus: (e.activationCode || e.qrCodeUrl) ? 'READY' : 'PENDING',
+                hasUsableInstallData: hasUsableInstallData(installFields),
+              })
+              return {
+                id: undefined, iccid: e.iccid,
+                status: e.status,
+                serviceStatus: p.serviceStatus,
+                serviceStatusLabel: p.serviceLabel,
+                installationStatus: (e.activationCode || e.qrCodeUrl) ? 'READY' : 'PENDING',
+                installationStatusLabel: p.setupLabel,
+              }
+            }) || [],
           })
         }
       } catch {}

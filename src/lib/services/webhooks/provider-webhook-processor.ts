@@ -1,10 +1,11 @@
 import { prisma } from '@/lib/prisma'
 import { normalizeChoiceWebhook } from '@/lib/providers/webhooks/choice-webhook-normalizer'
-import { deriveEsimLifecycleStatus } from '@/lib/services/esims/lifecycle-status'
+import { normalizeTelnaWebhook } from '@/lib/providers/webhooks/telna-webhook-normalizer'
+import { deriveEsimLifecycleStatus, deriveDepletionStatus, deriveUsageActivation, isProviderExhaustedStatus } from '@/lib/services/esims/lifecycle-status'
 
 export interface NormalizedWebhookEvent {
   providerType: string
-  eventType: 'ESIM_ACTIVATED' | 'USAGE_UPDATED' | 'ESIM_EXPIRED' | 'ESIM_SUSPENDED' | 'ESIM_RESUMED' | 'TOPUP_APPLIED' | 'PROVIDER_ERROR' | 'UNKNOWN'
+  eventType: 'ESIM_ACTIVATED' | 'ESIM_INSTALLED' | 'ESIM_PROFILE_DOWNLOADED' | 'ESIM_PROFILE_DISABLED' | 'ESIM_PROFILE_DELETED' | 'ESIM_INSTALLATION_FAILED' | 'USAGE_UPDATED' | 'ESIM_EXPIRED' | 'ESIM_SUSPENDED' | 'ESIM_RESUMED' | 'TOPUP_APPLIED' | 'PROVIDER_ERROR' | 'UNKNOWN'
   externalEventId?: string
   iccid?: string
   imsi?: string
@@ -15,12 +16,14 @@ export interface NormalizedWebhookEvent {
   dataTotalMB?: number
   dataRemainingMB?: number
   expiresAt?: string
+  installationStatus?: string
   raw?: any
 }
 
 const WEBHOOK_NORMALIZERS: Record<string, (payload: any) => NormalizedWebhookEvent> = {
   CHOICE: normalizeChoiceWebhook,
   IBASIS: normalizeIbasisWebhook,
+  TELNA: normalizeTelnaWebhook,
 }
 
 import { normalizeIbasisWebhook } from '@/lib/providers/webhooks/ibasis-webhook-normalizer'
@@ -28,7 +31,13 @@ import { normalizeIbasisWebhook } from '@/lib/providers/webhooks/ibasis-webhook-
 export function normalizeProviderWebhook(providerType: string, payload: any): NormalizedWebhookEvent {
   const normalizer = WEBHOOK_NORMALIZERS[providerType.toUpperCase()]
   if (normalizer) {
-    return normalizer(payload)
+    const normalized = normalizer(payload)
+    // Keep compatibility with older generic Telna callbacks while preferring
+    // the documented RSP / package payload shapes whenever they are present.
+    if (providerType.toUpperCase() === 'TELNA' && normalized.eventType === 'UNKNOWN' && (payload?.event || payload?.type)) {
+      return normalizeGeneric(payload, providerType)
+    }
+    return normalized
   }
   return normalizeGeneric(payload, providerType)
 }
@@ -68,9 +77,11 @@ function normalizeGeneric(payload: any, providerType: string): NormalizedWebhook
   else if (eLower.includes('error') || eLower.includes('fail')) eventType = 'PROVIDER_ERROR'
 
   const usage = payload.usage || payload.usageData || {}
-  const dataUsedMB = payload.dataUsedMB || usage.usedMB || undefined
-  const dataTotalMB = payload.dataTotalMB || usage.totalMB || undefined
-  const dataRemainingMB = payload.dataRemainingMB || usage.remainingMB || undefined
+  // Nullish access preserves a legitimate numeric zero; a genuinely missing
+  // value stays undefined (unknown) and is never mistaken for a real zero.
+  const dataUsedMB = payload.dataUsedMB ?? usage.usedMB ?? undefined
+  const dataTotalMB = payload.dataTotalMB ?? usage.totalMB ?? undefined
+  const dataRemainingMB = payload.dataRemainingMB ?? usage.remainingMB ?? undefined
 
   const externalId = `${providerType}:${event}:${payload.iccid || payload.imsi || ''}:${payload.timestamp || ''}`
 
@@ -91,11 +102,19 @@ function normalizeGeneric(payload: any, providerType: string): NormalizedWebhook
   }
 }
 
-export async function processProviderWebhookEvent(eventId: string): Promise<{ success: boolean; status: string; error?: string }> {
+export async function processProviderWebhookEvent(eventId: string, claimed = false): Promise<{ success: boolean; status: string; error?: string }> {
   const event = await prisma.providerWebhookEvent.findUnique({ where: { id: eventId } })
   if (!event) return { success: false, status: 'FAILED', error: 'Event not found' }
 
-  if (event.status !== 'RECEIVED') {
+  if ((event.status === 'RECEIVED' || event.status === 'FAILED') && !claimed) {
+    const claim = await prisma.providerWebhookEvent.updateMany({
+      where: { id: event.id, status: event.status },
+      data: { status: 'PROCESSING', errorMessage: null, processedAt: null },
+    })
+    if (claim.count !== 1) return { success: true, status: 'PROCESSING' }
+  } else if (event.status === 'PROCESSING' && !claimed) {
+    return { success: true, status: 'PROCESSING' }
+  } else if (event.status !== 'RECEIVED' && event.status !== 'PROCESSING' && !(claimed && event.status === 'FAILED')) {
     return { success: true, status: event.status }
   }
 
@@ -112,8 +131,20 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
       if (normalized.iccid) where.push({ iccid: normalized.iccid })
       if (normalized.imsi) where.push({ imsi: normalized.imsi })
 
-      const esim = where.length > 0
-        ? await prisma.eSIM.findFirst({ where: { OR: where }, include: { purchase: { select: { businessId: true } } } })
+      const providerOwnership = event.providerId
+        ? {
+            OR: [
+              { purchase: { providerId: event.providerId } },
+              { purchase: { package: { providerId: event.providerId } } },
+            ],
+          }
+        : {}
+      const telnaProviderMissing = event.providerType.toUpperCase() === 'TELNA' && !event.providerId
+      const esim = where.length > 0 && !telnaProviderMissing
+        ? await prisma.eSIM.findFirst({
+            where: { AND: [{ OR: where }, providerOwnership] },
+            include: { purchase: { select: { businessId: true, providerId: true, package: { select: { providerId: true } } } } },
+          })
         : null
 
       if (!esim) {
@@ -177,23 +208,136 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
         break
       }
 
+      case 'ESIM_INSTALLED':
+      case 'ESIM_PROFILE_DISABLED': {
+        const existing = await prisma.eSIM.findUnique({ where: { id: esimId } })
+        const lifecycle = deriveEsimLifecycleStatus({
+          providerNormalizedStatus: 'INSTALLED',
+          currentStatus: existing?.status || 'PENDING_ACTIVATION',
+          dataUsedMB: existing?.dataUsedMB || 0,
+          activatedAt: existing?.activatedAt ?? null,
+          providerInstalledSignal: true,
+        })
+        const write: any = {
+          installationStatus: normalized.installationStatus || (normalized.eventType === 'ESIM_PROFILE_DISABLED' ? 'DISABLED' : 'INSTALLED'),
+          installationLastCheckedAt: now,
+          installationLastError: null,
+          lastSyncAt: now,
+          lastStatusSyncAt: now,
+          providerStatus: normalized.providerStatus || existing?.providerStatus,
+          providerResponse: {
+            ...(existing?.providerResponse && typeof existing.providerResponse === 'object' ? existing.providerResponse as Record<string, unknown> : {}),
+            telnaInstallationEvent: normalized.eventType,
+            evidence: lifecycle.reason,
+            evidenceObservedAt: now.toISOString(),
+          },
+        }
+        if (lifecycle.status !== existing?.status) write.status = lifecycle.status
+        await prisma.eSIM.update({ where: { id: esimId }, data: write })
+        break
+      }
+
+      case 'ESIM_PROFILE_DOWNLOADED':
+      case 'ESIM_INSTALLATION_FAILED': {
+        const existing = await prisma.eSIM.findUnique({ where: { id: esimId } })
+        await prisma.eSIM.update({
+          where: { id: esimId },
+          data: {
+            installationStatus: normalized.installationStatus || (normalized.eventType === 'ESIM_INSTALLATION_FAILED' ? 'FAILED' : 'DOWNLOADED'),
+            installationLastCheckedAt: now,
+            installationLastError: normalized.eventType === 'ESIM_INSTALLATION_FAILED' ? 'Telna reported an eSIM profile download or installation failure' : null,
+            providerStatus: normalized.providerStatus || existing?.providerStatus,
+            providerResponse: {
+              ...(existing?.providerResponse && typeof existing.providerResponse === 'object' ? existing.providerResponse as Record<string, unknown> : {}),
+              telnaInstallationEvent: normalized.eventType,
+              evidenceObservedAt: now.toISOString(),
+            },
+          },
+        })
+        break
+      }
+
+      case 'ESIM_PROFILE_DELETED': {
+        const existing = await prisma.eSIM.findUnique({ where: { id: esimId } })
+        const lifecycle = deriveEsimLifecycleStatus({
+          providerNormalizedStatus: 'PENDING_ACTIVATION',
+          currentStatus: existing?.status || 'PENDING_ACTIVATION',
+          dataUsedMB: existing?.dataUsedMB || 0,
+          activatedAt: existing?.activatedAt ?? null,
+          providerProfileDeletedSignal: true,
+        })
+        const write: any = {
+          installationStatus: 'DELETED',
+          installationLastCheckedAt: now,
+          installationLastError: null,
+          lastSyncAt: now,
+          lastStatusSyncAt: now,
+          providerStatus: normalized.providerStatus || existing?.providerStatus,
+          providerResponse: {
+            ...(existing?.providerResponse && typeof existing.providerResponse === 'object' ? existing.providerResponse as Record<string, unknown> : {}),
+            telnaInstallationEvent: normalized.eventType,
+            evidence: lifecycle.reason,
+            evidenceObservedAt: now.toISOString(),
+          },
+        }
+        if (lifecycle.status !== existing?.status) write.status = lifecycle.status
+        await prisma.eSIM.update({ where: { id: esimId }, data: write })
+        break
+      }
+
       case 'USAGE_UPDATED': {
-        const usageData: any = { lastSyncAt: now, lastStatusSyncAt: now }
+        const usageData: any = { lastSyncAt: now, lastStatusSyncAt: now, lastUsageSyncAt: now, lastUsageAt: now }
         if (normalized.dataUsedMB != null) usageData.dataUsedMB = normalized.dataUsedMB
         if (normalized.dataTotalMB != null) usageData.dataTotalMB = normalized.dataTotalMB
         if (normalized.dataRemainingMB != null) usageData.dataRemainingMB = normalized.dataRemainingMB
         if (normalized.usageDate) usageData.lastUsageAt = new Date(normalized.usageDate)
+
+        // A webhook reporting authoritative remaining zero is capable of deriving
+        // DEPLETED (same canonical engine as scheduled/manual sync). Missing or
+        // unknown remaining never implies depletion; terminal states are never
+        // rewritten.
+        const existing = await prisma.eSIM.findUnique({ where: { id: esimId }, select: { status: true, providerStatus: true, activatedAt: true } })
+        const providerStatusRaw = String(normalized.providerStatus || '')
+        const remainingNum =
+          normalized.dataRemainingMB != null && Number.isFinite(Number(normalized.dataRemainingMB))
+            ? Number(normalized.dataRemainingMB)
+            : undefined
+        const depletion = deriveDepletionStatus(existing?.status || 'PENDING_ACTIVATION', {
+          dataRemainingMB: remainingNum,
+          snapshotValid: remainingNum != null,
+          providerExhausted: isProviderExhaustedStatus(providerStatusRaw || undefined),
+        })
+        // Canonical PENDING → ACTIVE promotion from authoritative usage evidence
+        // (identical to scheduled/manual usage sync). A positive used value is
+        // activation evidence; zero/missing is not.
+        const activation = deriveUsageActivation({
+          currentStatus: existing?.status || 'PENDING_ACTIVATION',
+          dataUsedMB: normalized.dataUsedMB == null ? undefined : Number(normalized.dataUsedMB),
+          activatedAt: existing?.activatedAt ?? null,
+        })
+        const targetStatus = depletion || (activation.status !== (existing?.status || 'PENDING_ACTIVATION') ? activation.status : existing?.status || 'PENDING_ACTIVATION')
+        if (targetStatus !== (existing?.status || 'PENDING_ACTIVATION')) usageData.status = targetStatus
+        if (targetStatus === 'ACTIVE' && activation.setActivatedAt && existing && !existing.activatedAt) {
+          usageData.activatedAt = normalized.activatedAt ? new Date(normalized.activatedAt) : new Date()
+          usageData.activationDetectedAt = new Date()
+        }
+        if (providerStatusRaw && existing?.providerStatus !== providerStatusRaw) usageData.providerStatus = providerStatusRaw
+
         await prisma.eSIM.update({ where: { id: esimId }, data: usageData })
 
-        await prisma.usageRecord.create({
-          data: {
-            esimId,
-            dataUsedMB: normalized.dataUsedMB || 0,
-            dataTotalMB: normalized.dataTotalMB || null,
-            dataRemainingMB: normalized.dataRemainingMB || null,
-            timestamp: normalized.usageDate ? new Date(normalized.usageDate) : now,
-          },
-        })
+        // History record only when an authoritative value exists; a real zero is
+        // preserved and a missing value is never fabricated as 0.
+        if (normalized.dataUsedMB != null || normalized.dataTotalMB != null || normalized.dataRemainingMB != null) {
+          await prisma.usageRecord.create({
+            data: {
+              esimId,
+              dataUsedMB: normalized.dataUsedMB ?? 0,
+              dataTotalMB: normalized.dataTotalMB ?? null,
+              dataRemainingMB: normalized.dataRemainingMB ?? null,
+              timestamp: normalized.usageDate ? new Date(normalized.usageDate) : now,
+            },
+          })
+        }
         break
       }
 
@@ -206,6 +350,16 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
         break
       }
 
+      case 'PROVIDER_ERROR': {
+        // A provider-declared failure is NOT an authoritative canonical status:
+        // it may be transient and the eSIM row can hold stronger evidence. Never
+        // write FAILED from the event name — record the event as IGNORED with a
+        // durable reason and preserve the canonical status unchanged.
+        updateData.status = 'IGNORED'
+        updateData.errorMessage = 'Provider error event — canonical eSIM status preserved'
+        break
+      }
+
       default: {
         updateData.status = 'IGNORED'
         updateData.errorMessage = 'Unrecognized event type'
@@ -213,12 +367,13 @@ export async function processProviderWebhookEvent(eventId: string): Promise<{ su
       }
     }
 
+    const finalStatus = updateData.status || 'PROCESSED'
     await prisma.providerWebhookEvent.update({
       where: { id: eventId },
-      data: { ...updateData, status: 'PROCESSED', processedAt: now, esimId, businessId },
+      data: { ...updateData, status: finalStatus, processedAt: now, esimId, businessId },
     })
 
-    return { success: true, status: 'PROCESSED' }
+    return { success: true, status: finalStatus }
   } catch (error: any) {
     await prisma.providerWebhookEvent.update({
       where: { id: eventId },
@@ -239,22 +394,48 @@ export async function receiveProviderWebhook(providerType: string, payload: any)
       if (existing.status === 'PROCESSED' || existing.status === 'IGNORED') {
         return { success: true, duplicate: true, status: existing.status }
       }
+      // Do not process an in-flight delivery twice: parallel callbacks can
+      // otherwise duplicate usage history writes. FAILED/RECEIVED rows are
+      // atomically claimed before their retry is processed.
+      if (existing.status === 'PROCESSING') {
+        return { success: true, duplicate: true, status: existing.status, eventId: existing.id }
+      }
+      if (existing.status === 'RECEIVED' || existing.status === 'FAILED') {
+        const claimed = await prisma.providerWebhookEvent.updateMany({
+          where: { id: existing.id, status: existing.status },
+          data: { status: 'PROCESSING', errorMessage: null, processedAt: null },
+        })
+        if (claimed.count !== 1) {
+          return { success: true, duplicate: true, status: 'PROCESSING', eventId: existing.id }
+        }
+        const result = await processProviderWebhookEvent(existing.id, true)
+        return { success: result.success, status: result.status, eventId: existing.id, error: result.error }
+      }
     }
   }
+
+  // Persist the provider association (when resolvable by code) so provider-scoped
+  // operational alerts (e.g. WEBHOOK_BACKLOG) can measure this provider's events.
+  let providerId: string | null = null
+  try {
+    const provider = await prisma.provider.findFirst({ where: { code: providerType.toUpperCase() }, select: { id: true } })
+    providerId = provider?.id || null
+  } catch {}
 
   const event = await prisma.providerWebhookEvent.create({
     data: {
       providerType: providerType.toUpperCase(),
+      providerId,
       eventType: normalized.eventType,
       externalEventId: normalized.externalEventId || null,
       iccid: normalized.iccid || null,
       imsi: normalized.imsi || null,
-      status: 'RECEIVED',
+      status: 'PROCESSING',
       payload: payload as any,
     },
   })
 
-  const result = await processProviderWebhookEvent(event.id)
+  const result = await processProviderWebhookEvent(event.id, true)
 
   return {
     success: result.success,

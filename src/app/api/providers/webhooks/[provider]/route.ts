@@ -100,6 +100,18 @@ export async function POST(req: NextRequest, { params }: { params: { provider: s
     payload = { raw: text }
   }
 
+  // Telna callback payloads carry lifecycle/usage data rather than an order
+  // completion object. Send them through the durable provider-webhook event
+  // processor so deduplication and the canonical eSIM lifecycle rules apply.
+  if (providerCode === 'TELNA') {
+    const { receiveProviderWebhook } = await import('@/lib/services/webhooks/provider-webhook-processor')
+    const result = await receiveProviderWebhook(providerCode, payload)
+    if (!result.success) {
+      return NextResponse.json({ status: result.status, eventId: result.eventId, error: result.error || 'Webhook processing failed' }, { status: 500 })
+    }
+    return NextResponse.json({ status: result.duplicate ? 'DUPLICATE' : result.status, eventId: result.eventId }, { status: 200 })
+  }
+
   // Extract event ID for idempotency
   const eventId = payload.event_id || payload.id || payload.externalEventId || payload.eventId || ''
   const computedId = `${providerCode}:${eventId || crypto.createHash('md5').update(JSON.stringify(payload)).digest('hex')}`
@@ -126,6 +138,7 @@ export async function POST(req: NextRequest, { params }: { params: { provider: s
   const event = await prisma.providerWebhookEvent.create({
     data: {
       providerType: providerCode,
+      providerId: provider.id,
       eventType: payload.event || payload.type || 'RECEIVED',
       externalEventId: eventId || null,
       iccid: payload.iccid || null,
@@ -145,11 +158,15 @@ export async function POST(req: NextRequest, { params }: { params: { provider: s
   const { normalizeProviderWebhook } = await import('@/lib/services/webhooks/provider-webhook-processor')
 
   const normalized = normalizeProviderWebhook(providerCode, payload)
+  // Provider statuses are case-insensitive across normalizers (Choice emits
+  // uppercase canonical values; iBASIS preserves provider lower-case). Compare
+  // on the uppercased value so every connector maps to the same disposition.
+  const normalizedStatus = String(normalized.providerStatus || '').toUpperCase()
   processProviderWebhook(provider.id, {
     eventId: computedId,
     eventType: normalized.eventType || 'RECEIVED',
-    status: normalized.providerStatus === 'active' || normalized.providerStatus === 'completed'
-      ? 'COMPLETED' : normalized.providerStatus === 'failed' || normalized.providerStatus === 'error'
+    status: normalizedStatus === 'ACTIVE' || normalizedStatus === 'COMPLETED'
+      ? 'COMPLETED' : normalizedStatus === 'FAILED' || normalizedStatus === 'ERROR' || normalizedStatus === 'REJECTED'
         ? 'FAILED' : 'PENDING' as any,
     // Map BOTH reference fields: providerReference carries the provider-side
     // reservation/fulfillment id; orderReference carries OUR internal orderId

@@ -257,7 +257,7 @@ describe('getUsagePanelState', () => {
 
 describe('getEsimStatusLabel', () => {
   it('never maps PENDING_ACTIVATION to ACTIVE', () => {
-    expect(getEsimStatusLabel('PENDING_ACTIVATION').label).toBe('Ready to install')
+    expect(getEsimStatusLabel('PENDING_ACTIVATION').label).toBe('Provisioned')
     expect(getEsimStatusLabel('ACTIVE').label).toBe('Active')
     expect(getEsimStatusLabel('PENDING_ACTIVATION').label).not.toBe(getEsimStatusLabel('ACTIVE').label)
   })

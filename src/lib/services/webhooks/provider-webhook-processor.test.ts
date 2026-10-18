@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/lib/prisma', () => ({
   prisma: {
-    providerWebhookEvent: { findUnique: vi.fn(), update: vi.fn() },
+    providerWebhookEvent: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
     eSIM: { findUnique: vi.fn(), findFirst: vi.fn(), update: vi.fn() },
     usageRecord: { create: vi.fn() },
   },
@@ -63,6 +63,7 @@ function lastEsimUpdate() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockPrisma.providerWebhookEvent.updateMany.mockResolvedValue({ count: 1 } as any)
 })
 
 describe('webhookLifecycleClaim', () => {
@@ -201,6 +202,15 @@ describe('processProviderWebhookEvent — canonical lifecycle arbitration (D1)',
     expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
   })
 
+  it('does not process a webhook delivery already claimed by another request', async () => {
+    const event = makeEvent({ status: 'PROCESSING' })
+    mockPrisma.providerWebhookEvent.findUnique.mockResolvedValue(event as any)
+    const result = await processProviderWebhookEvent(event.id)
+    expect(result.status).toBe('PROCESSING')
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+    expect(mockPrisma.providerWebhookEvent.updateMany).not.toHaveBeenCalled()
+  })
+
   it('20. event with no matching eSIM → IGNORED, no lifecycle write', async () => {
     const event = makeEvent({ esimId: null, iccid: null, imsi: null })
     mockPrisma.providerWebhookEvent.findUnique.mockResolvedValue(event as any)
@@ -228,5 +238,174 @@ describe('processProviderWebhookEvent — canonical lifecycle arbitration (D1)',
       expect(mockPrisma.eSIM.update).toHaveBeenCalledTimes(1)
       expect(lastEsimUpdate().status).toBeUndefined()
     }
+  })
+
+  it('unknown event type is recorded IGNORED (not PROCESSED) with no lifecycle write', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'esim_updated_unknown', iccid: '89012345678901234567', status: 'ACTIVE' } } })
+    const result = await process(event, makeEsim())
+    expect(result.status).toBe('IGNORED')
+    expect(mockPrisma.providerWebhookEvent.update).toHaveBeenCalled()
+    const updateData = mockPrisma.providerWebhookEvent.update.mock.calls[0][0].data
+    expect(updateData.status).toBe('IGNORED')
+    expect(updateData.errorMessage).toBe('Unrecognized event type')
+    // An unrecognized event must never mutate the eSIM row.
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+  })
+
+  it('PROVIDER_ERROR event is recorded IGNORED and preserves the canonical status', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'purchase_failed', iccid: '89012345678901234567', status: 'failed' } } })
+    const result = await process(event, makeEsim({ status: 'ACTIVE', activatedAt: new Date('2026-01-01') }))
+    expect(result.status).toBe('IGNORED')
+    const updateData = mockPrisma.providerWebhookEvent.update.mock.calls[0][0].data
+    expect(updateData.status).toBe('IGNORED')
+    expect(updateData.errorMessage).toMatch(/Provider error event/)
+    // Provider-declared failure is NOT an authoritative canonical status: the
+    // stored ACTIVE state stays untouched (no eSIM write, no fabricated FAILED).
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+  })
+
+  it('iBASIS `rejected` activation propagates as PROVIDER_ERROR → IGNORED, status preserved', async () => {
+    const event = makeEvent({ providerType: 'IBASIS', payload: { body: { subscription_activation_id: 'act-1', status: 'rejected' } } })
+    const result = await process(event, makeEsim({ status: 'ACTIVE', activatedAt: new Date('2026-01-01') }))
+    expect(result.status).toBe('IGNORED')
+    expect(mockPrisma.providerWebhookEvent.update.mock.calls[0][0].data.status).toBe('IGNORED')
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+  })
+
+  it('REFUNDED + lifecycle webhook stays REFUNDED (webhook cannot reactivate a refunded eSIM)', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'esim_activated', iccid: '8901', status: 'ACTIVE' } } })
+    await process(event, makeEsim({ status: 'REFUNDED' }))
+    expect(lastEsimUpdate().status).toBe('REFUNDED')
+    expect(lastEsimUpdate().providerResponse.evidence).toBe('preserve-terminal')
+    expect(lastEsimUpdate().activatedAt).toBeUndefined()
+  })
+
+  it('REFUNDED + usage-threshold webhook stays REFUNDED (never DEPLETED/ACTIVE via usage data)', async () => {
+    // A threshold notice carries remaining data — but the shared engine applies
+    // terminal precedence on lifecycle claims; usage-only events never mutate
+    // status. The row stays REFUNDED.
+    const event = makeEvent({ payload: { body: { command: 'imsi_usage_threshold_notice', threshold_code: 6, imsi: '310150123456789' } } })
+    await process(event, makeEsim({ status: 'REFUNDED', dataRemainingMB: 0, dataTotalMB: 100 }))
+    expect(lastEsimUpdate().status).toBeUndefined()
+    expect(mockPrisma.eSIM.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('Telna install checkpoint updates installation state without fabricating activation', async () => {
+    const event = makeEvent({
+      providerType: 'TELNA',
+      payload: { body: { eventName: 'ESIM_STATUS_CHANGE', iccid: '89012345678901234567', notificationPointId: '4', notificationPointStatus: { status: 'Executed-Success' } } },
+    })
+    await process(event, makeEsim())
+    expect(lastEsimUpdate()).toMatchObject({ status: 'INSTALLED', installationStatus: 'INSTALLED' })
+    expect(lastEsimUpdate().activatedAt).toBeUndefined()
+    expect(lastEsimUpdate().activationDetectedAt).toBeUndefined()
+  })
+
+  it('Telna profile delete clears install-only lifecycle but preserves ACTIVE service history', async () => {
+    const event = makeEvent({
+      providerType: 'TELNA',
+      payload: { body: { iccid: '89012345678901234567', notificationPointId: '8', notificationPointStatus: { status: 'Executed-Success' } } },
+    })
+    await process(event, makeEsim({ status: 'INSTALLED' }))
+    expect(lastEsimUpdate()).toMatchObject({ status: 'PENDING_ACTIVATION', installationStatus: 'DELETED' })
+    vi.clearAllMocks()
+    await process(event, makeEsim({ status: 'ACTIVE', activatedAt: new Date('2026-01-01') }))
+    expect(lastEsimUpdate()).toMatchObject({ installationStatus: 'DELETED' })
+    expect(lastEsimUpdate().status).toBeUndefined() // stored ACTIVE remains authoritative
+  })
+
+  it('Telna usage alert promotes only from positive reported usage and writes a usage record', async () => {
+    const event = makeEvent({
+      providerType: 'TELNA',
+      payload: { body: { eventName: 'PACKAGE_DATA_USAGE_ALERT', eventTimestamp: 1_689_714_160_492, eventDetails: { sim: { iccid: '89012345678901234567' }, package: { id: 'pkg-1', packageUsedBytes: 1, packageTotalBytes: 100 * 1024 * 1024 } } } },
+    })
+    await process(event, makeEsim())
+    expect(lastEsimUpdate()).toMatchObject({ status: 'ACTIVE', dataUsedMB: 1, dataTotalMB: 100, dataRemainingMB: 99 })
+    expect(mockPrisma.usageRecord.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ esimId: 'esim-1', dataUsedMB: 1 }) }))
+  })
+
+  it('provider-scopes ICCID matching so a Telna callback cannot mutate another provider purchase', async () => {
+    const event = makeEvent({ providerType: 'TELNA', providerId: 'provider-telna', esimId: null, payload: { body: { eventName: 'PACKAGE_STATUS_CHANGE', eventDetails: { sim: { iccid: '89012345678901234567' }, package: { id: 'pkg-1', status: { currentValue: 'ACTIVATED' } } } } } })
+    mockPrisma.providerWebhookEvent.findUnique.mockResolvedValue(event as any)
+    mockPrisma.eSIM.findFirst.mockResolvedValue(null)
+    mockPrisma.providerWebhookEvent.update.mockResolvedValue({} as any)
+    await processProviderWebhookEvent(event.id)
+    expect(mockPrisma.eSIM.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { AND: [
+        { OR: [{ iccid: '89012345678901234567' }] },
+        { OR: [{ purchase: { providerId: 'provider-telna' } }, { purchase: { package: { providerId: 'provider-telna' } } }] },
+      ] },
+    }))
+    expect(mockPrisma.eSIM.update).not.toHaveBeenCalled()
+  })
+})
+describe('USAGE_UPDATED � zero preservation + canonical depletion via webhook', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('remaining 0 persists zero and derives DEPLETED', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901', dataUsedMB: 1024, dataTotalMB: 1024, dataRemainingMB: 0 } } })
+    await process(event, makeEsim({ status: 'ACTIVE' }))
+    const u = lastEsimUpdate()
+    expect(u.dataRemainingMB).toBe(0)
+    expect(u.dataUsedMB).toBe(1024)
+    expect(u.status).toBe('DEPLETED')
+    expect(mockPrisma.usageRecord.create).toHaveBeenCalledTimes(1)
+    const rec = mockPrisma.usageRecord.create.mock.calls[0][0].data
+    expect(rec.dataRemainingMB).toBe(0)
+    expect(rec.dataUsedMB).toBe(1024)
+  })
+
+  it('missing usage fields do NOT create a history record or fabricate zero', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901' } } })
+    await process(event, makeEsim({ status: 'ACTIVE' }))
+    const u = lastEsimUpdate()
+    expect(u.dataUsedMB).toBeUndefined()
+    expect(u.dataRemainingMB).toBeUndefined()
+    expect(u.status).toBeUndefined()
+    expect(mockPrisma.usageRecord.create).not.toHaveBeenCalled()
+  })
+
+  it('Choice threshold notice with used 0 preserves zero and remaining = total', async () => {
+    const event = makeEvent({ providerType: 'CHOICE', payload: { body: { command: 'imsi_usage_threshold_notice', threshold_code: '6', quantity_used: '0', maximum_units: '1024', max_qty_type: 'MB', imsi: '310150123456789' } } })
+    await process(event, makeEsim({ status: 'ACTIVE' }))
+    const u = lastEsimUpdate()
+    expect(u.dataUsedMB).toBe(0)
+    expect(u.dataRemainingMB).toBe(1024)
+    expect(u.status).toBeUndefined()
+  })
+
+it('Choice threshold notice fully used derives DEPLETED with remaining 0', async () => {
+    const event = makeEvent({ providerType: 'CHOICE', payload: { body: { command: 'imsi_usage_threshold_notice', threshold_code: '6', quantity_used: '1024', maximum_units: '1024', max_qty_type: 'MB', imsi: '310150123456789' } } })
+    await process(event, makeEsim({ status: 'ACTIVE' }))
+    expect(lastEsimUpdate().dataRemainingMB).toBe(0)
+    expect(lastEsimUpdate().status).toBe('DEPLETED')
+  })
+
+  it('authoritative usage > 0 promotes PENDING_ACTIVATION → ACTIVE via canonical activation (webhook parity)', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901', dataUsedMB: 128, dataTotalMB: 1024, dataRemainingMB: 896 } } })
+    await process(event, makeEsim({ status: 'PENDING_ACTIVATION', activatedAt: null }))
+    const u = lastEsimUpdate()
+    expect(u.status).toBe('ACTIVE')
+    expect(u.activatedAt).toBeInstanceOf(Date)
+    expect(u.activationDetectedAt).toBeInstanceOf(Date)
+  })
+
+  it('authoritative usage = 0 does NOT promote PENDING → ACTIVE (zero is valid but not activation evidence)', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901', dataUsedMB: 0, dataTotalMB: 1024, dataRemainingMB: 1024 } } })
+    await process(event, makeEsim({ status: 'PENDING_ACTIVATION', activatedAt: null }))
+    const u = lastEsimUpdate()
+    expect(u.dataUsedMB).toBe(0)
+    expect(u.status).toBeUndefined()
+    expect(u.activatedAt).toBeUndefined()
+  })
+
+  it('missing usage does NOT promote PENDING → ACTIVE', async () => {
+    const event = makeEvent({ providerType: 'TELNA', payload: { body: { event: 'usage.updated', iccid: '8901' } } })
+    await process(event, makeEsim({ status: 'PENDING_ACTIVATION', activatedAt: null }))
+    const u = lastEsimUpdate()
+    expect(u.status).toBeUndefined()
+    expect(u.activatedAt).toBeUndefined()
   })
 })

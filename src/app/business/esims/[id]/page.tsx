@@ -8,7 +8,8 @@ import { installStatusLabel } from '@/lib/status-labels'
 import { UsageSummary } from '@/components/admin/esims/UsageBar'
 import { QrCodeButton } from '@/components/business/QrCodeModal'
 import { QrImage } from '@/components/business/QrImage'
-import { getEsimStatusLabel } from '@/lib/providers/capabilities/esim-action-availability'
+import { getEsimStatusLabel, isTopUpEligibleStatus } from '@/lib/providers/capabilities/esim-action-availability'
+import { deriveEsimLifecyclePresentation } from '@/lib/esim/lifecycle-presentation'
 import { syncEsimStatusAction } from '@/lib/actions/esim'
 import { refreshEsimQrCodeAction } from '@/lib/actions/esim-sync'
 import { getEsimClientCapabilities } from '@/lib/esim/client-capabilities'
@@ -74,6 +75,16 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
   const install = buildInstallationPresentation(installFields)
   const lpa = safeProviderLPA(esim.providerResponse)
   const displaySmdp = install.smdpAddress || lpa?.smdpAddress
+  // Two-axis customer presentation (Service + Setup). Raw provider status is
+  // never exposed to business users.
+  const lifecycle = deriveEsimLifecyclePresentation({
+    status: esim.status,
+    installationStatus: esim.installationStatus,
+    hasUsableInstallData: hasInstallData,
+    activatedAt: esim.activatedAt,
+    activationDetectedAt: esim.activationDetectedAt,
+    dataUsedMB: esim.dataUsedMB,
+  })
 
   return (
     <div className="space-y-6">
@@ -101,9 +112,13 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
           <dl className="space-y-1">
             <DetailRow label="ICCID" value={esim.iccid} mono />
             {esim.imsi && <DetailRow label="IMSI" value={esim.imsi} mono />}
-            <div className="flex justify-between py-1.5">
-              <dt className="text-xs text-gray-500">Status</dt>
-              <dd><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses}`}>{statusLabel.label}</span></dd>
+            <div className="flex justify-between items-center py-1.5">
+              <dt className="text-xs text-gray-500">Service status</dt>
+              <dd><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses}`}>{lifecycle.serviceLabel}</span></dd>
+            </div>
+            <div className="flex justify-between items-center py-1.5">
+              <dt className="text-xs text-gray-500">Setup status</dt>
+              <dd className="text-xs font-medium text-gray-900 text-right">{lifecycle.setupLabel}</dd>
             </div>
             {esim.lastStatusSyncAt && <DetailRow label="Last Updated" value={timeAgo(esim.lastStatusSyncAt)} />}
             <div className="flex justify-between py-1.5">
@@ -191,7 +206,7 @@ export default async function BusinessEsimDetailPage({ params, searchParams }: {
             </form>
           )}
           <RefreshQrButton esimId={esim.id} hasInstallData={hasInstallData} />
-          {caps.canTopUp && (esim.status === 'ACTIVE' || esim.status === 'PENDING_ACTIVATION' || esim.status === 'PENDING') && (
+          {caps.canTopUp && isTopUpEligibleStatus(esim.status) && (
             <Link href={`/business/esims/${esim.id}/top-up`} className="rounded-lg border border-emerald-300 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50">Top Up</Link>
           )}
           {hasInstallData && (

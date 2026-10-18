@@ -4,8 +4,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { authenticateApiKey } from '@/lib/api/auth'
 import { logApiRequest, checkRateLimit, addRateLimitHeaders, createRateLimitResponse } from '@/lib/api/logging'
-import { stripEsimProviderFields } from '@/lib/analytics/safe-fields'
 import { serializePublicUsageRecord } from '@/lib/api/public-dto'
+import { serializePublicEsimUsageDetail } from '@/lib/api/esim-usage-serialize'
 
 function makeError(code: string, message: string) {
   return { success: false, error: { code, message } }
@@ -44,21 +44,12 @@ export async function GET(request: NextRequest, { params }: { params: { esimId: 
     if (!esim) return respond(request, makeError('ESIM_NOT_FOUND', 'eSIM not found'), 404, startTime, businessId, { errorMessage: 'eSIM not found', rateLimit })
     if (esim.purchase.businessId !== businessId) return respond(request, makeError('FORBIDDEN', 'eSIM does not belong to this business'), 403, startTime, businessId, { errorMessage: 'Forbidden', rateLimit })
 
-    const safe = stripEsimProviderFields(esim)
-
-    const responseBody = {
+const responseBody = {
       success: true,
-      esim: {
-        id: safe.id,
-        iccid: safe.iccid,
-        imsi: safe.imsi,
-        status: safe.status,
-        expiresAt: safe.expiresAt?.toISOString() || null,
-        dataUsedMB: safe.dataUsedMB,
-        dataRemainingMB: safe.dataRemainingMB,
-        dataTotalMB: safe.dataTotalMB,
-        lastUsageSyncAt: safe.lastUsageSyncAt?.toISOString() || null,
-      },
+      // Emits a fixed safe shape built from the unstripped row so the real
+      // lastUsageSyncAt (a safe operational timestamp) reaches clients; no
+      // provider credentials/internals are included.
+      esim: serializePublicEsimUsageDetail(esim),
       usageRecords: esim.usageRecords.map(serializePublicUsageRecord),
     }
 

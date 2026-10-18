@@ -571,6 +571,13 @@ export interface PricingMutationInput {
   }
   /** Persisted values before the mutation (fallback for non-edited fields). */
   existing: ExistingPricingState
+  /**
+   * Optional pricingMode of the package. Makes validation mode-aware so that
+   * FIXED_PRICE packages only validate their relevant field (selling price)
+   * and never demand a positive cost to derive markup, while MARKUP_PERCENT /
+   * FIXED_MARGIN packages keep the full triple-derivation contract.
+   */
+  mode?: string | null
 }
 
 /** Resolved, internally consistent pricing triple after the mutation. */
@@ -613,11 +620,16 @@ function toFiniteOrNull(value: unknown): number | null {
  * components (no prisma / server-only imports).
  */
 export function resolvePricingMutation(input: PricingMutationInput): ResolvedPricingMutation {
-  const { intent, supplied, existing } = input
+  const { intent, supplied, existing, mode } = input
 
   const costPrice = toFiniteOrNull(supplied.costPrice !== undefined ? supplied.costPrice : existing.costPrice)
   const sellingPrice = toFiniteOrNull(supplied.sellingPrice !== undefined ? supplied.sellingPrice : existing.sellingPrice)
   const markupPercent = toFiniteOrNull(supplied.markupPercent !== undefined ? supplied.markupPercent : existing.markupPercent)
+
+  // FIXED_PRICE packages validate only their relevant field: the selling price.
+  // Markup/cost are informational — the admin's fixed selling price is never
+  // silently recomputed from markup (or rejected for a missing cost).
+  const isFixedPrice = mode === 'FIXED_PRICE'
 
   const errors: string[] = []
   if (costPrice !== null && costPrice < 0) errors.push('Cost cannot be negative')
@@ -638,6 +650,12 @@ export function resolvePricingMutation(input: PricingMutationInput): ResolvedPri
       return { costPrice: outCost, sellingPrice: outSelling, markupPercent: outMarkup, valid: true, errors }
 
     case 'MARKUP': {
+      if (isFixedPrice) {
+        // Markup is not the authoritative driver of a fixed-price package.
+        // Persist the supplied markup as-is (informational) without clobbering
+        // the fixed selling price and without demanding cost to recompute it.
+        break
+      }
       // Markup is authoritative → derive selling from cost + markup.
       if (outMarkup === null) {
         errors.push('Markup % is required when editing markup')
@@ -655,6 +673,11 @@ export function resolvePricingMutation(input: PricingMutationInput): ResolvedPri
       // Selling is authoritative → derive markup from cost + selling.
       if (outSelling === null) {
         errors.push('Selling price is required when editing selling price')
+        break
+      }
+      if (isFixedPrice) {
+        // A fixed selling price stands on its own: never require cost/markup
+        // to validate it and never force a derived markup.
         break
       }
       if (outCost === null || outCost <= 0) {
@@ -680,6 +703,16 @@ export function resolvePricingMutation(input: PricingMutationInput): ResolvedPri
       }
       if (outCost < 0) {
         errors.push('Cost cannot be negative')
+        break
+      }
+      if (isFixedPrice) {
+        // A cost tweak on a fixed-price package must not move the fixed
+        // selling price. Markup is recomputed for reporting only when the
+        // fixed selling price is known.
+        if (outSelling !== null && outSelling > 0 && outCost > 0) {
+          const derived = computeMarkupFromCostAndSell(outCost, outSelling)
+          if (derived !== undefined) outMarkup = derived
+        }
         break
       }
       if (outMarkup !== null && outMarkup > 0 && outCost > 0) {

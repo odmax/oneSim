@@ -1,6 +1,7 @@
 'use server'
 
 import { getServerSession } from 'next-auth'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { authOptions } from '@/lib/auth/config'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
@@ -11,21 +12,9 @@ import { buildUpdateRequest } from '@/lib/pricing/pricing-update-service'
 import { simulateRulePricing } from '@/lib/pricing/pricing-simulation-service'
 import type { SimulationResult } from '@/lib/pricing/pricing-simulation-service'
 import type { PricingRuleSummary } from '@/lib/pricing/types'
+import { buildApplyRuleScopeWhere, type ProviderCatalogRuleFilters } from '@/lib/packages/apply-rule-scope'
 
-export interface ApplyRuleFilters {
-  providerId?: string
-  country?: string
-  region?: string
-  network?: string
-  publishStatus?: string
-  configurationStatus?: string
-  hasCostPrice?: boolean
-  hasSellingPrice?: boolean
-  hasValidity?: boolean
-  hasDataAllowance?: boolean
-  includeArchived?: boolean
-  includeHidden?: boolean
-}
+export interface ApplyRuleFilters extends ProviderCatalogRuleFilters {}
 
 export interface SkipReason {
   reason: string
@@ -79,13 +68,12 @@ export async function getApplyRulePreview(
 ): Promise<{ success: boolean; data?: ApplyRulePreview; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PRICING))) return { success: false, error: 'Unauthorized' }
 
   const rule = await prisma.packageConfigurationRule.findUnique({ where: { id: ruleId } })
   if (!rule) return { success: false, error: 'Rule not found' }
 
-  const where: any = buildScopeWhere(scope, filters, selectedIds)
-  if (filters.includeArchived) delete where.ARCHIVED
-  if (filters.includeHidden) delete where.HIDDEN
+  const where: any = buildApplyRuleScopeWhere(scope, filters, selectedIds)
   if (rule.providerId && !where.providerId) {
     where.providerId = rule.providerId
   }
@@ -169,15 +157,14 @@ export async function executeApplyRule(
 ): Promise<ApplyRuleResult> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PRICING))) return { success: false, error: 'Unauthorized' }
 
   try {
     const rule = await prisma.packageConfigurationRule.findUnique({ where: { id: ruleId } })
     if (!rule) return { success: false, error: 'Rule not found' }
     if (!rule.isActive) return { success: false, error: 'Rule is inactive — activate it first' }
 
-    const where: any = buildScopeWhere(scope, filters, selectedIds)
-    if (filters.includeArchived) delete where.ARCHIVED
-    if (filters.includeHidden) delete where.HIDDEN
+    const where: any = buildApplyRuleScopeWhere(scope, filters, selectedIds)
     // Inject the rule's own providerId into the DB query so we only fetch
     // packages from the provider this rule actually targets.
     if (rule.providerId && !where.providerId) {
@@ -358,6 +345,7 @@ export async function getRuleExecutionHistory(
 ): Promise<{ executions: RuleExecutionSummary[]; total: number; page: number; totalPages: number }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { executions: [], total: 0, page: 1, totalPages: 0 }
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PRICING))) return { executions: [], total: 0, page: 1, totalPages: 0 }
 
   const where: any = {}
   if (ruleId) where.ruleId = ruleId
@@ -398,6 +386,7 @@ export async function getRuleExecutionHistory(
 export async function getRuleExecutionDetail(executionId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return null
+  if (!(await canAccessAdmin(session.user.id, Permissions.VIEW_PRICING))) return null
 
   return prisma.ruleExecution.findUnique({
     where: { id: executionId },
@@ -406,6 +395,8 @@ export async function getRuleExecutionDetail(executionId: string) {
 }
 
 export async function getRuleLastUsed(ruleId: string): Promise<Date | null> {
+  const session = await getServerSession(authOptions)
+  if (!(await canAccessAdmin(session?.user?.id, Permissions.VIEW_PRICING))) return null
   const last = await prisma.ruleExecution.findFirst({
     where: { ruleId, status: 'COMPLETED' },
     orderBy: { executedAt: 'desc' },
@@ -415,63 +406,13 @@ export async function getRuleLastUsed(ruleId: string): Promise<Date | null> {
 }
 
 export async function getRuleTimesApplied(ruleId: string): Promise<number> {
+  const session = await getServerSession(authOptions)
+  if (!(await canAccessAdmin(session?.user?.id, Permissions.VIEW_PRICING))) return 0
   return prisma.ruleExecution.count({
     where: { ruleId, status: 'COMPLETED' },
   })
 }
 
-function buildScopeWhere(scope: string, filters: ApplyRuleFilters, selectedIds?: string[]): any {
-  const where: any = {}
-  // Track which fields the scope sets — filters must NOT override these
-  const scopeManaged = new Set<string>()
-
-  if (scope === 'unconfigured') {
-    where.configurationStatus = 'UNCONFIGURED'
-    where.publishStatus = { notIn: ['PUBLISHED', 'ARCHIVED', 'HIDDEN'] }
-    scopeManaged.add('configurationStatus').add('publishStatus')
-  } else if (scope === 'configured') {
-    where.configurationStatus = { in: ['CONFIGURED', 'AUTO_CONFIGURED'] }
-    scopeManaged.add('configurationStatus')
-  } else if (scope === 'draft') {
-    where.publishStatus = 'DRAFT'
-    scopeManaged.add('publishStatus')
-  } else if (scope === 'all_eligible') {
-    where.OR = [
-      { configurationStatus: 'UNCONFIGURED' },
-      { configurationStatus: { in: ['CONFIGURED', 'AUTO_CONFIGURED'] } },
-      { publishStatus: 'DRAFT' },
-    ]
-    where.publishStatus = { notIn: ['PUBLISHED', 'ARCHIVED', 'HIDDEN'] }
-    scopeManaged.add('configurationStatus').add('publishStatus')
-  } else if (scope === 'selected') {
-    if (selectedIds && selectedIds.length > 0) where.id = { in: selectedIds }
-  }
-
-  // Filters only applied for fields NOT already set by the scope
-  if (filters.providerId) where.providerId = filters.providerId
-  if (filters.country) where.country = filters.country
-  if (filters.region) where.region = filters.region
-  if (filters.publishStatus && !scopeManaged.has('publishStatus')) where.publishStatus = filters.publishStatus
-  if (filters.configurationStatus && !scopeManaged.has('configurationStatus')) where.configurationStatus = filters.configurationStatus
-  if (filters.hasCostPrice) where.costPrice = { gt: 0 }
-  if (filters.hasSellingPrice) where.sellingPrice = { gt: 0 }
-  if (filters.hasValidity) where.validityDays = { gt: 0 }
-  if (filters.hasDataAllowance) where.dataGB = { gt: 0 }
-
-  // Archive/hidden exclusion only for non-scope-managed publishStatus
-  if (!scopeManaged.has('publishStatus')) {
-    const publishExcludes: string[] = []
-    if (!filters.includeArchived) publishExcludes.push('ARCHIVED')
-    if (!filters.includeHidden) publishExcludes.push('HIDDEN')
-    if (publishExcludes.length === 1) {
-      where.publishStatus = { not: publishExcludes[0] }
-    } else if (publishExcludes.length === 2) {
-      where.publishStatus = { notIn: publishExcludes }
-    }
-  }
-
-  return where
-}
 
 /**
  * Phase 2A — Simulate rule pricing without database writes.
@@ -491,6 +432,7 @@ export async function simulateRuleApplication(
 ): Promise<{ success: boolean; data?: SimulationResult; error?: string }> {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') return { success: false, error: 'Unauthorized' }
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_PRICING))) return { success: false, error: 'Unauthorized' }
 
   const rule = await prisma.packageConfigurationRule.findUnique({
     where: { id: ruleId },
@@ -499,9 +441,7 @@ export async function simulateRuleApplication(
   if (!rule) return { success: false, error: 'Rule not found' }
   if (!rule.isActive) return { success: false, error: 'Rule is inactive — activate it first' }
 
-  const where: any = buildScopeWhere(scope, filters, selectedIds)
-  if (filters.includeArchived) delete where.ARCHIVED
-  if (filters.includeHidden) delete where.HIDDEN
+  const where: any = buildApplyRuleScopeWhere(scope, filters, selectedIds)
   if (rule.providerId && !where.providerId) {
     where.providerId = rule.providerId
   }

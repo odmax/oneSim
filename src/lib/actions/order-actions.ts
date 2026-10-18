@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
+import { canAccessAdmin, Permissions } from '@/lib/auth/permissions'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth/config'
 import { revalidatePath } from 'next/cache'
@@ -11,6 +12,7 @@ import { recoverOrder } from '@/lib/services/orders/recovery'
 export async function retryFailedOrder(orderId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_ORDERS))) throw new Error('Unauthorized')
 
   const recovery = await recoverOrder(orderId)
   revalidatePath(`/admin/orders/${orderId}`)
@@ -39,6 +41,7 @@ function formatRecoveryMessage(r: { action: string; message?: string }): string 
 export async function cancelOrder(orderId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_ORDERS))) throw new Error('Unauthorized')
 
   const order = await prisma.eSIMPurchase.findUnique({
     where: { id: orderId },
@@ -72,6 +75,7 @@ export async function cancelOrder(orderId: string) {
 export async function refundOrder(orderId: string) {
   const session = await getServerSession(authOptions)
   if (!session || session.user.role !== 'INTERNAL_ADMIN') throw new Error('Unauthorized')
+  if (!(await canAccessAdmin(session.user.id, Permissions.MANAGE_ORDERS))) throw new Error('Unauthorized')
 
   const order = await prisma.eSIMPurchase.findUnique({
     where: { id: orderId },
